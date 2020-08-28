@@ -1,0 +1,12 @@
+[package]
+name = "librice"
+description = "ICE (RFC8445) implementation"
+version = "0.1.0"
+authors = ["Matthew Waters <matthew@centricular.com>"]
+edition = "2018"
+keywords = ["STUN", "ICE"]
+
+[dependencies]
+log = "0.4"
+byteorder = "1.3.4"
+env_logger = "0.7"
