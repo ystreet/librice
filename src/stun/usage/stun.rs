@@ -8,7 +8,7 @@
 
 use std::net::SocketAddr;
 
-use crate::stun::attribute::{Attribute, AttributeType, UnknownAttributes, ErrorCode};
+use crate::stun::attribute::{Attribute, AttributeType, UnknownAttributes, ErrorCode, Software};
 use crate::stun::attribute::{MAPPED_ADDRESS, USERNAME, MESSAGE_INTEGRITY, ERROR_CODE, UNKNOWN_ATTRIBUTES, REALM, NONCE, XOR_MAPPED_ADDRESS, SOFTWARE, ALTERNATE_SERVER, FINGERPRINT};
 use crate::stun::message::{Message, MessageType, MessageClass};
 use crate::stun::message::{BINDING};
@@ -53,6 +53,7 @@ impl StunUsage {
             let mtype = MessageType::from_class_method(
                     MessageClass::Error, msg.get_type().method());
             let mut out = Message::new(mtype, msg.transaction_id());
+            out.add_attribute(Software::new("librice v0.1")?.to_raw())?;
             out.add_attribute(ErrorCode::new(400, "Bad Request")?.to_raw())?;
             let attr_types = msg.iter_attributes()
                     .map(|a| a.get_type()).collect::<Vec<_>>();

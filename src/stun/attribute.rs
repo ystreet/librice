@@ -239,6 +239,7 @@ impl Username {
         if user.len() > 513 {
             return Err(AgentError::InvalidSize);
         }
+        // TODO: SASLPrep RFC4013 requirements
         Ok(Self {
             user: user.to_owned(),
         })
@@ -382,6 +383,51 @@ impl UnknownAttributes {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Software {
+    software: String,
+}
+impl Attribute for Software {
+    fn get_type(&self) -> AttributeType {
+        SOFTWARE
+    }
+
+    fn get_length (&self) -> u16 {
+        self.software.len() as u16
+    }
+
+    fn to_raw(&self) -> RawAttribute {
+        RawAttribute::new(self.get_type().into(), self.software.as_bytes())
+    }
+
+    fn from_raw(raw: RawAttribute) -> Result<Self,AgentError> {
+        if raw.header.atype != SOFTWARE {
+            return Err(AgentError::WrongImplementation);
+        }
+        if raw.value.len() > 763 {
+            return Err(AgentError::TooBig);
+        }
+        Ok(Self {
+            software: std::str::from_utf8(&raw.value).map_err(|_| AgentError::Malformed)?.to_owned()
+        })
+    }
+}
+
+impl Software {
+    pub fn new(software: &str) -> Result<Self,AgentError> {
+        if software.len() > 768 {
+            return Err(AgentError::InvalidSize);
+        }
+        Ok(Self {
+            software: software.to_owned(),
+        })
+    }
+
+    pub fn software(&self) -> &str {
+        &self.software
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,5 +504,17 @@ mod tests {
         assert_eq!(unknown2.has_attribute(REALM), true);
         assert_eq!(unknown2.has_attribute(ALTERNATE_SERVER), true);
         assert_eq!(unknown2.has_attribute(NONCE), false);
+    }
+
+    #[test]
+    fn software() {
+        init();
+        let software = Software::new("software").unwrap();
+        assert_eq!(software.get_type(), SOFTWARE);
+        assert_eq!(software.software(), "software");
+        let raw = software.to_raw();
+        let software2 = Software::from_raw(raw).unwrap();
+        assert_eq!(software2.get_type(), SOFTWARE);
+        assert_eq!(software2.software(), "software");
     }
 }
