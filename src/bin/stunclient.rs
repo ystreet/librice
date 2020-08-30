@@ -22,7 +22,7 @@ fn main() -> std::io::Result<()> {
     let to = "127.0.0.1:3478";
 
     let mtype = MessageType::from_class_method(MessageClass::Request, BINDING);
-    let mut out = Message::new(mtype, 89); // FIXME transaction ids
+    let mut out = Message::new(mtype, Message::generate_transaction());
     out.add_attribute(Username::new("hi stun person")
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid message"))?
         .to_raw())

@@ -126,6 +126,12 @@ impl Message {
         self.transaction
     }
 
+    pub fn generate_transaction() -> u128 {
+        use rand::{thread_rng, Rng};
+        let mut rng = thread_rng();
+        rng.gen::<u128>() & 0x00000000_ffffffff_ffffffff_ffffffff
+    }
+
     /// Serialize a `Message` to network bytes
     ///
     /// # Examples

@@ -6,39 +6,76 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::net::UdpSocket;
+use async_std::io;
+use async_std::net::{UdpSocket, SocketAddr};
+use async_std::task;
+use async_std::sync::Arc;
+
+use async_channel;
 
 #[macro_use] extern crate log;
 use env_logger;
 
-use librice::stun::attribute::*;
-use librice::stun::message::*;
+use librice::stun::usage::Usage;
+use librice::stun::usage::stun::StunUsage;
 
-
-fn main() -> std::io::Result<()> {
+fn main() -> io::Result<()> {
     env_logger::init();
 
-    let socket = UdpSocket::bind("127.0.0.1:3478")?;
+    task::block_on (async move {
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:3478").await?);
 
-    /* echo server, return errors for all requests */
-    loop {
-        let mut buf = [0; 1500];
-        let (amt, src) = socket.recv_from(&mut buf)?;
-        let buf = &buf[..amt];
-        trace!("got {:?}", buf);
-        let msg = Message::from_bytes(buf).map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid message"))?;
-        info!("got {:?}", msg);
-        if msg.get_type().class() == MessageClass::Request {
-            let mtype = MessageType::from_class_method(MessageClass::Error, msg.get_type().method());
-            let mut out = Message::new(mtype, msg.transaction_id());
-            let attrs = msg.iter_attributes().map(|a| a.get_type()).collect::<Vec<_>>();
-            if attrs.len() > 0 {
-                 out.add_attribute(UnknownAttributes::new(&attrs).to_raw()).unwrap();
+        let (send_s, send_r) = async_channel::unbounded();
+        let (recv_s, recv_r) = async_channel::unbounded();
+
+        let socket_c = socket.clone();
+        task::spawn(async move {
+            loop {
+                let (buf, to): (Vec<_>, SocketAddr) = send_r.recv().await.unwrap();
+                trace!("sending {:?}", buf);
+                socket_c.send_to(&buf, &to).await.unwrap();
             }
-            info!("sending {:?}", out);
-            let buf = out.to_bytes();
-            trace!("sending {:?}", buf);
-            socket.send_to(&buf, &src)?;
-        }
-    };
+        });
+
+        let socket_c = socket.clone();
+        task::spawn(async move {
+            loop {
+                let (buf, src) = {
+                    // receive data
+                    let mut buf = [0; 1500];
+                    let (amt, src) = socket_c.recv_from(&mut buf).await.unwrap();
+                    trace!("got from {:?}, {:?}", src, &buf[..amt]);
+                    (buf[..amt].to_vec(), src)
+                };
+                recv_s.send((buf.to_vec(), src)).await.unwrap();
+            }
+        });
+
+        let mut usage = StunUsage::new();
+        /* echo server, return errors for all requests */
+        loop {
+            let (buf, from): (Vec<_>, SocketAddr) = recv_r.recv().await.unwrap();
+            let messages = {
+                // handle data
+                let msg = usage.received_data(&buf, &from)
+                        .map_err(|_| std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Invalid message"))?;
+                info!("got {:?}", msg);
+                usage.received_message (&msg, &from)
+                        .map_err(|_| std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Could not process message"))?;
+
+                usage.take_messages_to_send()
+            };
+
+            for (out, to) in messages.iter().cloned() {
+                usage.send_message(&out, &to);
+                info!("sending to {:?}, {:?}", to, out);
+                let buf = usage.write_message(&out).unwrap();
+                send_s.send((buf.to_vec(), to)).await.unwrap();
+            }
+        };
+    })
 }
