@@ -6,6 +6,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use std::error::Error;
+use std::fmt::Display;
+
 #[derive(Debug)]
 pub enum AgentError {
     AlreadyExists,
@@ -18,4 +21,12 @@ pub enum AgentError {
     WrongImplementation,
     TooBig,
     IoError(std::io::Error),
+}
+
+impl Error for AgentError {}
+
+impl Display for AgentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }

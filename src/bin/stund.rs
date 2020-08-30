@@ -9,7 +9,7 @@
 use async_std::io;
 use async_std::net::{UdpSocket, SocketAddr};
 use async_std::task;
-use async_std::sync::Arc;
+use async_std::sync::{Arc, Mutex};
 
 use async_channel;
 
@@ -30,42 +30,77 @@ fn main() -> io::Result<()> {
 
         let socket_c = socket.clone();
         task::spawn(async move {
+            let process = || async {
+                let (buf, to): (Vec<_>, SocketAddr) = send_r.recv().await
+                        .map_err(|e| std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            e))?;
+                trace!("sending to {:?} {:?}", to, buf);
+                socket_c.send_to(&buf, &to).await
+                        .map_err(|e| std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            e))
+            };
+
             loop {
-                let (buf, to): (Vec<_>, SocketAddr) = send_r.recv().await.unwrap();
-                trace!("sending {:?}", buf);
-                socket_c.send_to(&buf, &to).await.unwrap();
+                match process().await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!("{:?}", e);
+                        continue;
+                    },
+                };
             }
         });
 
         let socket_c = socket.clone();
         task::spawn(async move {
-            loop {
+            let process = || async {
                 let (buf, src) = {
                     // receive data
                     let mut buf = [0; 1500];
-                    let (amt, src) = socket_c.recv_from(&mut buf).await.unwrap();
+                    let (amt, src) = socket_c.recv_from(&mut buf).await
+                            .map_err(|e| std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                e))?;
                     trace!("got from {:?}, {:?}", src, &buf[..amt]);
                     (buf[..amt].to_vec(), src)
                 };
-                recv_s.send((buf.to_vec(), src)).await.unwrap();
+                recv_s.send((buf.to_vec(), src)).await
+                        .map_err(|e| std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            e))
+            };
+            loop {
+                match process().await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!("{:?}", e);
+                        continue;
+                    },
+                };
             }
         });
 
-        let mut usage = StunUsage::new();
         /* echo server, return errors for all requests */
-        loop {
-            let (buf, from): (Vec<_>, SocketAddr) = recv_r.recv().await.unwrap();
+        let usage = Arc::new(Mutex::new(StunUsage::new()));
+        let process = || async {
+            let (buf, from): (Vec<_>, SocketAddr) = recv_r.recv().await
+                    .map_err(|e| std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        e))?;
+            let mut usage = usage.lock().await;
             let messages = {
                 // handle data
                 let msg = usage.received_data(&buf, &from)
-                        .map_err(|_| std::io::Error::new(
+                        .map_err(|e| std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
-                            "Invalid message"))?;
-                info!("got {:?}", msg);
+                            e))?;
+                info!("got from {:?} {:?}", from, msg);
                 usage.received_message (&msg, &from)
-                        .map_err(|_| std::io::Error::new(
+                        .map_err(|e| std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
-                            "Could not process message"))?;
+                            e))?;
 
                 usage.take_messages_to_send()
             };
@@ -73,9 +108,26 @@ fn main() -> io::Result<()> {
             for (out, to) in messages.iter().cloned() {
                 usage.send_message(&out, &to);
                 info!("sending to {:?}, {:?}", to, out);
-                let buf = usage.write_message(&out).unwrap();
-                send_s.send((buf.to_vec(), to)).await.unwrap();
+                let buf = usage.write_message(&out)
+                        .map_err(|e| std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            e))?;
+                send_s.send((buf.to_vec(), to)).await
+                        .map_err(|e| std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            e))?;
             }
+            Ok::<(),io::Error>(())
         };
+
+        loop {
+            match process().await {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("got error: {:?}", e);
+                    continue;
+                },
+            };
+        }
     })
 }

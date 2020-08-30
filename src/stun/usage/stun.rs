@@ -112,6 +112,9 @@ impl Usage for StunUsage {
             self.handle_request(msg, addr)?;
         } else if msg.get_type().class() == MessageClass::Indication {
             self.handle_indication(msg, addr)?;
+        } else {
+            // message class is not known
+            return Err(AgentError::Malformed);
         }
         Ok(())
     }
