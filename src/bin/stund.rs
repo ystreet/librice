@@ -96,7 +96,7 @@ fn main() -> io::Result<()> {
                         .map_err(|e| std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
                             e))?;
-                info!("got from {:?} {:?}", from, msg);
+                info!("got from {:?} {}", from, msg);
                 usage.received_message (&msg, &from)
                         .map_err(|e| std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
@@ -107,7 +107,7 @@ fn main() -> io::Result<()> {
 
             for (out, to) in messages.iter().cloned() {
                 usage.send_message(&out, &to);
-                info!("sending to {:?}, {:?}", to, out);
+                info!("sending to {:?}, {}", to, out);
                 let buf = usage.write_message(&out)
                         .map_err(|e| std::io::Error::new(
                             std::io::ErrorKind::InvalidData,

@@ -27,12 +27,12 @@ fn main() -> std::io::Result<()> {
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid message"))?
         .to_raw())
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid message"))?;
-    info!("generated {:?}", out);
+    info!("generated {}", out);
     socket.send_to(&out.to_bytes(), &to)?;
     let mut buf = [0; 1500];
     let (amt, _src) = socket.recv_from(&mut buf)?;
     let buf = &buf[..amt];
     let msg = Message::from_bytes(buf).map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid message"))?;
-    info!("got {:?}", msg);
+    info!("got {}", msg);
     Ok(())
 }

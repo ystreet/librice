@@ -30,11 +30,34 @@ pub const SOFTWARE: AttributeType = AttributeType(0x8022);
 pub const ALTERNATE_SERVER: AttributeType = AttributeType(0x8023);
 pub const FINGERPRINT: AttributeType = AttributeType(0x8028);
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AttributeType(u16);
+
+impl std::fmt::Display for AttributeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}({:#x}: {})", self.0, self.0, self.name())
+    }
+}
+
 impl AttributeType {
     pub fn new(val: u16) -> Self {
         Self(val)
+    }
+
+    pub fn name(self) -> &'static str{
+        match self {
+            MAPPED_ADDRESS => "MAPPED-ADDRESS",
+            USERNAME => "USERNAME",
+            MESSAGE_INTEGRITY => "MESSAGE-INTEGRITY",
+            ERROR_CODE => "ERROR-CODE",
+            UNKNOWN_ATTRIBUTES => "UNKNOWN-ATTRIBUTES",
+            REALM => "REALM",
+            NONCE => "NONCE",
+            SOFTWARE => "SOFTWARE",
+            ALTERNATE_SERVER => "ALTERNATE-SERVER",
+            FINGERPRINT => "FINGERPRINT",
+            _ => "unknown",
+        }
     }
 
     /// Check if comprehension is required for an `AttributeType`.  All integer attribute
@@ -121,6 +144,41 @@ pub trait Attribute: std::fmt::Debug + std::any::Any {
 pub struct RawAttribute {
     pub header: AttributeHeader,
     pub value: Vec<u8>
+}
+
+impl std::fmt::Display for RawAttribute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // try to get a more specialised display
+        let malformed_str = format!("{}(Malformed): len: {}, data: {:?})", self.get_type(), self.header.length, self.value);
+        let display_str = if self.get_type() == SOFTWARE {
+            if let Ok(software) = Software::from_raw(self.clone()) {
+                format!("{}", software)
+            } else {
+                malformed_str
+            }
+        } else if self.get_type() == UNKNOWN_ATTRIBUTES {
+            if let Ok(attrs) = UnknownAttributes::from_raw(self.clone()) {
+                format!("{}", attrs)
+            } else {
+                malformed_str
+            }
+        } else if self.get_type() == ERROR_CODE {
+            if let Ok(code) = ErrorCode::from_raw(self.clone()) {
+                format!("{}", code)
+            } else {
+                malformed_str
+            }
+        } else if self.get_type() == USERNAME {
+            if let Ok(user) = Username::from_raw(self.clone()) {
+                format!("{}", user)
+            } else {
+                malformed_str
+            }
+        } else {
+            format!("RawAttribute (type: {:?}, len: {}, data: {:?})", self.header.atype, self.header.length, &self.value)
+        };
+        write!(f, "{}", display_str)
+    }
 }
 
 impl Attribute for RawAttribute {
@@ -250,6 +308,12 @@ impl Username {
     }
 }
 
+impl std::fmt::Display for Username {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: '{}'", self.get_type(), self.user)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ErrorCode {
     code: u16,
@@ -325,6 +389,12 @@ impl ErrorCode {
     }
 }
 
+impl std::fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {} '{}'", self.get_type(), self.code, self.reason)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UnknownAttributes {
     attributes: Vec<AttributeType>,
@@ -383,6 +453,12 @@ impl UnknownAttributes {
     }
 }
 
+impl std::fmt::Display for UnknownAttributes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {:?}", self.get_type(), self.attributes)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Software {
     software: String,
@@ -425,6 +501,12 @@ impl Software {
 
     pub fn software(&self) -> &str {
         &self.software
+    }
+}
+
+impl std::fmt::Display for Software {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: '{}'", self.get_type(), self.software)
     }
 }
 

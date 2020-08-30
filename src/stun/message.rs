@@ -44,6 +44,12 @@ impl MessageClass {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct MessageType(u16);
 
+impl std::fmt::Display for MessageType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MessageType(class: {:?}, method: {} ({:#x}))", self.class(), self.method(), self.method())
+    }
+}
+
 impl MessageType {
     pub fn class(self) -> MessageClass {
         let class = (self.0 & 0x10) >> 4 | (self.0 & 0x100) >> 7;
@@ -99,6 +105,25 @@ pub struct Message {
     msg_type: MessageType,
     transaction: u128,       /* 96-bits valid */
     attributes: Vec<RawAttribute>,
+}
+
+impl std::fmt::Display for Message {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Message(class: {:?}, method: {} ({:#x}), transaction: {:#x}, attributes: ", self.get_type().class(), self.get_type().method(), self.get_type().method(), self.transaction_id())?;
+        if self.attributes.len() <= 0 {
+            write!(f, "[]")?;
+        } else {
+            write!(f, "[")?;
+            for (i, a) in self.attributes.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{}", a)?;
+            }
+            write!(f, "]")?;
+        }
+        write!(f, ")")
+    }
 }
 
 fn padded_attr_size (attr: &dyn Attribute) -> usize {
