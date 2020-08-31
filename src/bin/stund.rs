@@ -73,26 +73,92 @@ impl StunServerInner {
         Ok(msg.to_bytes())
     }
 
-    async fn handle_request(&mut self, msg: &Message, addr: &SocketAddr) -> Result<(),AgentError> {
-        let out = if msg.get_type().method() == BINDING && false {
-            Err(AgentError::WrongImplementation)
-        } else {
+    fn generate_unknown_attributes (src: &Message, attributes: &[AttributeType]) -> Result<Message,AgentError> {
+        let mtype = MessageType::from_class_method(
+                MessageClass::Error, src.get_type().method());
+        let mut out = Message::new(mtype, src.transaction_id());
+        out.add_attribute(Software::new("stund - librice v0.1")?.to_raw())?;
+        out.add_attribute(ErrorCode::new(420, "Unknown Attributes")?.to_raw())?;
+        if attributes.len() > 0 {
+             out.add_attribute(UnknownAttributes::new(&attributes)
+                    .to_raw())?;
+        }
+        Ok(out)
+    }
+
+    fn generate_bad_request (src: &Message) -> Result<Message,AgentError> {
+        let mtype = MessageType::from_class_method(
+                MessageClass::Error, src.get_type().method());
+        let mut out = Message::new(mtype, src.transaction_id());
+        out.add_attribute(Software::new("stund - librice v0.1")?.to_raw())?;
+        out.add_attribute(ErrorCode::new(400, "Bad Request")?.to_raw())?;
+        Ok(out)
+    }
+
+    async fn send_message(&self, msg: &Message, addr: &SocketAddr) -> Result<(),AgentError> {
+        info!("sending to {:?} {}", addr, msg);
+        self.send_queue_sender
+                .send((self.write_message(msg)?, *addr)).await
+                .map_err(|_| AgentError::ConnectionClosed)?;
+        Ok(())
+    }
+
+    fn request_check_attribute_types (msg: &Message, supported: &[AttributeType], required_in_msg: &[AttributeType]) -> Option<Message> {
+        // Attribute -> AttributeType
+        let unsupported: Vec<AttributeType> = msg.iter_attributes().map(|a| a.get_type())
+            // attribute types that require comprehension but are not supported by the caller
+            .filter(|&at| {at.comprehension_required() && supported.iter().position(|&a| a == at).is_none()})
+            .collect();
+        if unsupported.len() > 0 {
+            return StunServerInner::generate_unknown_attributes(msg, &unsupported).ok();
+        }
+        if required_in_msg.iter()
+                // attribute types we need in the message -> failure -> Bad Request
+                .filter(|&at| {msg.iter_attributes().map(|a| a.get_type()).position(|a| a == *at).is_none()})
+                .next().is_some() {
+            debug!("Message is missing required attributes");
+            return StunServerInner::generate_bad_request(msg).ok();
+        }
+        None
+    }
+
+    async fn generate_response(&mut self, msg: &Message, addr: &SocketAddr) -> Result<Message,AgentError> {
+        if msg.get_type().method() == BINDING {
+            if let Some(error) = StunServerInner::request_check_attribute_types(msg, &[USERNAME, XOR_MAPPED_ADDRESS], &[XOR_MAPPED_ADDRESS]) {
+                return Ok(error);
+            }
+
+            // existence checked above
+            let mapped_address = XorMappedAddress::from_raw(msg.get_attribute(XOR_MAPPED_ADDRESS).unwrap().clone()).ok();
+            if let None = mapped_address {
+                debug!("Message is missing XOR-MAPPED-ADDRESS");
+                return StunServerInner::generate_bad_request(msg);
+            }
             let mtype = MessageType::from_class_method(
-                    MessageClass::Error, msg.get_type().method());
+                    MessageClass::Success, msg.get_type().method());
             let mut out = Message::new(mtype, msg.transaction_id());
             out.add_attribute(Software::new("stund - librice v0.1")?.to_raw())?;
-            out.add_attribute(ErrorCode::new(400, "Bad Request")?.to_raw())?;
-            let attr_types = msg.iter_attributes()
-                    .map(|a| a.get_type()).collect::<Vec<_>>();
-            if attr_types.len() > 0 {
-                 out.add_attribute(UnknownAttributes::new(&attr_types)
-                        .to_raw()).unwrap();
+            out.add_attribute(XorMappedAddress::new(*addr, msg.transaction_id())?.to_raw())?;
+            if let Some(username) = msg.get_attribute(USERNAME) {
+                out.add_attribute(Username::new(Username::from_raw(username.clone())?.username())?.to_raw())?;
             }
-            info!("sending to {:?} {}", addr, out);
-            self.write_message(&out)
-        }?;
-        self.send_queue_sender.send((out, *addr)).await.map_err(|_| AgentError::ConnectionClosed)?;
-        Ok(())
+            Ok(out)
+        } else {
+            StunServerInner::generate_bad_request(msg)
+        }
+    }
+
+    async fn handle_request(&mut self, msg: &Message, addr: &SocketAddr) -> Result<(),AgentError> {
+        match self.generate_response(msg, addr).await {
+            Ok(out) => {
+                self.send_message(&out, addr).await?;
+                Ok(())
+            } ,
+            Err(err) => {
+                self.send_message(&StunServerInner::generate_bad_request(msg)?, addr).await?;
+                Err(err)
+            },
+        }
     }
 
     fn handle_indication(&mut self, _msg: &Message, _addr: &SocketAddr) -> Result<(),AgentError> {
