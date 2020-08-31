@@ -19,6 +19,37 @@ use env_logger;
 use librice::stun::usage::Usage;
 use librice::stun::usage::stun::StunUsage;
 
+async fn send_task(socket: Arc<UdpSocket>, recv_channel: async_channel::Receiver<(Vec<u8>,SocketAddr)>) -> io::Result<()> {
+    let (buf, to): (Vec<_>, SocketAddr) = recv_channel.recv().await
+            .map_err(|e| std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e))?;
+    trace!("sending to {:?} {:?}", to, buf);
+    socket.send_to(&buf, &to).await
+            .map_err(|e| std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e))?;
+    Ok(())
+}
+
+async fn receive_task(socket: Arc<UdpSocket>, send_channel: async_channel::Sender<(Vec<u8>,SocketAddr)>) -> io::Result<()> {
+    let (buf, src) = {
+        // receive data
+        let mut buf = [0; 1500];
+        let (amt, src) = socket.recv_from(&mut buf).await
+                .map_err(|e| std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    e))?;
+        trace!("got from {:?}, {:?}", src, &buf[..amt]);
+        (buf[..amt].to_vec(), src)
+    };
+    send_channel.send((buf.to_vec(), src)).await
+            .map_err(|e| std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e))?;
+    Ok(())
+}
+
 fn main() -> io::Result<()> {
     env_logger::init();
 
@@ -30,20 +61,8 @@ fn main() -> io::Result<()> {
 
         let socket_c = socket.clone();
         task::spawn(async move {
-            let process = || async {
-                let (buf, to): (Vec<_>, SocketAddr) = send_r.recv().await
-                        .map_err(|e| std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            e))?;
-                trace!("sending to {:?} {:?}", to, buf);
-                socket_c.send_to(&buf, &to).await
-                        .map_err(|e| std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            e))
-            };
-
             loop {
-                match process().await {
+                match send_task(socket_c.clone(), send_r.clone()).await {
                     Ok(v) => v,
                     Err(e) => {
                         warn!("{:?}", e);
@@ -55,24 +74,8 @@ fn main() -> io::Result<()> {
 
         let socket_c = socket.clone();
         task::spawn(async move {
-            let process = || async {
-                let (buf, src) = {
-                    // receive data
-                    let mut buf = [0; 1500];
-                    let (amt, src) = socket_c.recv_from(&mut buf).await
-                            .map_err(|e| std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                e))?;
-                    trace!("got from {:?}, {:?}", src, &buf[..amt]);
-                    (buf[..amt].to_vec(), src)
-                };
-                recv_s.send((buf.to_vec(), src)).await
-                        .map_err(|e| std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            e))
-            };
             loop {
-                match process().await {
+                match receive_task(socket_c.clone(), recv_s.clone()).await {
                     Ok(v) => v,
                     Err(e) => {
                         warn!("{:?}", e);
