@@ -8,7 +8,10 @@
 
 use std::convert::TryFrom;
 
+use std::net::{SocketAddr, IpAddr, Ipv4Addr, Ipv6Addr};
+
 use crate::agent::AgentError;
+use crate::stun::message::MAGIC_COOKIE;
 
 use byteorder::{BigEndian, ByteOrder};
 
@@ -55,6 +58,7 @@ impl AttributeType {
             UNKNOWN_ATTRIBUTES => "UNKNOWN-ATTRIBUTES",
             REALM => "REALM",
             NONCE => "NONCE",
+            XOR_MAPPED_ADDRESS => "XOR-MAPPED-ADDRESS",
             SOFTWARE => "SOFTWARE",
             ALTERNATE_SERVER => "ALTERNATE-SERVER",
             FINGERPRINT => "FINGERPRINT",
@@ -178,6 +182,12 @@ impl std::fmt::Display for RawAttribute {
             }
         } else if self.get_type() == USERNAME {
             if let Ok(user) = Username::from_raw(self.clone()) {
+                format!("{}", user)
+            } else {
+                malformed_str
+            }
+        } else if self.get_type() == XOR_MAPPED_ADDRESS {
+            if let Ok(user) = XorMappedAddress::from_raw(self.clone()) {
                 format!("{}", user)
             } else {
                 malformed_str
@@ -581,6 +591,144 @@ impl From<Software> for RawAttribute {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct XorMappedAddress {
+    // stored XOR-ed as we need the transaction id to get the original value
+    addr: SocketAddr,
+}
+impl Attribute for XorMappedAddress {
+    fn get_type(&self) -> AttributeType {
+        XOR_MAPPED_ADDRESS
+    }
+
+    fn get_length (&self) -> u16 {
+        match self.addr {
+            SocketAddr::V4(_) => 8,
+            SocketAddr::V6(_) => 20,
+        }
+    }
+
+    fn to_raw(&self) -> RawAttribute {
+        match self.addr {
+            SocketAddr::V4(addr) => {
+                let mut buf = [0; 8];
+                buf[1] = 0x1;
+                BigEndian::write_u16(&mut buf[2..4], addr.port());
+                let octets = u32::from(*addr.ip());
+                BigEndian::write_u32(&mut buf[4..8], octets);
+                RawAttribute::new(self.get_type().into(), &buf)
+            },
+            SocketAddr::V6(addr) => {
+                let mut buf = [0; 20];
+                buf[1] = 0x2;
+                BigEndian::write_u16(&mut buf[2..4], addr.port());
+                let octets = u128::from(*addr.ip());
+                BigEndian::write_u128(&mut buf[2..4], octets);
+                RawAttribute::new(self.get_type().into(), &buf)
+            },
+        }
+    }
+
+    fn from_raw(raw: RawAttribute) -> Result<Self,AgentError> {
+        if raw.header.atype != XOR_MAPPED_ADDRESS {
+            return Err(AgentError::WrongImplementation);
+        }
+        if raw.value.len() < 4 {
+            return Err(AgentError::NotEnoughData);
+        }
+        let port = BigEndian::read_u16(&raw.value[2..4]);
+        let addr = match raw.value[1] {
+            0x1 => {
+                // ipv4
+                if raw.value.len() < 8 {
+                    return Err(AgentError::NotEnoughData);
+                }
+                if raw.value.len() > 8 {
+                    return Err(AgentError::TooBig);
+                } IpAddr::V4(Ipv4Addr::from(BigEndian::read_u32(&raw.value[4..8])))
+            },
+            0x2 => {
+                // ipv6
+                if raw.value.len() < 20 {
+                    return Err(AgentError::NotEnoughData);
+                }
+                if raw.value.len() > 20 {
+                    return Err(AgentError::TooBig);
+                }
+                let mut octets = [0; 16];
+                for i in 0..16 {
+                    octets[i] = raw.value[4+i];
+                }
+                IpAddr::V6(Ipv6Addr::from(octets))
+            },
+            _ => return Err(AgentError::Malformed),
+        };
+        Ok(Self {
+            addr: SocketAddr::new(addr, port),
+        })
+    }
+}
+
+impl XorMappedAddress {
+    pub fn new(addr: SocketAddr, transaction: u128) -> Result<Self,AgentError> {
+        Ok(Self {
+            addr: XorMappedAddress::xor_addr (addr, transaction),
+        })
+    }
+
+    fn xor_addr(addr: SocketAddr, transaction: u128) -> SocketAddr {
+        match addr {
+            SocketAddr::V4(addr) => {
+                let port = addr.port() ^ (MAGIC_COOKIE >> 16) as u16;
+                let const_octets = MAGIC_COOKIE.to_be_bytes();
+                let addr_octets = addr.ip().octets();
+                let mut octets = [0; 4];
+                for i in 0..4 {
+                    octets[i] = const_octets[i] ^ addr_octets[i];
+                };
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::from(octets)), port)
+            },
+            SocketAddr::V6(addr) => {
+                let port = addr.port() ^ (MAGIC_COOKIE >> 16) as u16;
+                let const_octets = ((MAGIC_COOKIE as u128) << 96 | (transaction & 0x00000000_ffffffff_ffffffff_ffffffff)).to_be_bytes();
+                let addr_octets = addr.ip().octets();
+                let mut octets = [0; 16];
+                for i in 0..16 {
+                    octets[i] = const_octets[i] ^ addr_octets[i];
+                };
+                SocketAddr::new(IpAddr::V6(Ipv6Addr::from(octets)), port)
+            },
+        }
+    }
+
+    pub fn addr(&self, transaction: u128) -> SocketAddr {
+        XorMappedAddress::xor_addr (self.addr, transaction)
+    }
+}
+
+impl std::fmt::Display for XorMappedAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.addr {
+            SocketAddr::V4(_) => write!(f, "{}: {:?}", self.get_type(), self.addr(0x0)),
+            SocketAddr::V6(addr) => write!(f, "{}: XOR({:?})", self.get_type(), addr),
+        }
+    }
+}
+
+impl TryFrom<RawAttribute> for XorMappedAddress {
+    type Error = AgentError;
+
+    fn try_from(value: RawAttribute) -> Result<Self, Self::Error> {
+        XorMappedAddress::from_raw(value)
+    }
+}
+
+impl From<XorMappedAddress> for RawAttribute {
+    fn from(f: XorMappedAddress) -> Self {
+        f.to_raw()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -669,5 +817,21 @@ mod tests {
         let software2 = Software::try_from(raw).unwrap();
         assert_eq!(software2.get_type(), SOFTWARE);
         assert_eq!(software2.software(), "software");
+    }
+
+    #[test]
+    fn xor_mapped_address() {
+        init();
+        let transaction_id = 0x98765432_10987654_32109876;
+        let addrs = &["192.168.0.1:40000".parse().unwrap()];
+        for addr in addrs {
+            let mapped = XorMappedAddress::new(*addr, transaction_id).unwrap();
+            assert_eq!(mapped.get_type(), XOR_MAPPED_ADDRESS);
+            assert_eq!(mapped.addr(transaction_id), *addr);
+            let raw: RawAttribute = mapped.into();
+            let mapped2 = XorMappedAddress::try_from(raw).unwrap();
+            assert_eq!(mapped2.get_type(), XOR_MAPPED_ADDRESS);
+            assert_eq!(mapped2.addr(transaction_id), *addr);
+        }
     }
 }
