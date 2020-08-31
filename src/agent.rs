@@ -20,6 +20,7 @@ pub enum AgentError {
     NotStun,
     WrongImplementation,
     TooBig,
+    ConnectionClosed,
     IoError(std::io::Error),
 }
 
