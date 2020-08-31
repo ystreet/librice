@@ -6,6 +6,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use std::convert::TryFrom;
+
 use crate::agent::AgentError;
 
 use byteorder::{BigEndian, ByteOrder};
@@ -94,7 +96,6 @@ pub struct AttributeHeader {
 impl AttributeHeader {
     fn parse (data: &[u8]) -> Result<Self,AgentError> {
         if data.len() < 4 {
-            error!("not enough data");
             return Err(AgentError::NotEnoughData)
         }
         let ret = Self {
@@ -115,6 +116,13 @@ impl AttributeHeader {
 impl From<AttributeHeader> for Vec<u8> {
     fn from(f: AttributeHeader) -> Self {
         f.to_bytes()
+    }
+}
+impl TryFrom<&[u8]> for AttributeHeader {
+    type Error = AgentError;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        AttributeHeader::parse(value)
     }
 }
 
@@ -262,6 +270,14 @@ impl From<RawAttribute> for Vec<u8> {
     }
 }
 
+impl TryFrom<&[u8]> for RawAttribute {
+    type Error = AgentError;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        RawAttribute::from_bytes(value)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Username {
     user: String,
@@ -311,6 +327,19 @@ impl Username {
 impl std::fmt::Display for Username {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: '{}'", self.get_type(), self.user)
+    }
+}
+impl TryFrom<RawAttribute> for Username {
+    type Error = AgentError;
+
+    fn try_from(value: RawAttribute) -> Result<Self, Self::Error> {
+        Username::from_raw(value)
+    }
+}
+
+impl From<Username> for RawAttribute {
+    fn from(f: Username) -> Self {
+        f.to_raw()
     }
 }
 
@@ -395,6 +424,20 @@ impl std::fmt::Display for ErrorCode {
     }
 }
 
+impl TryFrom<RawAttribute> for ErrorCode {
+    type Error = AgentError;
+
+    fn try_from(value: RawAttribute) -> Result<Self, Self::Error> {
+        ErrorCode::from_raw(value)
+    }
+}
+
+impl From<ErrorCode> for RawAttribute {
+    fn from(f: ErrorCode) -> Self {
+        f.to_raw()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UnknownAttributes {
     attributes: Vec<AttributeType>,
@@ -459,6 +502,20 @@ impl std::fmt::Display for UnknownAttributes {
     }
 }
 
+impl TryFrom<RawAttribute> for UnknownAttributes {
+    type Error = AgentError;
+
+    fn try_from(value: RawAttribute) -> Result<Self, Self::Error> {
+        UnknownAttributes::from_raw(value)
+    }
+}
+
+impl From<UnknownAttributes> for RawAttribute {
+    fn from(f: UnknownAttributes) -> Self {
+        f.to_raw()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Software {
     software: String,
@@ -510,6 +567,20 @@ impl std::fmt::Display for Software {
     }
 }
 
+impl TryFrom<RawAttribute> for Software {
+    type Error = AgentError;
+
+    fn try_from(value: RawAttribute) -> Result<Self, Self::Error> {
+        Software::from_raw(value)
+    }
+}
+
+impl From<Software> for RawAttribute {
+    fn from(f: Software) -> Self {
+        f.to_raw()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,8 +618,8 @@ mod tests {
         let user = Username::new(&s).unwrap();
         assert_eq!(user.get_type(), USERNAME);
         assert_eq!(user.username(), s);
-        let raw = user.to_raw();
-        let user2 = Username::from_raw(raw).unwrap();
+        let raw: RawAttribute = user.into();
+        let user2 = Username::try_from(raw).unwrap();
         assert_eq!(user2.get_type(), USERNAME);
         assert_eq!(user2.username(), s);
     }
@@ -562,8 +633,8 @@ mod tests {
         assert_eq!(err.get_type(), ERROR_CODE);
         assert_eq!(err.code(), code);
         assert_eq!(err.reason(), reason);
-        let raw = err.to_raw();
-        let err2 = ErrorCode::from_raw(raw).unwrap();
+        let raw: RawAttribute = err.into();
+        let err2 = ErrorCode::try_from(raw).unwrap();
         assert_eq!(err2.get_type(), ERROR_CODE);
         assert_eq!(err2.code(), code);
         assert_eq!(err2.reason(), reason);
@@ -580,8 +651,8 @@ mod tests {
         assert_eq!(unknown.has_attribute(REALM), true);
         assert_eq!(unknown.has_attribute(ALTERNATE_SERVER), true);
         assert_eq!(unknown.has_attribute(NONCE), false);
-        let raw = unknown.to_raw();
-        let unknown2 = UnknownAttributes::from_raw(raw).unwrap();
+        let raw: RawAttribute = unknown.into();
+        let unknown2 = UnknownAttributes::try_from(raw).unwrap();
         assert_eq!(unknown2.get_type(), UNKNOWN_ATTRIBUTES);
         assert_eq!(unknown2.has_attribute(REALM), true);
         assert_eq!(unknown2.has_attribute(ALTERNATE_SERVER), true);
@@ -594,8 +665,8 @@ mod tests {
         let software = Software::new("software").unwrap();
         assert_eq!(software.get_type(), SOFTWARE);
         assert_eq!(software.software(), "software");
-        let raw = software.to_raw();
-        let software2 = Software::from_raw(raw).unwrap();
+        let raw: RawAttribute = software.into();
+        let software2 = Software::try_from(raw).unwrap();
         assert_eq!(software2.get_type(), SOFTWARE);
         assert_eq!(software2.software(), "software");
     }

@@ -6,6 +6,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use std::convert::TryFrom;
+
 use byteorder::{BigEndian, ByteOrder};
 
 use crate::stun::attribute::{Attribute, RawAttribute, AttributeType};
@@ -97,6 +99,13 @@ impl MessageType {
 impl From<MessageType> for Vec<u8> {
     fn from (f: MessageType) -> Self {
         f.to_bytes()
+    }
+}
+impl TryFrom<&[u8]> for MessageType {
+    type Error = AgentError;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        MessageType::from_bytes(value)
     }
 }
 
@@ -280,6 +289,13 @@ impl Message {
 impl From<Message> for Vec<u8> {
     fn from (f: Message) -> Self {
         f.to_bytes()
+    }
+}
+impl TryFrom<&[u8]> for Message {
+    type Error = AgentError;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        Message::from_bytes(value)
     }
 }
 
