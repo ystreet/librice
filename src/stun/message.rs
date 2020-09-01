@@ -10,8 +10,8 @@ use std::convert::TryFrom;
 
 use byteorder::{BigEndian, ByteOrder};
 
-use crate::stun::attribute::{Attribute, RawAttribute, AttributeType};
 use crate::agent::AgentError;
+use crate::stun::attribute::{Attribute, AttributeType, RawAttribute};
 
 pub const MAGIC_COOKIE: u32 = 0x2112A442;
 
@@ -33,7 +33,7 @@ impl MessageClass {
         }
     }
 
-    fn to_bits (self) -> u16 {
+    fn to_bits(self) -> u16 {
         match self {
             MessageClass::Request => 0x000,
             MessageClass::Indication => 0x010,
@@ -48,7 +48,13 @@ pub struct MessageType(u16);
 
 impl std::fmt::Display for MessageType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "MessageType(class: {:?}, method: {} ({:#x}))", self.class(), self.method(), self.method())
+        write!(
+            f,
+            "MessageType(class: {:?}, method: {} ({:#x}))",
+            self.class(),
+            self.method(),
+            self.method()
+        )
     }
 }
 
@@ -68,8 +74,8 @@ impl MessageType {
         self.0 & 0xf | (self.0 & 0xe0) >> 1 | (self.0 & 0x3e00) >> 2
     }
 
-    pub fn from_class_method (class: MessageClass, method: u16) -> Self {
-        let class_bits = MessageClass::to_bits (class);
+    pub fn from_class_method(class: MessageClass, method: u16) -> Self {
+        let class_bits = MessageClass::to_bits(class);
         let method_bits = method & 0xf | (method & 0x70) << 1 | (method & 0xf80) << 2;
         // trace!("MessageType from class {:?} and method {:?} into {:?}", class, method,
         //     class_bits | method_bits);
@@ -80,24 +86,22 @@ impl MessageType {
 
     pub fn to_bytes(self) -> Vec<u8> {
         let mut ret = vec![0; 2];
-        BigEndian::write_u16 (&mut ret[0..2], self.0);
+        BigEndian::write_u16(&mut ret[0..2], self.0);
         ret
     }
 
-    pub fn from_bytes(data: &[u8]) -> Result<Self,AgentError> {
-        let data = BigEndian::read_u16 (data);
+    pub fn from_bytes(data: &[u8]) -> Result<Self, AgentError> {
+        let data = BigEndian::read_u16(data);
         if data & 0xc000 != 0x0 {
             /* not a stun packet */
             error!("malformed {:?}", data);
             return Err(AgentError::Malformed);
         }
-        Ok(Self {
-            0: data,
-        })
+        Ok(Self { 0: data })
     }
 }
 impl From<MessageType> for Vec<u8> {
-    fn from (f: MessageType) -> Self {
+    fn from(f: MessageType) -> Self {
         f.to_bytes()
     }
 }
@@ -112,13 +116,20 @@ impl TryFrom<&[u8]> for MessageType {
 #[derive(Debug, Clone)]
 pub struct Message {
     msg_type: MessageType,
-    transaction: u128,       /* 96-bits valid */
+    transaction: u128, /* 96-bits valid */
     attributes: Vec<RawAttribute>,
 }
 
 impl std::fmt::Display for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Message(class: {:?}, method: {} ({:#x}), transaction: {:#x}, attributes: ", self.get_type().class(), self.get_type().method(), self.get_type().method(), self.transaction_id())?;
+        write!(
+            f,
+            "Message(class: {:?}, method: {} ({:#x}), transaction: {:#x}, attributes: ",
+            self.get_type().class(),
+            self.get_type().method(),
+            self.get_type().method(),
+            self.transaction_id()
+        )?;
         if self.attributes.len() <= 0 {
             write!(f, "[]")?;
         } else {
@@ -135,7 +146,7 @@ impl std::fmt::Display for Message {
     }
 }
 
-fn padded_attr_size (attr: &dyn Attribute) -> usize {
+fn padded_attr_size(attr: &dyn Attribute) -> usize {
     if attr.get_length() % 4 == 0 {
         4 + attr.get_length() as usize
     } else {
@@ -186,9 +197,9 @@ impl Message {
         let mut ret = Vec::with_capacity(20 + attr_size);
         ret.extend(self.msg_type.to_bytes());
         ret.resize(20, 0);
-        let tid = (MAGIC_COOKIE as u128) << 96 | self.transaction & 0xffffffffffffffffffffffff;
-        BigEndian::write_u128 (&mut ret[4..20], tid);
-        BigEndian::write_u16 (&mut ret[2..4], attr_size as u16);
+        let tid = (MAGIC_COOKIE as u128) << 96 | self.transaction & 0xffffffff_ffffffff_ffffffff;
+        BigEndian::write_u128(&mut ret[4..20], tid);
+        BigEndian::write_u16(&mut ret[2..4], attr_size as u16);
         for attr in &self.attributes {
             ret.extend(attr.to_bytes());
         }
@@ -210,28 +221,33 @@ impl Message {
     /// assert_eq!(message.get_type(), MessageType::from_class_method(MessageClass::Request, BINDING));
     /// assert_eq!(message.transaction_id(), 1000);
     /// ```
-    pub fn from_bytes(data: &[u8]) -> Result<Self,AgentError> {
+    pub fn from_bytes(data: &[u8]) -> Result<Self, AgentError> {
         if data.len() < 20 {
             // always at least 20 bytes long
             error!("not enough");
-            return Err(AgentError::NotEnoughData)
+            return Err(AgentError::NotEnoughData);
         }
         let mtype = MessageType::from_bytes(data)?;
-        let mlength = BigEndian::read_u16 (&data[2..]) as usize;
+        let mlength = BigEndian::read_u16(&data[2..]) as usize;
         if mlength + 20 > data.len() {
             // mlength + header
             error!("malformed {:?} {:?}", mlength + 20, data.len());
             return Err(AgentError::Malformed);
         }
-        let tid = BigEndian::read_u128 (&data[4..]);
+        let tid = BigEndian::read_u128(&data[4..]);
         let cookie = (tid >> 96) as u32;
         if cookie != MAGIC_COOKIE {
-            error!("malformed {:?} != {:?} {:?}", MAGIC_COOKIE, cookie, tid >> 64);
+            error!(
+                "malformed {:?} != {:?} {:?}",
+                MAGIC_COOKIE,
+                cookie,
+                tid >> 64
+            );
             return Err(AgentError::Malformed);
         }
         let tid = tid & 0x00000000ffffffffffffffffffffffff;
         let mut data = &data[20..];
-        let mut ret = Self::new (mtype, tid);
+        let mut ret = Self::new(mtype, tid);
         while data.len() > 0 {
             let attr = RawAttribute::from_bytes(data)?;
             let padded_len = padded_attr_size(&attr);
@@ -256,7 +272,7 @@ impl Message {
     /// assert!(message.add_attribute(attr.clone()).is_ok());
     /// assert!(message.add_attribute(attr).is_err());
     /// ```
-    pub fn add_attribute(&mut self, attr: RawAttribute) -> Result<(),AgentError> {
+    pub fn add_attribute(&mut self, attr: RawAttribute) -> Result<(), AgentError> {
         if let Some(_) = self.get_attribute(attr.get_type()) {
             return Err(AgentError::AlreadyExists);
         }
@@ -287,7 +303,7 @@ impl Message {
     }
 }
 impl From<Message> for Vec<u8> {
-    fn from (f: Message) -> Self {
+    fn from(f: Message) -> Self {
         f.to_bytes()
     }
 }
@@ -312,9 +328,14 @@ mod tests {
         init();
         /* validate that all methods/classes survive a roundtrip */
         for m in 0..0xfff {
-            let classes = vec![MessageClass::Request, MessageClass::Indication, MessageClass::Success, MessageClass::Error];
+            let classes = vec![
+                MessageClass::Request,
+                MessageClass::Indication,
+                MessageClass::Success,
+                MessageClass::Error,
+            ];
             for c in classes {
-                let mtype = MessageType::from_class_method (c, m);
+                let mtype = MessageType::from_class_method(c, m);
                 assert_eq!(mtype.class(), c);
                 assert_eq!(mtype.method(), m);
             }
@@ -326,9 +347,14 @@ mod tests {
         init();
         /* validate that all methods/classes survive a roundtrip */
         for m in (0x009..0x4ff).step_by(0x123) {
-            let classes = vec![MessageClass::Request, MessageClass::Indication, MessageClass::Success, MessageClass::Error];
+            let classes = vec![
+                MessageClass::Request,
+                MessageClass::Indication,
+                MessageClass::Success,
+                MessageClass::Error,
+            ];
             for c in classes {
-                let mtype = MessageType::from_class_method (c, m);
+                let mtype = MessageType::from_class_method(c, m);
                 for tid in (0x18..0xffff_ffff_ffff_ffff_ff).step_by(0xfedc_ba98_7654_3210) {
                     let mut msg = Message::new(mtype, tid);
                     let attr = RawAttribute::new(1.into(), &[3]);

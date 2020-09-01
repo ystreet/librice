@@ -8,7 +8,7 @@
 
 use std::convert::TryFrom;
 
-use std::net::{SocketAddr, IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use crate::agent::AgentError;
 use crate::stun::message::MAGIC_COOKIE;
@@ -49,7 +49,7 @@ impl AttributeType {
         Self(val)
     }
 
-    pub fn name(self) -> &'static str{
+    pub fn name(self) -> &'static str {
         match self {
             MAPPED_ADDRESS => "MAPPED-ADDRESS",
             USERNAME => "USERNAME",
@@ -98,9 +98,9 @@ pub struct AttributeHeader {
 }
 
 impl AttributeHeader {
-    fn parse (data: &[u8]) -> Result<Self,AgentError> {
+    fn parse(data: &[u8]) -> Result<Self, AgentError> {
         if data.len() < 4 {
-            return Err(AgentError::NotEnoughData)
+            return Err(AgentError::NotEnoughData);
         }
         let ret = Self {
             atype: BigEndian::read_u16(&data[0..2]).into(),
@@ -112,8 +112,8 @@ impl AttributeHeader {
 
     fn to_bytes(self) -> Vec<u8> {
         let mut ret = vec![0; 4];
-        BigEndian::write_u16 (&mut ret[0..2], self.atype.into());
-        BigEndian::write_u16 (&mut ret[2..4], self.length);
+        BigEndian::write_u16(&mut ret[0..2], self.atype.into());
+        BigEndian::write_u16(&mut ret[2..4], self.length);
         ret
     }
 }
@@ -136,11 +136,13 @@ pub trait Attribute: std::fmt::Debug + std::any::Any {
 
     /// Retrieve the length of an `Attribute`.  This is not the padded length as stored in a
     /// `Message`
-    fn get_length (&self) -> u16;
+    fn get_length(&self) -> u16;
 
     /// Helper to cast to an std::any::Any
     fn as_any(&self) -> &dyn std::any::Any
-            where Self: Sized {
+    where
+        Self: Sized,
+    {
         self
     }
 
@@ -148,20 +150,26 @@ pub trait Attribute: std::fmt::Debug + std::any::Any {
     fn to_raw(&self) -> RawAttribute;
 
     /// Convert an `Attribute` from a `RawAttribute`
-    fn from_raw(raw: RawAttribute) -> Result<Self,AgentError>
-    where Self: Sized;
+    fn from_raw(raw: RawAttribute) -> Result<Self, AgentError>
+    where
+        Self: Sized;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawAttribute {
     pub header: AttributeHeader,
-    pub value: Vec<u8>
+    pub value: Vec<u8>,
 }
 
 impl std::fmt::Display for RawAttribute {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // try to get a more specialised display
-        let malformed_str = format!("{}(Malformed): len: {}, data: {:?})", self.get_type(), self.header.length, self.value);
+        let malformed_str = format!(
+            "{}(Malformed): len: {}, data: {:?})",
+            self.get_type(),
+            self.header.length,
+            self.value
+        );
         let display_str = if self.get_type() == SOFTWARE {
             if let Ok(software) = Software::from_raw(self.clone()) {
                 format!("{}", software)
@@ -193,18 +201,21 @@ impl std::fmt::Display for RawAttribute {
                 malformed_str
             }
         } else {
-            format!("RawAttribute (type: {:?}, len: {}, data: {:?})", self.header.atype, self.header.length, &self.value)
+            format!(
+                "RawAttribute (type: {:?}, len: {}, data: {:?})",
+                self.header.atype, self.header.length, &self.value
+            )
         };
         write!(f, "{}", display_str)
     }
 }
 
 impl Attribute for RawAttribute {
-    fn get_length (&self) -> u16 {
+    fn get_length(&self) -> u16 {
         self.header.length
     }
 
-    fn get_type (&self) -> AttributeType {
+    fn get_type(&self) -> AttributeType {
         self.header.atype
     }
 
@@ -212,7 +223,7 @@ impl Attribute for RawAttribute {
         self.clone()
     }
 
-    fn from_raw(raw: RawAttribute) -> Result<Self,AgentError> {
+    fn from_raw(raw: RawAttribute) -> Result<Self, AgentError> {
         Ok(raw.clone())
     }
 }
@@ -239,7 +250,7 @@ impl RawAttribute {
     /// assert_eq!(attr.get_type(), AttributeType::new(1));
     /// assert_eq!(attr.get_length(), 2);
     /// ```
-    pub fn from_bytes(data: &[u8]) -> Result<Self,AgentError> {
+    pub fn from_bytes(data: &[u8]) -> Result<Self, AgentError> {
         let header = AttributeHeader::parse(data)?;
         // the advertised length is larger than actual data -> error
         if header.length > (data.len() - 4) as u16 {
@@ -248,7 +259,7 @@ impl RawAttribute {
         let mut data = data[4..].to_vec();
         data.truncate(header.length as usize);
         //trace!("parsed into {:?} {:?}", header, data);
-        Ok (Self {
+        Ok(Self {
             header: header,
             value: data,
         })
@@ -297,7 +308,7 @@ impl Attribute for Username {
         USERNAME
     }
 
-    fn get_length (&self) -> u16 {
+    fn get_length(&self) -> u16 {
         self.user.len() as u16
     }
 
@@ -305,7 +316,7 @@ impl Attribute for Username {
         RawAttribute::new(self.get_type().into(), self.user.as_bytes())
     }
 
-    fn from_raw(raw: RawAttribute) -> Result<Self,AgentError> {
+    fn from_raw(raw: RawAttribute) -> Result<Self, AgentError> {
         if raw.header.atype != USERNAME {
             return Err(AgentError::WrongImplementation);
         }
@@ -313,13 +324,15 @@ impl Attribute for Username {
             return Err(AgentError::TooBig);
         }
         Ok(Self {
-            user: std::str::from_utf8(&raw.value).map_err(|_| AgentError::Malformed)?.to_owned()
+            user: std::str::from_utf8(&raw.value)
+                .map_err(|_| AgentError::Malformed)?
+                .to_owned(),
         })
     }
 }
 
 impl Username {
-    pub fn new(user: &str) -> Result<Self,AgentError> {
+    pub fn new(user: &str) -> Result<Self, AgentError> {
         if user.len() > 513 {
             return Err(AgentError::InvalidSize);
         }
@@ -363,7 +376,7 @@ impl Attribute for ErrorCode {
         ERROR_CODE
     }
 
-    fn get_length (&self) -> u16 {
+    fn get_length(&self) -> u16 {
         self.reason.len() as u16 + 4
     }
 
@@ -377,7 +390,7 @@ impl Attribute for ErrorCode {
         RawAttribute::new(self.get_type().into(), &data)
     }
 
-    fn from_raw(raw: RawAttribute) -> Result<Self,AgentError> {
+    fn from_raw(raw: RawAttribute) -> Result<Self, AgentError> {
         if raw.header.atype != ERROR_CODE {
             return Err(AgentError::WrongImplementation);
         }
@@ -392,12 +405,14 @@ impl Attribute for ErrorCode {
         let code = code_h * 100 + code_tens;
         Ok(Self {
             code: code,
-            reason: std::str::from_utf8(&raw.value[4..]).map_err(|_| AgentError::Malformed)?.to_owned()
+            reason: std::str::from_utf8(&raw.value[4..])
+                .map_err(|_| AgentError::Malformed)?
+                .to_owned(),
         })
     }
 }
 impl ErrorCode {
-    pub fn new(code: u16, reason: &str) -> Result<Self,AgentError> {
+    pub fn new(code: u16, reason: &str) -> Result<Self, AgentError> {
         if code < 300 || code > 699 {
             return Err(AgentError::Malformed);
         }
@@ -457,7 +472,7 @@ impl Attribute for UnknownAttributes {
         UNKNOWN_ATTRIBUTES
     }
 
-    fn get_length (&self) -> u16 {
+    fn get_length(&self) -> u16 {
         (self.attributes.len() as u16) * 2
     }
 
@@ -465,13 +480,13 @@ impl Attribute for UnknownAttributes {
         let mut data = Vec::with_capacity(self.get_length() as usize);
         for attr in &self.attributes {
             let mut encoded = vec![0; 2];
-            BigEndian::write_u16 (&mut encoded, (*attr).into());
+            BigEndian::write_u16(&mut encoded, (*attr).into());
             data.extend(encoded);
         }
         RawAttribute::new(self.get_type().into(), &data)
     }
 
-    fn from_raw(raw: RawAttribute) -> Result<Self,AgentError> {
+    fn from_raw(raw: RawAttribute) -> Result<Self, AgentError> {
         if raw.header.atype != UNKNOWN_ATTRIBUTES {
             return Err(AgentError::WrongImplementation);
         }
@@ -483,9 +498,7 @@ impl Attribute for UnknownAttributes {
         for attr in raw.value.chunks_exact(2) {
             attrs.push(BigEndian::read_u16(attr).into());
         }
-        Ok(Self {
-            attributes: attrs,
-        })
+        Ok(Self { attributes: attrs })
     }
 }
 impl UnknownAttributes {
@@ -535,7 +548,7 @@ impl Attribute for Software {
         SOFTWARE
     }
 
-    fn get_length (&self) -> u16 {
+    fn get_length(&self) -> u16 {
         self.software.len() as u16
     }
 
@@ -543,7 +556,7 @@ impl Attribute for Software {
         RawAttribute::new(self.get_type().into(), self.software.as_bytes())
     }
 
-    fn from_raw(raw: RawAttribute) -> Result<Self,AgentError> {
+    fn from_raw(raw: RawAttribute) -> Result<Self, AgentError> {
         if raw.header.atype != SOFTWARE {
             return Err(AgentError::WrongImplementation);
         }
@@ -551,13 +564,15 @@ impl Attribute for Software {
             return Err(AgentError::TooBig);
         }
         Ok(Self {
-            software: std::str::from_utf8(&raw.value).map_err(|_| AgentError::Malformed)?.to_owned()
+            software: std::str::from_utf8(&raw.value)
+                .map_err(|_| AgentError::Malformed)?
+                .to_owned(),
         })
     }
 }
 
 impl Software {
-    pub fn new(software: &str) -> Result<Self,AgentError> {
+    pub fn new(software: &str) -> Result<Self, AgentError> {
         if software.len() > 768 {
             return Err(AgentError::InvalidSize);
         }
@@ -601,7 +616,7 @@ impl Attribute for XorMappedAddress {
         XOR_MAPPED_ADDRESS
     }
 
-    fn get_length (&self) -> u16 {
+    fn get_length(&self) -> u16 {
         match self.addr {
             SocketAddr::V4(_) => 8,
             SocketAddr::V6(_) => 20,
@@ -617,7 +632,7 @@ impl Attribute for XorMappedAddress {
                 let octets = u32::from(*addr.ip());
                 BigEndian::write_u32(&mut buf[4..8], octets);
                 RawAttribute::new(self.get_type().into(), &buf)
-            },
+            }
             SocketAddr::V6(addr) => {
                 let mut buf = [0; 20];
                 buf[1] = 0x2;
@@ -625,11 +640,11 @@ impl Attribute for XorMappedAddress {
                 let octets = u128::from(*addr.ip());
                 BigEndian::write_u128(&mut buf[2..4], octets);
                 RawAttribute::new(self.get_type().into(), &buf)
-            },
+            }
         }
     }
 
-    fn from_raw(raw: RawAttribute) -> Result<Self,AgentError> {
+    fn from_raw(raw: RawAttribute) -> Result<Self, AgentError> {
         if raw.header.atype != XOR_MAPPED_ADDRESS {
             return Err(AgentError::WrongImplementation);
         }
@@ -645,8 +660,9 @@ impl Attribute for XorMappedAddress {
                 }
                 if raw.value.len() > 8 {
                     return Err(AgentError::TooBig);
-                } IpAddr::V4(Ipv4Addr::from(BigEndian::read_u32(&raw.value[4..8])))
-            },
+                }
+                IpAddr::V4(Ipv4Addr::from(BigEndian::read_u32(&raw.value[4..8])))
+            }
             0x2 => {
                 // ipv6
                 if raw.value.len() < 20 {
@@ -657,10 +673,10 @@ impl Attribute for XorMappedAddress {
                 }
                 let mut octets = [0; 16];
                 for i in 0..16 {
-                    octets[i] = raw.value[4+i];
+                    octets[i] = raw.value[4 + i];
                 }
                 IpAddr::V6(Ipv6Addr::from(octets))
-            },
+            }
             _ => return Err(AgentError::Malformed),
         };
         Ok(Self {
@@ -670,9 +686,9 @@ impl Attribute for XorMappedAddress {
 }
 
 impl XorMappedAddress {
-    pub fn new(addr: SocketAddr, transaction: u128) -> Result<Self,AgentError> {
+    pub fn new(addr: SocketAddr, transaction: u128) -> Result<Self, AgentError> {
         Ok(Self {
-            addr: XorMappedAddress::xor_addr (addr, transaction),
+            addr: XorMappedAddress::xor_addr(addr, transaction),
         })
     }
 
@@ -685,24 +701,26 @@ impl XorMappedAddress {
                 let mut octets = [0; 4];
                 for i in 0..4 {
                     octets[i] = const_octets[i] ^ addr_octets[i];
-                };
+                }
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::from(octets)), port)
-            },
+            }
             SocketAddr::V6(addr) => {
                 let port = addr.port() ^ (MAGIC_COOKIE >> 16) as u16;
-                let const_octets = ((MAGIC_COOKIE as u128) << 96 | (transaction & 0x00000000_ffffffff_ffffffff_ffffffff)).to_be_bytes();
+                let const_octets = ((MAGIC_COOKIE as u128) << 96
+                    | (transaction & 0x00000000_ffffffff_ffffffff_ffffffff))
+                    .to_be_bytes();
                 let addr_octets = addr.ip().octets();
                 let mut octets = [0; 16];
                 for i in 0..16 {
                     octets[i] = const_octets[i] ^ addr_octets[i];
-                };
+                }
                 SocketAddr::new(IpAddr::V6(Ipv6Addr::from(octets)), port)
-            },
+            }
         }
     }
 
     pub fn addr(&self, transaction: u128) -> SocketAddr {
-        XorMappedAddress::xor_addr (self.addr, transaction)
+        XorMappedAddress::xor_addr(self.addr, transaction)
     }
 }
 
