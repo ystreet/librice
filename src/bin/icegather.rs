@@ -1,0 +1,79 @@
+// Copyright (C) 2020 Matthew Waters <matthew@centricular.com>
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
+
+#[macro_use]
+extern crate log;
+use env_logger;
+
+use async_std::task;
+
+use std::io;
+
+use futures::prelude::*;
+
+use librice::socket::SocketChannel;
+
+fn warn_and_ignore<T, E>(tag: &str, res: Result<T, E>)
+where
+    E: std::fmt::Debug,
+{
+    if let Err(e) = res {
+        warn!("{}: {:?}", tag, e);
+    }
+}
+
+fn main() -> io::Result<()> {
+    env_logger::init();
+    task::block_on(async move {
+        let schannels = librice::gathering::iface_udp_sockets().map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                e,
+            )
+        })?.filter_map(move |s| async move { s.ok() })
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(move |chan| {
+            task::spawn({
+                let schannel = chan.clone();
+                async move {
+                    match &*schannel {
+                        SocketChannel::Udp(udp) => warn_and_ignore("udp recv:", udp.receive_loop().await),
+                    };
+                }
+            });
+            task::spawn({
+                let schannel = chan.clone();
+                async move {
+                    match &*schannel {
+                        SocketChannel::Udp(udp) => warn_and_ignore("udp send:", udp.send_loop().await),
+                    };
+                }
+            });
+            chan
+        })
+        .collect();
+
+        // non-existent
+        //let stun_servers = ["192.168.1.200:3000".parse().unwrap()].to_vec();
+        let stun_servers = ["127.0.0.1:3478".parse().unwrap()].to_vec();
+        //let stun_servers = ["172.253.56.127:19302".parse().unwrap()].to_vec();
+        let gather_stream = librice::gathering::gather_component(1, schannels, stun_servers).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                e,
+            )
+        })?;
+        futures::pin_mut!(gather_stream);
+        while let Some(candidate) = gather_stream.next().await {
+            println!{"{:?}", candidate};
+        }
+        Ok(())
+    })
+}
