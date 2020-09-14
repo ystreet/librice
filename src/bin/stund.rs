@@ -17,9 +17,13 @@ use async_channel;
 extern crate log;
 use env_logger;
 
+use futures;
+use futures::StreamExt;
+
 use librice::agent::AgentError;
 use librice::stun::attribute::*;
 use librice::stun::message::*;
+use librice::socket::UdpSocketChannel;
 
 struct StunServer {
     inner: Arc<std::sync::Mutex<StunServerInner>>,
@@ -201,106 +205,54 @@ impl StunServerInner {
     }
 }
 
-async fn send_task(
-    socket: Arc<UdpSocket>,
-    recv_channel: async_channel::Receiver<(Vec<u8>, SocketAddr)>,
-) -> io::Result<()> {
-    let (buf, to) = recv_channel
-        .recv()
-        .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    trace!("sending to {:?} {:?}", to, buf);
-    socket
-        .send_to(&buf, &to)
-        .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    Ok(())
-}
-
-async fn receive_task(
-    socket: Arc<UdpSocket>,
-    send_channel: async_channel::Sender<(Vec<u8>, SocketAddr)>,
-) -> io::Result<()> {
-    let (buf, src) = {
-        // receive data
-        let mut buf = [0; 1500];
-        let (amt, src) = socket
-            .recv_from(&mut buf)
-            .await
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        trace!("got from {:?}, {:?}", src, &buf[..amt]);
-        (buf[..amt].to_vec(), src)
-    };
-    send_channel
-        .send((buf, src))
-        .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    Ok(())
-}
-
-async fn handle_data(
-    server: &StunServer,
-    receive_channel: async_channel::Receiver<(Vec<u8>, SocketAddr)>,
-) -> io::Result<()> {
-    let (buf, from): (Vec<_>, SocketAddr) = receive_channel
-        .recv()
-        .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    // handle data
-    let msg = server
-        .received_data(&buf)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    info!("got from {:?} {}", from, msg);
-    server
-        .handle_message(msg, &from)
-        .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+fn warn_and_ignore<T, E>(res: Result<T, E>)
+where
+    E: std::fmt::Debug,
+{
+    if let Err(e) = res {
+        warn!("{:?}", e);
+    }
 }
 
 fn main() -> io::Result<()> {
     env_logger::init();
 
     task::block_on(async move {
-        let socket = Arc::new(UdpSocket::bind("127.0.0.1:3478").await?);
+        let socket = UdpSocket::bind("127.0.0.1:3478").await?;
+        let channel = Arc::new(UdpSocketChannel::new(socket));
         let server = Arc::new(StunServer::new());
-        let send_r = server.async_send_queue();
 
-        let (recv_s, recv_r) = async_channel::bounded(16);
-
-        let socket_c = socket.clone();
-        task::spawn(async move {
-            loop {
-                match send_task(socket_c.clone(), send_r.clone()).await {
-                    Ok(v) => v,
-                    Err(e) => {
-                        warn!("{:?}", e);
-                        continue;
+        task::spawn({
+            let mut send_r = server.async_send_queue().clone();
+            let channel = channel.clone();
+            async move {
+                while let Some(data) = send_r.next().await {
+                    if let Err(_) = channel.send_to(&data.0, data.1).await {
+                        break;
                     }
-                };
-            }
-        });
-
-        let socket_c = socket.clone();
-        task::spawn(async move {
-            loop {
-                match receive_task(socket_c.clone(), recv_s.clone()).await {
-                    Ok(v) => v,
-                    Err(e) => {
-                        warn!("{:?}", e);
-                        continue;
-                    }
-                };
-            }
-        });
-
-        loop {
-            match handle_data(&server, recv_r.clone()).await {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!("got error: {:?}", e);
-                    continue;
                 }
-            };
+                error!("send loop exited");
+            }
+        });
+
+        let recv_r = channel.receive_stream();
+        futures::pin_mut!(recv_r);
+        while let Some((buf, from)) = recv_r.next().await {
+            let server = server.clone();
+            let ret = server
+                .received_data(&buf)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+                .and_then(|msg| {
+                    info!("got from {:?} {}", from, msg);
+                    Ok(msg)
+                }).and_then(move |msg| {
+                    Ok(async move { server.handle_message(msg, &from).await })
+                });
+            match ret {
+                Ok(f) => warn_and_ignore(f.await),
+                Err(e) => warn!("{:?}", e),
+            }
         }
+        Ok(())
     })
 }

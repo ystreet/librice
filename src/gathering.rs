@@ -8,8 +8,6 @@
 
 use async_std::net::{SocketAddr, UdpSocket};
 
-use async_channel;
-
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -25,7 +23,7 @@ use crate::agent::AgentError;
 use crate::candidate::{Candidate, CandidateType, TransportType};
 use crate::stun::message::*;
 use crate::stun::attribute::*;
-use crate::socket::{SocketChannel, UdpSocketChannel};
+use crate::socket::{SocketChannel, UdpConnectionChannel, UdpSocketChannel};
 
 fn priority_type_preference(ctype: CandidateType) -> u32 {
     match ctype {
@@ -44,7 +42,7 @@ fn candidate_is_redundant_with(a: &Candidate, b: &Candidate) -> bool {
     a.address.ip() == b.address.ip() && a.base_address.ip() == b.base_address.ip()
 }
 
-pub fn iface_udp_sockets() -> Result<impl Stream<Item = Result<Arc<SocketChannel>, std::io::Error>>, AgentError> {
+pub fn iface_udp_sockets() -> Result<impl Stream<Item = Result<Arc<UdpSocketChannel>, std::io::Error>>, AgentError> {
     let mut ifaces = get_if_addrs ().map_err(|e| AgentError::IoError(e))?;
     // We only care about non-loopback interfaces for now
     // TODO: remove 'Deprecated IPv4-compatible IPv6 addresses [RFC4291]'
@@ -58,7 +56,7 @@ pub fn iface_udp_sockets() -> Result<impl Stream<Item = Result<Arc<SocketChannel
     }) {}
 
     Ok(futures::stream::iter(ifaces.into_iter()).then(|iface| async move {
-        Ok(Arc::new(SocketChannel::Udp(UdpSocketChannel::new(UdpSocket::bind(SocketAddr::new(iface.clone().ip(), 0)).await?))))
+        Ok(Arc::new(UdpSocketChannel::new(UdpSocket::bind(SocketAddr::new(iface.clone().ip(), 0)).await?)))
     }))
 }
 
@@ -78,23 +76,17 @@ fn generate_bind_request(from: SocketAddr) -> std::io::Result<Message> {
 
 async fn send_message_with_retransmissions_delay(
     msg: Message,
-    addr: SocketAddr,
-    send_channel: async_channel::Sender<(Vec<u8>, SocketAddr)>,
+    schannel: Arc<SocketChannel>,
     recv_abort_handle: AbortHandle,
 ) -> std::io::Result<SocketAddr> {
     // FIXME: fix these timeout values
     let timeouts: [u64; 4] = [0, 1, 2, 3];
     for timeout in timeouts.iter() {
         Delay::new(Duration::from_secs(timeout.clone())).await;
-        info!("sending to {:?} {}", addr, msg);
+        info!("sending {}", msg);
         let buf = msg.to_bytes();
-        trace!("sending to {:?} {:?}", addr, buf);
-        send_channel.send((buf, addr)).await.map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::ConnectionAborted,
-                "sending connection closed",
-            )
-        })?;
+        trace!("sending {:?}", buf);
+        schannel.send(&buf).await?;
     }
 
     // on failure, abort the receiver waiting
@@ -107,24 +99,15 @@ async fn send_message_with_retransmissions_delay(
 
 async fn listen_for_xor_address_response(
     transaction_id: u128,
-    stun_server: SocketAddr,
-    recv_channel: async_channel::Receiver<(Vec<u8>, SocketAddr)>,
+    schannel: Arc<SocketChannel>,
     send_abort_handle: AbortHandle,
 ) -> std::io::Result<SocketAddr> {
-    loop {
-        let (buf, from): (Vec<_>, SocketAddr) = recv_channel.recv().await.map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::ConnectionAborted,
-                "receive connection closed",
-            )
-        })?;
-
+    let mut s = schannel.receive_stream();
+    while let Some(buf) = s.next().await {
+        let from = schannel.remote_addr().unwrap();
         trace!("got from {:?} data {:?}", from, buf);
 
         // XXX: Too restrictive?
-        if from != stun_server {
-            continue;
-        }
         if let Ok(msg) = Message::from_bytes(&buf) {
             if msg.get_type().class() != MessageClass::Success {
                 continue;
@@ -148,6 +131,10 @@ async fn listen_for_xor_address_response(
             }
         }
     }
+    Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "receive connection closed",
+            ))
 }
 
 #[derive(Debug)]
@@ -160,10 +147,8 @@ struct GatherCandidateAddress {
 
 async fn gather_stun_xor_address(
     from: SocketAddr,
-    stun_server: SocketAddr,
     local_preference: u8,
-    receive_channel: async_channel::Receiver<(Vec<u8>, SocketAddr)>,
-    send_channel: async_channel::Sender<(Vec<u8>, SocketAddr)>,
+    schannel: Arc<SocketChannel>,
 ) -> Result<GatherCandidateAddress, AgentError> {
     let msg = generate_bind_request(from)
         .map_err(|e| AgentError::IoError(e))?;
@@ -171,11 +156,11 @@ async fn gather_stun_xor_address(
 
     let (recv_abort_handle, recv_registration) = futures::future::AbortHandle::new_pair();
     let (send_abortable, send_abort_handle) = futures::future::abortable(
-        send_message_with_retransmissions_delay(msg, stun_server, send_channel, recv_abort_handle),
+        send_message_with_retransmissions_delay(msg, schannel.clone(), recv_abort_handle),
     );
 
     let recv_abortable = futures::future::Abortable::new(
-        listen_for_xor_address_response(transaction_id, stun_server, receive_channel, send_abort_handle),
+        listen_for_xor_address_response(transaction_id, schannel, send_abort_handle),
         recv_registration,
     );
 
@@ -214,20 +199,28 @@ fn udp_socket_host_gather_candidate(
 
 pub fn gather_component (
     component_id: u32,
-    schannels: Vec<Arc<SocketChannel>>,
+    schannels: Vec<Arc<UdpSocketChannel>>,
     stun_servers: Vec<SocketAddr>,
 ) -> Result<impl Stream<Item = Candidate>, AgentError> {
     let futures = futures::stream::FuturesUnordered::new();
 
-    for f in schannels.iter().enumerate().map(|(i, schannel)| match &*schannel.as_ref() {
-        SocketChannel::Udp(udp) => futures::future::ready(udp_socket_host_gather_candidate(udp.socket(), (i * 10) as u8)),
+    for f in schannels.iter().enumerate().map(|(i, schannel)| {
+        futures::future::ready(udp_socket_host_gather_candidate(schannel.socket(), (i * 10) as u8))
     }) {
-        futures.push(f.boxed());
+        futures.push(f.boxed_local());
     }
 
-    for (i, schannel) in schannels.iter().enumerate() {
+    for (i, schannel) in schannels.iter().cloned().enumerate() {
         for stun_server in stun_servers.iter() {
-            futures.push(gather_stun_xor_address(schannel.local_addr().unwrap(), stun_server.clone(), (i * 10) as u8, schannel.receive_channel(), schannel.send_channel()).boxed())
+            futures.push({
+                let schannel = schannel.clone();
+                let stun_server = stun_server.clone();
+                let local_addr = schannel.local_addr().unwrap().clone();
+                async move {
+                    let chan = Arc::new(SocketChannel::Udp(UdpConnectionChannel::new(schannel, stun_server)));
+                    gather_stun_xor_address(local_addr, (i * 10) as u8, chan).await
+                }
+            }.boxed_local())
         }
     }
 
@@ -245,7 +238,8 @@ pub fn gather_component (
                         let mut produced = produced.lock().unwrap();
                         let cand = Candidate::new(ga.ctype, TransportType::Udp, &produced.len().to_string(), priority, ga.remote, ga.local);
                         for c in produced.iter() {
-                            //trace!("reduntant {:?} redundant with produced? {:?}", cand, c);
+                            // ignore candidates that produce the same local/remote pair of
+                            // addresses
                             if candidate_is_redundant_with(&cand, c) {
                                 trace!("redundant {:?}", cand);
                                 return None;
