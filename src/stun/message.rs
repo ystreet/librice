@@ -11,11 +11,47 @@ use std::convert::TryFrom;
 use byteorder::{BigEndian, ByteOrder};
 
 use crate::agent::AgentError;
-use crate::stun::attribute::{Attribute, AttributeType, RawAttribute};
+use crate::stun::attribute::*;
+
+use hmac::{Hmac, Mac, NewMac};
 
 pub const MAGIC_COOKIE: u32 = 0x2112A442;
 
 pub const BINDING: u16 = 0x0001;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LongTermCredentials {
+    pub username: String,
+    pub password: String,
+    pub nonce: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShortTermCredentials {
+    pub password: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageIntegrityCredentials {
+    ShortTerm(ShortTermCredentials),
+    LongTerm(LongTermCredentials),
+}
+
+impl MessageIntegrityCredentials {
+    fn make_hmac_key(&self) -> Vec<u8> {
+        match self {
+            MessageIntegrityCredentials::ShortTerm(short) => short.password.clone().into(),
+            MessageIntegrityCredentials::LongTerm(long) => {
+                let data = long.username.clone()
+                    + ":"
+                    + &long.nonce.clone()
+                    + ":"
+                    + &long.password.clone();
+                data.into()
+            }
+        }
+    }
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum MessageClass {
@@ -70,8 +106,20 @@ impl MessageType {
         }
     }
 
+    pub fn has_class(self, cls: MessageClass) -> bool {
+        self.class() == cls
+    }
+
+    pub fn is_response(self) -> bool {
+        self.class().is_response()
+    }
+
     pub fn method(self) -> u16 {
         self.0 & 0xf | (self.0 & 0xe0) >> 1 | (self.0 & 0x3e00) >> 2
+    }
+
+    pub fn has_method(self, method: u16) -> bool {
+        self.method() == method
     }
 
     pub fn from_class_method(class: MessageClass, method: u16) -> Self {
@@ -94,7 +142,7 @@ impl MessageType {
         let data = BigEndian::read_u16(data);
         if data & 0xc000 != 0x0 {
             /* not a stun packet */
-            error!("malformed {:?}", data);
+            warn!("malformed {:?}", data);
             return Err(AgentError::Malformed);
         }
         Ok(Self { 0: data })
@@ -158,13 +206,58 @@ impl Message {
     pub fn new(mtype: MessageType, transaction: u128) -> Self {
         Self {
             msg_type: mtype,
-            transaction: transaction,
+            transaction,
             attributes: vec![],
         }
     }
 
+    fn new_request(mtype: MessageType) -> Self {
+        Message::new(mtype, Message::generate_transaction())
+    }
+
+    pub fn new_request_method(method: u16) -> Self {
+        Message::new_request(MessageType::from_class_method(
+            MessageClass::Request,
+            method,
+        ))
+    }
+
+    pub fn new_success(orig: &Message) -> Self {
+        Message::new(
+            MessageType::from_class_method(MessageClass::Success, orig.method()),
+            orig.transaction_id(),
+        )
+    }
+
+    pub fn new_error(orig: &Message) -> Self {
+        Message::new(
+            MessageType::from_class_method(MessageClass::Error, orig.method()),
+            orig.transaction_id(),
+        )
+    }
+
     pub fn get_type(&self) -> MessageType {
         self.msg_type
+    }
+
+    pub fn class(&self) -> MessageClass {
+        self.get_type().class()
+    }
+
+    pub fn has_class(&self, cls: MessageClass) -> bool {
+        self.class() == cls
+    }
+
+    pub fn is_response(&self) -> bool {
+        self.class().is_response()
+    }
+
+    pub fn method(&self) -> u16 {
+        self.get_type().method()
+    }
+
+    pub fn has_method(&self, method: u16) -> bool {
+        self.method() == method
     }
 
     pub fn transaction_id(&self) -> u128 {
@@ -222,39 +315,169 @@ impl Message {
     /// assert_eq!(message.transaction_id(), 1000);
     /// ```
     pub fn from_bytes(data: &[u8]) -> Result<Self, AgentError> {
+        let orig_data = data;
+
         if data.len() < 20 {
             // always at least 20 bytes long
-            error!("not enough");
             return Err(AgentError::NotEnoughData);
         }
         let mtype = MessageType::from_bytes(data)?;
         let mlength = BigEndian::read_u16(&data[2..]) as usize;
         if mlength + 20 > data.len() {
             // mlength + header
-            error!("malformed {:?} {:?}", mlength + 20, data.len());
+            warn!(
+                "malformed advertised size {:?} and data size {:?} don't match",
+                mlength + 20,
+                data.len()
+            );
             return Err(AgentError::Malformed);
         }
         let tid = BigEndian::read_u128(&data[4..]);
         let cookie = (tid >> 96) as u32;
         if cookie != MAGIC_COOKIE {
-            error!(
-                "malformed {:?} != {:?} {:?}",
-                MAGIC_COOKIE,
-                cookie,
-                tid >> 64
+            warn!(
+                "malformed cookie constant {:?} != stored data {:?}",
+                MAGIC_COOKIE, cookie
             );
             return Err(AgentError::Malformed);
         }
-        let tid = tid & 0x00000000ffffffffffffffffffffffff;
-        let mut data = &data[20..];
+        let tid = tid & 0x00000000_ffffffff_ffffffff_ffffffff;
         let mut ret = Self::new(mtype, tid);
+
+        let mut data_offset = 20;
+        let mut data = &data[20..];
+        let mut seen_message_integrity = false;
         while data.len() > 0 {
             let attr = RawAttribute::from_bytes(data)?;
             let padded_len = padded_attr_size(&attr);
+
+            if seen_message_integrity && attr.get_type() != FINGERPRINT {
+                // only attribute valid after MESSAGE_INTEGRITY is FINGERPRINT
+                warn!(
+                    "unexpected attribute {} after MESSAGE_INTEGRITY",
+                    attr.get_type()
+                );
+                return Err(AgentError::Malformed);
+            }
+
+            if attr.get_type() == MESSAGE_INTEGRITY {
+                seen_message_integrity = true;
+                // need credentials to validate the integrity of the message
+            }
+            if attr.get_type() == FINGERPRINT {
+                let f = Fingerprint::from_raw(&attr)?;
+                let msg_fingerprint = f.fingerprint();
+                let mut fingerprint_data = orig_data[..data_offset].to_vec();
+                BigEndian::write_u16(
+                    &mut fingerprint_data[2..4],
+                    (data_offset + padded_len - 20) as u16,
+                );
+                let calculated_fingerprint =
+                    crc::crc32::checksum_ieee(&fingerprint_data).to_be_bytes();
+                if &calculated_fingerprint != msg_fingerprint {
+                    warn!(
+                        "fingerprint mismatch {:?} != {:?}",
+                        calculated_fingerprint, msg_fingerprint
+                    );
+                    return Err(AgentError::Malformed);
+                }
+            }
             ret.attributes.push(attr);
             data = &data[padded_len..];
+            data_offset += padded_len;
         }
         Ok(ret)
+    }
+
+    pub fn validate_integrity(
+        &self,
+        orig_data: &[u8],
+        credentials: &MessageIntegrityCredentials,
+    ) -> Result<(), AgentError> {
+        let raw = self
+            .get_attribute(MESSAGE_INTEGRITY)
+            .ok_or(AgentError::ResourceNotFound)?;
+        let integrity = MessageIntegrity::try_from(raw)?;
+        let msg_hmac = integrity.hmac();
+
+        // find the location of the original MessageIntegrity attribute: XXX: maybe encode this into
+        // the attribute instead?
+        let data = orig_data;
+        if data.len() < 20 {
+            // always at least 20 bytes long
+            return Err(AgentError::NotEnoughData);
+        }
+        let mut data = &data[20..];
+        let mut data_offset = 20;
+        while data.len() > 0 {
+            let attr = RawAttribute::from_bytes(data)?;
+            if attr.get_type() == MESSAGE_INTEGRITY {
+                let msg = MessageIntegrity::try_from(&attr)?;
+                if msg.hmac() != msg_hmac {
+                    // data hmac is different from message hmac -> wrong data for this message.
+                    return Err(AgentError::Malformed);
+                }
+
+                // HMAC is computed using all the data up to (exclusive of) the MESSAGE_INTEGRITY
+                // but with a length field including the MESSAGE_INTEGRITY attribute...
+                let key = credentials.make_hmac_key();
+                let mut hmac =
+                    Hmac::<sha1::Sha1>::new_varkey(&key).map_err(|_| AgentError::Malformed)?;
+                let mut hmac_data = orig_data[..data_offset].to_vec();
+                BigEndian::write_u16(&mut hmac_data[2..4], data_offset as u16 + 24 - 20);
+                hmac.update(&hmac_data);
+                return hmac
+                    .verify(msg_hmac)
+                    .map_err(|_| AgentError::IntegrityCheckFailed);
+            }
+            let padded_len = padded_attr_size(&attr);
+            data = &data[padded_len..];
+            data_offset += padded_len;
+        }
+        // no hmac in data but there was in the message? -> incompatible data for this message
+        Err(AgentError::Malformed)
+    }
+
+    pub fn add_message_integrity(
+        &mut self,
+        credentials: &MessageIntegrityCredentials,
+    ) -> Result<(), AgentError> {
+        if let Some(_) = self.get_attribute(MESSAGE_INTEGRITY) {
+            return Err(AgentError::AlreadyExists);
+        }
+        if let Some(_) = self.get_attribute(FINGERPRINT) {
+            return Err(AgentError::AlreadyExists);
+        }
+
+        // message-integrity is computed using all the data up to (exclusive of) the
+        // MESSAGE-INTEGRITY but with a length field including the MESSAGE-INTEGRITY attribute...
+        let mut bytes = self.to_bytes();
+        // rewrite the length to include the message-integrity attribute
+        let existing_len = BigEndian::read_u16(&bytes[2..4]);
+        BigEndian::write_u16(&mut bytes[2..4], existing_len + 24);
+        let key = credentials.make_hmac_key();
+        let mut hmac = Hmac::<sha1::Sha1>::new_varkey(&key).map_err(|_| AgentError::Malformed)?;
+        let hmac_data = bytes.to_vec();
+        hmac.update(&hmac_data);
+        let integrity = hmac.finalize().into_bytes();
+        self.attributes
+            .push(MessageIntegrity::new(integrity.into()).into());
+        Ok(())
+    }
+
+    pub fn add_fingerprint(&mut self) -> Result<(), AgentError> {
+        if let Some(_) = self.get_attribute(FINGERPRINT) {
+            return Err(AgentError::AlreadyExists);
+        }
+        // fingerprint is computed using all the data up to (exclusive of) the FINGERPRINT
+        // but with a length field including the FINGERPRINT attribute...
+        let mut bytes = self.to_bytes();
+        // rewrite the length to include the fingerprint attribute
+        let existing_len = BigEndian::read_u16(&bytes[2..4]);
+        BigEndian::write_u16(&mut bytes[2..4], existing_len + 8);
+        let fingerprint = crc::crc32::checksum_ieee(&bytes).to_be_bytes();
+        self.attributes.push(Fingerprint::new(fingerprint).into());
+        Ok(())
     }
 
     /// Add a `Attribute` to this `Message`.  Only one `AttributeType` can be added for each
@@ -273,7 +496,20 @@ impl Message {
     /// assert!(message.add_attribute(attr).is_err());
     /// ```
     pub fn add_attribute(&mut self, attr: RawAttribute) -> Result<(), AgentError> {
+        if attr.get_type() == MESSAGE_INTEGRITY {
+            return Err(AgentError::WrongImplementation);
+        }
+        if attr.get_type() == FINGERPRINT {
+            return Err(AgentError::WrongImplementation);
+        }
         if let Some(_) = self.get_attribute(attr.get_type()) {
+            return Err(AgentError::AlreadyExists);
+        }
+        // can't validly add generic attributes after message integrity or fingerprint
+        if let Some(_) = self.get_attribute(MESSAGE_INTEGRITY) {
+            return Err(AgentError::AlreadyExists);
+        }
+        if let Some(_) = self.get_attribute(FINGERPRINT) {
             return Err(AgentError::AlreadyExists);
         }
         self.attributes.push(attr);
@@ -300,6 +536,65 @@ impl Message {
 
     pub fn iter_attributes(&self) -> impl Iterator<Item = &RawAttribute> {
         self.attributes.iter()
+    }
+
+    pub fn check_attribute_types(
+        msg: &Message,
+        supported: &[AttributeType],
+        required_in_msg: &[AttributeType],
+    ) -> Option<Message> {
+        // Attribute -> AttributeType
+        let unsupported: Vec<AttributeType> = msg
+            .iter_attributes()
+            .map(|a| a.get_type())
+            // attribute types that require comprehension but are not supported by the caller
+            .filter(|&at| {
+                at.comprehension_required() && supported.iter().position(|&a| a == at).is_none()
+            })
+            .collect();
+        if unsupported.len() > 0 {
+            debug!(
+                "Message contains unknown comprehension required attributes {:?}",
+                unsupported
+            );
+            return Message::unknown_attributes(msg, &unsupported).ok();
+        }
+        if required_in_msg
+            .iter()
+            // attribute types we need in the message -> failure -> Bad Request
+            .filter(|&at| {
+                msg.iter_attributes()
+                    .map(|a| a.get_type())
+                    .position(|a| a == *at)
+                    .is_none()
+            })
+            .next()
+            .is_some()
+        {
+            debug!("Message is missing required attributes");
+            return Message::bad_request(msg).ok();
+        }
+        None
+    }
+
+    pub fn unknown_attributes(
+        src: &Message,
+        attributes: &[AttributeType],
+    ) -> Result<Message, AgentError> {
+        let mut out = Message::new_error(src);
+        out.add_attribute(Software::new("stund - librice v0.1")?.to_raw())?;
+        out.add_attribute(ErrorCode::new(420, "Unknown Attributes")?.to_raw())?;
+        if attributes.len() > 0 {
+            out.add_attribute(UnknownAttributes::new(&attributes).to_raw())?;
+        }
+        Ok(out)
+    }
+
+    pub fn bad_request(src: &Message) -> Result<Message, AgentError> {
+        let mut out = Message::new_error(src);
+        out.add_attribute(Software::new("stund - librice v0.1")?.to_raw())?;
+        out.add_attribute(ErrorCode::new(400, "Bad Request")?.to_raw())?;
+        Ok(out)
     }
 }
 impl From<Message> for Vec<u8> {
@@ -369,5 +664,111 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn unknown_attributes() {
+        let src = Message::new_request_method(BINDING);
+        let msg = Message::unknown_attributes(&src, &[SOFTWARE]).unwrap();
+        assert_eq!(msg.transaction_id(), src.transaction_id());
+        assert_eq!(msg.class(), MessageClass::Error);
+        assert_eq!(msg.method(), src.method());
+        let err = ErrorCode::from_raw(msg.get_attribute(ERROR_CODE).unwrap()).unwrap();
+        assert_eq!(err.code(), 420);
+        let unknown_attrs =
+            UnknownAttributes::from_raw(msg.get_attribute(UNKNOWN_ATTRIBUTES).unwrap()).unwrap();
+        assert!(unknown_attrs.has_attribute(SOFTWARE));
+    }
+
+    #[test]
+    fn bad_request() {
+        let src = Message::new_request_method(BINDING);
+        let msg = Message::bad_request(&src).unwrap();
+        assert_eq!(msg.transaction_id(), src.transaction_id());
+        assert_eq!(msg.class(), MessageClass::Error);
+        assert_eq!(msg.method(), src.method());
+        let err = ErrorCode::from_raw(msg.get_attribute(ERROR_CODE).unwrap()).unwrap();
+        assert_eq!(err.code(), 400);
+    }
+
+    #[test]
+    fn fingerprint() {
+        init();
+        let mut msg = Message::new_request_method(BINDING);
+        let software_str = "s";
+        msg.add_attribute(Software::new(software_str).unwrap().into())
+            .unwrap();
+        msg.add_fingerprint().unwrap();
+        let orig_fingerprint =
+            Fingerprint::try_from(msg.get_attribute(FINGERPRINT).unwrap()).unwrap();
+        let bytes: Vec<_> = msg.into();
+        // validates the fingerprint of the data when available
+        let new_msg = Message::from_bytes(&bytes).unwrap();
+        let software = Software::try_from(new_msg.get_attribute(SOFTWARE).unwrap()).unwrap();
+        assert_eq!(software.software(), software_str);
+        let new_fingerprint =
+            Fingerprint::try_from(new_msg.get_attribute(FINGERPRINT).unwrap()).unwrap();
+        assert_eq!(
+            orig_fingerprint.fingerprint(),
+            new_fingerprint.fingerprint()
+        );
+    }
+
+    #[test]
+    fn integrity() {
+        init();
+        let mut msg = Message::new_request_method(BINDING);
+        let software_str = "s";
+        let credentials = MessageIntegrityCredentials::ShortTerm(ShortTermCredentials {
+            password: "secret".to_owned(),
+        });
+        msg.add_attribute(Software::new(software_str).unwrap().into())
+            .unwrap();
+        msg.add_message_integrity(&credentials).unwrap();
+        let bytes: Vec<_> = msg.clone().into();
+        msg.validate_integrity(&bytes, &credentials).unwrap();
+        let orig_integrity =
+            MessageIntegrity::try_from(msg.get_attribute(MESSAGE_INTEGRITY).unwrap()).unwrap();
+        // validates the fingerprint of the data when available
+        let new_msg = Message::from_bytes(&bytes).unwrap();
+        let software = Software::try_from(new_msg.get_attribute(SOFTWARE).unwrap()).unwrap();
+        assert_eq!(software.software(), software_str);
+        let new_integrity =
+            MessageIntegrity::try_from(new_msg.get_attribute(MESSAGE_INTEGRITY).unwrap()).unwrap();
+        assert_eq!(orig_integrity.hmac(), new_integrity.hmac());
+        new_msg.validate_integrity(&bytes, &credentials).unwrap();
+    }
+
+    #[test]
+    fn valid_attributes() {
+        let mut src = Message::new_request_method(BINDING);
+        src.add_attribute(Username::new("123").unwrap().into())
+            .unwrap();
+        src.add_attribute(Priority::new(123).into()).unwrap();
+
+        // success case
+        let res = Message::check_attribute_types(&src, &[USERNAME, PRIORITY], &[USERNAME]);
+        assert!(res.is_none());
+
+        // fingerprint required but not present
+        let res = Message::check_attribute_types(&src, &[USERNAME, PRIORITY], &[FINGERPRINT]);
+        assert!(res.is_some());
+        let res = res.unwrap();
+        assert!(res.has_class(MessageClass::Error));
+        assert!(res.has_method(src.method()));
+        let err = ErrorCode::from_raw(res.get_attribute(ERROR_CODE).unwrap()).unwrap();
+        assert_eq!(err.code(), 400);
+
+        // priority unsupported
+        let res = Message::check_attribute_types(&src, &[USERNAME], &[]);
+        assert!(res.is_some());
+        let res = res.unwrap();
+        assert!(res.has_class(MessageClass::Error));
+        assert!(res.has_method(src.method()));
+        let err = ErrorCode::from_raw(res.get_attribute(ERROR_CODE).unwrap()).unwrap();
+        assert_eq!(err.code(), 420);
+        let unknown =
+            UnknownAttributes::from_raw(res.get_attribute(UNKNOWN_ATTRIBUTES).unwrap()).unwrap();
+        assert!(unknown.has_attribute(PRIORITY));
     }
 }

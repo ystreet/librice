@@ -7,6 +7,7 @@
 // except according to those terms.
 
 use std::convert::TryFrom;
+use std::convert::TryInto;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -35,6 +36,13 @@ pub const SOFTWARE: AttributeType = AttributeType(0x8022);
 pub const ALTERNATE_SERVER: AttributeType = AttributeType(0x8023);
 pub const FINGERPRINT: AttributeType = AttributeType(0x8028);
 
+// RFC 8445
+pub const PRIORITY: AttributeType = AttributeType(0x0024);
+pub const USE_CANDIDATE: AttributeType = AttributeType(0x0025);
+
+pub const ICE_CONTROLLED: AttributeType = AttributeType(0x0029);
+pub const ICE_CONTROLLING: AttributeType = AttributeType(0x002A);
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AttributeType(u16);
 
@@ -62,6 +70,10 @@ impl AttributeType {
             SOFTWARE => "SOFTWARE",
             ALTERNATE_SERVER => "ALTERNATE-SERVER",
             FINGERPRINT => "FINGERPRINT",
+            PRIORITY => "PRIORITY",
+            USE_CANDIDATE => "USE-CANDIDATE",
+            ICE_CONTROLLED => "ICE-CONTROLLED",
+            ICE_CONTROLLING => "ICE-CONTROLLING",
             _ => "unknown",
         }
     }
@@ -150,7 +162,7 @@ pub trait Attribute: std::fmt::Debug + std::any::Any {
     fn to_raw(&self) -> RawAttribute;
 
     /// Convert an `Attribute` from a `RawAttribute`
-    fn from_raw(raw: RawAttribute) -> Result<Self, AgentError>
+    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError>
     where
         Self: Sized;
 }
@@ -159,6 +171,16 @@ pub trait Attribute: std::fmt::Debug + std::any::Any {
 pub struct RawAttribute {
     pub header: AttributeHeader,
     pub value: Vec<u8>,
+}
+
+macro_rules! display_attr {
+    ($this:ident, $CamelType:ty, $default:ident) => {{
+        if let Ok(attr) = <$CamelType>::from_raw($this) {
+            format!("{}", attr)
+        } else {
+            $default
+        }
+    }};
 }
 
 impl std::fmt::Display for RawAttribute {
@@ -171,35 +193,27 @@ impl std::fmt::Display for RawAttribute {
             self.value
         );
         let display_str = if self.get_type() == SOFTWARE {
-            if let Ok(software) = Software::from_raw(self.clone()) {
-                format!("{}", software)
-            } else {
-                malformed_str
-            }
+            display_attr!(self, Software, malformed_str)
         } else if self.get_type() == UNKNOWN_ATTRIBUTES {
-            if let Ok(attrs) = UnknownAttributes::from_raw(self.clone()) {
-                format!("{}", attrs)
-            } else {
-                malformed_str
-            }
+            display_attr!(self, UnknownAttributes, malformed_str)
         } else if self.get_type() == ERROR_CODE {
-            if let Ok(code) = ErrorCode::from_raw(self.clone()) {
-                format!("{}", code)
-            } else {
-                malformed_str
-            }
+            display_attr!(self, ErrorCode, malformed_str)
         } else if self.get_type() == USERNAME {
-            if let Ok(user) = Username::from_raw(self.clone()) {
-                format!("{}", user)
-            } else {
-                malformed_str
-            }
+            display_attr!(self, Username, malformed_str)
         } else if self.get_type() == XOR_MAPPED_ADDRESS {
-            if let Ok(user) = XorMappedAddress::from_raw(self.clone()) {
-                format!("{}", user)
-            } else {
-                malformed_str
-            }
+            display_attr!(self, XorMappedAddress, malformed_str)
+        } else if self.get_type() == PRIORITY {
+            display_attr!(self, Priority, malformed_str)
+        } else if self.get_type() == USE_CANDIDATE {
+            display_attr!(self, UseCandidate, malformed_str)
+        } else if self.get_type() == ICE_CONTROLLED {
+            display_attr!(self, IceControlled, malformed_str)
+        } else if self.get_type() == ICE_CONTROLLING {
+            display_attr!(self, IceControlling, malformed_str)
+        } else if self.get_type() == MESSAGE_INTEGRITY {
+            display_attr!(self, MessageIntegrity, malformed_str)
+        } else if self.get_type() == FINGERPRINT {
+            display_attr!(self, Fingerprint, malformed_str)
         } else {
             format!(
                 "RawAttribute (type: {:?}, len: {}, data: {:?})",
@@ -223,7 +237,7 @@ impl Attribute for RawAttribute {
         self.clone()
     }
 
-    fn from_raw(raw: RawAttribute) -> Result<Self, AgentError> {
+    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
         Ok(raw.clone())
     }
 }
@@ -232,7 +246,7 @@ impl RawAttribute {
     pub fn new(atype: AttributeType, data: &[u8]) -> Self {
         Self {
             header: AttributeHeader {
-                atype: atype,
+                atype,
                 length: data.len() as u16,
             },
             value: data.to_vec(),
@@ -260,7 +274,7 @@ impl RawAttribute {
         data.truncate(header.length as usize);
         //trace!("parsed into {:?} {:?}", header, data);
         Ok(Self {
-            header: header,
+            header,
             value: data,
         })
     }
@@ -316,7 +330,7 @@ impl Attribute for Username {
         RawAttribute::new(self.get_type().into(), self.user.as_bytes())
     }
 
-    fn from_raw(raw: RawAttribute) -> Result<Self, AgentError> {
+    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
         if raw.header.atype != USERNAME {
             return Err(AgentError::WrongImplementation);
         }
@@ -352,10 +366,10 @@ impl std::fmt::Display for Username {
         write!(f, "{}: '{}'", self.get_type(), self.user)
     }
 }
-impl TryFrom<RawAttribute> for Username {
+impl TryFrom<&RawAttribute> for Username {
     type Error = AgentError;
 
-    fn try_from(value: RawAttribute) -> Result<Self, Self::Error> {
+    fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
         Username::from_raw(value)
     }
 }
@@ -390,7 +404,7 @@ impl Attribute for ErrorCode {
         RawAttribute::new(self.get_type().into(), &data)
     }
 
-    fn from_raw(raw: RawAttribute) -> Result<Self, AgentError> {
+    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
         if raw.header.atype != ERROR_CODE {
             return Err(AgentError::WrongImplementation);
         }
@@ -404,7 +418,7 @@ impl Attribute for ErrorCode {
         }
         let code = code_h * 100 + code_tens;
         Ok(Self {
-            code: code,
+            code,
             reason: std::str::from_utf8(&raw.value[4..])
                 .map_err(|_| AgentError::Malformed)?
                 .to_owned(),
@@ -417,7 +431,7 @@ impl ErrorCode {
             return Err(AgentError::Malformed);
         }
         Ok(Self {
-            code: code,
+            code,
             reason: reason.to_owned(),
         })
     }
@@ -449,10 +463,10 @@ impl std::fmt::Display for ErrorCode {
     }
 }
 
-impl TryFrom<RawAttribute> for ErrorCode {
+impl TryFrom<&RawAttribute> for ErrorCode {
     type Error = AgentError;
 
-    fn try_from(value: RawAttribute) -> Result<Self, Self::Error> {
+    fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
         ErrorCode::from_raw(value)
     }
 }
@@ -486,7 +500,7 @@ impl Attribute for UnknownAttributes {
         RawAttribute::new(self.get_type().into(), &data)
     }
 
-    fn from_raw(raw: RawAttribute) -> Result<Self, AgentError> {
+    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
         if raw.header.atype != UNKNOWN_ATTRIBUTES {
             return Err(AgentError::WrongImplementation);
         }
@@ -525,10 +539,10 @@ impl std::fmt::Display for UnknownAttributes {
     }
 }
 
-impl TryFrom<RawAttribute> for UnknownAttributes {
+impl TryFrom<&RawAttribute> for UnknownAttributes {
     type Error = AgentError;
 
-    fn try_from(value: RawAttribute) -> Result<Self, Self::Error> {
+    fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
         UnknownAttributes::from_raw(value)
     }
 }
@@ -556,7 +570,7 @@ impl Attribute for Software {
         RawAttribute::new(self.get_type().into(), self.software.as_bytes())
     }
 
-    fn from_raw(raw: RawAttribute) -> Result<Self, AgentError> {
+    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
         if raw.header.atype != SOFTWARE {
             return Err(AgentError::WrongImplementation);
         }
@@ -592,10 +606,10 @@ impl std::fmt::Display for Software {
     }
 }
 
-impl TryFrom<RawAttribute> for Software {
+impl TryFrom<&RawAttribute> for Software {
     type Error = AgentError;
 
-    fn try_from(value: RawAttribute) -> Result<Self, Self::Error> {
+    fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
         Software::from_raw(value)
     }
 }
@@ -604,6 +618,16 @@ impl From<Software> for RawAttribute {
     fn from(f: Software) -> Self {
         f.to_raw()
     }
+}
+
+macro_rules! bytewise_xor {
+    ($size:literal, $a:expr, $b:expr, $default:literal) => {{
+        let mut arr = [$default; $size];
+        for (i, item) in arr.iter_mut().enumerate() {
+            *item = $a[i] ^ $b[i];
+        }
+        arr
+    }};
 }
 
 #[derive(Debug, Clone)]
@@ -644,7 +668,7 @@ impl Attribute for XorMappedAddress {
         }
     }
 
-    fn from_raw(raw: RawAttribute) -> Result<Self, AgentError> {
+    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
         if raw.header.atype != XOR_MAPPED_ADDRESS {
             return Err(AgentError::WrongImplementation);
         }
@@ -698,10 +722,7 @@ impl XorMappedAddress {
                 let port = addr.port() ^ (MAGIC_COOKIE >> 16) as u16;
                 let const_octets = MAGIC_COOKIE.to_be_bytes();
                 let addr_octets = addr.ip().octets();
-                let mut octets = [0; 4];
-                for i in 0..4 {
-                    octets[i] = const_octets[i] ^ addr_octets[i];
-                }
+                let octets = bytewise_xor!(4, const_octets, addr_octets, 0);
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::from(octets)), port)
             }
             SocketAddr::V6(addr) => {
@@ -710,10 +731,7 @@ impl XorMappedAddress {
                     | (transaction & 0x00000000_ffffffff_ffffffff_ffffffff))
                     .to_be_bytes();
                 let addr_octets = addr.ip().octets();
-                let mut octets = [0; 16];
-                for i in 0..16 {
-                    octets[i] = const_octets[i] ^ addr_octets[i];
-                }
+                let octets = bytewise_xor!(16, const_octets, addr_octets, 0);
                 SocketAddr::new(IpAddr::V6(Ipv6Addr::from(octets)), port)
             }
         }
@@ -733,10 +751,10 @@ impl std::fmt::Display for XorMappedAddress {
     }
 }
 
-impl TryFrom<RawAttribute> for XorMappedAddress {
+impl TryFrom<&RawAttribute> for XorMappedAddress {
     type Error = AgentError;
 
-    fn try_from(value: RawAttribute) -> Result<Self, Self::Error> {
+    fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
         XorMappedAddress::from_raw(value)
     }
 }
@@ -744,6 +762,389 @@ impl TryFrom<RawAttribute> for XorMappedAddress {
 impl From<XorMappedAddress> for RawAttribute {
     fn from(f: XorMappedAddress) -> Self {
         f.to_raw()
+    }
+}
+
+#[derive(Debug)]
+pub struct Priority {
+    priority: u32,
+}
+
+impl Attribute for Priority {
+    fn get_type(&self) -> AttributeType {
+        PRIORITY
+    }
+
+    fn get_length(&self) -> u16 {
+        4
+    }
+
+    fn to_raw(&self) -> RawAttribute {
+        let mut buf = [0; 4];
+        BigEndian::write_u32(&mut buf[0..4], self.priority);
+        RawAttribute::new(self.get_type().into(), &buf)
+    }
+
+    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
+        if raw.header.atype != PRIORITY {
+            return Err(AgentError::WrongImplementation);
+        }
+        if raw.value.len() < 4 {
+            return Err(AgentError::NotEnoughData);
+        }
+        if raw.value.len() > 4 {
+            return Err(AgentError::TooBig);
+        }
+        Ok(Self {
+            priority: BigEndian::read_u32(&raw.value[..4]),
+        })
+    }
+}
+
+impl Priority {
+    pub fn new(priority: u32) -> Self {
+        Self { priority }
+    }
+
+    pub fn priority(&self) -> u32 {
+        self.priority
+    }
+}
+
+impl TryFrom<&RawAttribute> for Priority {
+    type Error = AgentError;
+
+    fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
+        Priority::from_raw(value)
+    }
+}
+
+impl From<Priority> for RawAttribute {
+    fn from(f: Priority) -> Self {
+        f.to_raw()
+    }
+}
+
+impl std::fmt::Display for Priority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.get_type(), self.priority)
+    }
+}
+
+#[derive(Debug)]
+pub struct UseCandidate {}
+
+impl Attribute for UseCandidate {
+    fn get_type(&self) -> AttributeType {
+        USE_CANDIDATE
+    }
+
+    fn get_length(&self) -> u16 {
+        0
+    }
+
+    fn to_raw(&self) -> RawAttribute {
+        let buf = [0; 0];
+        RawAttribute::new(self.get_type().into(), &buf)
+    }
+
+    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
+        if raw.header.atype != USE_CANDIDATE {
+            return Err(AgentError::WrongImplementation);
+        }
+        if raw.value.len() > 0 {
+            return Err(AgentError::TooBig);
+        }
+        Ok(Self {})
+    }
+}
+
+impl UseCandidate {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl TryFrom<&RawAttribute> for UseCandidate {
+    type Error = AgentError;
+
+    fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
+        UseCandidate::from_raw(value)
+    }
+}
+
+impl From<UseCandidate> for RawAttribute {
+    fn from(f: UseCandidate) -> Self {
+        f.to_raw()
+    }
+}
+
+impl std::fmt::Display for UseCandidate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.get_type())
+    }
+}
+
+#[derive(Debug)]
+pub struct IceControlled {
+    tie_breaker: u64,
+}
+
+impl Attribute for IceControlled {
+    fn get_type(&self) -> AttributeType {
+        ICE_CONTROLLED
+    }
+
+    fn get_length(&self) -> u16 {
+        8
+    }
+
+    fn to_raw(&self) -> RawAttribute {
+        let mut buf = [0; 8];
+        BigEndian::write_u64(&mut buf[..8], self.tie_breaker);
+        RawAttribute::new(self.get_type().into(), &buf)
+    }
+
+    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
+        if raw.header.atype != ICE_CONTROLLED {
+            return Err(AgentError::WrongImplementation);
+        }
+        if raw.value.len() < 8 {
+            return Err(AgentError::NotEnoughData);
+        }
+        if raw.value.len() > 8 {
+            return Err(AgentError::TooBig);
+        }
+        Ok(Self {
+            tie_breaker: BigEndian::read_u64(&raw.value),
+        })
+    }
+}
+
+impl IceControlled {
+    pub fn new(tie_breaker: u64) -> Self {
+        Self { tie_breaker }
+    }
+
+    pub fn tie_breaker(&self) -> u64 {
+        self.tie_breaker
+    }
+}
+
+impl TryFrom<&RawAttribute> for IceControlled {
+    type Error = AgentError;
+
+    fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
+        IceControlled::from_raw(value)
+    }
+}
+
+impl From<IceControlled> for RawAttribute {
+    fn from(f: IceControlled) -> Self {
+        f.to_raw()
+    }
+}
+
+impl std::fmt::Display for IceControlled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.get_type())
+    }
+}
+
+#[derive(Debug)]
+pub struct IceControlling {
+    tie_breaker: u64,
+}
+
+impl Attribute for IceControlling {
+    fn get_type(&self) -> AttributeType {
+        ICE_CONTROLLING
+    }
+
+    fn get_length(&self) -> u16 {
+        8
+    }
+
+    fn to_raw(&self) -> RawAttribute {
+        let mut buf = [0; 8];
+        BigEndian::write_u64(&mut buf[..8], self.tie_breaker);
+        RawAttribute::new(self.get_type().into(), &buf)
+    }
+
+    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
+        if raw.header.atype != ICE_CONTROLLING {
+            return Err(AgentError::WrongImplementation);
+        }
+        if raw.value.len() < 8 {
+            return Err(AgentError::NotEnoughData);
+        }
+        if raw.value.len() > 8 {
+            return Err(AgentError::TooBig);
+        }
+        Ok(Self {
+            tie_breaker: BigEndian::read_u64(&raw.value),
+        })
+    }
+}
+
+impl IceControlling {
+    pub fn new(tie_breaker: u64) -> Self {
+        Self { tie_breaker }
+    }
+
+    pub fn tie_breaker(&self) -> u64 {
+        self.tie_breaker
+    }
+}
+
+impl TryFrom<&RawAttribute> for IceControlling {
+    type Error = AgentError;
+
+    fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
+        IceControlling::from_raw(value)
+    }
+}
+
+impl From<IceControlling> for RawAttribute {
+    fn from(f: IceControlling) -> Self {
+        f.to_raw()
+    }
+}
+
+impl std::fmt::Display for IceControlling {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.get_type())
+    }
+}
+
+#[derive(Debug)]
+pub struct MessageIntegrity {
+    hmac: [u8; 20],
+}
+
+impl Attribute for MessageIntegrity {
+    fn get_type(&self) -> AttributeType {
+        MESSAGE_INTEGRITY
+    }
+
+    fn get_length(&self) -> u16 {
+        20
+    }
+
+    fn to_raw(&self) -> RawAttribute {
+        RawAttribute::new(self.get_type().into(), &self.hmac)
+    }
+
+    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
+        if raw.header.atype != MESSAGE_INTEGRITY {
+            return Err(AgentError::WrongImplementation);
+        }
+        if raw.value.len() < 20 {
+            return Err(AgentError::NotEnoughData);
+        }
+        if raw.value.len() > 20 {
+            return Err(AgentError::TooBig);
+        }
+        // sized checked earlier
+        let boxed: Box<[u8; 20]> = raw.value.clone().into_boxed_slice().try_into().unwrap();
+        Ok(Self { hmac: *boxed })
+    }
+}
+
+impl MessageIntegrity {
+    pub fn new(hmac: [u8; 20]) -> Self {
+        Self { hmac }
+    }
+
+    pub fn hmac(&self) -> &[u8; 20] {
+        &self.hmac
+    }
+}
+
+impl TryFrom<&RawAttribute> for MessageIntegrity {
+    type Error = AgentError;
+
+    fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
+        MessageIntegrity::from_raw(value)
+    }
+}
+impl From<MessageIntegrity> for RawAttribute {
+    fn from(f: MessageIntegrity) -> Self {
+        f.to_raw()
+    }
+}
+
+impl std::fmt::Display for MessageIntegrity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {:?}", self.get_type(), self.hmac)
+    }
+}
+
+#[derive(Debug)]
+pub struct Fingerprint {
+    fingerprint: [u8; 4],
+}
+
+impl Attribute for Fingerprint {
+    fn get_type(&self) -> AttributeType {
+        FINGERPRINT
+    }
+
+    fn get_length(&self) -> u16 {
+        4
+    }
+
+    fn to_raw(&self) -> RawAttribute {
+        let buf = bytewise_xor!(4, self.fingerprint, Fingerprint::XOR_CONSTANT, 0);
+        RawAttribute::new(self.get_type().into(), &buf)
+    }
+
+    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
+        if raw.header.atype != FINGERPRINT {
+            return Err(AgentError::WrongImplementation);
+        }
+        if raw.value.len() < 4 {
+            return Err(AgentError::NotEnoughData);
+        }
+        if raw.value.len() > 4 {
+            return Err(AgentError::TooBig);
+        }
+        // sized checked earlier
+        let boxed: Box<[u8; 4]> = raw.value.clone().into_boxed_slice().try_into().unwrap();
+        let fingerprint = bytewise_xor!(4, *boxed, Fingerprint::XOR_CONSTANT, 0);
+        Ok(Self { fingerprint })
+    }
+}
+
+impl Fingerprint {
+    pub const XOR_CONSTANT: [u8; 4] = [0x53, 0x54, 0x55, 0x4E];
+
+    pub fn new(fingerprint: [u8; 4]) -> Self {
+        Self { fingerprint }
+    }
+
+    pub fn fingerprint(&self) -> &[u8; 4] {
+        &self.fingerprint
+    }
+}
+
+impl TryFrom<&RawAttribute> for Fingerprint {
+    type Error = AgentError;
+
+    fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
+        Fingerprint::from_raw(value)
+    }
+}
+
+impl From<Fingerprint> for RawAttribute {
+    fn from(f: Fingerprint) -> Self {
+        f.to_raw()
+    }
+}
+
+impl std::fmt::Display for Fingerprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {:?}", self.get_type(), self.fingerprint)
     }
 }
 
@@ -785,7 +1186,7 @@ mod tests {
         assert_eq!(user.get_type(), USERNAME);
         assert_eq!(user.username(), s);
         let raw: RawAttribute = user.into();
-        let user2 = Username::try_from(raw).unwrap();
+        let user2 = Username::try_from(&raw).unwrap();
         assert_eq!(user2.get_type(), USERNAME);
         assert_eq!(user2.username(), s);
     }
@@ -800,7 +1201,7 @@ mod tests {
         assert_eq!(err.code(), code);
         assert_eq!(err.reason(), reason);
         let raw: RawAttribute = err.into();
-        let err2 = ErrorCode::try_from(raw).unwrap();
+        let err2 = ErrorCode::try_from(&raw).unwrap();
         assert_eq!(err2.get_type(), ERROR_CODE);
         assert_eq!(err2.code(), code);
         assert_eq!(err2.reason(), reason);
@@ -818,7 +1219,7 @@ mod tests {
         assert_eq!(unknown.has_attribute(ALTERNATE_SERVER), true);
         assert_eq!(unknown.has_attribute(NONCE), false);
         let raw: RawAttribute = unknown.into();
-        let unknown2 = UnknownAttributes::try_from(raw).unwrap();
+        let unknown2 = UnknownAttributes::try_from(&raw).unwrap();
         assert_eq!(unknown2.get_type(), UNKNOWN_ATTRIBUTES);
         assert_eq!(unknown2.has_attribute(REALM), true);
         assert_eq!(unknown2.has_attribute(ALTERNATE_SERVER), true);
@@ -832,7 +1233,7 @@ mod tests {
         assert_eq!(software.get_type(), SOFTWARE);
         assert_eq!(software.software(), "software");
         let raw: RawAttribute = software.into();
-        let software2 = Software::try_from(raw).unwrap();
+        let software2 = Software::try_from(&raw).unwrap();
         assert_eq!(software2.get_type(), SOFTWARE);
         assert_eq!(software2.software(), "software");
     }
@@ -847,9 +1248,84 @@ mod tests {
             assert_eq!(mapped.get_type(), XOR_MAPPED_ADDRESS);
             assert_eq!(mapped.addr(transaction_id), *addr);
             let raw: RawAttribute = mapped.into();
-            let mapped2 = XorMappedAddress::try_from(raw).unwrap();
+            let mapped2 = XorMappedAddress::try_from(&raw).unwrap();
             assert_eq!(mapped2.get_type(), XOR_MAPPED_ADDRESS);
             assert_eq!(mapped2.addr(transaction_id), *addr);
         }
+    }
+
+    #[test]
+    fn priority() {
+        init();
+        let val = 100;
+        let priority = Priority::new(val);
+        assert_eq!(priority.get_type(), PRIORITY);
+        assert_eq!(priority.priority(), val);
+        let raw: RawAttribute = priority.into();
+        let mapped2 = Priority::try_from(&raw).unwrap();
+        assert_eq!(mapped2.get_type(), PRIORITY);
+        assert_eq!(mapped2.priority(), val);
+    }
+
+    #[test]
+    fn use_candidate() {
+        init();
+        let use_candidate = UseCandidate::new();
+        assert_eq!(use_candidate.get_type(), USE_CANDIDATE);
+        let raw: RawAttribute = use_candidate.into();
+        let mapped2 = UseCandidate::try_from(&raw).unwrap();
+        assert_eq!(mapped2.get_type(), USE_CANDIDATE);
+    }
+
+    #[test]
+    fn ice_controlling() {
+        init();
+        let tb = 100;
+        let attr = IceControlling::new(tb);
+        assert_eq!(attr.get_type(), ICE_CONTROLLING);
+        assert_eq!(attr.tie_breaker(), tb);
+        let raw: RawAttribute = attr.into();
+        let mapped2 = IceControlling::try_from(&raw).unwrap();
+        assert_eq!(mapped2.get_type(), ICE_CONTROLLING);
+        assert_eq!(mapped2.tie_breaker(), tb);
+    }
+
+    #[test]
+    fn ice_controlled() {
+        init();
+        let tb = 100;
+        let attr = IceControlled::new(tb);
+        assert_eq!(attr.get_type(), ICE_CONTROLLED);
+        assert_eq!(attr.tie_breaker(), tb);
+        let raw: RawAttribute = attr.into();
+        let mapped2 = IceControlled::try_from(&raw).unwrap();
+        assert_eq!(mapped2.get_type(), ICE_CONTROLLED);
+        assert_eq!(mapped2.tie_breaker(), tb);
+    }
+
+    #[test]
+    fn fingerprint() {
+        init();
+        let val = [1; 4];
+        let attr = Fingerprint::new(val);
+        assert_eq!(attr.get_type(), FINGERPRINT);
+        assert_eq!(attr.fingerprint(), &val);
+        let raw: RawAttribute = attr.into();
+        let mapped2 = Fingerprint::try_from(&raw).unwrap();
+        assert_eq!(mapped2.get_type(), FINGERPRINT);
+        assert_eq!(mapped2.fingerprint(), &val);
+    }
+
+    #[test]
+    fn message_integrity() {
+        init();
+        let val = [1; 20];
+        let attr = MessageIntegrity::new(val);
+        assert_eq!(attr.get_type(), MESSAGE_INTEGRITY);
+        assert_eq!(attr.hmac(), &val);
+        let raw: RawAttribute = attr.into();
+        let mapped2 = MessageIntegrity::try_from(&raw).unwrap();
+        assert_eq!(mapped2.get_type(), MESSAGE_INTEGRITY);
+        assert_eq!(mapped2.hmac(), &val);
     }
 }

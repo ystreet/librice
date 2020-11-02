@@ -6,5 +6,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+pub mod agent;
 pub mod attribute;
 pub mod message;
+pub mod pacer;

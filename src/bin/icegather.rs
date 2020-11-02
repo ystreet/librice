@@ -19,27 +19,23 @@ use futures::prelude::*;
 fn main() -> io::Result<()> {
     env_logger::init();
     task::block_on(async move {
+        // non-existent
+        //let stun_servers = ["192.168.1.200:3000".parse().unwrap()].to_vec();
         let stun_servers = ["127.0.0.1:3478".parse().unwrap()].to_vec();
+        //let stun_servers = ["172.253.56.127:19302".parse().unwrap()].to_vec();
 
-        let schannels = librice::gathering::iface_udp_sockets().map_err(|e| {
-            std::io::Error::new(
-                std::io::ErrorKind::ConnectionAborted,
-                e,
-            )
-        })?.filter_map(move |s| async move { s.ok() })
-        .collect::<Vec<_>>()
-        .await;
+        let schannels = librice::gathering::iface_udp_sockets()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e))?
+            .filter_map(move |s| async move { s.ok() })
+            .collect::<Vec<_>>()
+            .await;
 
         info!("retreived sockets");
-        let gather_stream = librice::gathering::gather_component(1, schannels, stun_servers).map_err(|e| {
-            std::io::Error::new(
-                std::io::ErrorKind::ConnectionAborted,
-                e,
-            )
-        })?;
+        let gather_stream = librice::gathering::gather_component(1, schannels, stun_servers)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e))?;
         futures::pin_mut!(gather_stream);
         while let Some(candidate) = gather_stream.next().await {
-            println!{"{:?}", candidate};
+            println! {"{:?}", candidate};
         }
         Ok(())
     })

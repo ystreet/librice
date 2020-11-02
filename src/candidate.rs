@@ -8,7 +8,7 @@
 
 use std::net::SocketAddr;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
     pub candidate_type: CandidateType,
     pub transport_type: TransportType,
@@ -16,7 +16,7 @@ pub struct Candidate {
     pub priority: u32,
     pub address: SocketAddr,
     pub base_address: SocketAddr,
-    // TODO: from stun/turn addr
+    pub related_address: Option<SocketAddr>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +41,7 @@ impl Candidate {
         priority: u32,
         address: SocketAddr,
         base_address: SocketAddr,
+        related_address: Option<SocketAddr>,
     ) -> Self {
         Self {
             candidate_type: ctype,
@@ -49,6 +50,68 @@ impl Candidate {
             priority,
             address,
             base_address,
+            related_address,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidatePair {
+    pub local: Candidate,
+    pub remote: Candidate,
+    pub component_id: usize,
+    default: bool,
+    valid: bool,
+    nominated: bool,
+}
+
+impl CandidatePair {
+    pub fn new(component_id: usize, local: Candidate, remote: Candidate) -> Self {
+        Self {
+            local,
+            remote,
+            component_id,
+            default: false,
+            valid: false,
+            nominated: false,
+        }
+    }
+
+    pub(crate) fn get_foundation(&self) -> String {
+        return self.local.foundation.to_string() + ":" + &self.remote.foundation;
+    }
+
+    pub fn priority(&self, are_controlling: bool) -> u64 {
+        let controlling_priority = if are_controlling {
+            self.local.priority
+        } else {
+            self.remote.priority
+        } as u64;
+        let controlled_priority = if are_controlling {
+            self.remote.priority
+        } else {
+            self.local.priority
+        } as u64;
+        let extra = if controlled_priority > controlling_priority {
+            1u64
+        } else {
+            0u64
+        };
+        (1 << 32) * controlling_priority.min(controlled_priority)
+            + 2 * controlling_priority.max(controlled_priority)
+            + extra
+    }
+
+    pub fn construct_valid(&self, mapped_address: SocketAddr) -> Self {
+        let mut local = self.local.clone();
+        local.address = mapped_address;
+        Self {
+            local,
+            remote: self.remote.clone(),
+            component_id: self.component_id,
+            default: false,
+            valid: true,
+            nominated: false,
         }
     }
 }
@@ -59,10 +122,5 @@ mod tests {
 
     fn init() {
         let _ = env_logger::builder().is_test(true).try_init();
-    }
-
-    #[test]
-    fn initial_type_none() {
-        init();
     }
 }

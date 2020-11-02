@@ -11,6 +11,9 @@ extern crate log;
 
 pub mod agent;
 pub mod candidate;
+pub mod component;
+mod conncheck;
 pub mod gathering;
-pub mod stun;
 pub mod socket;
+pub mod stream;
+pub mod stun;
