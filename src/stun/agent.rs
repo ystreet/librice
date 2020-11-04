@@ -33,7 +33,6 @@ pub struct StunAgent {
     pub(crate) channel: Arc<UdpSocketChannel>,
     stun_broadcaster: Arc<ChannelBroadcast<(Message, SocketAddr)>>,
     data_broadcaster: Arc<ChannelBroadcast<(Vec<u8>, SocketAddr)>>,
-    stun_send_send: async_channel::Sender<(Message, SocketAddr)>,
 }
 
 #[derive(Debug)]
@@ -46,30 +45,11 @@ struct StunAgentState {
 
 impl StunAgent {
     pub fn new(channel: Arc<UdpSocketChannel>) -> Self {
-        let (stun_send_send, mut stun_send_recv) =
-            async_channel::bounded::<(Message, SocketAddr)>(16);
-        let state = Arc::new(Mutex::new(StunAgentState::new()));
-
-        async_std::task::spawn({
-            let channel = channel.clone();
-
-            async move {
-                while let Some((msg, to)) = stun_send_recv.next().await {
-                    trace!("StunAgent channel send message {}", msg);
-                    StunAgent::maybe_store_message(state.clone(), msg.clone());
-                    let buf = msg.to_bytes();
-                    let _ = channel.send_to(&buf, to).await;
-                }
-                debug!("StunAgent channel send loop exited");
-            }
-        });
-
         Self {
             state: Arc::new(Mutex::new(StunAgentState::new())),
             channel,
             stun_broadcaster: Arc::new(ChannelBroadcast::default()),
             data_broadcaster: Arc::new(ChannelBroadcast::default()),
-            stun_send_send,
         }
     }
 
@@ -104,9 +84,8 @@ impl StunAgent {
 
     pub async fn send(&self, msg: Message, to: SocketAddr) -> Result<(), std::io::Error> {
         StunAgent::maybe_store_message(self.state.clone(), msg.clone());
-        self.stun_send_send.send((msg, to)).await.map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "Channel closed")
-        })
+        let buf = msg.to_bytes();
+        self.channel.send_to(&buf, to).await
     }
 
     fn receive_task_loop(
