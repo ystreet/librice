@@ -278,65 +278,67 @@ impl ConnCheckListSet {
         checklist: Arc<ConnCheckList>,
         checklists: Vec<Arc<ConnCheckList>>,
     ) -> Result<(), AgentError> {
-        connectivity_check(conncheck, /* FIXME */ true, /* FIXME */ 0)
-            .map(|response| {
-                match response {
-                    Err(e) => warn!("{:?}", e),
-                    Ok(ConnCheckResponse::Timeout(conncheck))
-                    | Ok(ConnCheckResponse::Failure(conncheck)) => {
-                        warn!("conncheck timeout/failure");
-                        conncheck.set_state(CandidatePairState::Failed);
-                    }
-                    Ok(ConnCheckResponse::Success(conncheck, addr)) => {
-                        debug!("conncheck succeeded in finding {:?}", addr);
-                        conncheck.set_state(CandidatePairState::Succeeded);
-                        let mut pair_dealt_with = false;
-                        let ok_pair = conncheck.pair.construct_valid(addr);
-                        // 1.
-                        // If the valid pair equals the pair that generated the check, the
-                        // pair is added to the valid list associated with the checklist to
-                        // which the pair belongs; or
-                        if let Some(_check) = checklist.get_matching_check(&ok_pair) {
-                            checklist.add_valid(ok_pair.clone());
-                            pair_dealt_with = true;
-                        } else {
-                            // 2.
-                            // If the valid pair equals another pair in a checklist, that pair
-                            // is added to the valid list associated with the checklist of that
-                            // pair.  The pair that generated the check is not added to a vali
-                            // list; or
-                            for checklist in checklists.iter() {
-                                if let Some(check) = checklist.get_matching_check(&ok_pair) {
-                                    checklist.add_valid(check.pair.clone());
-                                    pair_dealt_with = true;
-                                    break;
-                                }
+        connectivity_check(
+            conncheck, /* FIXME */ true, /* FIXME */ 0, /* FIXME */ false,
+        )
+        .map(|response| {
+            match response {
+                Err(e) => warn!("{:?}", e),
+                Ok(ConnCheckResponse::Failure(conncheck)) => {
+                    warn!("conncheck timeout/failure");
+                    conncheck.set_state(CandidatePairState::Failed);
+                }
+                Ok(ConnCheckResponse::RoleConflict(_conncheck)) => error!("Role Conflict"),
+                Ok(ConnCheckResponse::Success(conncheck, addr)) => {
+                    debug!("conncheck succeeded in finding {:?}", addr);
+                    conncheck.set_state(CandidatePairState::Succeeded);
+                    let mut pair_dealt_with = false;
+                    let ok_pair = conncheck.pair.construct_valid(addr);
+                    // 1.
+                    // If the valid pair equals the pair that generated the check, the
+                    // pair is added to the valid list associated with the checklist to
+                    // which the pair belongs; or
+                    if let Some(_check) = checklist.get_matching_check(&ok_pair) {
+                        checklist.add_valid(ok_pair.clone());
+                        pair_dealt_with = true;
+                    } else {
+                        // 2.
+                        // If the valid pair equals another pair in a checklist, that pair
+                        // is added to the valid list associated with the checklist of that
+                        // pair.  The pair that generated the check is not added to a vali
+                        // list; or
+                        for checklist in checklists.iter() {
+                            if let Some(check) = checklist.get_matching_check(&ok_pair) {
+                                checklist.add_valid(check.pair.clone());
+                                pair_dealt_with = true;
+                                break;
                             }
                         }
-                        // 3.
-                        // If the valid pair is not in any checklist, the agent computes the
-                        // priority for the pair based on the priority of each candidate,
-                        // using the algorithm in Section 6.1.2.  The priority of the local
-                        // candidate depends on its type.  Unless the type is peer
-                        // reflexive, the priority is equal to the priority signaled for
-                        // that candidate in the candidate exchange.  If the type is peer
-                        // reflexive, it is equal to the PRIORITY attribute the agent placed
-                        // in the Binding request that just completed.  The priority of the
-                        // remote candidate is taken from the candidate information of the
-                        // peer.  If the candidate does not appear there, then the check has
-                        // been a triggered check to a new remote candidate.  In that case,
-                        // the priority is taken as the value of the PRIORITY attribute in
-                        // the Binding request that triggered the check that just completed.
-                        // The pair is then added to the valid list.
-                        if !pair_dealt_with {
-                            // TODO: need to construct correct pair priorities, just use
-                            // whatever the conncheck produced for now
-                            checklist.add_valid(conncheck.pair.clone());
-                        }
-                    } // TODO: continue binding keepalives/implement RFC7675
-                };
-            })
-            .await;
+                    }
+                    // 3.
+                    // If the valid pair is not in any checklist, the agent computes the
+                    // priority for the pair based on the priority of each candidate,
+                    // using the algorithm in Section 6.1.2.  The priority of the local
+                    // candidate depends on its type.  Unless the type is peer
+                    // reflexive, the priority is equal to the priority signaled for
+                    // that candidate in the candidate exchange.  If the type is peer
+                    // reflexive, it is equal to the PRIORITY attribute the agent placed
+                    // in the Binding request that just completed.  The priority of the
+                    // remote candidate is taken from the candidate information of the
+                    // peer.  If the candidate does not appear there, then the check has
+                    // been a triggered check to a new remote candidate.  In that case,
+                    // the priority is taken as the value of the PRIORITY attribute in
+                    // the Binding request that triggered the check that just completed.
+                    // The pair is then added to the valid list.
+                    if !pair_dealt_with {
+                        // TODO: need to construct correct pair priorities, just use
+                        // whatever the conncheck produced for now
+                        checklist.add_valid(conncheck.pair.clone());
+                    }
+                } // TODO: continue binding keepalives/implement RFC7675
+            };
+        })
+        .await;
         Ok(())
     }
 
