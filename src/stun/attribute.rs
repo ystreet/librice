@@ -1076,7 +1076,11 @@ impl From<MessageIntegrity> for RawAttribute {
 
 impl std::fmt::Display for MessageIntegrity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {:?}", self.get_type(), self.hmac)
+        write!(f, "{}: 0x", self.get_type())?;
+        for val in self.hmac.iter() {
+            write!(f, "{:02x}", val)?;
+        }
+        Ok(())
     }
 }
 
@@ -1144,7 +1148,11 @@ impl From<Fingerprint> for RawAttribute {
 
 impl std::fmt::Display for Fingerprint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {:?}", self.get_type(), self.fingerprint)
+        write!(f, "{}: 0x", self.get_type())?;
+        for val in self.fingerprint.iter() {
+            write!(f, "{:02x}", val)?;
+        }
+        Ok(())
     }
 }
 
