@@ -106,7 +106,7 @@ impl StunAgent {
                             debug!("received from {:?} {}", from, msg);
                             let handle = {
                                 let mut state = state.lock().unwrap();
-                                state.handle_stun(msg.clone(), from)
+                                state.handle_stun(msg.clone(), &data, from)
                             };
                             match handle {
                                 HandleStunReply::Reply(msg) => {
@@ -261,7 +261,13 @@ impl StunAgentState {
         }
     }
 
-    fn handle_binding_request(msg: &Message, from: SocketAddr) -> Result<Message, AgentError> {
+    fn handle_binding_request(
+        msg: &Message,
+        orig_data: &[u8],
+        from: SocketAddr,
+        local_credentials: Option<MessageIntegrityCredentials>,
+        remote_credentials: Option<MessageIntegrityCredentials>,
+    ) -> Result<Message, AgentError> {
         if let Some(error) = Message::check_attribute_types(
             msg,
             &[
@@ -277,7 +283,10 @@ impl StunAgentState {
         ) {
             return Ok(error);
         }
-        // TODO: validate integrity
+
+        if let Some(credentials) = remote_credentials {
+            msg.validate_integrity(orig_data, &credentials)?
+        }
 
         let mapped_address =
             XorMappedAddress::from_raw(msg.get_attribute(XOR_MAPPED_ADDRESS).unwrap()).ok();
@@ -288,10 +297,14 @@ impl StunAgentState {
 
         let mut response = Message::new_success(msg);
         response.add_attribute(XorMappedAddress::new(from, msg.transaction_id())?.to_raw())?;
+        if let Some(credentials) = local_credentials {
+            response.add_message_integrity(&credentials)?;
+        }
+        response.add_fingerprint()?;
         Ok(response)
     }
 
-    fn handle_stun(&mut self, msg: Message, from: SocketAddr) -> HandleStunReply {
+    fn handle_stun(&mut self, msg: Message, orig_data: &[u8], from: SocketAddr) -> HandleStunReply {
         // TODO: validate message with credentials
         if msg.is_response() {
             if let Some(_orig_request) = self.outstanding_requests.remove(&msg.transaction_id()) {
@@ -303,8 +316,14 @@ impl StunAgentState {
             }
         } else if msg.has_class(MessageClass::Request) {
             if msg.has_method(BINDING) {
-                return match StunAgentState::handle_binding_request(&msg, from)
-                    .or_else(|_| Message::bad_request(&msg))
+                return match StunAgentState::handle_binding_request(
+                    &msg,
+                    orig_data,
+                    from,
+                    self.local_credentials.clone(),
+                    self.remote_credentials.clone(),
+                )
+                .or_else(|_| Message::bad_request(&msg))
                 {
                     Ok(response) => HandleStunReply::Reply(response),
                     Err(e) => HandleStunReply::Failure(e),
