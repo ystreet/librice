@@ -34,9 +34,9 @@ fn priority_type_preference(ctype: CandidateType) -> u32 {
     }
 }
 
-fn calculate_priority(ctype: CandidateType, local_preference: u32, component_id: u32) -> u32 {
+fn calculate_priority(ctype: CandidateType, local_preference: u32, component_id: usize) -> u32 {
     ((1 << 24) * priority_type_preference(ctype)) + ((1 << 8) * local_preference) + 256
-        - component_id
+        - component_id as u32
 }
 
 fn candidate_is_redundant_with(a: &Candidate, b: &Candidate) -> bool {
@@ -210,7 +210,7 @@ fn udp_socket_host_gather_candidate(
 }
 
 pub fn gather_component(
-    component_id: u32,
+    component_id: usize,
     schannels: Vec<Arc<UdpSocketChannel>>,
     stun_servers: Vec<SocketAddr>,
 ) -> Result<impl Stream<Item = (Candidate, Arc<UdpSocketChannel>)>, AgentError> {

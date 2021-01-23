@@ -452,10 +452,14 @@ impl ErrorCode {
             420 => "Unknown Attribute",
             438 => "Stale Nonce",
             500 => "Server Error",
+            // RFC 8445
+            ROLE_CONFLICT => "Role Conflict",
             _ => "Unknown",
         }
     }
 }
+
+pub const ROLE_CONFLICT: u16 = 487;
 
 impl std::fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

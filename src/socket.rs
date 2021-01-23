@@ -16,6 +16,8 @@ use async_channel;
 
 use futures;
 
+use crate::utils::ChannelBroadcast;
+
 #[derive(Debug)]
 pub enum SocketChannel {
     Udp(UdpConnectionChannel),
@@ -95,7 +97,7 @@ impl UdpSocketChannel {
                 .ok()
                 .and_then(|(len, from)| {
                     data.truncate(len);
-                    trace!("got {} bytes from {:?}", data.len(), from);
+                    //trace!("got {} bytes from {:?}", data.len(), from);
                     Some(((data, from), socket))
                 })
         })
@@ -176,100 +178,6 @@ impl UdpConnectionChannel {
 
     pub async fn send(&self, data: &[u8]) -> std::io::Result<()> {
         self.channel.send_to(data, self.to).await
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct DebugWrapper<T>(&'static str, T);
-
-impl<T> std::fmt::Debug for DebugWrapper<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-impl<T> std::ops::Deref for DebugWrapper<T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        &self.1
-    }
-}
-impl<T> DebugWrapper<T> {
-    pub(crate) fn wrap(func: T, name: &'static str) -> Self {
-        Self(name, func)
-    }
-}
-
-#[derive(Debug, Clone)]
-struct MaybeSender<T: std::fmt::Debug> {
-    sender: async_channel::Sender<T>,
-    filter: DebugWrapper<Arc<dyn Fn(&T) -> bool + Send + Sync + 'static>>,
-}
-
-#[derive(Debug)]
-pub struct ChannelBroadcast<T: std::fmt::Debug> {
-    senders: Mutex<Vec<MaybeSender<T>>>,
-}
-
-impl<T> Default for ChannelBroadcast<T>
-where
-    T: std::fmt::Debug,
-{
-    fn default() -> Self {
-        Self {
-            senders: Mutex::new(vec![]),
-        }
-    }
-}
-
-impl<T: Clone> ChannelBroadcast<T>
-where
-    T: Clone + std::fmt::Debug,
-{
-    // only sends when @filter returns true
-    pub fn channel_with_filter(
-        &self,
-        filter: impl Fn(&T) -> bool + Send + Sync + 'static,
-    ) -> async_channel::Receiver<T> {
-        let (send, recv) = async_channel::bounded(16);
-        let mut inner = self.senders.lock().unwrap();
-        inner.push(MaybeSender {
-            sender: send,
-            filter: DebugWrapper::wrap(Arc::new(filter), "ChannelFilter"),
-        });
-        recv
-    }
-
-    pub fn channel(&self) -> async_channel::Receiver<T> {
-        self.channel_with_filter(|_| true)
-    }
-
-    pub async fn broadcast(&self, data: T) {
-        let channels = {
-            let inner = self.senders.lock().unwrap();
-            inner.clone()
-        };
-
-        trace!("sending to {} receivers", channels.len());
-        let mut removed = vec![];
-        for (i, channel) in channels.iter().enumerate() {
-            if (channel.filter)(&data) {
-                // XXX: maybe a parallel send?
-                if let Err(_) = channel.sender.send(data.clone()).await {
-                    removed.push(i);
-                }
-            }
-        }
-
-        if removed.len() > 0 {
-            trace!("removing {} listeners", removed.len());
-            let mut inner = self.senders.lock().unwrap();
-            // XXX: may need a cookie value instead of relying on the sizes
-            if inner.len() == channels.len() {
-                for i in removed.iter() {
-                    inner.remove(*i);
-                }
-            }
-        }
     }
 }
 
