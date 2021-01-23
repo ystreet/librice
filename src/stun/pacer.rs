@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use futures_timer::Delay;
 
-use crate::socket::ChannelBroadcast;
+use crate::utils::ChannelBroadcast;
 
 pub const STUN_REQUEST_PACE_TIME: Duration = Duration::from_millis(2000);
 

@@ -13,7 +13,7 @@ use async_std::net::{SocketAddr, UdpSocket};
 use futures::prelude::*;
 use futures::Stream;
 
-use crate::agent::AgentError;
+use crate::agent::{AgentError, AgentMessage};
 use crate::candidate::Candidate;
 
 use crate::socket::{SocketChannel, UdpConnectionChannel, UdpSocketChannel};
@@ -21,27 +21,31 @@ use crate::socket::{SocketChannel, UdpConnectionChannel, UdpSocketChannel};
 use crate::stun::agent::StunAgent;
 use crate::stun::message::MessageIntegrityCredentials;
 
+use crate::utils::ChannelBroadcast;
+
 pub const RTP: usize = 1;
 pub const RTCP: usize = 2;
 
 #[derive(Debug)]
 pub struct Component {
     pub id: usize,
+    broadcast: Arc<ChannelBroadcast<AgentMessage>>,
     inner: Arc<Mutex<ComponentInner>>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ComponentState {
     New,
-    Gathering,
+    Connecting,
     Connected,
     Failed,
 }
 
 impl Component {
-    pub(crate) fn new(id: usize) -> Self {
+    pub(crate) fn new(id: usize, broadcast: Arc<ChannelBroadcast<AgentMessage>>) -> Self {
         Self {
             id,
+            broadcast,
             inner: Arc::new(Mutex::new(ComponentInner::new(id))),
         }
     }
@@ -64,6 +68,26 @@ impl Component {
     pub fn state(&self) -> ComponentState {
         let inner = self.inner.lock().unwrap();
         inner.state
+    }
+
+    pub(crate) async fn set_state(self: &Arc<Self>, state: ComponentState) {
+        if let Some(new_state) = {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.state != state {
+                error!(
+                    "Component {} changing state from {:?} to {:?}",
+                    self.id, inner.state, state
+                );
+                inner.state = state;
+                Some(state)
+            } else {
+                None
+            }
+        } {
+            self.broadcast
+                .broadcast(AgentMessage::ComponentStateChange(self.clone(), new_state))
+                .await;
+        }
     }
 
     // XXX: temporary for bring up
@@ -148,7 +172,7 @@ impl Component {
 
         info!("retreived sockets");
         Ok(
-            crate::gathering::gather_component(1, schannels, stun_servers)?.map(
+            crate::gathering::gather_component(self.id, schannels, stun_servers)?.map(
                 move |(cand, channel)| {
                     (
                         cand,
@@ -207,7 +231,7 @@ impl ComponentInner {
         channel: Arc<UdpSocketChannel>,
     ) -> Result<(), AgentError> {
         self.socket = Some(channel);
-        self.state = ComponentState::Gathering;
+        self.state = ComponentState::Connecting;
         Ok(())
     }
 
@@ -244,6 +268,42 @@ mod tests {
     }
 
     #[test]
+    fn set_state_broadcast() {
+        init();
+        async_std::task::block_on(async move {
+            let a = Arc::new(Agent::default());
+            let s = a.add_stream();
+            let c = s.add_component().unwrap();
+            let mut msg_channel = a.message_channel();
+
+            let loop_task = async_std::task::spawn({
+                let a = a.clone();
+                async move {
+                    a.run_loop().await.unwrap();
+                }
+            });
+            assert_eq!(c.state(), ComponentState::New);
+            c.set_state(ComponentState::Connecting).await;
+            while let Some(AgentMessage::ComponentStateChange(_, state)) = msg_channel.next().await
+            {
+                assert_eq!(state, ComponentState::Connecting);
+                break;
+            }
+            // duplicate states ignored
+            c.set_state(ComponentState::Connecting).await;
+            c.set_state(ComponentState::Connected).await;
+            while let Some(AgentMessage::ComponentStateChange(_, state)) = msg_channel.next().await
+            {
+                assert_eq!(state, ComponentState::Connected);
+                break;
+            }
+
+            a.close().await.unwrap();
+            loop_task.await;
+        });
+    }
+
+    #[test]
     fn set_addrs() {
         init();
         async_std::task::block_on(async move {
@@ -254,7 +314,7 @@ mod tests {
             c.set_local_addr("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap();
-            assert_eq!(c.state(), ComponentState::Gathering);
+            assert_eq!(c.state(), ComponentState::Connecting);
             c.set_remote_addr("127.0.0.1:9000".parse().unwrap())
                 .await
                 .unwrap();

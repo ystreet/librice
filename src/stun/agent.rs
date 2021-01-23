@@ -20,18 +20,16 @@ use futures_timer::Delay;
 
 use crate::agent::AgentError;
 
-use crate::stun::attribute::*;
 use crate::stun::message::*;
 
-use crate::socket::ChannelBroadcast;
-
 use crate::socket::UdpSocketChannel;
+use crate::utils::ChannelBroadcast;
 
 #[derive(Debug)]
 pub struct StunAgent {
     state: Arc<Mutex<StunAgentState>>,
     pub(crate) channel: Arc<UdpSocketChannel>,
-    stun_broadcaster: Arc<ChannelBroadcast<(Message, SocketAddr)>>,
+    stun_broadcaster: Arc<ChannelBroadcast<(Message, Vec<u8>, SocketAddr)>>,
     data_broadcaster: Arc<ChannelBroadcast<(Vec<u8>, SocketAddr)>>,
 }
 
@@ -92,7 +90,7 @@ impl StunAgent {
         state: Arc<Mutex<StunAgentState>>,
         channel: Arc<UdpSocketChannel>,
         data_broadcaster: Arc<ChannelBroadcast<(Vec<u8>, SocketAddr)>>,
-        stun_broadcaster: Arc<ChannelBroadcast<(Message, SocketAddr)>>,
+        stun_broadcaster: Arc<ChannelBroadcast<(Message, Vec<u8>, SocketAddr)>>,
     ) {
         // XXX: can we remove this demuxing task?
         // retrieve stream outside task to avoid a race
@@ -106,15 +104,11 @@ impl StunAgent {
                             debug!("received from {:?} {}", from, msg);
                             let handle = {
                                 let mut state = state.lock().unwrap();
-                                state.handle_stun(msg.clone(), &data, from)
+                                state.handle_stun(msg.clone())
                             };
                             match handle {
-                                HandleStunReply::Reply(msg) => {
-                                    let buf = msg.to_bytes();
-                                    let _ = channel.send_to(&buf, from).await;
-                                }
                                 HandleStunReply::Broadcast(msg) => {
-                                    stun_broadcaster.broadcast((msg, from)).await;
+                                    stun_broadcaster.broadcast((msg, data, from)).await;
                                 }
                                 HandleStunReply::Failure(err) => {
                                     error!("Failed to handle {}. {:?}", msg, err);
@@ -162,15 +156,15 @@ impl StunAgent {
     pub fn stun_receive_stream_filter<F>(
         &self,
         filter: F,
-    ) -> impl Stream<Item = (Message, SocketAddr)>
+    ) -> impl Stream<Item = (Message, Vec<u8>, SocketAddr)>
     where
-        F: Fn(&(Message, SocketAddr)) -> bool + Send + Sync + 'static,
+        F: Fn(&(Message, Vec<u8>, SocketAddr)) -> bool + Send + Sync + 'static,
     {
         self.ensure_receive_task_loop();
         self.stun_broadcaster.channel_with_filter(filter)
     }
 
-    pub fn stun_receive_stream(&self) -> impl Stream<Item = (Message, SocketAddr)> {
+    pub fn stun_receive_stream(&self) -> impl Stream<Item = (Message, Vec<u8>, SocketAddr)> {
         self.stun_receive_stream_filter(|_| true)
     }
 
@@ -184,9 +178,8 @@ impl StunAgent {
         let timeouts: [u64; 7] = [0, 500, 1500, 3500, 7500, 15500, 31500];
         for timeout in timeouts.iter() {
             Delay::new(Duration::from_millis(timeout.clone())).await;
-            info!("sending {}", msg);
+            info!("sending {} to {}", msg, to);
             let buf = msg.to_bytes();
-            trace!("sending {:?}", buf);
             self.channel.send_to(&buf, to).await?;
         }
 
@@ -202,7 +195,7 @@ impl StunAgent {
         &self,
         msg: &Message,
         addr: SocketAddr,
-    ) -> Result<(Message, SocketAddr), AgentError> {
+    ) -> Result<(Message, Vec<u8>, SocketAddr), AgentError> {
         if !msg.has_class(MessageClass::Request) {
             return Err(AgentError::WrongImplementation);
         }
@@ -212,8 +205,10 @@ impl StunAgent {
         let (send_abortable, send_abort_handle) =
             futures::future::abortable(self.send_request(&msg, recv_abort_handle, addr));
 
-        let mut receive_s = self
-            .stun_receive_stream_filter(move |(incoming, _from)| tid == incoming.transaction_id());
+        let mut receive_s =
+            self.stun_receive_stream_filter(move |(incoming, _orig_data, _from)| {
+                tid == incoming.transaction_id()
+            });
         let recv_abortable = futures::future::Abortable::new(
             receive_s.next().then(|msg| async move {
                 send_abort_handle.abort();
@@ -222,13 +217,14 @@ impl StunAgent {
             recv_registration,
         );
 
-        futures::pin_mut!(recv_abortable);
         futures::pin_mut!(send_abortable);
+        futures::pin_mut!(recv_abortable);
 
         // race the sending and receiving futures returning the first that succeeds
         match futures::future::try_select(send_abortable, recv_abortable).await {
-            Ok(Either::Left((x, _))) => x.map(|_| (Message::new_error(msg), addr)),
+            Ok(Either::Left((x, _))) => x.map(|_| (Message::new_error(msg), vec![], addr)),
             Ok(Either::Right((y, _))) => y.ok_or(std::io::Error::new(
+                // FIXME: use an AgentError::TimedOut instead
                 std::io::ErrorKind::TimedOut,
                 "Stun Request timed out",
             )),
@@ -240,7 +236,6 @@ impl StunAgent {
 
 #[derive(Debug)]
 enum HandleStunReply {
-    Reply(Message),
     Broadcast(Message),
     Failure(AgentError),
     Ignore,
@@ -261,73 +256,15 @@ impl StunAgentState {
         }
     }
 
-    fn handle_binding_request(
-        msg: &Message,
-        orig_data: &[u8],
-        from: SocketAddr,
-        local_credentials: Option<MessageIntegrityCredentials>,
-        remote_credentials: Option<MessageIntegrityCredentials>,
-    ) -> Result<Message, AgentError> {
-        if let Some(error) = Message::check_attribute_types(
-            msg,
-            &[
-                USERNAME,
-                XOR_MAPPED_ADDRESS,
-                FINGERPRINT,
-                MESSAGE_INTEGRITY,
-                ICE_CONTROLLED,
-                ICE_CONTROLLING,
-                PRIORITY,
-            ],
-            &[XOR_MAPPED_ADDRESS],
-        ) {
-            return Ok(error);
-        }
-
-        if let Some(credentials) = remote_credentials {
-            msg.validate_integrity(orig_data, &credentials)?
-        }
-
-        let mapped_address =
-            XorMappedAddress::from_raw(msg.get_attribute(XOR_MAPPED_ADDRESS).unwrap()).ok();
-        if let None = mapped_address {
-            debug!("Message is missing XOR-MAPPED-ADDRESS");
-            return Message::bad_request(msg);
-        }
-
-        let mut response = Message::new_success(msg);
-        response.add_attribute(XorMappedAddress::new(from, msg.transaction_id())?.to_raw())?;
-        if let Some(credentials) = local_credentials {
-            response.add_message_integrity(&credentials)?;
-        }
-        response.add_fingerprint()?;
-        Ok(response)
-    }
-
-    fn handle_stun(&mut self, msg: Message, orig_data: &[u8], from: SocketAddr) -> HandleStunReply {
+    fn handle_stun(&mut self, msg: Message) -> HandleStunReply {
         // TODO: validate message with credentials
         if msg.is_response() {
             if let Some(_orig_request) = self.outstanding_requests.remove(&msg.transaction_id()) {
                 return HandleStunReply::Broadcast(msg);
             } else {
-                trace!("unmatched stun response, dropping");
+                debug!("unmatched stun response, dropping");
                 // unmatched response -> drop
                 return HandleStunReply::Ignore;
-            }
-        } else if msg.has_class(MessageClass::Request) {
-            if msg.has_method(BINDING) {
-                return match StunAgentState::handle_binding_request(
-                    &msg,
-                    orig_data,
-                    from,
-                    self.local_credentials.clone(),
-                    self.remote_credentials.clone(),
-                )
-                .or_else(|_| Message::bad_request(&msg))
-                {
-                    Ok(response) => HandleStunReply::Reply(response),
-                    Err(e) => HandleStunReply::Failure(e),
-                };
             }
         }
         HandleStunReply::Broadcast(msg)

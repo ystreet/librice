@@ -11,12 +11,13 @@ use std::sync::{Arc, Mutex, Weak};
 
 use futures::prelude::*;
 
-use crate::agent::{AgentError, AgentInner};
-use crate::component::Component;
+use crate::agent::{AgentError, AgentInner, AgentMessage};
+use crate::component::{Component, ComponentState};
 use crate::conncheck::*;
 
 use crate::candidate::Candidate;
 use crate::stun::message::*;
+use crate::utils::ChannelBroadcast;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Credentials {
@@ -48,6 +49,7 @@ static STREAM_COUNT: AtomicUsize = AtomicUsize::new(0);
 pub struct Stream {
     id: usize,
     agent: Weak<Mutex<AgentInner>>,
+    broadcast: Arc<ChannelBroadcast<AgentMessage>>,
     pub(crate) state: Arc<Mutex<StreamState>>,
     pub(super) checklist: Arc<ConnCheckList>,
 }
@@ -62,13 +64,17 @@ pub(crate) struct StreamState {
 }
 
 impl Stream {
-    pub(crate) fn new(agent: Weak<Mutex<AgentInner>>) -> Self {
+    pub(crate) fn new(
+        agent: Weak<Mutex<AgentInner>>,
+        broadcast: Arc<ChannelBroadcast<AgentMessage>>,
+    ) -> Self {
         let id = STREAM_COUNT.fetch_add(1, Ordering::SeqCst);
         Self {
             id,
             agent,
+            broadcast: broadcast.clone(),
             state: Arc::new(Mutex::new(StreamState::new(id))),
-            checklist: Arc::new(ConnCheckList::default()),
+            checklist: Arc::new(ConnCheckList::new()),
         }
     }
 
@@ -105,7 +111,7 @@ impl Stream {
         while state.components.len() <= index {
             state.components.push(None);
         }
-        let component = Arc::new(Component::new(index + 1));
+        let component = Arc::new(Component::new(index + 1, self.broadcast.clone()));
         state.components[index] = Some(component.clone());
         info!("Added component at index {}", index);
         Ok(component)
@@ -361,19 +367,27 @@ impl Stream {
         };
 
         // TODO: parallelize
-        for (id, component) in components
-            .iter()
-            .cloned()
-            .enumerate()
-            .filter_map(|(id, c)| c.and_then(|c| Some((id, c))))
-        {
+        for component in components.iter().cloned().filter_map(|c| c) {
+            component.set_state(ComponentState::Connecting).await;
             let s = component
                 .gather_stream(local_credentials.clone(), remote_credentials.clone())
                 .await?;
             futures::pin_mut!(s);
             while let Some((cand, agent)) = s.next().await {
-                self.checklist.add_local_candidate(id, cand, agent);
+                self.checklist
+                    .add_local_candidate(&component, cand.clone(), agent)
+                    .await;
+                self.broadcast
+                    .broadcast(AgentMessage::NewLocalCandidate(component.clone(), cand))
+                    .await;
             }
+            debug!(
+                "gathering completed for stream {} component {}",
+                self.id, component.id
+            );
+            self.broadcast
+                .broadcast(AgentMessage::GatheringCompleted(component.clone()))
+                .await;
         }
         // TODO: find STUN/TURN reflexive candidates
         Ok(())
@@ -470,7 +484,7 @@ mod tests {
     #[test]
     fn gather_candidates() {
         init();
-        let agent = Agent::default();
+        let agent = Arc::new(Agent::default());
         let s = agent.add_stream();
         s.set_local_credentials(Credentials::new("luser".into(), "lpass".into()));
         s.set_remote_credentials(Credentials::new("ruser".into(), "rpass".into()));
@@ -489,19 +503,19 @@ mod tests {
         let lcreds = Credentials::new("luser".into(), "lpass".into());
         let rcreds = Credentials::new("ruser".into(), "rpass".into());
 
-        let lagent = Agent::default();
-        let ls = lagent.add_stream();
-        ls.set_local_credentials(lcreds.clone());
-        ls.set_remote_credentials(rcreds.clone());
-        let _lc = ls.add_component().unwrap();
-
-        let ragent = Agent::default();
-        let rs = ragent.add_stream();
-        rs.set_local_credentials(rcreds.clone());
-        rs.set_remote_credentials(lcreds.clone());
-        let _rc = rs.add_component().unwrap();
-
         async_std::task::block_on(async move {
+            let lagent = Arc::new(Agent::default());
+            let ls = lagent.add_stream();
+            ls.set_local_credentials(lcreds.clone());
+            ls.set_remote_credentials(rcreds.clone());
+            let _lc = ls.add_component().unwrap();
+
+            let ragent = Arc::new(Agent::default());
+            let rs = ragent.add_stream();
+            rs.set_local_credentials(rcreds.clone());
+            rs.set_remote_credentials(lcreds.clone());
+            let _rc = rs.add_component().unwrap();
+
             ls.gather_candidates().await.unwrap();
             let local_cands = ls.get_local_candidates();
             info!("gathered local candidates {:?}", local_cands);
@@ -516,8 +530,13 @@ mod tests {
                 ls.add_remote_candidate(1, cand).unwrap();
             }
 
-            lagent.start();
-            ragent.start();
+            lagent.start().unwrap();
+            ragent.start().unwrap();
+
+            // TODO: send data. Needs selected-pair handling
+
+            lagent.close().await.unwrap();
+            ragent.close().await.unwrap();
         });
     }
 }

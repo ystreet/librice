@@ -12,30 +12,16 @@ use std::net::UdpSocket;
 extern crate log;
 use env_logger;
 
-use librice::stun::attribute::*;
 use librice::stun::message::*;
 
 fn main() -> std::io::Result<()> {
     env_logger::init();
 
-    let socket = UdpSocket::bind("192.168.1.101:0")?;
+    let socket = UdpSocket::bind("0.0.0.0:0")?;
     //let to = "172.253.56.127:19302";
     let to = "127.0.0.1:3478";
 
-    let mtype = MessageType::from_class_method(MessageClass::Request, BINDING);
-    let mut out = Message::new(mtype, Message::generate_transaction());
-    out.add_attribute(
-        Username::new("hi stun person")
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid message"))?
-            .to_raw(),
-    )
-    .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid message"))?;
-    out.add_attribute(
-        XorMappedAddress::new(socket.local_addr().unwrap(), out.transaction_id())
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid message"))?
-            .to_raw(),
-    )
-    .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid message"))?;
+    let out = Message::new_request_method(BINDING);
 
     info!("generated to {}", out);
     let buf = out.to_bytes();

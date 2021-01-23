@@ -596,6 +596,10 @@ impl Message {
         out.add_attribute(ErrorCode::new(400, "Bad Request")?.to_raw())?;
         Ok(out)
     }
+
+    pub fn has_attribute(&self, atype: AttributeType) -> bool {
+        self.get_attribute(atype).is_some()
+    }
 }
 impl From<Message> for Vec<u8> {
     fn from(f: Message) -> Self {

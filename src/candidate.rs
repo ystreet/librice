@@ -60,8 +60,9 @@ pub struct CandidatePair {
     pub local: Candidate,
     pub remote: Candidate,
     pub component_id: usize,
-    default: bool,
-    valid: bool,
+// FIXME: currently unused
+//    default: bool,
+//    valid: bool,
     nominated: bool,
 }
 
@@ -71,8 +72,6 @@ impl CandidatePair {
             local,
             remote,
             component_id,
-            default: false,
-            valid: false,
             nominated: false,
         }
     }
@@ -109,10 +108,16 @@ impl CandidatePair {
             local,
             remote: self.remote.clone(),
             component_id: self.component_id,
-            default: false,
-            valid: true,
             nominated: false,
         }
+    }
+
+    pub(crate) fn nominated(&self) -> bool {
+        self.nominated
+    }
+
+    pub(crate) fn nominate(&mut self) {
+        self.nominated = true;
     }
 }
 
@@ -122,5 +127,26 @@ mod tests {
 
     fn init() {
         let _ = env_logger::builder().is_test(true).try_init();
+    }
+
+    #[test]
+    fn pair_nominate() {
+        init();
+        let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let cand = Candidate::new(
+            CandidateType::Host,
+            TransportType::Udp,
+            "0",
+            0,
+            addr.clone(),
+            addr,
+            None,
+        );
+        let mut pair = CandidatePair::new(1, cand.clone(), cand);
+        assert_eq!(pair.nominated(), false);
+        pair.nominate();
+        assert_eq!(pair.nominated(), true);
+        pair.nominate();
+        assert_eq!(pair.nominated(), true);
     }
 }
