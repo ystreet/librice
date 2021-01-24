@@ -1,11 +1,14 @@
 [package]
 name = "librice"
 description = "ICE (RFC8445) implementation"
-version = "0.1.0"
+version = "0.0.1"
 authors = ["Matthew Waters <matthew@centricular.com>"]
 license = "MIT OR Apache-2.0"
 edition = "2018"
 keywords = ["STUN", "ICE"]
+categories = ["network-programming", ]
+documentation = "https://docs.rs/librice"
+repository = "https://github.com/ystreet/librice"
 
 [dependencies]
 log = "0.4"
