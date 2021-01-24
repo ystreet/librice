@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use async_std::net::{SocketAddr, UdpSocket};
 
+use futures::future::AbortHandle;
 use futures::prelude::*;
 use futures::Stream;
 
@@ -91,12 +92,14 @@ impl Component {
     }
 
     // XXX: temporary for bring up
+    #[allow(clippy::await_holding_lock)] /* !!! FIXME !!! */
     pub async fn set_local_addr(&self, addr: SocketAddr) -> Result<(), AgentError> {
         let mut inner = self.inner.lock().unwrap();
         inner.set_local_addr(addr).await
     }
 
     // XXX: temporary for bring up
+    #[allow(clippy::await_holding_lock)] /* !!! FIXME !!! */
     pub async fn set_local_channel(
         &self,
         channel: Arc<UdpSocketChannel>,
@@ -106,6 +109,7 @@ impl Component {
     }
 
     // XXX: temporary for bring up
+    #[allow(clippy::await_holding_lock)] /* !!! FIXME !!! */
     pub async fn set_remote_addr(&self, addr: SocketAddr) -> Result<(), AgentError> {
         let mut inner = self.inner.lock().unwrap();
         inner.set_remote_addr(addr).await
@@ -127,12 +131,11 @@ impl Component {
     }
 
     /// Retrieve a Stream that produces data sent to this component from a peer
-    pub fn receive_stream(&self) -> Option<impl Stream<Item = Vec<u8>>> {
+    pub fn receive_stream(&self) -> impl Stream<Item = Vec<u8>> {
         let inner = self.inner.lock().unwrap();
         // TODO: this probably may need to be multiplexed from multiple sources on e.g. candidate
         // changes
-        let c = inner.channel.clone();
-        c.and_then(move |c| Some(c.receive_stream()))
+        inner.receive_receive_channel.clone()
     }
 
     /// Send data to the peer using the established communication channel
@@ -188,6 +191,30 @@ impl Component {
             ),
         )
     }
+
+    pub(crate) async fn add_recv_agent(&self, agent: Arc<StunAgent>) -> AbortHandle {
+        let sender = self.inner.lock().unwrap().receive_send_channel.clone();
+        let (ready_send, mut ready_recv) = async_channel::bounded(1);
+
+        let (abortable, abort_handle) = futures::future::abortable(async move{
+            let mut data_recv_stream = agent.data_receive_stream();
+            if ready_send.send(0).await.is_err() {
+                return;
+            }
+            while let Some(data) = data_recv_stream.next().await {
+                if let Err(e) = sender.send(data.0).await {
+                    warn!("error receiving {:?}", e);
+                }
+            }
+            debug!("receive loop exited");
+        });
+
+        async_std::task::spawn(abortable);
+
+        ready_recv.next().await.unwrap();
+
+        abort_handle
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -197,6 +224,8 @@ pub(crate) struct ComponentInner {
     //selected_pair: Option<CandidatePair>,
     socket: Option<Arc<UdpSocketChannel>>,
     channel: Option<Arc<SocketChannel>>,
+    receive_send_channel: async_channel::Sender<Vec<u8>>,
+    receive_receive_channel: async_channel::Receiver<Vec<u8>>,
     pub(crate) stun_agent: Option<Arc<StunAgent>>,
     stun_servers: Vec<SocketAddr>,
     turn_servers: Vec<SocketAddr>,
@@ -205,12 +234,15 @@ pub(crate) struct ComponentInner {
 
 impl ComponentInner {
     fn new(id: usize) -> Self {
+        let (recv_s, recv_r) = async_channel::bounded(16);
         Self {
             id,
             state: ComponentState::New,
             //selected_pair: None,
             socket: None,
             channel: None,
+            receive_send_channel: recv_s,
+            receive_receive_channel: recv_r,
             stun_agent: None,
             stun_servers: vec![],
             turn_servers: vec![],
@@ -230,8 +262,17 @@ impl ComponentInner {
         &mut self,
         channel: Arc<UdpSocketChannel>,
     ) -> Result<(), AgentError> {
-        self.socket = Some(channel);
+        self.socket = Some(channel.clone());
         self.state = ComponentState::Connecting;
+        let send_channel = self.receive_send_channel.clone();
+        async_std::task::spawn(async move {
+            let mut recv_stream = channel.receive_stream();
+            while let Some(data) = recv_stream.next().await {
+                if send_channel.send(data.0).await.is_err() {
+                    break;
+                }
+            }
+        });
         Ok(())
     }
 
@@ -344,11 +385,42 @@ mod tests {
                 .await
                 .unwrap();
             let data = vec![3; 4];
-            let recv_stream = recv.receive_stream().unwrap();
+            let recv_stream = recv.receive_stream();
             futures::pin_mut!(recv_stream);
             send.send(&data).await.unwrap();
             let res = recv_stream.next().await.unwrap();
             assert_eq!(data, res);
+        });
+    }
+
+    #[test]
+    fn muxing_recv() {
+        // given two sockets ensure sending to either of them produces the same data
+        init();
+        async_std::task::block_on(async move {
+            let a = Agent::default();
+            let s = a.add_stream();
+            let send = s.add_component().unwrap();
+
+            let socket1 = UdpSocket::bind("127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
+            let addr1 = socket1.local_addr().unwrap();
+            let channel1 = Arc::new(UdpSocketChannel::new(socket1));
+            let stun = Arc::new(StunAgent::new(channel1.clone()));
+            send.add_recv_agent(stun).await;
+
+            let socket2 = UdpSocket::bind("127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
+            let addr2 = socket2.local_addr().unwrap();
+            let channel2 = Arc::new(UdpSocketChannel::new(socket2));
+            let stun = Arc::new(StunAgent::new(channel2.clone()));
+            send.add_recv_agent(stun).await;
+
+            let mut recv_stream = send.receive_stream();
+            let buf = vec![0, 1];
+            channel1.send_to(&buf, addr2).await.unwrap();
+            assert_eq!(&recv_stream.next().await.unwrap(), &buf);
+            let buf = vec![2, 3];
+            channel2.send_to(&buf, addr1).await.unwrap();
+            assert_eq!(&recv_stream.next().await.unwrap(), &buf);
         });
     }
 
@@ -398,14 +470,14 @@ mod tests {
 
             // two-way connection has been setup
             let data = vec![3; 4];
-            let recv_recv_stream = recv.receive_stream().unwrap();
+            let recv_recv_stream = recv.receive_stream();
             futures::pin_mut!(recv_recv_stream);
             send.send(&data).await.unwrap();
             let res = recv_recv_stream.next().await.unwrap();
             assert_eq!(data, res);
 
             let data = vec![2; 4];
-            let send_recv_stream = send.receive_stream().unwrap();
+            let send_recv_stream = send.receive_stream();
             futures::pin_mut!(send_recv_stream);
             recv.send(&data).await.unwrap();
             let res = send_recv_stream.next().await.unwrap();

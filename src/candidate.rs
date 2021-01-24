@@ -77,7 +77,7 @@ impl CandidatePair {
     }
 
     pub(crate) fn get_foundation(&self) -> String {
-        return self.local.foundation.to_string() + ":" + &self.remote.foundation;
+        self.local.foundation.to_string() + ":" + &self.remote.foundation
     }
 
     pub fn priority(&self, are_controlling: bool) -> u64 {

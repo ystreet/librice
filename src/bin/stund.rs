@@ -16,7 +16,6 @@ use async_std::task;
 
 #[macro_use]
 extern crate log;
-use env_logger;
 
 use futures::StreamExt;
 

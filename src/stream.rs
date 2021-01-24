@@ -72,7 +72,7 @@ impl Stream {
         Self {
             id,
             agent,
-            broadcast: broadcast.clone(),
+            broadcast,
             state: Arc::new(Mutex::new(StreamState::new(id))),
             checklist: Arc::new(ConnCheckList::new()),
         }
@@ -105,7 +105,7 @@ impl Stream {
             .unwrap()
             .0;
         info!("stream {} adding component {}", self.id, index);
-        if let Some(_) = state.components.get(index) {
+        if state.components.get(index).is_some() {
             return Err(AgentError::AlreadyExists);
         }
         while state.components.len() <= index {
@@ -206,7 +206,7 @@ impl Stream {
             .get(index - 1)
             .unwrap_or(&None)
             .as_ref()
-            .map(|e| e.clone())
+            .cloned()
     }
 
     /// Set local ICE credentials for this `Stream`.
@@ -493,7 +493,7 @@ mod tests {
             s.gather_candidates().await.unwrap();
             let local_cands = s.get_local_candidates();
             info!("gathered local candidates {:?}", local_cands);
-            assert!(local_cands.len() > 0);
+            assert!(!local_cands.is_empty());
         });
     }
 
@@ -519,7 +519,7 @@ mod tests {
             ls.gather_candidates().await.unwrap();
             let local_cands = ls.get_local_candidates();
             info!("gathered local candidates {:?}", local_cands);
-            assert!(local_cands.len() > 0);
+            assert!(!local_cands.is_empty());
             rs.gather_candidates().await.unwrap();
             let remote_cands = rs.get_local_candidates();
 
