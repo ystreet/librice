@@ -11,7 +11,6 @@ use async_std::net::{SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use futures;
 use futures::future::{AbortHandle, Either};
 use futures::prelude::*;
 use futures::StreamExt;
@@ -45,7 +44,7 @@ fn candidate_is_redundant_with(a: &Candidate, b: &Candidate) -> bool {
 
 pub fn iface_udp_sockets(
 ) -> Result<impl Stream<Item = Result<Arc<UdpSocketChannel>, std::io::Error>>, AgentError> {
-    let mut ifaces = get_if_addrs().map_err(|e| AgentError::IoError(e))?;
+    let mut ifaces = get_if_addrs()?;
     // We only care about non-loopback interfaces for now
     // TODO: remove 'Deprecated IPv4-compatible IPv6 addresses [RFC4291]'
     // TODO: remove 'IPv6 site-local unicast addresses [RFC3879]'
@@ -84,11 +83,11 @@ async fn send_message_with_retransmissions_delay(
     msg: Message,
     schannel: Arc<SocketChannel>,
     recv_abort_handle: AbortHandle,
-) -> std::io::Result<SocketAddr> {
+) -> Result<SocketAddr,AgentError> {
     // FIXME: fix these timeout values
     let timeouts: [u64; 4] = [0, 1, 2, 3];
     for timeout in timeouts.iter() {
-        Delay::new(Duration::from_secs(timeout.clone())).await;
+        Delay::new(Duration::from_secs(*timeout)).await;
         info!("sending {}", msg);
         let buf = msg.to_bytes();
         trace!("sending {:?}", buf);
@@ -97,17 +96,14 @@ async fn send_message_with_retransmissions_delay(
 
     // on failure, abort the receiver waiting
     recv_abort_handle.abort();
-    Err(std::io::Error::new(
-        std::io::ErrorKind::TimedOut,
-        "request timed out",
-    ))
+    Err(AgentError::TimedOut)
 }
 
 async fn listen_for_xor_address_response(
     transaction_id: u128,
     schannel: Arc<SocketChannel>,
     send_abort_handle: AbortHandle,
-) -> std::io::Result<SocketAddr> {
+) -> Result<SocketAddr,AgentError> {
     let mut s = schannel.receive_stream();
     while let Some(buf) = s.next().await {
         let from = schannel.remote_addr().unwrap();
@@ -137,10 +133,7 @@ async fn listen_for_xor_address_response(
             }
         }
     }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::ConnectionAborted,
-        "receive connection closed",
-    ))
+    Err(AgentError::ConnectionClosed)
 }
 
 #[derive(Debug)]
@@ -159,9 +152,9 @@ async fn gather_stun_xor_address(
 ) -> Result<GatherCandidateAddress, AgentError> {
     // perform an unauthenticated stun binding request against the stun server pointed to by
     // @schannel and wait for the response (or timeout).
-    let remote_addr = schannel.remote_addr().unwrap().clone();
+    let remote_addr = schannel.remote_addr().unwrap();
 
-    let msg = generate_bind_request(from).map_err(|e| AgentError::IoError(e))?;
+    let msg = generate_bind_request(from)?;
     let transaction_id = msg.transaction_id();
 
     let (recv_abort_handle, recv_registration) = futures::future::AbortHandle::new_pair();
@@ -183,15 +176,14 @@ async fn gather_stun_xor_address(
         Ok(Either::Right((y, _))) => y,
         Err(_) => unreachable!(),
     }
-    .map_err(|e| AgentError::IoError(e))
-    .and_then(move |addr| {
-        Ok(GatherCandidateAddress {
+    .map(move |addr| {
+        GatherCandidateAddress {
             ctype: CandidateType::ServerReflexive,
             local_preference,
             address: addr,
             base: from,
             related: Some(remote_addr),
-        })
+        }
     })
 }
 
@@ -203,7 +195,7 @@ fn udp_socket_host_gather_candidate(
     Ok(GatherCandidateAddress {
         ctype: CandidateType::Host,
         local_preference,
-        address: local_addr.clone(),
+        address: local_addr,
         base: local_addr,
         related: None,
     })
@@ -230,8 +222,8 @@ pub fn gather_component(
             futures.push(
                 {
                     let schannel = schannel.clone();
-                    let stun_server = stun_server.clone();
-                    let local_addr = schannel.local_addr().unwrap().clone();
+                    let stun_server = *stun_server;
+                    let local_addr = schannel.local_addr().unwrap();
                     async move {
                         let chan = Arc::new(SocketChannel::Udp(UdpConnectionChannel::new(
                             schannel.clone(),

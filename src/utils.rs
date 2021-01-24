@@ -99,13 +99,13 @@ where
         for (i, channel) in channels.iter().enumerate() {
             if (channel.filter)(&data) {
                 // XXX: maybe a parallel send?
-                if let Err(_) = channel.sender.send(data.clone()).await {
+                if channel.sender.send(data.clone()).await.is_err() {
                     removed.push(i);
                 }
             }
         }
 
-        if removed.len() > 0 {
+        if !removed.is_empty() {
             trace!("removing {} listeners", removed.len());
             let mut inner = self.senders.lock().unwrap();
             // XXX: may need a cookie value instead of relying on the sizes

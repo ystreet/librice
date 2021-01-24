@@ -94,11 +94,11 @@ impl ConnCheck {
     fn cancel(&self) {
         let mut inner = self.state.lock().unwrap();
         let abort_handle = inner.abort_handle.take();
-        abort_handle.map(|handle| {
+        if let Some(handle) = abort_handle {
             debug!("conncheck {} cancelling for {:?}", self.conncheck_id, self.pair);
             handle.abort();
             inner.state = CandidatePairState::Failed;
-        });
+        }
     }
 }
 
@@ -272,15 +272,14 @@ impl ConnCheckListInner {
                 //   nominated, and the state of the checklist associated with the data
                 //   stream is Running, the ICE agent sets the state of the checklist
                 //   to Completed.
-                if self.component_ids.iter().all(|&component_id| {
+                let all_nominated = self.component_ids.iter().all(|&component_id| {
                     self.valid
                         .iter()
-                        .filter(|valid_pair| {
+                        .any(|valid_pair| {
                             valid_pair.component_id == component_id && valid_pair.nominated()
                         })
-                        .next()
-                        .is_some()
-                }) {
+                });
+                if all_nominated {
                     info!("checklist state change from {:?} to Completed", self.state);
                     self.state = CheckListState::Completed;
                 }
@@ -289,8 +288,7 @@ impl ConnCheckListInner {
                 .components
                 .iter()
                 .filter_map(|component| component.upgrade())
-                .filter(|component| component.id == component_id)
-                .next();
+                .find(|component| component.id == component_id);
             error!("trying to signal component {:?} {:?}", ret, self.components);
             return ret;
         } else {
@@ -375,7 +373,7 @@ impl ConnCheckList {
 
         let peer_nominating = if let Some(use_candidate_raw) = msg.get_attribute(USE_CANDIDATE) {
             error!("have use-candidate attr");
-            if let Some(_) = UseCandidate::from_raw(use_candidate_raw).ok() {
+            if UseCandidate::from_raw(use_candidate_raw).is_ok() {
                 error!("have valid use-candidate attr");
                 true
             } else {
@@ -536,7 +534,7 @@ impl ConnCheckList {
             async move {
                 let drop_log = DropLogger::new("dropping stun receive stream");
                 let mut recv_stun = agent.stun_receive_stream();
-                if let Err(_) = stun_send.send(0u32).await {
+                if stun_send.send(0u32).await.is_err() {
                     return;
                 }
                 while let Some((msg, data, from)) = recv_stun.next().await {
@@ -574,7 +572,7 @@ impl ConnCheckList {
         });
 
         async_std::task::spawn(abortable);
-        if let Err(_) = stun_recv.recv().await {
+        if stun_recv.recv().await.is_err() {
             warn!("Failed to start listening task");
             return;
         }
@@ -591,13 +589,14 @@ impl ConnCheckList {
                 stun_recv_abort: stun_abort_handle,
                 data_recv_abort: data_abort_handle,
             });
-            if let None = inner.components.iter().find(|&v| {
+            let existing = inner.components.iter().find(|&v| {
                 if let Some(component) = Weak::upgrade(v) {
                     component.id == component_id
                 } else {
                     false
                 }
-            }) {
+            });
+            if existing.is_none() {
                 error!("adding component {:?}", component);
                 inner.component_ids.push(component_id);
                 inner.components.push(Arc::downgrade(component));
@@ -612,7 +611,7 @@ impl ConnCheckList {
         {
             let mut inner = self.inner.lock().unwrap();
             inner.add_remote_candidate(component_id, remote);
-            if let None = inner.component_ids.iter().find(|&v| v == &component_id) {
+            if inner.component_ids.iter().find(|&v| v == &component_id).is_none() {
                 inner.component_ids.push(component_id);
             }
         }
@@ -685,13 +684,13 @@ impl ConnCheckList {
         // lowest component_id
         let mut seen_foundations = vec![];
         maybe_thaw.retain(|check| {
-            if let Some(_) = seen_foundations
+            if seen_foundations
                 .iter()
-                .find(|&foundation| &check.pair.get_foundation() == foundation)
+                .any(|foundation| &check.pair.get_foundation() == foundation)
             {
                 false
             } else {
-                seen_foundations.push(check.pair.get_foundation().clone());
+                seen_foundations.push(check.pair.get_foundation());
                 true
             }
         });
@@ -725,12 +724,12 @@ impl ConnCheckList {
             // first look for any that are waiting
             // FIXME: should be highest priority pair: make the data structure give us that by
             // default
-            .filter_map(|check| {
+            .filter(|check| {
                 if check.state() == CandidatePairState::Waiting {
                     check.set_state(CandidatePairState::InProgress);
-                    Some(check)
+                    true
                 } else {
-                    None
+                    false
                 }
             })
             .cloned()
@@ -748,8 +747,7 @@ impl ConnCheckList {
                 if check.state() == CandidatePairState::Frozen {
                     from_foundations
                         .iter()
-                        .filter(|&f| f == &check.pair.get_foundation())
-                        .next()
+                        .find(|&f| f == &check.pair.get_foundation())
                         .and(Some(check))
                 } else {
                     None
@@ -770,7 +768,7 @@ impl ConnCheckList {
             .iter()
             .cloned()
             .inspect(|check| {
-                foundations.insert(check.pair.get_foundation().clone());
+                foundations.insert(check.pair.get_foundation());
             })
             .collect();
         foundations
@@ -884,7 +882,7 @@ impl ConnCheckList {
                         })
                         .map(|local| local.stun_agent.clone())
                     {
-                        inner.add_triggered(Arc::new(ConnCheck::new(pair.clone(), agent, true)));
+                        inner.add_triggered(Arc::new(ConnCheck::new(pair, agent, true)));
                     }
                 })
                 .collect();
@@ -991,7 +989,7 @@ async fn connectivity_check_cancellable(
 ) -> Result<ConnCheckResponse, AgentError> {
     let abort_registration = {
         let mut inner = conncheck.state.lock().unwrap();
-        if let Some(_) = inner.abort_handle {
+        if inner.abort_handle.is_some() {
             panic!("duplicate connection checks!");
 //            return Err(AgentError::AlreadyExists);
         }
@@ -1166,7 +1164,7 @@ impl ConnCheckListSet {
                 check.pair,
                 check.nominate
             );
-            Some(check.clone())
+            Some(check)
         // 3.  If there are one or more candidate pairs in the Waiting state,
         //     the agent picks the highest-priority candidate pair (if there are
         //     multiple pairs with the same priority, the pair with the lowest
@@ -1180,7 +1178,7 @@ impl ConnCheckListSet {
                 check.pair,
                 check.nominate
             );
-            Some(check.clone())
+            Some(check)
         } else {
             // TODO: cache this locally somewhere
             // TODO: iter()ize this
@@ -1221,7 +1219,7 @@ impl ConnCheckListSet {
                     check.nominate
                 );
                 check.set_state(CandidatePairState::InProgress);
-                Some(check.clone())
+                Some(check)
             } else {
                 trace!("nothing to be done for stream");
                 None
@@ -1256,19 +1254,19 @@ impl ConnCheckListSet {
                 };
                 // FIXME: get these values from the agent
                 let tie_breaker = 0;
-                if let Err(_) = self
+                if self
                     .tasks
                     .add_task(
                         ConnCheckListSet::perform_conncheck(
                             conncheck,
                             checklist.clone(),
-                            self.checklists.iter().cloned().collect(),
+                            self.checklists.to_vec(),
                             checklist.controlling(),
                             tie_breaker,
                         )
                         .boxed(),
                     )
-                    .await
+                    .await.is_err()
                 {
                     // receiver stopped -> no more timers
                     return Ok(());
@@ -1320,7 +1318,7 @@ mod tests {
                 TransportType::Udp,
                 "0",
                 0,
-                local_addr.clone(),
+                local_addr,
                 local_addr,
                 None,
             );
@@ -1330,7 +1328,7 @@ mod tests {
                 TransportType::Udp,
                 "0",
                 0,
-                remote_addr.clone(),
+                remote_addr,
                 remote_addr,
                 None,
             );
@@ -1674,20 +1672,16 @@ mod tests {
             assert_eq!(thawn.len(), 4);
             assert!(thawn
                 .iter()
-                .find(|&f| f == &pair2.get_foundation())
-                .is_some());
+                .any(|f| f == &pair2.get_foundation()));
             assert!(thawn
                 .iter()
-                .find(|&f| f == &pair3.get_foundation())
-                .is_some());
+                .any(|f| f == &pair3.get_foundation()));
             assert!(thawn
                 .iter()
-                .find(|&f| f == &pair4.get_foundation())
-                .is_some());
+                .any(|f| f == &pair4.get_foundation()));
             assert!(thawn
                 .iter()
-                .find(|&f| f == &pair5.get_foundation())
-                .is_some());
+                .any(|f| f == &pair5.get_foundation()));
             let check1 = list1.get_matching_check(&pair1).unwrap();
             assert_eq!(check1.pair, pair1);
             assert_eq!(check1.state(), CandidatePairState::Waiting);

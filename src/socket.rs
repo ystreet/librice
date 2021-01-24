@@ -12,10 +12,6 @@ use std::sync::{Arc, Mutex};
 use async_std::net::UdpSocket;
 use async_std::prelude::*;
 
-use async_channel;
-
-use futures;
-
 use crate::utils::ChannelBroadcast;
 
 #[derive(Debug)]
@@ -89,16 +85,16 @@ impl UdpSocketChannel {
     fn socket_receive_stream(socket: Arc<UdpSocket>) -> impl Stream<Item = (Vec<u8>, SocketAddr)> {
         // stream that continuosly reads from a udp socket
         info!("starting udp receive stream for {:?}", socket.local_addr());
-        futures::stream::unfold(socket.clone(), |socket| async move {
+        futures::stream::unfold(socket, |socket| async move {
             let mut data = vec![0; 1500];
             socket
                 .recv_from(&mut data)
                 .await
                 .ok()
-                .and_then(|(len, from)| {
+                .map(|(len, from)| {
                     data.truncate(len);
                     //trace!("got {} bytes from {:?}", data.len(), from);
-                    Some(((data, from), socket))
+                    ((data, from), socket)
                 })
         })
     }
@@ -152,7 +148,7 @@ impl UdpConnectionChannel {
 
     pub fn receive_stream(&self) -> impl Stream<Item = Vec<u8>> {
         let channel = self.channel.clone();
-        let to = self.to.clone();
+        let to = self.to;
         channel.receive_stream().filter_map(
             move |(data, from)| {
                 if from == to {
@@ -169,7 +165,7 @@ impl UdpConnectionChannel {
     }
 
     pub fn remote_addr(&self) -> Result<SocketAddr, std::io::Error> {
-        Ok(self.to.clone())
+        Ok(self.to)
     }
 
     pub fn socket(&self) -> Arc<UdpSocket> {
@@ -195,7 +191,7 @@ mod tests {
         init();
         task::block_on(async move {
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-            let s1 = UdpSocket::bind(addr.clone()).await.unwrap();
+            let s1 = UdpSocket::bind(addr).await.unwrap();
             let from = s1.local_addr().unwrap();
             let channel = UdpSocketChannel::new(s1);
             assert_eq!(from, channel.local_addr().unwrap());
@@ -204,9 +200,8 @@ mod tests {
 
     async fn setup_udp_channel() -> Arc<UdpSocketChannel> {
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let socket = UdpSocket::bind(addr.clone()).await.unwrap();
-        let channel = Arc::new(UdpSocketChannel::new(socket));
-        channel
+        let socket = UdpSocket::bind(addr).await.unwrap();
+        Arc::new(UdpSocketChannel::new(socket))
     }
 
     fn recv_data(channel: Arc<UdpConnectionChannel>) -> impl Future<Output = Vec<u8>> {

@@ -327,7 +327,7 @@ impl Attribute for Username {
     }
 
     fn to_raw(&self) -> RawAttribute {
-        RawAttribute::new(self.get_type().into(), self.user.as_bytes())
+        RawAttribute::new(self.get_type(), self.user.as_bytes())
     }
 
     fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
@@ -401,7 +401,7 @@ impl Attribute for ErrorCode {
         data.push((self.code / 100) as u8);
         data.push((self.code % 100) as u8);
         data.extend(self.reason.as_bytes());
-        RawAttribute::new(self.get_type().into(), &data)
+        RawAttribute::new(self.get_type(), &data)
     }
 
     fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
@@ -413,7 +413,7 @@ impl Attribute for ErrorCode {
         }
         let code_h = (raw.value[2] & 0x7) as u16;
         let code_tens = raw.value[3] as u16;
-        if code_h < 3 || code_h > 6 || code_tens > 99 {
+        if (3..6).contains(&code_h) || code_tens > 99 {
             return Err(AgentError::Malformed);
         }
         let code = code_h * 100 + code_tens;
@@ -427,7 +427,7 @@ impl Attribute for ErrorCode {
 }
 impl ErrorCode {
     pub fn new(code: u16, reason: &str) -> Result<Self, AgentError> {
-        if code < 300 || code > 699 {
+        if (300..699).contains(&code) {
             return Err(AgentError::Malformed);
         }
         Ok(Self {
@@ -501,7 +501,7 @@ impl Attribute for UnknownAttributes {
             BigEndian::write_u16(&mut encoded, (*attr).into());
             data.extend(encoded);
         }
-        RawAttribute::new(self.get_type().into(), &data)
+        RawAttribute::new(self.get_type(), &data)
     }
 
     fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
@@ -533,7 +533,7 @@ impl UnknownAttributes {
     }
 
     pub fn has_attribute(&self, attr: AttributeType) -> bool {
-        self.attributes.iter().find(|&&a| a == attr).is_some()
+        self.attributes.iter().any(|&a| a == attr)
     }
 }
 
@@ -571,7 +571,7 @@ impl Attribute for Software {
     }
 
     fn to_raw(&self) -> RawAttribute {
-        RawAttribute::new(self.get_type().into(), self.software.as_bytes())
+        RawAttribute::new(self.get_type(), self.software.as_bytes())
     }
 
     fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
@@ -659,7 +659,7 @@ impl Attribute for XorMappedAddress {
                 BigEndian::write_u16(&mut buf[2..4], addr.port());
                 let octets = u32::from(*addr.ip());
                 BigEndian::write_u32(&mut buf[4..8], octets);
-                RawAttribute::new(self.get_type().into(), &buf)
+                RawAttribute::new(self.get_type(), &buf)
             }
             SocketAddr::V6(addr) => {
                 let mut buf = [0; 20];
@@ -667,7 +667,7 @@ impl Attribute for XorMappedAddress {
                 BigEndian::write_u16(&mut buf[2..4], addr.port());
                 let octets = u128::from(*addr.ip());
                 BigEndian::write_u128(&mut buf[2..4], octets);
-                RawAttribute::new(self.get_type().into(), &buf)
+                RawAttribute::new(self.get_type(), &buf)
             }
         }
     }
@@ -700,9 +700,7 @@ impl Attribute for XorMappedAddress {
                     return Err(AgentError::TooBig);
                 }
                 let mut octets = [0; 16];
-                for i in 0..16 {
-                    octets[i] = raw.value[4 + i];
-                }
+                octets.clone_from_slice(&raw.value[4..]);
                 IpAddr::V6(Ipv6Addr::from(octets))
             }
             _ => return Err(AgentError::Malformed),
@@ -732,7 +730,7 @@ impl XorMappedAddress {
             SocketAddr::V6(addr) => {
                 let port = addr.port() ^ (MAGIC_COOKIE >> 16) as u16;
                 let const_octets = ((MAGIC_COOKIE as u128) << 96
-                    | (transaction & 0x00000000_ffffffff_ffffffff_ffffffff))
+                    | (transaction & 0x0000_0000_ffff_ffff_ffff_ffff_ffff_ffff))
                     .to_be_bytes();
                 let addr_octets = addr.ip().octets();
                 let octets = bytewise_xor!(16, const_octets, addr_octets, 0);
@@ -786,7 +784,7 @@ impl Attribute for Priority {
     fn to_raw(&self) -> RawAttribute {
         let mut buf = [0; 4];
         BigEndian::write_u32(&mut buf[0..4], self.priority);
-        RawAttribute::new(self.get_type().into(), &buf)
+        RawAttribute::new(self.get_type(), &buf)
     }
 
     fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
@@ -849,17 +847,23 @@ impl Attribute for UseCandidate {
 
     fn to_raw(&self) -> RawAttribute {
         let buf = [0; 0];
-        RawAttribute::new(self.get_type().into(), &buf)
+        RawAttribute::new(self.get_type(), &buf)
     }
 
     fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
         if raw.header.atype != USE_CANDIDATE {
             return Err(AgentError::WrongImplementation);
         }
-        if raw.value.len() > 0 {
+        if !raw.value.is_empty() {
             return Err(AgentError::TooBig);
         }
         Ok(Self {})
+    }
+}
+
+impl Default for UseCandidate {
+    fn default() -> Self {
+        UseCandidate::new()
     }
 }
 
@@ -906,7 +910,7 @@ impl Attribute for IceControlled {
     fn to_raw(&self) -> RawAttribute {
         let mut buf = [0; 8];
         BigEndian::write_u64(&mut buf[..8], self.tie_breaker);
-        RawAttribute::new(self.get_type().into(), &buf)
+        RawAttribute::new(self.get_type(), &buf)
     }
 
     fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
@@ -972,7 +976,7 @@ impl Attribute for IceControlling {
     fn to_raw(&self) -> RawAttribute {
         let mut buf = [0; 8];
         BigEndian::write_u64(&mut buf[..8], self.tie_breaker);
-        RawAttribute::new(self.get_type().into(), &buf)
+        RawAttribute::new(self.get_type(), &buf)
     }
 
     fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
@@ -1036,7 +1040,7 @@ impl Attribute for MessageIntegrity {
     }
 
     fn to_raw(&self) -> RawAttribute {
-        RawAttribute::new(self.get_type().into(), &self.hmac)
+        RawAttribute::new(self.get_type(), &self.hmac)
     }
 
     fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
@@ -1104,7 +1108,7 @@ impl Attribute for Fingerprint {
 
     fn to_raw(&self) -> RawAttribute {
         let buf = bytewise_xor!(4, self.fingerprint, Fingerprint::XOR_CONSTANT, 0);
-        RawAttribute::new(self.get_type().into(), &buf)
+        RawAttribute::new(self.get_type(), &buf)
     }
 
     fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
@@ -1253,7 +1257,7 @@ mod tests {
     #[test]
     fn xor_mapped_address() {
         init();
-        let transaction_id = 0x98765432_10987654_32109876;
+        let transaction_id = 0x9876_5432_1098_7654_3210_9876;
         let addrs = &["192.168.0.1:40000".parse().unwrap()];
         for addr in addrs {
             let mapped = XorMappedAddress::new(*addr, transaction_id).unwrap();

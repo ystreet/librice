@@ -10,7 +10,6 @@ use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
-use async_channel;
 use futures::prelude::*;
 
 use crate::agent::{AgentError, AgentFuture};
@@ -135,7 +134,7 @@ mod tests {
         init();
         let n_tasks: usize = 5;
         let tl = Arc::new(TaskList::new());
-        async fn inc_sleep_start(tl: Arc<TaskList>, counter: Arc<Mutex<Counter>>) {
+        async fn inc_sleep_start(tl: Arc<TaskList>, counter: Arc<Mutex<Counter>>) -> Result<(),AgentError> {
             let task_i = {
                 let mut inner = counter.lock().unwrap();
                 inner.0 += 1;
@@ -146,18 +145,18 @@ mod tests {
             tl.clone()
                 .add_task(
                     inc_sleep(tl.clone(), counter.clone())
-                        .map(|r| Ok(r))
                         .boxed(),
                 )
                 .await
                 .unwrap();
             tl.clone()
-                .add_task(inc_sleep(tl, counter).map(|r| Ok(r)).boxed())
+                .add_task(inc_sleep(tl, counter).boxed())
                 .await
                 .unwrap();
             info!("executed task {}", task_i);
+            Ok(())
         }
-        async fn inc_sleep(tl: Arc<TaskList>, counter: Arc<Mutex<Counter>>) {
+        async fn inc_sleep(tl: Arc<TaskList>, counter: Arc<Mutex<Counter>>) -> Result<(),AgentError> {
             let n_tasks = 5 * 3 - 2;
             let task_i = {
                 let mut inner = counter.lock().unwrap();
@@ -170,6 +169,7 @@ mod tests {
                 tl.stop().await.unwrap();
             }
             info!("executed task {}", task_i);
+            Ok(())
         }
 
         task::block_on(async move {
@@ -178,7 +178,6 @@ mod tests {
             for _ in 0..n_tasks {
                 tl.add_task(
                     inc_sleep_start(tl.clone(), counter.clone())
-                        .map(|r| Ok(r))
                         .boxed(),
                 )
                 .await

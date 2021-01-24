@@ -92,12 +92,14 @@ impl Component {
     }
 
     // XXX: temporary for bring up
+    #[allow(clippy::await_holding_lock)] /* !!! FIXME !!! */
     pub async fn set_local_addr(&self, addr: SocketAddr) -> Result<(), AgentError> {
         let mut inner = self.inner.lock().unwrap();
         inner.set_local_addr(addr).await
     }
 
     // XXX: temporary for bring up
+    #[allow(clippy::await_holding_lock)] /* !!! FIXME !!! */
     pub async fn set_local_channel(
         &self,
         channel: Arc<UdpSocketChannel>,
@@ -107,6 +109,7 @@ impl Component {
     }
 
     // XXX: temporary for bring up
+    #[allow(clippy::await_holding_lock)] /* !!! FIXME !!! */
     pub async fn set_remote_addr(&self, addr: SocketAddr) -> Result<(), AgentError> {
         let mut inner = self.inner.lock().unwrap();
         inner.set_remote_addr(addr).await
@@ -195,7 +198,7 @@ impl Component {
 
         let (abortable, abort_handle) = futures::future::abortable(async move{
             let mut data_recv_stream = agent.data_receive_stream();
-            if let Err(_) = ready_send.send(0).await {
+            if ready_send.send(0).await.is_err() {
                 return;
             }
             while let Some(data) = data_recv_stream.next().await {
@@ -265,7 +268,7 @@ impl ComponentInner {
         async_std::task::spawn(async move {
             let mut recv_stream = channel.receive_stream();
             while let Some(data) = recv_stream.next().await {
-                if let Err(_) = send_channel.send(data.0).await {
+                if send_channel.send(data.0).await.is_err() {
                     break;
                 }
             }
