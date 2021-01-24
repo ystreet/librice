@@ -56,7 +56,7 @@ impl StunAgent {
             let mut state = state.lock().unwrap();
             state
                 .outstanding_requests
-                .insert(msg.transaction_id(), msg.clone());
+                .insert(msg.transaction_id(), msg);
         }
     }
 
@@ -173,11 +173,11 @@ impl StunAgent {
         msg: &Message,
         recv_abort_handle: AbortHandle,
         to: SocketAddr,
-    ) -> std::io::Result<()> {
+    ) -> Result<(),AgentError> {
         // FIXME: configurable timeout values: RFC 4389 Secion 7.2.1
         let timeouts: [u64; 7] = [0, 500, 1500, 3500, 7500, 15500, 31500];
         for timeout in timeouts.iter() {
-            Delay::new(Duration::from_millis(timeout.clone())).await;
+            Delay::new(Duration::from_millis(*timeout)).await;
             info!("sending {} to {}", msg, to);
             let buf = msg.to_bytes();
             self.channel.send_to(&buf, to).await?;
@@ -185,10 +185,7 @@ impl StunAgent {
 
         // on failure, abort the receiver waiting
         recv_abort_handle.abort();
-        Err(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            "request timed out",
-        ))
+        Err(AgentError::TimedOut)
     }
 
     pub async fn stun_request_transaction(
@@ -223,14 +220,9 @@ impl StunAgent {
         // race the sending and receiving futures returning the first that succeeds
         match futures::future::try_select(send_abortable, recv_abortable).await {
             Ok(Either::Left((x, _))) => x.map(|_| (Message::new_error(msg), vec![], addr)),
-            Ok(Either::Right((y, _))) => y.ok_or(std::io::Error::new(
-                // FIXME: use an AgentError::TimedOut instead
-                std::io::ErrorKind::TimedOut,
-                "Stun Request timed out",
-            )),
+            Ok(Either::Right((y, _))) => y.ok_or(AgentError::TimedOut),
             Err(_) => unreachable!(),
         }
-        .map_err(|e| AgentError::IoError(e))
     }
 }
 

@@ -63,10 +63,7 @@ pub enum MessageClass {
 
 impl MessageClass {
     pub fn is_response(self) -> bool {
-        match self {
-            MessageClass::Success | MessageClass::Error => true,
-            _ => false,
-        }
+        matches!(self, MessageClass::Success | MessageClass::Error)
     }
 
     fn to_bits(self) -> u16 {
@@ -178,7 +175,7 @@ impl std::fmt::Display for Message {
             self.get_type().method(),
             self.transaction_id()
         )?;
-        if self.attributes.len() <= 0 {
+        if self.attributes.is_empty() {
             write!(f, "[]")?;
         } else {
             write!(f, "[")?;
@@ -267,7 +264,7 @@ impl Message {
     pub fn generate_transaction() -> u128 {
         use rand::{thread_rng, Rng};
         let mut rng = thread_rng();
-        rng.gen::<u128>() & 0x00000000_ffffffff_ffffffff_ffffffff
+        rng.gen::<u128>() & 0x0000_0000_ffff_ffff_ffff_ffff_ffff_ffff
     }
 
     /// Serialize a `Message` to network bytes
@@ -290,7 +287,7 @@ impl Message {
         let mut ret = Vec::with_capacity(20 + attr_size);
         ret.extend(self.msg_type.to_bytes());
         ret.resize(20, 0);
-        let tid = (MAGIC_COOKIE as u128) << 96 | self.transaction & 0xffffffff_ffffffff_ffffffff;
+        let tid = (MAGIC_COOKIE as u128) << 96 | self.transaction & 0xffff_ffff_ffff_ffff_ffff_ffff;
         BigEndian::write_u128(&mut ret[4..20], tid);
         BigEndian::write_u16(&mut ret[2..4], attr_size as u16);
         for attr in &self.attributes {
@@ -341,13 +338,13 @@ impl Message {
             );
             return Err(AgentError::Malformed);
         }
-        let tid = tid & 0x00000000_ffffffff_ffffffff_ffffffff;
+        let tid = tid & 0x0000_0000_ffff_ffff_ffff_ffff_ffff_ffff;
         let mut ret = Self::new(mtype, tid);
 
         let mut data_offset = 20;
         let mut data = &data[20..];
         let mut seen_message_integrity = false;
-        while data.len() > 0 {
+        while !data.is_empty() {
             let attr = RawAttribute::from_bytes(data)?;
             let padded_len = padded_attr_size(&attr);
 
@@ -409,7 +406,7 @@ impl Message {
         }
         let mut data = &data[20..];
         let mut data_offset = 20;
-        while data.len() > 0 {
+        while !data.is_empty() {
             let attr = RawAttribute::from_bytes(data)?;
             if attr.get_type() == MESSAGE_INTEGRITY {
                 let msg = MessageIntegrity::try_from(&attr)?;
@@ -442,10 +439,10 @@ impl Message {
         &mut self,
         credentials: &MessageIntegrityCredentials,
     ) -> Result<(), AgentError> {
-        if let Some(_) = self.get_attribute(MESSAGE_INTEGRITY) {
+        if self.get_attribute(MESSAGE_INTEGRITY).is_some() {
             return Err(AgentError::AlreadyExists);
         }
-        if let Some(_) = self.get_attribute(FINGERPRINT) {
+        if self.get_attribute(FINGERPRINT).is_some() {
             return Err(AgentError::AlreadyExists);
         }
 
@@ -466,7 +463,7 @@ impl Message {
     }
 
     pub fn add_fingerprint(&mut self) -> Result<(), AgentError> {
-        if let Some(_) = self.get_attribute(FINGERPRINT) {
+        if  self.get_attribute(FINGERPRINT).is_some() {
             return Err(AgentError::AlreadyExists);
         }
         // fingerprint is computed using all the data up to (exclusive of) the FINGERPRINT
@@ -502,14 +499,14 @@ impl Message {
         if attr.get_type() == FINGERPRINT {
             return Err(AgentError::WrongImplementation);
         }
-        if let Some(_) = self.get_attribute(attr.get_type()) {
+        if self.get_attribute(attr.get_type()).is_some() {
             return Err(AgentError::AlreadyExists);
         }
         // can't validly add generic attributes after message integrity or fingerprint
-        if let Some(_) = self.get_attribute(MESSAGE_INTEGRITY) {
+        if self.get_attribute(MESSAGE_INTEGRITY).is_some() {
             return Err(AgentError::AlreadyExists);
         }
-        if let Some(_) = self.get_attribute(FINGERPRINT) {
+        if self.get_attribute(FINGERPRINT).is_some() {
             return Err(AgentError::AlreadyExists);
         }
         self.attributes.push(attr);
@@ -552,25 +549,24 @@ impl Message {
                 at.comprehension_required() && supported.iter().position(|&a| a == at).is_none()
             })
             .collect();
-        if unsupported.len() > 0 {
+        if !unsupported.is_empty() {
             debug!(
                 "Message contains unknown comprehension required attributes {:?}",
                 unsupported
             );
             return Message::unknown_attributes(msg, &unsupported).ok();
         }
-        if required_in_msg
-            .iter()
-            // attribute types we need in the message -> failure -> Bad Request
-            .filter(|&at| {
-                msg.iter_attributes()
-                    .map(|a| a.get_type())
-                    .position(|a| a == *at)
-                    .is_none()
-            })
-            .next()
-            .is_some()
-        {
+        let has_required_attribute_missing =
+            required_in_msg
+                .iter()
+                // attribute types we need in the message -> failure -> Bad Request
+                .any(|&at| {
+                    msg.iter_attributes()
+                        .map(|a| a.get_type())
+                        .position(|a| a == at)
+                        .is_none()
+                });
+        if has_required_attribute_missing {
             debug!("Message is missing required attributes");
             return Message::bad_request(msg).ok();
         }
@@ -584,7 +580,7 @@ impl Message {
         let mut out = Message::new_error(src);
         out.add_attribute(Software::new("stund - librice v0.1")?.to_raw())?;
         out.add_attribute(ErrorCode::new(420, "Unknown Attributes")?.to_raw())?;
-        if attributes.len() > 0 {
+        if !attributes.is_empty() {
             out.add_attribute(UnknownAttributes::new(&attributes).to_raw())?;
         }
         Ok(out)

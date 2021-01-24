@@ -11,7 +11,6 @@ use std::fmt::Display;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
-use futures;
 use futures::prelude::*;
 use rand::prelude::*;
 
@@ -36,6 +35,7 @@ pub enum AgentError {
     ConnectionClosed,
     IntegrityCheckFailed,
     Aborted,
+    TimedOut,
     IoError(std::io::Error),
 }
 
