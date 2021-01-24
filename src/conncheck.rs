@@ -119,7 +119,8 @@ struct ConnCheckLocalCandidate {
     component_id: usize,
     candidate: Candidate,
     stun_agent: Arc<StunAgent>,
-    servicing: AbortHandle,
+    stun_recv_abort: AbortHandle,
+    data_recv_abort: AbortHandle,
 }
 
 #[derive(Debug)]
@@ -526,16 +527,16 @@ impl ConnCheckList {
         let component_id = component.id;
         debug!("adding local component {} {:?}", component_id, local);
         let weak_inner = Arc::downgrade(&self.inner);
-        let (send, recv) = async_channel::bounded(1);
+        let (stun_send, stun_recv) = async_channel::bounded(1);
 
         // We need to listen for and respond to stun binding requests for the local candidate
-        let (abortable, abort_handle) = futures::future::abortable({
+        let (abortable, stun_abort_handle) = futures::future::abortable({
             let agent = agent.clone();
             let local = local.clone();
             async move {
                 let drop_log = DropLogger::new("dropping stun receive stream");
                 let mut recv_stun = agent.stun_receive_stream();
-                if let Err(_) = send.send(0).await {
+                if let Err(_) = stun_send.send(0u32).await {
                     return;
                 }
                 while let Some((msg, data, from)) = recv_stun.next().await {
@@ -573,10 +574,11 @@ impl ConnCheckList {
         });
 
         async_std::task::spawn(abortable);
-        if let Err(_) = recv.recv().await {
+        if let Err(_) = stun_recv.recv().await {
             warn!("Failed to start listening task");
             return;
         }
+        let data_abort_handle = component.add_recv_agent(agent.clone()).await;
         error!("added recv task for candidate {:?}", local);
 
         {
@@ -586,7 +588,8 @@ impl ConnCheckList {
                 candidate: local,
                 stun_agent: agent,
                 // FIXME: abort when closing or not needing stun for candidate
-                servicing: abort_handle,
+                stun_recv_abort: stun_abort_handle,
+                data_recv_abort: data_abort_handle,
             });
             if let None = inner.components.iter().find(|&v| {
                 if let Some(component) = Weak::upgrade(v) {
