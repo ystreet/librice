@@ -413,7 +413,7 @@ impl Attribute for ErrorCode {
         }
         let code_h = (raw.value[2] & 0x7) as u16;
         let code_tens = raw.value[3] as u16;
-        if (3..6).contains(&code_h) || code_tens > 99 {
+        if !(3..7).contains(&code_h) || code_tens > 99 {
             return Err(AgentError::Malformed);
         }
         let code = code_h * 100 + code_tens;
@@ -427,7 +427,7 @@ impl Attribute for ErrorCode {
 }
 impl ErrorCode {
     pub fn new(code: u16, reason: &str) -> Result<Self, AgentError> {
-        if (300..699).contains(&code) {
+        if !(300..700).contains(&code) {
             return Err(AgentError::Malformed);
         }
         Ok(Self {
@@ -1210,17 +1210,19 @@ mod tests {
     #[test]
     fn error_code() {
         init();
-        let code = 401;
-        let reason = ErrorCode::default_reason_for_code(code);
-        let err = ErrorCode::new(code, &reason).unwrap();
-        assert_eq!(err.get_type(), ERROR_CODE);
-        assert_eq!(err.code(), code);
-        assert_eq!(err.reason(), reason);
-        let raw: RawAttribute = err.into();
-        let err2 = ErrorCode::try_from(&raw).unwrap();
-        assert_eq!(err2.get_type(), ERROR_CODE);
-        assert_eq!(err2.code(), code);
-        assert_eq!(err2.reason(), reason);
+        let codes = vec![300, 401, 699];
+        for code in codes.into_iter() {
+            let reason = ErrorCode::default_reason_for_code(code);
+            let err = ErrorCode::new(code, &reason).unwrap();
+            assert_eq!(err.get_type(), ERROR_CODE);
+            assert_eq!(err.code(), code);
+            assert_eq!(err.reason(), reason);
+            let raw: RawAttribute = err.into();
+            let err2 = ErrorCode::try_from(&raw).unwrap();
+            assert_eq!(err2.get_type(), ERROR_CODE);
+            assert_eq!(err2.code(), code);
+            assert_eq!(err2.reason(), reason);
+        }
     }
 
     #[test]
