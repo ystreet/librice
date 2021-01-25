@@ -1,5 +1,8 @@
 [![Build status](https://github.com/ystreet/librice/workflows/Build/badge.svg?branch=master)](https://github.com/ystreet/librice/actions)
 [![codecov](https://codecov.io/gh/ystreet/librice/branch/master/graph/badge.svg?token=7SP9REUN7L)](https://codecov.io/gh/ystreet/librice)
+[![Dependencies](https://deps.rs/repo/github/ystreet/librice/status.svg)](https://deps.rs/repo/github/ystreet/librice)
+[![crates.io](https://img.shields.io/crates/v/librice.svg)](https://crates.io/crates/librice)
+[![docs.rs](https://docs.rs/librice/badge.svg)](https://docs.rs/librice)
 
 # librice
 
