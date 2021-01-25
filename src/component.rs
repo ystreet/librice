@@ -196,7 +196,7 @@ impl Component {
         let sender = self.inner.lock().unwrap().receive_send_channel.clone();
         let (ready_send, mut ready_recv) = async_channel::bounded(1);
 
-        let (abortable, abort_handle) = futures::future::abortable(async move{
+        let (abortable, abort_handle) = futures::future::abortable(async move {
             let mut data_recv_stream = agent.data_receive_stream();
             if ready_send.send(0).await.is_err() {
                 return;
@@ -402,13 +402,17 @@ mod tests {
             let s = a.add_stream();
             let send = s.add_component().unwrap();
 
-            let socket1 = UdpSocket::bind("127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
+            let socket1 = UdpSocket::bind("127.0.0.1:0".parse::<SocketAddr>().unwrap())
+                .await
+                .unwrap();
             let addr1 = socket1.local_addr().unwrap();
             let channel1 = Arc::new(UdpSocketChannel::new(socket1));
             let stun = Arc::new(StunAgent::new(channel1.clone()));
             send.add_recv_agent(stun).await;
 
-            let socket2 = UdpSocket::bind("127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
+            let socket2 = UdpSocket::bind("127.0.0.1:0".parse::<SocketAddr>().unwrap())
+                .await
+                .unwrap();
             let addr2 = socket2.local_addr().unwrap();
             let channel2 = Arc::new(UdpSocketChannel::new(socket2));
             let stun = Arc::new(StunAgent::new(channel2.clone()));

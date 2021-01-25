@@ -134,7 +134,10 @@ mod tests {
         init();
         let n_tasks: usize = 5;
         let tl = Arc::new(TaskList::new());
-        async fn inc_sleep_start(tl: Arc<TaskList>, counter: Arc<Mutex<Counter>>) -> Result<(),AgentError> {
+        async fn inc_sleep_start(
+            tl: Arc<TaskList>,
+            counter: Arc<Mutex<Counter>>,
+        ) -> Result<(), AgentError> {
             let task_i = {
                 let mut inner = counter.lock().unwrap();
                 inner.0 += 1;
@@ -143,10 +146,7 @@ mod tests {
             info!("executing task {}", task_i);
             task::sleep(Duration::from_millis(100)).await;
             tl.clone()
-                .add_task(
-                    inc_sleep(tl.clone(), counter.clone())
-                        .boxed(),
-                )
+                .add_task(inc_sleep(tl.clone(), counter.clone()).boxed())
                 .await
                 .unwrap();
             tl.clone()
@@ -156,7 +156,10 @@ mod tests {
             info!("executed task {}", task_i);
             Ok(())
         }
-        async fn inc_sleep(tl: Arc<TaskList>, counter: Arc<Mutex<Counter>>) -> Result<(),AgentError> {
+        async fn inc_sleep(
+            tl: Arc<TaskList>,
+            counter: Arc<Mutex<Counter>>,
+        ) -> Result<(), AgentError> {
             let n_tasks = 5 * 3 - 2;
             let task_i = {
                 let mut inner = counter.lock().unwrap();
@@ -176,12 +179,9 @@ mod tests {
             let counter = Arc::new(Mutex::new(Counter(0)));
 
             for _ in 0..n_tasks {
-                tl.add_task(
-                    inc_sleep_start(tl.clone(), counter.clone())
-                        .boxed(),
-                )
-                .await
-                .unwrap();
+                tl.add_task(inc_sleep_start(tl.clone(), counter.clone()).boxed())
+                    .await
+                    .unwrap();
             }
             tl.iterate_tasks().await.unwrap();
             assert_eq!(counter.lock().unwrap().0, n_tasks * 3);

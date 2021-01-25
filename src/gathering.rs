@@ -83,7 +83,7 @@ async fn send_message_with_retransmissions_delay(
     msg: Message,
     schannel: Arc<SocketChannel>,
     recv_abort_handle: AbortHandle,
-) -> Result<SocketAddr,AgentError> {
+) -> Result<SocketAddr, AgentError> {
     // FIXME: fix these timeout values
     let timeouts: [u64; 4] = [0, 1, 2, 3];
     for timeout in timeouts.iter() {
@@ -103,7 +103,7 @@ async fn listen_for_xor_address_response(
     transaction_id: u128,
     schannel: Arc<SocketChannel>,
     send_abort_handle: AbortHandle,
-) -> Result<SocketAddr,AgentError> {
+) -> Result<SocketAddr, AgentError> {
     let mut s = schannel.receive_stream();
     while let Some(buf) = s.next().await {
         let from = schannel.remote_addr().unwrap();
@@ -176,14 +176,12 @@ async fn gather_stun_xor_address(
         Ok(Either::Right((y, _))) => y,
         Err(_) => unreachable!(),
     }
-    .map(move |addr| {
-        GatherCandidateAddress {
-            ctype: CandidateType::ServerReflexive,
-            local_preference,
-            address: addr,
-            base: from,
-            related: Some(remote_addr),
-        }
+    .map(move |addr| GatherCandidateAddress {
+        ctype: CandidateType::ServerReflexive,
+        local_preference,
+        address: addr,
+        base: from,
+        related: Some(remote_addr),
     })
 }
 

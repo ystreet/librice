@@ -87,15 +87,11 @@ impl UdpSocketChannel {
         info!("starting udp receive stream for {:?}", socket.local_addr());
         futures::stream::unfold(socket, |socket| async move {
             let mut data = vec![0; 1500];
-            socket
-                .recv_from(&mut data)
-                .await
-                .ok()
-                .map(|(len, from)| {
-                    data.truncate(len);
-                    //trace!("got {} bytes from {:?}", data.len(), from);
-                    ((data, from), socket)
-                })
+            socket.recv_from(&mut data).await.ok().map(|(len, from)| {
+                data.truncate(len);
+                //trace!("got {} bytes from {:?}", data.len(), from);
+                ((data, from), socket)
+            })
         })
     }
 
