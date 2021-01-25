@@ -60,7 +60,7 @@ impl ConnCheck {
             pair,
             state: Mutex::new(ConnCheckState {
                 state: CandidatePairState::Frozen,
-                abort_handle: None
+                abort_handle: None,
             }),
             agent,
             nominate,
@@ -95,7 +95,10 @@ impl ConnCheck {
         let mut inner = self.state.lock().unwrap();
         let abort_handle = inner.abort_handle.take();
         if let Some(handle) = abort_handle {
-            debug!("conncheck {} cancelling for {:?}", self.conncheck_id, self.pair);
+            debug!(
+                "conncheck {} cancelling for {:?}",
+                self.conncheck_id, self.pair
+            );
             handle.abort();
             inner.state = CandidatePairState::Failed;
         }
@@ -184,16 +187,31 @@ impl ConnCheckListInner {
     }
 
     fn add_triggered(&mut self, check: Arc<ConnCheck>) {
-        if let Some(idx) = self.triggered.iter().position(|existing| existing.pair == check.pair) {
+        if let Some(idx) = self
+            .triggered
+            .iter()
+            .position(|existing| existing.pair == check.pair)
+        {
             if check.nominate() != self.triggered[idx].nominate() {
                 let existing = self.triggered.remove(idx).unwrap();
-                error!("removing existing triggered conncheck {} for {:?} nominate {}", existing.conncheck_id, existing.pair, existing.nominate);
+                error!(
+                    "removing existing triggered conncheck {} for {:?} nominate {}",
+                    existing.conncheck_id, existing.pair, existing.nominate
+                );
             } else {
-                error!("not adding duplicate triggered conncheck {} for {:?} nominate {}", self.triggered[idx].conncheck_id,self.triggered[idx].pair, self.triggered[idx].nominate);
-                return
+                error!(
+                    "not adding duplicate triggered conncheck {} for {:?} nominate {}",
+                    self.triggered[idx].conncheck_id,
+                    self.triggered[idx].pair,
+                    self.triggered[idx].nominate
+                );
+                return;
             }
         }
-        error!("adding triggered conncheck {} for {:?} nominate {}", check.conncheck_id, check.pair, check.nominate);
+        error!(
+            "adding triggered conncheck {} for {:?} nominate {}",
+            check.conncheck_id, check.pair, check.nominate
+        );
         self.triggered.push_front(check)
     }
 
@@ -249,35 +267,31 @@ impl ConnCheckListInner {
                 //   connectivity-check transaction, will not treat the lack of
                 //   response to be a failure, but will wait the duration of the
                 //   transaction timeout for a response.
-                self.triggered
-                    .retain(|check| {
-                        if check.pair.component_id == component_id {
-                            check.cancel();
-                            false
-                        } else {
-                            true
-                        }
-                    });
-                self.pairs
-                    .retain(|check| {
-                        if check.pair.component_id == component_id {
-                            check.cancel();
-                            false
-                        } else {
-                            true
-                        }
-                    });
+                self.triggered.retain(|check| {
+                    if check.pair.component_id == component_id {
+                        check.cancel();
+                        false
+                    } else {
+                        true
+                    }
+                });
+                self.pairs.retain(|check| {
+                    if check.pair.component_id == component_id {
+                        check.cancel();
+                        false
+                    } else {
+                        true
+                    }
+                });
                 // XXX: do we also need to clear self.valid?
                 // o Once candidate pairs for each component of a data stream have been
                 //   nominated, and the state of the checklist associated with the data
                 //   stream is Running, the ICE agent sets the state of the checklist
                 //   to Completed.
                 let all_nominated = self.component_ids.iter().all(|&component_id| {
-                    self.valid
-                        .iter()
-                        .any(|valid_pair| {
-                            valid_pair.component_id == component_id && valid_pair.nominated()
-                        })
+                    self.valid.iter().any(|valid_pair| {
+                        valid_pair.component_id == component_id && valid_pair.nominated()
+                    })
                 });
                 if all_nominated {
                     info!("checklist state change from {:?} to Completed", self.state);
@@ -429,7 +443,10 @@ impl ConnCheckList {
             let pair = CandidatePair::new(component_id, local.clone(), remote);
             if let Some(mut check) = checklist.take_matching_check(&pair) {
                 // When the pair is already on the checklist:
-                error!("found existing check {} for pair {:?}", check.conncheck_id, pair);
+                error!(
+                    "found existing check {} for pair {:?}",
+                    check.conncheck_id, pair
+                );
                 match check.state() {
                     // If the state of that pair is Succeeded, nothing further is
                     // done.
@@ -611,7 +628,12 @@ impl ConnCheckList {
         {
             let mut inner = self.inner.lock().unwrap();
             inner.add_remote_candidate(component_id, remote);
-            if inner.component_ids.iter().find(|&v| v == &component_id).is_none() {
+            if inner
+                .component_ids
+                .iter()
+                .find(|&v| v == &component_id)
+                .is_none()
+            {
                 inner.component_ids.push(component_id);
             }
         }
@@ -928,11 +950,12 @@ async fn connectivity_check(
     // if timeout -> resend?
     // if longer timeout -> fail
     // TODO: optional: if icmp error -> fail
-    let (response, orig_data, from) = match conncheck.agent.stun_request_transaction(&msg, to).await {
+    let (response, orig_data, from) = match conncheck.agent.stun_request_transaction(&msg, to).await
+    {
         Err(e) => {
             warn!("connectivity check produced error: {:?}", e);
             return Ok(ConnCheckResponse::Failure(conncheck));
-        },
+        }
         Ok(v) => v,
     };
     debug!("have response: {}", response);
@@ -991,7 +1014,7 @@ async fn connectivity_check_cancellable(
         let mut inner = conncheck.state.lock().unwrap();
         if inner.abort_handle.is_some() {
             panic!("duplicate connection checks!");
-//            return Err(AgentError::AlreadyExists);
+            //            return Err(AgentError::AlreadyExists);
         }
 
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
@@ -999,13 +1022,17 @@ async fn connectivity_check_cancellable(
         abort_registration
     };
 
-    let abortable = Abortable::new(connectivity_check(conncheck, controlling, tie_breaker, nominate), abort_registration);
+    let abortable = Abortable::new(
+        connectivity_check(conncheck, controlling, tie_breaker, nominate),
+        abort_registration,
+    );
     async_std::task::spawn(async move {
         match abortable.await {
             Ok(v) => v,
             Err(_) => Err(AgentError::Aborted),
         }
-    }).await
+    })
+    .await
 }
 
 #[derive(Debug)]
@@ -1052,7 +1079,8 @@ impl ConnCheckListSet {
             tie_breaker,
             conncheck.nominate(),
         )
-        .await {
+        .await
+        {
             Err(e) => {
                 warn!("conncheck {} error: {:?}", conncheck.conncheck_id, e);
                 conncheck.set_state(CandidatePairState::Failed);
@@ -1072,7 +1100,10 @@ impl ConnCheckListSet {
             }
             Ok(ConnCheckResponse::RoleConflict(_conncheck)) => error!("Unhandled Role Conflict"),
             Ok(ConnCheckResponse::Success(conncheck, addr)) => {
-                debug!("conncheck {} succeeded in finding {:?}", conncheck.conncheck_id, addr);
+                debug!(
+                    "conncheck {} succeeded in finding {:?}",
+                    conncheck.conncheck_id, addr
+                );
                 conncheck.set_state(CandidatePairState::Succeeded);
 
                 let mut pair_dealt_with = false;
@@ -1101,7 +1132,10 @@ impl ConnCheckListSet {
                         if let Some(check) = checklist.get_matching_check(&ok_pair) {
                             checklist.add_valid(check.pair.clone());
                             if conncheck.nominate() {
-                                error!("ConnCheck {} Succeeded -> nominate", conncheck.conncheck_id);
+                                error!(
+                                    "ConnCheck {} Succeeded -> nominate",
+                                    conncheck.conncheck_id
+                                );
                                 checklist
                                     .nominated_pair(conncheck.pair.component_id, &conncheck.pair)
                                     .await;
@@ -1266,7 +1300,8 @@ impl ConnCheckListSet {
                         )
                         .boxed(),
                     )
-                    .await.is_err()
+                    .await
+                    .is_err()
                 {
                     // receiver stopped -> no more timers
                     return Ok(());
@@ -1670,18 +1705,10 @@ mod tests {
             // unfrozen by the first checklist, which means unfreezing 3 pairs
             list2.initial_thaw(&mut thawn);
             assert_eq!(thawn.len(), 4);
-            assert!(thawn
-                .iter()
-                .any(|f| f == &pair2.get_foundation()));
-            assert!(thawn
-                .iter()
-                .any(|f| f == &pair3.get_foundation()));
-            assert!(thawn
-                .iter()
-                .any(|f| f == &pair4.get_foundation()));
-            assert!(thawn
-                .iter()
-                .any(|f| f == &pair5.get_foundation()));
+            assert!(thawn.iter().any(|f| f == &pair2.get_foundation()));
+            assert!(thawn.iter().any(|f| f == &pair3.get_foundation()));
+            assert!(thawn.iter().any(|f| f == &pair4.get_foundation()));
+            assert!(thawn.iter().any(|f| f == &pair5.get_foundation()));
             let check1 = list1.get_matching_check(&pair1).unwrap();
             assert_eq!(check1.pair, pair1);
             assert_eq!(check1.state(), CandidatePairState::Waiting);

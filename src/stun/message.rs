@@ -463,7 +463,7 @@ impl Message {
     }
 
     pub fn add_fingerprint(&mut self) -> Result<(), AgentError> {
-        if  self.get_attribute(FINGERPRINT).is_some() {
+        if self.get_attribute(FINGERPRINT).is_some() {
             return Err(AgentError::AlreadyExists);
         }
         // fingerprint is computed using all the data up to (exclusive of) the FINGERPRINT
@@ -556,16 +556,15 @@ impl Message {
             );
             return Message::unknown_attributes(msg, &unsupported).ok();
         }
-        let has_required_attribute_missing =
-            required_in_msg
-                .iter()
-                // attribute types we need in the message -> failure -> Bad Request
-                .any(|&at| {
-                    msg.iter_attributes()
-                        .map(|a| a.get_type())
-                        .position(|a| a == at)
-                        .is_none()
-                });
+        let has_required_attribute_missing = required_in_msg
+            .iter()
+            // attribute types we need in the message -> failure -> Bad Request
+            .any(|&at| {
+                msg.iter_attributes()
+                    .map(|a| a.get_type())
+                    .position(|a| a == at)
+                    .is_none()
+            });
         if has_required_attribute_missing {
             debug!("Message is missing required attributes");
             return Message::bad_request(msg).ok();

@@ -60,9 +60,9 @@ pub struct CandidatePair {
     pub local: Candidate,
     pub remote: Candidate,
     pub component_id: usize,
-// FIXME: currently unused
-//    default: bool,
-//    valid: bool,
+    // FIXME: currently unused
+    //    default: bool,
+    //    valid: bool,
     nominated: bool,
 }
 

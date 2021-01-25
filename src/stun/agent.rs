@@ -54,9 +54,7 @@ impl StunAgent {
     fn maybe_store_message(state: Arc<Mutex<StunAgentState>>, msg: Message) {
         if msg.has_class(MessageClass::Request) {
             let mut state = state.lock().unwrap();
-            state
-                .outstanding_requests
-                .insert(msg.transaction_id(), msg);
+            state.outstanding_requests.insert(msg.transaction_id(), msg);
         }
     }
 
@@ -173,7 +171,7 @@ impl StunAgent {
         msg: &Message,
         recv_abort_handle: AbortHandle,
         to: SocketAddr,
-    ) -> Result<(),AgentError> {
+    ) -> Result<(), AgentError> {
         // FIXME: configurable timeout values: RFC 4389 Secion 7.2.1
         let timeouts: [u64; 7] = [0, 500, 1500, 3500, 7500, 15500, 31500];
         for timeout in timeouts.iter() {
