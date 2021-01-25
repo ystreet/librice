@@ -142,21 +142,13 @@ impl TryFrom<&[u8]> for AttributeHeader {
     }
 }
 
-pub trait Attribute: std::fmt::Debug + std::any::Any {
+pub trait Attribute: std::fmt::Debug {
     /// Retrieve the `AttributeType` of an `Attribute`
     fn get_type(&self) -> AttributeType;
 
     /// Retrieve the length of an `Attribute`.  This is not the padded length as stored in a
     /// `Message`
     fn get_length(&self) -> u16;
-
-    /// Helper to cast to an std::any::Any
-    fn as_any(&self) -> &dyn std::any::Any
-    where
-        Self: Sized,
-    {
-        self
-    }
 
     /// Convert an `Attribute` to a `RawAttribute`
     fn to_raw(&self) -> RawAttribute;
@@ -407,6 +399,9 @@ impl Attribute for ErrorCode {
     fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
         if raw.header.atype != ERROR_CODE {
             return Err(AgentError::WrongImplementation);
+        }
+        if raw.value.len() < 4 {
+            return Err(AgentError::NotEnoughData);
         }
         if raw.value.len() > 763 + 4 {
             return Err(AgentError::TooBig);
@@ -1173,13 +1168,30 @@ mod tests {
     }
 
     #[test]
+    fn attribute_type() {
+        init();
+        let atype = ERROR_CODE;
+        let anum: u16 = atype.into();
+        assert_eq!(atype, anum.into());
+    }
+
+    #[test]
+    fn short_attribute_header() {
+        init();
+        let data = [0; 1];
+        // not enough data to parse the header
+        let res: Result<AttributeHeader, _> = data.as_ref().try_into();
+        assert!(res.is_err());
+    }
+
+    #[test]
     fn raw_attribute_construct() {
         init();
         let a = RawAttribute::new(1.into(), &[80, 160]);
         assert_eq!(a.get_type(), 1.into());
-        let bytes = a.to_bytes();
+        let bytes: Vec<_> = a.into();
         assert_eq!(bytes, &[0, 1, 0, 2, 80, 160, 0, 0]);
-        let b = RawAttribute::from_bytes(&bytes).unwrap();
+        let b = RawAttribute::try_from(bytes.as_ref()).unwrap();
         assert_eq!(b.get_type(), 1.into());
     }
 
@@ -1189,9 +1201,23 @@ mod tests {
         let orig = RawAttribute::new(1.into(), &[80, 160]);
         assert_eq!(orig.get_type(), 1.into());
         let raw = orig.to_raw();
+        assert_eq!(raw.get_type(), 1.into());
         assert_eq!(orig.get_type(), raw.get_type());
         assert_eq!(orig.get_length(), raw.get_length());
         assert_eq!(orig.to_bytes(), raw.to_bytes());
+        let raw = RawAttribute::from_raw(&orig).unwrap();
+        assert_eq!(raw.get_type(), 1.into());
+        assert_eq!(orig.get_type(), raw.get_type());
+        assert_eq!(orig.get_length(), raw.get_length());
+        assert_eq!(orig.to_bytes(), raw.to_bytes());
+        let mut data: Vec<_> = raw.into();
+        let len = data.len();
+        // one byte too big vs data size
+        BigEndian::write_u16(&mut data[2..4], len as u16 - 4 + 1);
+        assert!(matches!(
+            RawAttribute::try_from(data.as_ref()),
+            Err(AgentError::InvalidSize)
+        ));
     }
 
     #[test]
@@ -1201,28 +1227,57 @@ mod tests {
         let user = Username::new(&s).unwrap();
         assert_eq!(user.get_type(), USERNAME);
         assert_eq!(user.username(), s);
+        assert_eq!(user.get_length() as usize, s.len());
         let raw: RawAttribute = user.into();
+        assert_eq!(raw.get_type(), USERNAME);
         let user2 = Username::try_from(&raw).unwrap();
         assert_eq!(user2.get_type(), USERNAME);
         assert_eq!(user2.username(), s);
+        // provide incorrectly typed data
+        let mut data: Vec<_> = raw.into();
+        BigEndian::write_u16(&mut data[0..2], 0);
+        assert!(matches!(
+            Username::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            Err(AgentError::WrongImplementation)
+        ));
     }
 
     #[test]
     fn error_code() {
         init();
         let codes = vec![300, 401, 699];
-        for code in codes.into_iter() {
+        for code in codes.iter().copied() {
             let reason = ErrorCode::default_reason_for_code(code);
             let err = ErrorCode::new(code, &reason).unwrap();
             assert_eq!(err.get_type(), ERROR_CODE);
             assert_eq!(err.code(), code);
             assert_eq!(err.reason(), reason);
             let raw: RawAttribute = err.into();
+            assert_eq!(raw.get_type(), ERROR_CODE);
             let err2 = ErrorCode::try_from(&raw).unwrap();
             assert_eq!(err2.get_type(), ERROR_CODE);
             assert_eq!(err2.code(), code);
             assert_eq!(err2.reason(), reason);
         }
+        let code = codes[0];
+        let reason = ErrorCode::default_reason_for_code(code);
+        let err = ErrorCode::new(code, &reason).unwrap();
+        let raw: RawAttribute = err.into();
+        // no data
+        let mut data: Vec<_> = raw.clone().into();
+        let len = 0;
+        BigEndian::write_u16(&mut data[2..4], len as u16);
+        assert!(matches!(
+            ErrorCode::try_from(&RawAttribute::try_from(data[..len + 4].as_ref()).unwrap()),
+            Err(AgentError::NotEnoughData)
+        ));
+        // provide incorrectly typed data
+        let mut data: Vec<_> = raw.into();
+        BigEndian::write_u16(&mut data[0..2], 0);
+        assert!(matches!(
+            ErrorCode::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            Err(AgentError::WrongImplementation)
+        ));
     }
 
     #[test]
@@ -1237,11 +1292,27 @@ mod tests {
         assert_eq!(unknown.has_attribute(ALTERNATE_SERVER), true);
         assert_eq!(unknown.has_attribute(NONCE), false);
         let raw: RawAttribute = unknown.into();
+        assert_eq!(raw.get_type(), UNKNOWN_ATTRIBUTES);
         let unknown2 = UnknownAttributes::try_from(&raw).unwrap();
         assert_eq!(unknown2.get_type(), UNKNOWN_ATTRIBUTES);
         assert_eq!(unknown2.has_attribute(REALM), true);
         assert_eq!(unknown2.has_attribute(ALTERNATE_SERVER), true);
         assert_eq!(unknown2.has_attribute(NONCE), false);
+        // truncate by one byte
+        let mut data: Vec<_> = raw.clone().into();
+        let len = data.len();
+        BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
+        assert!(matches!(
+            UnknownAttributes::try_from(&RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()),
+            Err(AgentError::Malformed)
+        ));
+        // provide incorrectly typed data
+        let mut data: Vec<_> = raw.into();
+        BigEndian::write_u16(&mut data[0..2], 0);
+        assert!(matches!(
+            UnknownAttributes::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            Err(AgentError::WrongImplementation)
+        ));
     }
 
     #[test]
@@ -1251,9 +1322,17 @@ mod tests {
         assert_eq!(software.get_type(), SOFTWARE);
         assert_eq!(software.software(), "software");
         let raw: RawAttribute = software.into();
+        assert_eq!(raw.get_type(), SOFTWARE);
         let software2 = Software::try_from(&raw).unwrap();
         assert_eq!(software2.get_type(), SOFTWARE);
         assert_eq!(software2.software(), "software");
+        // provide incorrectly typed data
+        let mut data: Vec<_> = raw.into();
+        BigEndian::write_u16(&mut data[0..2], 0);
+        assert!(matches!(
+            Software::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            Err(AgentError::WrongImplementation)
+        ));
     }
 
     #[test]
@@ -1266,9 +1345,27 @@ mod tests {
             assert_eq!(mapped.get_type(), XOR_MAPPED_ADDRESS);
             assert_eq!(mapped.addr(transaction_id), *addr);
             let raw: RawAttribute = mapped.into();
+            assert_eq!(raw.get_type(), XOR_MAPPED_ADDRESS);
             let mapped2 = XorMappedAddress::try_from(&raw).unwrap();
             assert_eq!(mapped2.get_type(), XOR_MAPPED_ADDRESS);
             assert_eq!(mapped2.addr(transaction_id), *addr);
+            // truncate by one byte
+            let mut data: Vec<_> = raw.clone().into();
+            let len = data.len();
+            BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
+            assert!(matches!(
+                XorMappedAddress::try_from(
+                    &RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()
+                ),
+                Err(AgentError::NotEnoughData)
+            ));
+            // provide incorrectly typed data
+            let mut data: Vec<_> = raw.into();
+            BigEndian::write_u16(&mut data[0..2], 0);
+            assert!(matches!(
+                XorMappedAddress::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+                Err(AgentError::WrongImplementation)
+            ));
         }
     }
 
@@ -1280,9 +1377,25 @@ mod tests {
         assert_eq!(priority.get_type(), PRIORITY);
         assert_eq!(priority.priority(), val);
         let raw: RawAttribute = priority.into();
+        assert_eq!(raw.get_type(), PRIORITY);
         let mapped2 = Priority::try_from(&raw).unwrap();
         assert_eq!(mapped2.get_type(), PRIORITY);
         assert_eq!(mapped2.priority(), val);
+        // truncate by one byte
+        let mut data: Vec<_> = raw.clone().into();
+        let len = data.len();
+        BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
+        assert!(matches!(
+            Priority::try_from(&RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()),
+            Err(AgentError::NotEnoughData)
+        ));
+        // provide incorrectly typed data
+        let mut data: Vec<_> = raw.into();
+        BigEndian::write_u16(&mut data[0..2], 0);
+        assert!(matches!(
+            Priority::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            Err(AgentError::WrongImplementation)
+        ));
     }
 
     #[test]
@@ -1290,9 +1403,18 @@ mod tests {
         init();
         let use_candidate = UseCandidate::new();
         assert_eq!(use_candidate.get_type(), USE_CANDIDATE);
+        assert_eq!(use_candidate.get_length(), 0);
         let raw: RawAttribute = use_candidate.into();
+        assert_eq!(raw.get_type(), USE_CANDIDATE);
         let mapped2 = UseCandidate::try_from(&raw).unwrap();
         assert_eq!(mapped2.get_type(), USE_CANDIDATE);
+        // provide incorrectly typed data
+        let mut data: Vec<_> = raw.into();
+        BigEndian::write_u16(&mut data[0..2], 0);
+        assert!(matches!(
+            UseCandidate::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            Err(AgentError::WrongImplementation)
+        ));
     }
 
     #[test]
@@ -1303,9 +1425,25 @@ mod tests {
         assert_eq!(attr.get_type(), ICE_CONTROLLING);
         assert_eq!(attr.tie_breaker(), tb);
         let raw: RawAttribute = attr.into();
+        assert_eq!(raw.get_type(), ICE_CONTROLLING);
         let mapped2 = IceControlling::try_from(&raw).unwrap();
         assert_eq!(mapped2.get_type(), ICE_CONTROLLING);
         assert_eq!(mapped2.tie_breaker(), tb);
+        // truncate by one byte
+        let mut data: Vec<_> = raw.clone().into();
+        let len = data.len();
+        BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
+        assert!(matches!(
+            IceControlling::try_from(&RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()),
+            Err(AgentError::NotEnoughData)
+        ));
+        // provide incorrectly typed data
+        let mut data: Vec<_> = raw.into();
+        BigEndian::write_u16(&mut data[0..2], 0);
+        assert!(matches!(
+            IceControlling::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            Err(AgentError::WrongImplementation)
+        ));
     }
 
     #[test]
@@ -1316,9 +1454,25 @@ mod tests {
         assert_eq!(attr.get_type(), ICE_CONTROLLED);
         assert_eq!(attr.tie_breaker(), tb);
         let raw: RawAttribute = attr.into();
+        assert_eq!(raw.get_type(), ICE_CONTROLLED);
         let mapped2 = IceControlled::try_from(&raw).unwrap();
         assert_eq!(mapped2.get_type(), ICE_CONTROLLED);
         assert_eq!(mapped2.tie_breaker(), tb);
+        // truncate by one byte
+        let mut data: Vec<_> = raw.clone().into();
+        let len = data.len();
+        BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
+        assert!(matches!(
+            IceControlled::try_from(&RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()),
+            Err(AgentError::NotEnoughData)
+        ));
+        // provide incorrectly typed data
+        let mut data: Vec<_> = raw.into();
+        BigEndian::write_u16(&mut data[0..2], 0);
+        assert!(matches!(
+            IceControlled::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            Err(AgentError::WrongImplementation)
+        ));
     }
 
     #[test]
@@ -1329,9 +1483,25 @@ mod tests {
         assert_eq!(attr.get_type(), FINGERPRINT);
         assert_eq!(attr.fingerprint(), &val);
         let raw: RawAttribute = attr.into();
+        assert_eq!(raw.get_type(), FINGERPRINT);
         let mapped2 = Fingerprint::try_from(&raw).unwrap();
         assert_eq!(mapped2.get_type(), FINGERPRINT);
         assert_eq!(mapped2.fingerprint(), &val);
+        // truncate by one byte
+        let mut data: Vec<_> = raw.clone().into();
+        let len = data.len();
+        BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
+        assert!(matches!(
+            Fingerprint::try_from(&RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()),
+            Err(AgentError::NotEnoughData)
+        ));
+        // provide incorrectly typed data
+        let mut data: Vec<_> = raw.into();
+        BigEndian::write_u16(&mut data[0..2], 0);
+        assert!(matches!(
+            Fingerprint::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            Err(AgentError::WrongImplementation)
+        ));
     }
 
     #[test]
@@ -1342,8 +1512,24 @@ mod tests {
         assert_eq!(attr.get_type(), MESSAGE_INTEGRITY);
         assert_eq!(attr.hmac(), &val);
         let raw: RawAttribute = attr.into();
+        assert_eq!(raw.get_type(), MESSAGE_INTEGRITY);
         let mapped2 = MessageIntegrity::try_from(&raw).unwrap();
         assert_eq!(mapped2.get_type(), MESSAGE_INTEGRITY);
         assert_eq!(mapped2.hmac(), &val);
+        // truncate by one byte
+        let mut data: Vec<_> = raw.clone().into();
+        let len = data.len();
+        BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
+        assert!(matches!(
+            MessageIntegrity::try_from(&RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()),
+            Err(AgentError::NotEnoughData)
+        ));
+        // provide incorrectly typed data
+        let mut data: Vec<_> = raw.into();
+        BigEndian::write_u16(&mut data[0..2], 0);
+        assert!(matches!(
+            MessageIntegrity::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            Err(AgentError::WrongImplementation)
+        ));
     }
 }
