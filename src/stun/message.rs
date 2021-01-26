@@ -770,4 +770,293 @@ mod tests {
             UnknownAttributes::from_raw(res.get_attribute(UNKNOWN_ATTRIBUTES).unwrap()).unwrap();
         assert!(unknown.has_attribute(PRIORITY));
     }
+
+    #[test]
+    fn rfc5769_vector1() {
+        // https://tools.ietf.org/html/rfc5769#section-2.1
+        let data = vec![
+            0x00, 0x01, 0x00, 0x58, // Request type message length
+            0x21, 0x12, 0xa4, 0x42, // Magic cookie
+            0xb7, 0xe7, 0xa7, 0x01, // }
+            0xbc, 0x34, 0xd6, 0x86, // } Transaction ID
+            0xfa, 0x87, 0xdf, 0xae, // }
+            0x80, 0x22, 0x00, 0x10, // SOFTWARE header
+            0x53, 0x54, 0x55, 0x4e, //   }
+            0x20, 0x74, 0x65, 0x73, //   }  User-agent...
+            0x74, 0x20, 0x63, 0x6c, //   }  ...name
+            0x69, 0x65, 0x6e, 0x74, //   }
+            0x00, 0x24, 0x00, 0x04, // PRIORITY header
+            0x6e, 0x00, 0x01, 0xff, //   PRIORITY value
+            0x80, 0x29, 0x00, 0x08, // ICE_CONTROLLED header
+            0x93, 0x2f, 0xf9, 0xb1, //   Pseudo random number
+            0x51, 0x26, 0x3b, 0x36, //   ... for tie breaker
+            0x00, 0x06, 0x00, 0x09, // USERNAME header
+            0x65, 0x76, 0x74, 0x6a, //   Username value
+            0x3a, 0x68, 0x36, 0x76, //   (9 bytes)
+            0x59, 0x20, 0x20, 0x20, //   (3 bytes padding)
+            0x00, 0x08, 0x00, 0x14, // MESSAGE-INTEGRITY header
+            0x9a, 0xea, 0xa7, 0x0c, //   }
+            0xbf, 0xd8, 0xcb, 0x56, //   }
+            0x78, 0x1e, 0xf2, 0xb5, //   } HMAC-SHA1 fingerprint
+            0xb2, 0xd3, 0xf2, 0x49, //   }
+            0xc1, 0xb5, 0x71, 0xa2, //   }
+            0x80, 0x28, 0x00, 0x04, // FINGERPRINT header
+            0xe5, 0x7a, 0x3b, 0xcf, //   CRC32 fingerprint
+        ];
+
+        let msg = Message::from_bytes(&data).unwrap();
+        assert!(msg.has_class(MessageClass::Request));
+        assert!(msg.has_method(BINDING));
+        assert_eq!(msg.transaction_id(), 0xb7e7_a701_bc34_d686_fa87_dfae);
+
+        // SOFTWARE
+        assert!(msg.has_attribute(SOFTWARE));
+        let raw = msg.get_attribute(SOFTWARE).unwrap();
+        assert!(matches!(Software::try_from(raw), Ok(_)));
+        let software = Software::try_from(raw).unwrap();
+        assert_eq!(software.software(), "STUN test client");
+
+        // PRIORITY
+        assert!(msg.has_attribute(PRIORITY));
+        let raw = msg.get_attribute(PRIORITY).unwrap();
+        assert!(matches!(Priority::try_from(raw), Ok(_)));
+        let priority = Priority::try_from(raw).unwrap();
+        assert_eq!(priority.priority(), 0x6e0001ff);
+
+        // USERNAME
+        assert!(msg.has_attribute(USERNAME));
+        let raw = msg.get_attribute(USERNAME).unwrap();
+        assert!(matches!(Username::try_from(raw), Ok(_)));
+        let username = Username::try_from(raw).unwrap();
+        assert_eq!(username.username(), "evtj:h6vY");
+
+        // MESSAGE_INTEGRITY
+        let credentials = MessageIntegrityCredentials::ShortTerm(ShortTermCredentials {
+            password: "VOkJxbRl1RmTxUk/WvJxBt".to_owned(),
+        });
+        assert!(matches!(
+            msg.validate_integrity(&data, &credentials),
+            Ok(())
+        ));
+
+        // FINGERPRINT is checked by Message::from_bytes() when present
+        assert!(msg.has_attribute(FINGERPRINT));
+
+        // assert that we produce the same output as we parsed in this case
+        let mut msg_data = msg.to_bytes();
+        // match the padding bytes with the original
+        msg_data[73] = 0x20;
+        msg_data[74] = 0x20;
+        msg_data[75] = 0x20;
+        assert_eq!(msg_data, data);
+    }
+
+    #[test]
+    fn rfc5769_vector2() {
+        // https://tools.ietf.org/html/rfc5769#section-2.2
+        let data = vec![
+            0x01, 0x01, 0x00, 0x3c, // Response type message length
+            0x21, 0x12, 0xa4, 0x42, // Magic cookie
+            0xb7, 0xe7, 0xa7, 0x01, // }
+            0xbc, 0x34, 0xd6, 0x86, // }  Transaction ID
+            0xfa, 0x87, 0xdf, 0xae, // }
+            0x80, 0x22, 0x00, 0x0b, // SOFTWARE attribute header
+            0x74, 0x65, 0x73, 0x74, //   }
+            0x20, 0x76, 0x65, 0x63, //   }  UTF-8 server name
+            0x74, 0x6f, 0x72, 0x20, //   }
+            0x00, 0x20, 0x00, 0x08, // XOR-MAPPED-ADDRESS attribute header
+            0x00, 0x01, 0xa1, 0x47, //   Address family (IPv4) and xor'd mapped port number
+            0xe1, 0x12, 0xa6, 0x43, //   Xor'd mapped IPv4 address
+            0x00, 0x08, 0x00, 0x14, //   MESSAGE-INTEGRITY attribute header
+            0x2b, 0x91, 0xf5, 0x99, // }
+            0xfd, 0x9e, 0x90, 0xc3, // }
+            0x8c, 0x74, 0x89, 0xf9, // }  HMAC-SHA1 fingerprint
+            0x2a, 0xf9, 0xba, 0x53, // }
+            0xf0, 0x6b, 0xe7, 0xd7, // }
+            0x80, 0x28, 0x00, 0x04, //  FINGERPRINT attribute header
+            0xc0, 0x7d, 0x4c, 0x96, //  CRC32 fingerprint
+        ];
+
+        let msg = Message::from_bytes(&data).unwrap();
+        assert!(msg.has_class(MessageClass::Success));
+        assert!(msg.has_method(BINDING));
+        assert_eq!(msg.transaction_id(), 0xb7e7_a701_bc34_d686_fa87_dfae);
+
+        // SOFTWARE
+        assert!(msg.has_attribute(SOFTWARE));
+        let raw = msg.get_attribute(SOFTWARE).unwrap();
+        assert!(matches!(Software::try_from(raw), Ok(_)));
+        let software = Software::try_from(raw).unwrap();
+        assert_eq!(software.software(), "test vector");
+
+        // XOR_MAPPED_ADDRESS
+        assert!(msg.has_attribute(XOR_MAPPED_ADDRESS));
+        let raw = msg.get_attribute(XOR_MAPPED_ADDRESS).unwrap();
+        assert!(matches!(XorMappedAddress::try_from(raw), Ok(_)));
+        let xor_mapped_addres = XorMappedAddress::try_from(raw).unwrap();
+        assert_eq!(
+            xor_mapped_addres.addr(msg.transaction_id()),
+            "192.0.2.1:32853".parse().unwrap()
+        );
+
+        // MESSAGE_INTEGRITY
+        let credentials = MessageIntegrityCredentials::ShortTerm(ShortTermCredentials {
+            password: "VOkJxbRl1RmTxUk/WvJxBt".to_owned(),
+        });
+        assert!(matches!(
+            msg.validate_integrity(&data, &credentials),
+            Ok(())
+        ));
+
+        // FINGERPRINT is checked by Message::from_bytes() when present
+        assert!(msg.has_attribute(FINGERPRINT));
+
+        // assert that we produce the same output as we parsed in this case
+        let mut msg_data = msg.to_bytes();
+        // match the padding bytes with the original
+        msg_data[35] = 0x20;
+        assert_eq!(msg_data, data);
+    }
+
+    #[test]
+    fn rfc5769_vector3() {
+        // https://tools.ietf.org/html/rfc5769#section-2.3
+        let data = vec![
+            0x01, 0x01, 0x00, 0x48, // Response type and message length
+            0x21, 0x12, 0xa4, 0x42, // Magic cookie
+            0xb7, 0xe7, 0xa7, 0x01, // }
+            0xbc, 0x34, 0xd6, 0x86, // }  Transaction ID
+            0xfa, 0x87, 0xdf, 0xae, // }
+            0x80, 0x22, 0x00, 0x0b, //    SOFTWARE attribute header
+            0x74, 0x65, 0x73, 0x74, // }
+            0x20, 0x76, 0x65, 0x63, // }  UTF-8 server name
+            0x74, 0x6f, 0x72, 0x20, // }
+            0x00, 0x20, 0x00, 0x14, //    XOR-MAPPED-ADDRESS attribute header
+            0x00, 0x02, 0xa1, 0x47, //    Address family (IPv6) and xor'd mapped port number
+            0x01, 0x13, 0xa9, 0xfa, // }
+            0xa5, 0xd3, 0xf1, 0x79, // }  Xor'd mapped IPv6 address
+            0xbc, 0x25, 0xf4, 0xb5, // }
+            0xbe, 0xd2, 0xb9, 0xd9, // }
+            0x00, 0x08, 0x00, 0x14, //    MESSAGE-INTEGRITY attribute header
+            0xa3, 0x82, 0x95, 0x4e, // }
+            0x4b, 0xe6, 0x7b, 0xf1, // }
+            0x17, 0x84, 0xc9, 0x7c, // }  HMAC-SHA1 fingerprint
+            0x82, 0x92, 0xc2, 0x75, // }
+            0xbf, 0xe3, 0xed, 0x41, // }
+            0x80, 0x28, 0x00, 0x04, //    FINGERPRINT attribute header
+            0xc8, 0xfb, 0x0b, 0x4c, //    CRC32 fingerprint
+        ];
+
+        let msg = Message::from_bytes(&data).unwrap();
+        assert!(msg.has_class(MessageClass::Success));
+        assert!(msg.has_method(BINDING));
+        assert_eq!(msg.transaction_id(), 0xb7e7_a701_bc34_d686_fa87_dfae);
+
+        // SOFTWARE
+        assert!(msg.has_attribute(SOFTWARE));
+        let raw = msg.get_attribute(SOFTWARE).unwrap();
+        assert!(matches!(Software::try_from(raw), Ok(_)));
+        let software = Software::try_from(raw).unwrap();
+        assert_eq!(software.software(), "test vector");
+
+        // XOR_MAPPED_ADDRESS
+        assert!(msg.has_attribute(XOR_MAPPED_ADDRESS));
+        let raw = msg.get_attribute(XOR_MAPPED_ADDRESS).unwrap();
+        assert!(matches!(XorMappedAddress::try_from(raw), Ok(_)));
+        let xor_mapped_addres = XorMappedAddress::try_from(raw).unwrap();
+        assert_eq!(
+            xor_mapped_addres.addr(msg.transaction_id()),
+            "[2001:db8:1234:5678:11:2233:4455:6677]:32853"
+                .parse()
+                .unwrap()
+        );
+
+        // MESSAGE_INTEGRITY
+        let credentials = MessageIntegrityCredentials::ShortTerm(ShortTermCredentials {
+            password: "VOkJxbRl1RmTxUk/WvJxBt".to_owned(),
+        });
+        assert!(matches!(
+            msg.validate_integrity(&data, &credentials),
+            Ok(())
+        ));
+
+        // FINGERPRINT is checked by Message::from_bytes() when present
+        assert!(msg.has_attribute(FINGERPRINT));
+
+        // assert that we produce the same output as we parsed in this case
+        let mut msg_data = msg.to_bytes();
+        // match the padding bytes with the original
+        msg_data[35] = 0x20;
+        assert_eq!(msg_data, data);
+    }
+
+    #[test]
+    fn rfc5769_vector4() {
+        // https://tools.ietf.org/html/rfc5769#section-2.4
+        let data = vec![
+            0x00, 0x01, 0x00, 0x60, //    Request type and message length
+            0x21, 0x12, 0xa4, 0x42, //    Magic cookie
+            0x78, 0xad, 0x34, 0x33, // }
+            0xc6, 0xad, 0x72, 0xc0, // }  Transaction ID
+            0x29, 0xda, 0x41, 0x2e, // }
+            0x00, 0x06, 0x00, 0x12, //    USERNAME attribute header
+            0xe3, 0x83, 0x9e, 0xe3, // }
+            0x83, 0x88, 0xe3, 0x83, // }
+            0xaa, 0xe3, 0x83, 0x83, // }  Username value (18 bytes) and padding (2 bytes)
+            0xe3, 0x82, 0xaf, 0xe3, // }
+            0x82, 0xb9, 0x00, 0x00, // }
+            0x00, 0x15, 0x00, 0x1c, //    NONCE attribute header
+            0x66, 0x2f, 0x2f, 0x34, // }
+            0x39, 0x39, 0x6b, 0x39, // }
+            0x35, 0x34, 0x64, 0x36, // }
+            0x4f, 0x4c, 0x33, 0x34, // }  Nonce value
+            0x6f, 0x4c, 0x39, 0x46, // }
+            0x53, 0x54, 0x76, 0x79, // }
+            0x36, 0x34, 0x73, 0x41, // }
+            0x00, 0x14, 0x00, 0x0b, //    REALM attribute header
+            0x65, 0x78, 0x61, 0x6d, // }
+            0x70, 0x6c, 0x65, 0x2e, // }  Realm value (11 bytes) and padding (1 byte)
+            0x6f, 0x72, 0x67, 0x00, // }
+            0x00, 0x08, 0x00, 0x14, //    MESSAGE-INTEGRITY attribute header
+            0xf6, 0x70, 0x24, 0x65, // }
+            0x6d, 0xd6, 0x4a, 0x3e, // }
+            0x02, 0xb8, 0xe0, 0x71, // }  HMAC-SHA1 fingerprint
+            0x2e, 0x85, 0xc9, 0xa2, // }
+            0x8c, 0xa8, 0x96, 0x66, // }
+        ];
+
+        let msg = Message::from_bytes(&data).unwrap();
+        assert!(msg.has_class(MessageClass::Request));
+        assert!(msg.has_method(BINDING));
+        assert_eq!(msg.transaction_id(), 0x78ad_3433_c6ad_72c0_29da_412e);
+
+        let long_term = LongTermCredentials {
+            username: "\u{30DE}\u{30C8}\u{30EA}\u{30C3}\u{30AF}\u{30B9}".to_owned(),
+            password: "The\u{00AD}M\u{00AA}tr\u{2168}".to_owned(),
+            nonce: "f//499k954d6OL34oL9FSTvy64sA".to_owned(),
+        };
+        // USERNAME
+        assert!(msg.has_attribute(USERNAME));
+        let raw = msg.get_attribute(USERNAME).unwrap();
+        assert!(matches!(Username::try_from(raw), Ok(_)));
+        let username = Username::try_from(raw).unwrap();
+        assert_eq!(username.username(), &long_term.username);
+
+        // NONCE
+        /* XXX: not currently implemented
+        assert!(msg.has_attribute(NONCE));
+        let raw = msg.get_attribute(NONCE).unwrap();
+        assert!(matches!(Nonce::try_from(raw), Ok(_)));
+        let nonce = Nonce::try_from(raw).unwrap();
+        assert_eq!(nonce., &long_term.username);
+        */
+
+        // MESSAGE_INTEGRITY
+        /* XXX: the password needs SASLPrep-ing to be useful here
+        let credentials = MessageIntegrityCredentials::LongTerm(long_term);
+        assert!(matches!(msg.validate_integrity(&data, &credentials), Ok(())));
+        */
+
+        assert_eq!(msg.to_bytes(), data);
+    }
 }
