@@ -927,7 +927,7 @@ async fn connectivity_check(
 ) -> Result<ConnCheckResponse, AgentError> {
     // generate binding request
     let msg = {
-        let mut msg = Message::new_request_method(BINDING);
+        let mut msg = Message::new_request(BINDING);
 
         // XXX: this needs to be the priority as if the candidate was peer-reflexive
         msg.add_attribute(Priority::new(conncheck.pair.local.priority).into())?;
