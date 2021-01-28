@@ -20,7 +20,7 @@ fn main() -> std::io::Result<()> {
     //let to = "172.253.56.127:19302";
     let to = "127.0.0.1:3478";
 
-    let out = Message::new_request_method(BINDING);
+    let out = Message::new_request(BINDING);
 
     info!("generated to {}", out);
     let buf = out.to_bytes();

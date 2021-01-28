@@ -53,10 +53,39 @@ impl std::fmt::Display for AttributeType {
 }
 
 impl AttributeType {
+    /// Create a new AttributeType from an existing value
+    ///
+    /// Note: the value passed in is not encoded as in a stun message
+    ///
+    /// # Examples
+    /// ```
+    /// # use librice::stun::attribute::AttributeType;
+    /// assert_eq!(AttributeType::new(0x123).value(), 0x123);
+    /// ```
     pub fn new(val: u16) -> Self {
         Self(val)
     }
 
+    /// Return the integer value of this AttributeType
+    ///
+    /// Note: the value returned is not encoded as in a stun message
+    ///
+    /// # Examples
+    /// ```
+    /// # use librice::stun::attribute::AttributeType;
+    /// assert_eq!(AttributeType::new(0x123).value(), 0x123);
+    /// ```
+    pub fn value(&self) -> u16 {
+        self.0
+    }
+
+    /// Returns a human readable name of this `AttributeType` or "unknown"
+    ///
+    /// # Examples
+    /// ```
+    /// # use librice::stun::attribute::XOR_MAPPED_ADDRESS;
+    /// assert_eq!(XOR_MAPPED_ADDRESS.name(), "XOR-MAPPED-ADDRESS");
+    /// ```
     pub fn name(self) -> &'static str {
         match self {
             MAPPED_ADDRESS => "MAPPED-ADDRESS",
@@ -103,6 +132,7 @@ impl From<AttributeType> for u16 {
     }
 }
 
+/// Structure for holding the header of a STUN attribute.  Contains the type and the length
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct AttributeHeader {
     pub atype: AttributeType,

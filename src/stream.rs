@@ -144,10 +144,7 @@ impl Stream {
     /// # use std::sync::Arc;
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
-    /// if let Err(AgentError::ResourceNotFound) = stream.remove_component(component::RTP) {
-    /// } else {
-    ///     assert!(false);
-    /// };
+    /// assert!(matches!(stream.remove_component(component::RTP), Err(AgentError::ResourceNotFound)));
     /// ```
     // Should this really be public API?
     pub fn remove_component(&self, component_id: usize) -> Result<(), AgentError> {

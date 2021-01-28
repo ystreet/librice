@@ -6,6 +6,15 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+//! STUN Messages
+//!
+//! Provides types for generating, parsing, and manipulating STUN messages as specified in one of
+//! [RFC8489], [RFC5389], or [RFC3489].
+//!
+//! [RFC8489]: https://tools.ietf.org/html/rfc8489
+//! [RFC5389]: https://tools.ietf.org/html/rfc5389
+//! [RFC3489]: https://tools.ietf.org/html/rfc3489
+
 use std::convert::TryFrom;
 
 use byteorder::{BigEndian, ByteOrder};
@@ -15,10 +24,14 @@ use crate::stun::attribute::*;
 
 use hmac::{Hmac, Mac, NewMac};
 
+/// The value of magic cookie (in network byte order) as specified in RFC5389, and RFC8489.
 pub const MAGIC_COOKIE: u32 = 0x2112A442;
 
+/// The value of the binding message type.  Can be used in either a request or an indication
+/// message.
 pub const BINDING: u16 = 0x0001;
 
+/// Structure for holding the required credentials for handling long-term STUN credentials
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LongTermCredentials {
     pub username: String,
@@ -26,11 +39,13 @@ pub struct LongTermCredentials {
     pub nonce: String,
 }
 
+/// Structure for holding the required credentials for handling short-term STUN credentials
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShortTermCredentials {
     pub password: String,
 }
 
+/// Enum for holding the credentials used to sign or verify a [`Message`]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageIntegrityCredentials {
     ShortTerm(ShortTermCredentials),
@@ -53,6 +68,17 @@ impl MessageIntegrityCredentials {
     }
 }
 
+/// The class of a [`Message`].
+///
+/// There are four classes of [`Message`]s within the STUN protocol:
+///
+///  - [Request][`MessageClass::Request`] indicates that a request is being made and a
+///    response is expected.
+///  - An [Indication][`MessageClass::Indication`] is a fire and forget [`Message`] where
+///    no response is required or expected.
+///  - [Success][`MessageClass::Success`] indicates that a [Request][`MessageClass::Request`]
+///    was successfully handled and the
+///  - [Error][`MessageClass::Error`] class indicates that an error was produced.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum MessageClass {
     Request,
@@ -62,6 +88,8 @@ pub enum MessageClass {
 }
 
 impl MessageClass {
+    /// Returns whether this [`MessageClass`] is of a response type.  i.e. is either
+    /// [`MessageClass::Success`] or [`MessageClass::Error`].
     pub fn is_response(self) -> bool {
         matches!(self, MessageClass::Success | MessageClass::Error)
     }
@@ -76,6 +104,7 @@ impl MessageClass {
     }
 }
 
+/// The type of a [`Message`].  A combination of a [`MessageClass`] and a STUN method.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct MessageType(u16);
 
@@ -92,6 +121,35 @@ impl std::fmt::Display for MessageType {
 }
 
 impl MessageType {
+    /// Create a new [`MessageType`] from the provided [`MessageClass`] and method
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{MessageType, MessageClass, BINDING};
+    /// let mtype = MessageType::from_class_method(MessageClass::Indication, BINDING);
+    /// assert_eq!(mtype.has_class(MessageClass::Indication), true);
+    /// assert_eq!(mtype.has_method(BINDING), true);
+    /// ```
+    pub fn from_class_method(class: MessageClass, method: u16) -> Self {
+        let class_bits = MessageClass::to_bits(class);
+        let method_bits = method & 0xf | (method & 0x70) << 1 | (method & 0xf80) << 2;
+        // trace!("MessageType from class {:?} and method {:?} into {:?}", class, method,
+        //     class_bits | method_bits);
+        Self {
+            0: class_bits | method_bits,
+        }
+    }
+
+    /// Retrieves the class of a [`MessageType`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{MessageType, MessageClass, BINDING};
+    /// let mtype = MessageType::from_class_method(MessageClass::Indication, BINDING);
+    /// assert_eq!(mtype.class(), MessageClass::Indication);
+    /// ```
     pub fn class(self) -> MessageClass {
         let class = (self.0 & 0x10) >> 4 | (self.0 & 0x100) >> 7;
         match class {
@@ -103,38 +161,72 @@ impl MessageType {
         }
     }
 
+    /// Returns whether class of a [`MessageType`] is equal to the provided [`MessageClass`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{MessageType, MessageClass, BINDING};
+    /// let mtype = MessageType::from_class_method(MessageClass::Indication, BINDING);
+    /// assert!(mtype.has_class(MessageClass::Indication));
+    /// ```
     pub fn has_class(self, cls: MessageClass) -> bool {
         self.class() == cls
     }
 
+    /// Returns whether class of a [`MessageType`] indicates a response [`Message`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{MessageType, MessageClass, BINDING};
+    /// assert_eq!(MessageType::from_class_method(MessageClass::Indication, BINDING)
+    ///     .is_response(), false);
+    /// assert_eq!(MessageType::from_class_method(MessageClass::Request, BINDING)
+    ///     .is_response(), false);
+    /// assert_eq!(MessageType::from_class_method(MessageClass::Success, BINDING)
+    ///     .is_response(), true);
+    /// assert_eq!(MessageType::from_class_method(MessageClass::Error, BINDING)
+    ///     .is_response(), true);
+    /// ```
     pub fn is_response(self) -> bool {
         self.class().is_response()
     }
 
+    /// Returns the method of a [`MessageType`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{MessageType, MessageClass, BINDING};
+    /// let mtype = MessageType::from_class_method(MessageClass::Indication, BINDING);
+    /// assert_eq!(mtype.method(), BINDING);
+    /// ```
     pub fn method(self) -> u16 {
         self.0 & 0xf | (self.0 & 0xe0) >> 1 | (self.0 & 0x3e00) >> 2
     }
 
+    /// Returns whether the method of a [`MessageType`] is equal to the provided value
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{MessageType, MessageClass, BINDING};
+    /// let mtype = MessageType::from_class_method(MessageClass::Indication, BINDING);
+    /// assert_eq!(mtype.has_method(BINDING), true);
+    /// ```
     pub fn has_method(self, method: u16) -> bool {
         self.method() == method
     }
 
-    pub fn from_class_method(class: MessageClass, method: u16) -> Self {
-        let class_bits = MessageClass::to_bits(class);
-        let method_bits = method & 0xf | (method & 0x70) << 1 | (method & 0xf80) << 2;
-        // trace!("MessageType from class {:?} and method {:?} into {:?}", class, method,
-        //     class_bits | method_bits);
-        Self {
-            0: class_bits | method_bits,
-        }
-    }
-
+    /// Convert a [`MessageType`] to network bytes
     pub fn to_bytes(self) -> Vec<u8> {
         let mut ret = vec![0; 2];
         BigEndian::write_u16(&mut ret[0..2], self.0);
         ret
     }
 
+    /// Convert a set of network bytes into a [`MessageType`] or return an error
     pub fn from_bytes(data: &[u8]) -> Result<Self, AgentError> {
         let data = BigEndian::read_u16(data);
         if data & 0xc000 != 0x0 {
@@ -158,6 +250,10 @@ impl TryFrom<&[u8]> for MessageType {
     }
 }
 
+/// The structure that encapsulates the entirety of a STUN message
+///
+/// Contains the [`MessageType`], a transaction ID, and a list of STUN
+/// [`Attribute`](crate::stun::attribute::Attribute)s.
 #[derive(Debug, Clone)]
 pub struct Message {
     msg_type: MessageType,
@@ -200,6 +296,19 @@ fn padded_attr_size(attr: &dyn Attribute) -> usize {
 }
 
 impl Message {
+    /// Create a new [`Message`] with the provided [`MessageType`] and transaction ID
+    ///
+    /// Note you probably want to use one of the other helper constructors instead.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// let mtype = MessageType::from_class_method(MessageClass::Indication, BINDING);
+    /// let message = Message::new(mtype, 0);
+    /// assert!(message.has_class(MessageClass::Indication));
+    /// assert!(message.has_method(BINDING));
+    /// ```
     pub fn new(mtype: MessageType, transaction: u128) -> Self {
         Self {
             msg_type: mtype,
@@ -208,24 +317,65 @@ impl Message {
         }
     }
 
-    fn new_request(mtype: MessageType) -> Self {
-        Message::new(mtype, Message::generate_transaction())
+    /// Create a new request [`Message`] of the provided method
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// let message = Message::new_request(BINDING);
+    /// assert!(message.has_class(MessageClass::Request));
+    /// assert!(message.has_method(BINDING));
+    /// ```
+    pub fn new_request(method: u16) -> Self {
+        Message::new(
+            MessageType::from_class_method(MessageClass::Request, method),
+            Message::generate_transaction(),
+        )
     }
 
-    pub fn new_request_method(method: u16) -> Self {
-        Message::new_request(MessageType::from_class_method(
-            MessageClass::Request,
-            method,
-        ))
-    }
-
+    /// Create a new success [`Message`] response from the provided request
+    ///
+    /// # Panics
+    ///
+    /// When a non-request [`Message`] is passed as the original input [`Message`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// let message = Message::new_request(BINDING);
+    /// let success = Message::new_success(&message);
+    /// assert!(success.has_class(MessageClass::Success));
+    /// assert!(success.has_method(BINDING));
+    /// ```
     pub fn new_success(orig: &Message) -> Self {
+        if !orig.has_class(MessageClass::Request) {
+            panic!(
+                "A success response message was attempted to be created from a non-request message"
+            );
+        }
         Message::new(
             MessageType::from_class_method(MessageClass::Success, orig.method()),
             orig.transaction_id(),
         )
     }
 
+    /// Create a new error [`Message`] response from the provided request
+    ///
+    /// # Panics
+    ///
+    /// When a non-request [`Message`] is passed as the original input [`Message`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// let message = Message::new_request(BINDING);
+    /// let success = Message::new_error(&message);
+    /// assert!(success.has_class(MessageClass::Error));
+    /// assert!(success.has_method(BINDING));
+    /// ```
     pub fn new_error(orig: &Message) -> Self {
         Message::new(
             MessageType::from_class_method(MessageClass::Error, orig.method()),
@@ -233,30 +383,105 @@ impl Message {
         )
     }
 
+    /// Retrieve the [`MessageType`] of a [`Message`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// let message = Message::new_request(BINDING);
+    /// assert!(message.get_type().has_class(MessageClass::Request));
+    /// assert!(message.get_type().has_method(BINDING));
+    /// ```
     pub fn get_type(&self) -> MessageType {
         self.msg_type
     }
 
+    /// Retrieve the [`MessageClass`] of a [`Message`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// let message = Message::new_request(BINDING);
+    /// assert_eq!(message.class(), MessageClass::Request);
+    /// ```
     pub fn class(&self) -> MessageClass {
         self.get_type().class()
     }
 
+    /// Returns whether the [`Message`] is of the specified [`MessageClass`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// let message = Message::new_request(BINDING);
+    /// assert!(message.has_class(MessageClass::Request));
+    /// ```
     pub fn has_class(&self, cls: MessageClass) -> bool {
         self.class() == cls
     }
 
+    /// Returns whether the [`Message`] is a response
+    ///
+    /// This means that the [`Message`] has a class of either success or error
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// let message = Message::new_request(BINDING);
+    /// assert_eq!(message.is_response(), false);
+    ///
+    /// let error = Message::new_error(&message);
+    /// assert_eq!(error.is_response(), true);
+    ///
+    /// let success = Message::new_success(&message);
+    /// assert_eq!(success.is_response(), true);
+    /// ```
     pub fn is_response(&self) -> bool {
         self.class().is_response()
     }
 
+    /// Retrieves the method of the [`Message`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// let message = Message::new_request(BINDING);
+    /// assert_eq!(message.method(), BINDING);
+    /// ```
     pub fn method(&self) -> u16 {
         self.get_type().method()
     }
 
+    /// Returns whether the [`Message`] is of the specified method
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// let message = Message::new_request(BINDING);
+    /// assert_eq!(message.has_method(BINDING), true);
+    /// assert_eq!(message.has_method(0), false);
+    /// ```
     pub fn has_method(&self, method: u16) -> bool {
         self.method() == method
     }
 
+    /// Retrieves the 96-bit transaction ID of the [`Message`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// let mtype = MessageType::from_class_method(MessageClass::Request, BINDING);
+    /// let transaction_id = Message::generate_transaction();
+    /// let message = Message::new(mtype, transaction_id);
+    /// assert_eq!(message.transaction_id(), transaction_id);
+    /// ```
     pub fn transaction_id(&self) -> u128 {
         self.transaction
     }
@@ -386,6 +611,10 @@ impl Message {
         Ok(ret)
     }
 
+    /// Validates the MESSAGE_INTEGRITY attribute with the provided credentials
+    ///
+    /// The Original data that was used to construct this [`Message`] must be provided in order
+    /// to successfully validate the [`Message`]
     pub fn validate_integrity(
         &self,
         orig_data: &[u8],
@@ -435,6 +664,28 @@ impl Message {
         Err(AgentError::Malformed)
     }
 
+    /// Adds MESSAGE_INTEGRITY attribute to a [`Message`] using the provided credentials
+    ///
+    /// # Errors
+    ///
+    /// - If a MESSAGE_INTEGRITY attribute is already present
+    /// - If a FINGERPRINT attribute is already present
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING,
+    ///     MessageIntegrityCredentials, ShortTermCredentials};
+    /// let mut message = Message::new_request(BINDING);
+    /// let credentials = MessageIntegrityCredentials::ShortTerm(ShortTermCredentials { password:
+    ///     "pass".to_owned() });
+    /// assert!(message.add_message_integrity(&credentials).is_ok());
+    /// let data = message.to_bytes();
+    /// assert!(message.validate_integrity(&data, &credentials).is_ok());
+    ///
+    /// // duplicate MESSAGE_INTEGRITY is an error
+    /// assert!(message.add_message_integrity(&credentials).is_err());
+    /// ```
     pub fn add_message_integrity(
         &mut self,
         credentials: &MessageIntegrityCredentials,
@@ -462,6 +713,22 @@ impl Message {
         Ok(())
     }
 
+    /// Adds FINGERPRINT attribute to a [`Message`]
+    ///
+    /// # Errors
+    ///
+    /// - If a FINGERPRINT attribute is already present
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// let mut message = Message::new_request(BINDING);
+    /// assert!(message.add_fingerprint().is_ok());
+    ///
+    /// // duplicate FINGERPRINT is an error
+    /// assert!(message.add_fingerprint().is_err());
+    /// ```
     pub fn add_fingerprint(&mut self) -> Result<(), AgentError> {
         if self.get_attribute(FINGERPRINT).is_some() {
             return Err(AgentError::AlreadyExists);
@@ -478,7 +745,17 @@ impl Message {
     }
 
     /// Add a `Attribute` to this `Message`.  Only one `AttributeType` can be added for each
-    /// `Attribute.  Attempting to add multiple `Atribute`s of the same `AttributeType`.
+    /// `Attribute.  Attempting to add multiple `Atribute`s of the same `AttributeType` will fail.
+    ///
+    /// # Errors
+    ///
+    /// - if a MESSAGE_INTEGRITY attribute is attempted to be added.  Use
+    /// `Message::add_message_integrity` instead.
+    /// - if a FINGERPRINT attribute is attempted to be added. Use
+    /// `Message::add_fingerprint` instead.
+    /// - If the attribute already exists within the message
+    /// - If attempting to add attributes when MESSAGE_INTEGRITY or FINGERPRINT atributes already
+    /// exist
     ///
     /// # Examples
     ///
@@ -487,7 +764,7 @@ impl Message {
     /// ```
     /// # use librice::stun::attribute::RawAttribute;
     /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
-    /// let mut message = Message::new(MessageType::from_class_method(MessageClass::Request, BINDING), 0);
+    /// let mut message = Message::new_request(BINDING);
     /// let attr = RawAttribute::new(1.into(), &[3]);
     /// assert!(message.add_attribute(attr.clone()).is_ok());
     /// assert!(message.add_attribute(attr).is_err());
@@ -522,7 +799,7 @@ impl Message {
     /// ```
     /// # use librice::stun::attribute::{RawAttribute, Attribute};
     /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
-    /// let mut message = Message::new(MessageType::from_class_method(MessageClass::Request, BINDING), 0);
+    /// let mut message = Message::new_request(BINDING);
     /// let attr = RawAttribute::new(1.into(), &[3]);
     /// assert!(message.add_attribute(attr.clone()).is_ok());
     /// assert_eq!(*message.get_attribute(1.into()).unwrap(), attr);
@@ -531,10 +808,48 @@ impl Message {
         self.attributes.iter().find(|attr| attr.get_type() == atype)
     }
 
+    /// Returns an iterator over the attributes in the [`Message`].
     pub fn iter_attributes(&self) -> impl Iterator<Item = &RawAttribute> {
         self.attributes.iter()
     }
 
+    /// Check that a message [`Message`] only contains required attributes that are supported and
+    /// have at least some set of required attributes.  Returns an appropriate error message on
+    /// failure to meet these requirements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// # use std::convert::TryInto;
+    /// let mut message = Message::new_request(BINDING);
+    /// // If nothing is required, no error response is returned
+    /// assert!(matches!(Message::check_attribute_types(&message, &[], &[]), None));
+    ///
+    /// // If an atttribute is required that is not in the message, then and error response message
+    /// // is generated
+    /// let error_msg = Message::check_attribute_types(
+    ///     &message,
+    ///     &[],
+    ///     &[SOFTWARE]
+    /// ).unwrap();
+    /// assert!(error_msg.has_attribute(ERROR_CODE));
+    /// let error_code : ErrorCode =
+    ///     error_msg.get_attribute(ERROR_CODE).unwrap().try_into().unwrap();
+    /// assert_eq!(error_code.code(), 400);
+    ///
+    /// message.add_attribute(Username::new("user").unwrap().into());
+    /// // If a Username is in the message but is not advertised as supported then an
+    /// // 'UNKNOWN-ATTRIBUTES' error response is returned
+    /// let error_msg = Message::check_attribute_types(&message, &[], &[]).unwrap();
+    /// assert!(error_msg.is_response());
+    /// assert!(error_msg.has_attribute(ERROR_CODE));
+    /// let error_code : ErrorCode =
+    ///     error_msg.get_attribute(ERROR_CODE).unwrap().try_into().unwrap();
+    /// assert_eq!(error_code.code(), 420);
+    /// assert!(error_msg.has_attribute(UNKNOWN_ATTRIBUTES));
+    /// ```
     pub fn check_attribute_types(
         msg: &Message,
         supported: &[AttributeType],
@@ -572,6 +887,26 @@ impl Message {
         None
     }
 
+    /// Generate an error message with an [`ERROR_CODE`] attribute signalling 'Unknown Attribute'
+    /// and an [`UNKNOWN_ATTRIBUTES`] attribute containing the attributes that are unknown.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{Message, BINDING};
+    /// # use librice::stun::attribute::*;
+    /// # use std::convert::TryInto;
+    /// let msg = Message::new_request(BINDING);
+    /// let error_msg = Message::unknown_attributes(&msg, &[USERNAME]).unwrap();
+    /// assert!(error_msg.is_response());
+    /// assert!(error_msg.has_attribute(ERROR_CODE));
+    /// let error_code : ErrorCode =
+    ///     error_msg.get_attribute(ERROR_CODE).unwrap().try_into().unwrap();
+    /// assert_eq!(error_code.code(), 420);
+    /// let unknown : UnknownAttributes =
+    ///     error_msg.get_attribute(UNKNOWN_ATTRIBUTES).unwrap().try_into().unwrap();
+    /// assert!(unknown.has_attribute(USERNAME));
+    /// ```
     pub fn unknown_attributes(
         src: &Message,
         attributes: &[AttributeType],
@@ -585,6 +920,21 @@ impl Message {
         Ok(out)
     }
 
+    /// Generate an error message with an [`ERROR_CODE`] attribute signalling a 'Bad Request'
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// # use librice::stun::attribute::*;
+    /// # use std::convert::TryInto;
+    /// let msg = Message::new_request(BINDING);
+    /// let error_msg = Message::bad_request(&msg).unwrap();
+    /// assert!(error_msg.has_attribute(ERROR_CODE));
+    /// let error_code : ErrorCode =
+    ///     error_msg.get_attribute(ERROR_CODE).unwrap().try_into().unwrap();
+    /// assert_eq!(error_code.code(), 400);
+    /// ```
     pub fn bad_request(src: &Message) -> Result<Message, AgentError> {
         let mut out = Message::new_error(src);
         out.add_attribute(Software::new("stund - librice v0.1")?.to_raw())?;
@@ -667,7 +1017,7 @@ mod tests {
 
     #[test]
     fn unknown_attributes() {
-        let src = Message::new_request_method(BINDING);
+        let src = Message::new_request(BINDING);
         let msg = Message::unknown_attributes(&src, &[SOFTWARE]).unwrap();
         assert_eq!(msg.transaction_id(), src.transaction_id());
         assert_eq!(msg.class(), MessageClass::Error);
@@ -681,7 +1031,7 @@ mod tests {
 
     #[test]
     fn bad_request() {
-        let src = Message::new_request_method(BINDING);
+        let src = Message::new_request(BINDING);
         let msg = Message::bad_request(&src).unwrap();
         assert_eq!(msg.transaction_id(), src.transaction_id());
         assert_eq!(msg.class(), MessageClass::Error);
@@ -693,7 +1043,7 @@ mod tests {
     #[test]
     fn fingerprint() {
         init();
-        let mut msg = Message::new_request_method(BINDING);
+        let mut msg = Message::new_request(BINDING);
         let software_str = "s";
         msg.add_attribute(Software::new(software_str).unwrap().into())
             .unwrap();
@@ -716,7 +1066,7 @@ mod tests {
     #[test]
     fn integrity() {
         init();
-        let mut msg = Message::new_request_method(BINDING);
+        let mut msg = Message::new_request(BINDING);
         let software_str = "s";
         let credentials = MessageIntegrityCredentials::ShortTerm(ShortTermCredentials {
             password: "secret".to_owned(),
@@ -740,7 +1090,7 @@ mod tests {
 
     #[test]
     fn valid_attributes() {
-        let mut src = Message::new_request_method(BINDING);
+        let mut src = Message::new_request(BINDING);
         src.add_attribute(Username::new("123").unwrap().into())
             .unwrap();
         src.add_attribute(Priority::new(123).into()).unwrap();
