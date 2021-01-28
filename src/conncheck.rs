@@ -378,16 +378,16 @@ impl ConnCheckList {
             // failure -> send error response
             return Ok(Some(error_msg));
         }
-        let priority = match Priority::from_raw(msg.get_attribute(PRIORITY).unwrap()) {
-            Ok(p) => p.priority(),
-            Err(_) => {
+        let priority = match msg.get_attribute::<Priority>(PRIORITY) {
+            Some(p) => p.priority(),
+            None => {
                 return Ok(Some(Message::bad_request(msg)?));
             }
         };
 
-        let peer_nominating = if let Some(use_candidate_raw) = msg.get_attribute(USE_CANDIDATE) {
+        let peer_nominating = if let Some(use_candidate_raw) = msg.get_attribute::<RawAttribute>(USE_CANDIDATE) {
             error!("have use-candidate attr");
-            if UseCandidate::from_raw(use_candidate_raw).is_ok() {
+            if UseCandidate::from_raw(&use_candidate_raw).is_ok() {
                 error!("have valid use-candidate attr");
                 true
             } else {
@@ -969,12 +969,10 @@ async fn connectivity_check(
     // if response error -> fail TODO: might be a recoverable error!
     if response.has_class(MessageClass::Error) {
         warn!("error response {}", response);
-        if let Some(err_attr) = response.get_attribute(ERROR_CODE) {
-            if let Ok(err) = ErrorCode::from_raw(err_attr) {
-                if err.code() == ROLE_CONFLICT {
-                    info!("Role conflict received {}", response);
-                    return Ok(ConnCheckResponse::RoleConflict(conncheck));
-                }
+        if let Some(err) = response.get_attribute::<ErrorCode>(ERROR_CODE) {
+            if err.code() == ROLE_CONFLICT {
+                info!("Role conflict received {}", response);
+                return Ok(ConnCheckResponse::RoleConflict(conncheck));
             }
         }
         // FIXME: some failures are recoverable
@@ -991,13 +989,11 @@ async fn connectivity_check(
         return Ok(ConnCheckResponse::Failure(conncheck));
     }
 
-    if let Some(xor_attr) = response.get_attribute(XOR_MAPPED_ADDRESS) {
-        if let Ok(xor) = XorMappedAddress::from_raw(xor_attr) {
-            let xor_addr = xor.addr(response.transaction_id());
-            // TODO: if response mapped address not in remote candidate list -> new peer-reflexive candidate
-            // TODO glare
-            return Ok(ConnCheckResponse::Success(conncheck, xor_addr));
-        }
+    if let Some(xor) = response.get_attribute::<XorMappedAddress>(XOR_MAPPED_ADDRESS) {
+        let xor_addr = xor.addr(response.transaction_id());
+        // TODO: if response mapped address not in remote candidate list -> new peer-reflexive candidate
+        // TODO glare
+        return Ok(ConnCheckResponse::Success(conncheck, xor_addr));
     }
 
     Ok(ConnCheckResponse::Failure(conncheck))
