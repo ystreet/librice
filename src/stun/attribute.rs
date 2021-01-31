@@ -6,6 +6,15 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+//! STUN Attributes
+//!
+//! Provides for generating, parsing and manipulating STUN attributes as specified in one of
+//! [RFC8489], [RFC5389], or [RFC3489].
+//!
+//! [RFC8489]: https://tools.ietf.org/html/rfc8489
+//! [RFC5389]: https://tools.ietf.org/html/rfc5389
+//! [RFC3489]: https://tools.ietf.org/html/rfc3489
+
 use std::convert::TryFrom;
 use std::convert::TryInto;
 
@@ -43,6 +52,7 @@ pub const USE_CANDIDATE: AttributeType = AttributeType(0x0025);
 pub const ICE_CONTROLLED: AttributeType = AttributeType(0x0029);
 pub const ICE_CONTROLLING: AttributeType = AttributeType(0x002A);
 
+/// The type of an [`Attribute`] in a STUN [`Message`](crate::stun::message::Message)
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AttributeType(u16);
 
@@ -172,6 +182,7 @@ impl TryFrom<&[u8]> for AttributeHeader {
     }
 }
 
+/// A STUN attribute for use in [`Message`](crate::stun::message::Message)s
 pub trait Attribute: std::fmt::Debug {
     /// Retrieve the `AttributeType` of an `Attribute`
     fn get_type(&self) -> AttributeType;
@@ -189,9 +200,12 @@ pub trait Attribute: std::fmt::Debug {
         Self: Sized;
 }
 
+/// The header and raw bytes of an unparsed [`Attribute`]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawAttribute {
+    /// The [`AttributeHeader`] of this [`RawAttribute`]
     pub header: AttributeHeader,
+    /// The raw bytes of this [`RawAttribute`]
     pub value: Vec<u8>,
 }
 
@@ -335,6 +349,7 @@ impl TryFrom<&[u8]> for RawAttribute {
     }
 }
 
+/// The username [`Attribute`]
 #[derive(Debug, Clone)]
 pub struct Username {
     user: String,
@@ -368,6 +383,21 @@ impl Attribute for Username {
 }
 
 impl Username {
+    /// Create a new [`Username`] [`Attribute`]
+    ///
+    /// # Errors
+    ///
+    /// - When the length of the username is longer than allowed in a STUN
+    /// [`Message`](crate::stun::message::Message)
+    /// - TODO: If converting through SASLPrep fails
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let username = Username::new ("user").unwrap();
+    /// assert_eq!(username.username(), "user");
+    /// ```
     pub fn new(user: &str) -> Result<Self, AgentError> {
         if user.len() > 513 {
             return Err(AgentError::InvalidSize);
@@ -378,6 +408,15 @@ impl Username {
         })
     }
 
+    /// The username stored in a [`Username`] [`Attribute`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let username = Username::new ("user").unwrap();
+    /// assert_eq!(username.username(), "user");
+    /// ```
     pub fn username(&self) -> &str {
         &self.user
     }
@@ -402,6 +441,7 @@ impl From<Username> for RawAttribute {
     }
 }
 
+/// The ErrorCode [`Attribute`]
 #[derive(Debug, Clone)]
 pub struct ErrorCode {
     code: u16,
@@ -451,6 +491,20 @@ impl Attribute for ErrorCode {
     }
 }
 impl ErrorCode {
+    /// Create a new [`ErrorCode`] [`Attribute`]
+    ///
+    /// # Errors
+    ///
+    /// - When the code value is out of range [300, 699]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let error = ErrorCode::new (400, "bad error").unwrap();
+    /// assert_eq!(error.code(), 400);
+    /// assert_eq!(error.reason(), "bad error");
+    /// ```
     pub fn new(code: u16, reason: &str) -> Result<Self, AgentError> {
         if !(300..700).contains(&code) {
             return Err(AgentError::Malformed);
@@ -461,14 +515,43 @@ impl ErrorCode {
         })
     }
 
+    /// The error code value
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let error = ErrorCode::new (400, "bad error").unwrap();
+    /// assert_eq!(error.code(), 400);
+    /// ```
     pub fn code(&self) -> u16 {
         self.code
     }
 
+    /// The error code reason string
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let error = ErrorCode::new (400, "bad error").unwrap();
+    /// assert_eq!(error.reason(), "bad error");
+    /// ```
     pub fn reason(&self) -> &str {
         &self.reason
     }
 
+    /// Return some default reason strings for some error code values
+    ///
+    /// Currently the following are supported.
+    ///
+    ///  - 301 -> Try Alternate
+    ///  - 400 -> Bad Request
+    ///  - 401 -> Unauthorized
+    ///  - 420 -> Unknown Attribute
+    ///  - 438 -> Stale Nonce
+    ///  - 500 -> Server Error
+    ///  - 487 -> Role Conflict
     pub fn default_reason_for_code(code: u16) -> &'static str {
         match code {
             301 => "Try Alternate",
@@ -506,6 +589,7 @@ impl From<ErrorCode> for RawAttribute {
     }
 }
 
+/// The UnknownAttributes [`Attribute`]
 #[derive(Debug, Clone)]
 pub struct UnknownAttributes {
     attributes: Vec<AttributeType>,
@@ -545,18 +629,46 @@ impl Attribute for UnknownAttributes {
     }
 }
 impl UnknownAttributes {
+    /// Create a new unknown attributes [`Attribute`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let unknown = UnknownAttributes::new(&[USERNAME]);
+    /// assert!(unknown.has_attribute(USERNAME));
+    /// ```
     pub fn new(attrs: &[AttributeType]) -> Self {
         Self {
             attributes: attrs.to_vec(),
         }
     }
 
+    /// Add an [`AttributeType`] that is unsupported
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let mut unknown = UnknownAttributes::new(&[]);
+    /// unknown.add_attribute(USERNAME);
+    /// assert!(unknown.has_attribute(USERNAME));
+    /// ```
     pub fn add_attribute(&mut self, attr: AttributeType) {
         if !self.has_attribute(attr) {
             self.attributes.push(attr);
         }
     }
 
+    /// Check if an [`AttributeType`] is present
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let unknown = UnknownAttributes::new(&[USERNAME]);
+    /// assert!(unknown.has_attribute(USERNAME));
+    /// ```
     pub fn has_attribute(&self, attr: AttributeType) -> bool {
         self.attributes.iter().any(|&a| a == attr)
     }
@@ -582,6 +694,7 @@ impl From<UnknownAttributes> for RawAttribute {
     }
 }
 
+/// The Software [`Attribute`]
 #[derive(Debug, Clone)]
 pub struct Software {
     software: String,
@@ -615,6 +728,19 @@ impl Attribute for Software {
 }
 
 impl Software {
+    /// Create a new unknown attributes [`Attribute`]
+    ///
+    /// # Errors
+    ///
+    /// If the length of the provided string is too long for the [`Attribute`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let software = Software::new("librice 0.1").unwrap();
+    /// assert_eq!(software.software(), "librice 0.1");
+    /// ```
     pub fn new(software: &str) -> Result<Self, AgentError> {
         if software.len() > 768 {
             return Err(AgentError::InvalidSize);
@@ -624,6 +750,15 @@ impl Software {
         })
     }
 
+    /// The value of the software field
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let software = Software::new("librice 0.1").unwrap();
+    /// assert_eq!(software.software(), "librice 0.1");
+    /// ```
     pub fn software(&self) -> &str {
         &self.software
     }
@@ -659,6 +794,7 @@ macro_rules! bytewise_xor {
     }};
 }
 
+/// The XorMappedAddress [`Attribute`]
 #[derive(Debug, Clone)]
 pub struct XorMappedAddress {
     // stored XOR-ed as we need the transaction id to get the original value
@@ -737,6 +873,17 @@ impl Attribute for XorMappedAddress {
 }
 
 impl XorMappedAddress {
+    /// Create a new XorMappedAddress [`Attribute`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// # use std::net::SocketAddr;
+    /// let addr = "127.0.0.1:1234".parse().unwrap();
+    /// let mapped_addr = XorMappedAddress::new(addr, 0x5678);
+    /// assert_eq!(mapped_addr.addr(0x5678), addr);
+    /// ```
     pub fn new(addr: SocketAddr, transaction: u128) -> Self {
         Self {
             addr: XorMappedAddress::xor_addr(addr, transaction),
@@ -764,6 +911,17 @@ impl XorMappedAddress {
         }
     }
 
+    /// Retrieve the address stored in a XorMappedAddress
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// # use std::net::SocketAddr;
+    /// let addr = "[::1]:1234".parse().unwrap();
+    /// let mapped_addr = XorMappedAddress::new(addr, 0x5678);
+    /// assert_eq!(mapped_addr.addr(0x5678), addr);
+    /// ```
     pub fn addr(&self, transaction: u128) -> SocketAddr {
         XorMappedAddress::xor_addr(self.addr, transaction)
     }
@@ -792,6 +950,7 @@ impl From<XorMappedAddress> for RawAttribute {
     }
 }
 
+/// The Priority [`Attribute`]
 #[derive(Debug)]
 pub struct Priority {
     priority: u32,
@@ -829,10 +988,28 @@ impl Attribute for Priority {
 }
 
 impl Priority {
+    /// Create a new Priority [`Attribute`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let priority = Priority::new(1234);
+    /// assert_eq!(priority.priority(), 1234);
+    /// ```
     pub fn new(priority: u32) -> Self {
         Self { priority }
     }
 
+    /// Retrieve the priority value
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let priority = Priority::new(1234);
+    /// assert_eq!(priority.priority(), 1234);
+    /// ```
     pub fn priority(&self) -> u32 {
         self.priority
     }
@@ -858,6 +1035,7 @@ impl std::fmt::Display for Priority {
     }
 }
 
+/// The UseCandidate [`Attribute`]
 #[derive(Debug)]
 pub struct UseCandidate {}
 
@@ -893,6 +1071,14 @@ impl Default for UseCandidate {
 }
 
 impl UseCandidate {
+    /// Create a new UseCandidate [`Attribute`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let _use_candidate = UseCandidate::new();
+    /// ```
     pub fn new() -> Self {
         Self {}
     }
@@ -918,6 +1104,7 @@ impl std::fmt::Display for UseCandidate {
     }
 }
 
+/// The IceControlled [`Attribute`]
 #[derive(Debug)]
 pub struct IceControlled {
     tie_breaker: u64,
@@ -955,10 +1142,28 @@ impl Attribute for IceControlled {
 }
 
 impl IceControlled {
+    /// Create a new IceControlled [`Attribute`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let ice_controlled = IceControlled::new(1234);
+    /// assert_eq!(ice_controlled.tie_breaker(), 1234);
+    /// ```
     pub fn new(tie_breaker: u64) -> Self {
         Self { tie_breaker }
     }
 
+    /// Retrieve the tie breaker value
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let ice_controlled = IceControlled::new(1234);
+    /// assert_eq!(ice_controlled.tie_breaker(), 1234);
+    /// ```
     pub fn tie_breaker(&self) -> u64 {
         self.tie_breaker
     }
@@ -984,6 +1189,7 @@ impl std::fmt::Display for IceControlled {
     }
 }
 
+/// The IceControlling [`Attribute`]
 #[derive(Debug)]
 pub struct IceControlling {
     tie_breaker: u64,
@@ -1021,10 +1227,28 @@ impl Attribute for IceControlling {
 }
 
 impl IceControlling {
+    /// Create a new IceControlling [`Attribute`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let ice_controlling = IceControlling::new(1234);
+    /// assert_eq!(ice_controlling.tie_breaker(), 1234);
+    /// ```
     pub fn new(tie_breaker: u64) -> Self {
         Self { tie_breaker }
     }
 
+    /// Create a new IceControlling [`Attribute`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let ice_controlling = IceControlling::new(1234);
+    /// assert_eq!(ice_controlling.tie_breaker(), 1234);
+    /// ```
     pub fn tie_breaker(&self) -> u64 {
         self.tie_breaker
     }
@@ -1050,6 +1274,7 @@ impl std::fmt::Display for IceControlling {
     }
 }
 
+/// The MessageIntegrity [`Attribute`]
 #[derive(Debug)]
 pub struct MessageIntegrity {
     hmac: [u8; 20],
@@ -1085,10 +1310,30 @@ impl Attribute for MessageIntegrity {
 }
 
 impl MessageIntegrity {
+    /// Create a new MessageIntegrity [`Attribute`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let hmac = [0;20];
+    /// let integrity = MessageIntegrity::new(hmac);
+    /// assert_eq!(integrity.hmac(), &hmac);
+    /// ```
     pub fn new(hmac: [u8; 20]) -> Self {
         Self { hmac }
     }
 
+    /// Retrieve the value of the hmac
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let hmac = [0;20];
+    /// let integrity = MessageIntegrity::new(hmac);
+    /// assert_eq!(integrity.hmac(), &hmac);
+    /// ```
     pub fn hmac(&self) -> &[u8; 20] {
         &self.hmac
     }
@@ -1117,6 +1362,7 @@ impl std::fmt::Display for MessageIntegrity {
     }
 }
 
+/// The Fingerprint [`Attribute`]
 #[derive(Debug)]
 pub struct Fingerprint {
     fingerprint: [u8; 4],
@@ -1154,12 +1400,32 @@ impl Attribute for Fingerprint {
 }
 
 impl Fingerprint {
-    pub const XOR_CONSTANT: [u8; 4] = [0x53, 0x54, 0x55, 0x4E];
+    const XOR_CONSTANT: [u8; 4] = [0x53, 0x54, 0x55, 0x4E];
 
+    /// Create a new Fingerprint [`Attribute`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let value = [0;4];
+    /// let fingerprint = Fingerprint::new(value);
+    /// assert_eq!(fingerprint.fingerprint(), &value);
+    /// ```
     pub fn new(fingerprint: [u8; 4]) -> Self {
         Self { fingerprint }
     }
 
+    /// Retrieve the fingerprint value
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let value = [0;4];
+    /// let fingerprint = Fingerprint::new(value);
+    /// assert_eq!(fingerprint.fingerprint(), &value);
+    /// ```
     pub fn fingerprint(&self) -> &[u8; 4] {
         &self.fingerprint
     }
