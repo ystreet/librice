@@ -737,10 +737,10 @@ impl Attribute for XorMappedAddress {
 }
 
 impl XorMappedAddress {
-    pub fn new(addr: SocketAddr, transaction: u128) -> Result<Self, AgentError> {
-        Ok(Self {
+    pub fn new(addr: SocketAddr, transaction: u128) -> Self {
+        Self {
             addr: XorMappedAddress::xor_addr(addr, transaction),
-        })
+        }
     }
 
     fn xor_addr(addr: SocketAddr, transaction: u128) -> SocketAddr {
@@ -1371,7 +1371,7 @@ mod tests {
         let transaction_id = 0x9876_5432_1098_7654_3210_9876;
         let addrs = &["192.168.0.1:40000".parse().unwrap()];
         for addr in addrs {
-            let mapped = XorMappedAddress::new(*addr, transaction_id).unwrap();
+            let mapped = XorMappedAddress::new(*addr, transaction_id);
             assert_eq!(mapped.get_type(), XOR_MAPPED_ADDRESS);
             assert_eq!(mapped.addr(transaction_id), *addr);
             let raw: RawAttribute = mapped.into();
