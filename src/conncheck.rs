@@ -1645,7 +1645,8 @@ mod tests {
         async_std::task::block_on(async move {
             let agent = Arc::new(Agent::default());
             let stream = agent.add_stream();
-            let component = stream.add_component().unwrap();
+            let component1 = stream.add_component().unwrap();
+            let component2 = stream.add_component().unwrap();
             let list1 = ConnCheckList::new();
             let list2 = ConnCheckList::new();
 
@@ -1657,35 +1658,35 @@ mod tests {
             let remote3 = construct_peer_with_foundation("1").await;
 
             list1
-                .add_local_candidate(&component, local1.candidate.clone(), local1.agent)
+                .add_local_candidate(&component1, local1.candidate.clone(), local1.agent)
                 .await;
-            list1.add_remote_candidate(component.id, remote1.candidate.clone());
+            list1.add_remote_candidate(component1.id, remote1.candidate.clone());
             list2
-                .add_local_candidate(&component, local2.candidate.clone(), local2.agent)
+                .add_local_candidate(&component2, local2.candidate.clone(), local2.agent)
                 .await;
-            list2.add_remote_candidate(component.id, remote2.candidate.clone());
+            list2.add_remote_candidate(component2.id, remote2.candidate.clone());
             list2
-                .add_local_candidate(&component, local3.candidate.clone(), local3.agent)
+                .add_local_candidate(&component2, local3.candidate.clone(), local3.agent)
                 .await;
-            list2.add_remote_candidate(component.id, remote3.candidate.clone());
+            list2.add_remote_candidate(component2.id, remote3.candidate.clone());
 
             list1.generate_checks();
             list2.generate_checks();
 
             // generated pairs
-            let pair1 = CandidatePair::new(component.id, local1.candidate, remote1.candidate);
+            let pair1 = CandidatePair::new(component1.id, local1.candidate, remote1.candidate);
             let pair2 = CandidatePair::new(
-                component.id,
+                component2.id,
                 local2.candidate.clone(),
                 remote2.candidate.clone(),
             );
             let pair3 = CandidatePair::new(
-                component.id,
+                component2.id,
                 local3.candidate.clone(),
                 remote3.candidate.clone(),
             );
-            let pair4 = CandidatePair::new(component.id, local2.candidate, remote3.candidate);
-            let pair5 = CandidatePair::new(component.id, local3.candidate, remote2.candidate);
+            let pair4 = CandidatePair::new(component2.id, local2.candidate, remote3.candidate);
+            let pair5 = CandidatePair::new(component2.id, local3.candidate, remote2.candidate);
             assert_list_contains_checks(&list1, vec![&pair1]);
             assert_list_contains_checks(&list2, vec![&pair2, &pair3, &pair4, &pair5]);
 
