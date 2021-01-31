@@ -521,7 +521,7 @@ impl ConnCheckList {
         msg.validate_integrity(data, &remote_credentials)?;
 
         let mut response = Message::new_success(msg);
-        response.add_attribute(XorMappedAddress::new(from, msg.transaction_id())?.to_raw())?;
+        response.add_attribute(XorMappedAddress::new(from, msg.transaction_id()).to_raw())?;
         response.add_message_integrity(&local_credentials)?;
         response.add_fingerprint()?;
 
@@ -1443,7 +1443,7 @@ mod tests {
         msg.validate_integrity(data, &remote_credentials)?;
 
         let mut response = Message::new_success(msg);
-        response.add_attribute(XorMappedAddress::new(from, msg.transaction_id())?.to_raw())?;
+        response.add_attribute(XorMappedAddress::new(from, msg.transaction_id()).to_raw())?;
         response.add_message_integrity(&local_credentials)?;
         response.add_fingerprint()?;
         agent.send(response, from).await?;

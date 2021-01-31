@@ -70,7 +70,6 @@ fn generate_bind_request(from: SocketAddr) -> std::io::Result<Message> {
     let mut out = Message::new(mtype, Message::generate_transaction());
     out.add_attribute(
         XorMappedAddress::new(from, out.transaction_id())
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid message"))?
             .to_raw(),
     )
     .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid message"))?;
