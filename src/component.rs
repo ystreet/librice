@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use async_std::net::{SocketAddr, UdpSocket};
 
 use futures::future::AbortHandle;
+use futures::channel::oneshot;
 use futures::prelude::*;
 use futures::Stream;
 
@@ -194,11 +195,11 @@ impl Component {
 
     pub(crate) async fn add_recv_agent(&self, agent: StunAgent) -> AbortHandle {
         let sender = self.inner.lock().unwrap().receive_send_channel.clone();
-        let (ready_send, mut ready_recv) = async_channel::bounded(1);
+        let (ready_send, ready_recv) = oneshot::channel();
 
         let (abortable, abort_handle) = futures::future::abortable(async move {
             let mut data_recv_stream = agent.data_receive_stream();
-            if ready_send.send(0).await.is_err() {
+            if ready_send.send(()).is_err() {
                 return;
             }
             while let Some(data) = data_recv_stream.next().await {
@@ -211,7 +212,7 @@ impl Component {
 
         async_std::task::spawn(abortable);
 
-        ready_recv.next().await.unwrap();
+        ready_recv.await.unwrap();
 
         abort_handle
     }
