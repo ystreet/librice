@@ -21,7 +21,7 @@ use crate::candidate::{Candidate, CandidatePair, CandidateType, TransportType};
 
 use crate::agent::{AgentError, AgentMessage};
 
-use crate::component::{Component, ComponentState};
+use crate::component::{Component, ComponentState, SelectedPair};
 use crate::stun::agent::StunAgent;
 use crate::stun::attribute::*;
 use crate::stun::message::*;
@@ -257,6 +257,11 @@ impl ConnCheckListInner {
         if let Some(idx) = self.valid.iter().position(|valid_pair| valid_pair == pair) {
             info!("nominated component {} pair {:?}", component_id, pair);
             self.valid[idx].nominate();
+            let component = self
+                .components
+                .iter()
+                .filter_map(|component| component.upgrade())
+                .find(|component| component.id == component_id);
             if self.state == CheckListState::Running {
                 // o Once a candidate pair for a component of a data stream has been
                 //   nominated, and the state of the checklist associated with the data
@@ -295,17 +300,34 @@ impl ConnCheckListInner {
                     })
                 });
                 if all_nominated {
+                    // ... Once an ICE agent sets the
+                    // state of the checklist to Completed (when there is a nominated pair
+                    // for each component of the data stream), that pair becomes the
+                    // selected pair for that agent and is used for sending and receiving
+                    // data for that component of the data stream.
+                    self.valid.iter().fold(vec![], |mut component_ids_selected, valid_pair| {
+                        // Only nominate one valid candidatePair
+                        if component_ids_selected.iter().find(|&comp_id| comp_id == &valid_pair.component_id).is_none() {
+                            if let Some(component) = &component {
+                                let local_agent = self.local_candidates.iter().find(|cand| {
+                                    cand.candidate == pair.local
+                                }).map(|cand| cand.stun_agent.clone());
+                                if let Some(local_agent) = local_agent {
+                                    component.set_selected_pair(SelectedPair::new(pair.clone(), local_agent));
+                                } else {
+                                    panic!("Cannot find existing local stun agent!");
+                                }
+                            }
+                            component_ids_selected.push(valid_pair.component_id);
+                        }
+                        component_ids_selected
+                    });
                     info!("checklist state change from {:?} to Completed", self.state);
                     self.state = CheckListState::Completed;
                 }
             }
-            let ret = self
-                .components
-                .iter()
-                .filter_map(|component| component.upgrade())
-                .find(|component| component.id == component_id);
-            debug!("trying to signal component {:?} {:?}", ret, self.components);
-            return ret;
+            debug!("trying to signal component {:?}", component);
+            return component;
         } else {
             warn!(
                 "unknown nominated component {} pair {:?}",
