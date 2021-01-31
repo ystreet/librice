@@ -68,11 +68,8 @@ pub fn iface_udp_sockets(
 fn generate_bind_request(from: SocketAddr) -> std::io::Result<Message> {
     let mtype = MessageType::from_class_method(MessageClass::Request, BINDING);
     let mut out = Message::new(mtype, Message::generate_transaction());
-    out.add_attribute(
-        XorMappedAddress::new(from, out.transaction_id())
-            .to_raw(),
-    )
-    .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid message"))?;
+    out.add_attribute(XorMappedAddress::new(from, out.transaction_id()).to_raw())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid message"))?;
 
     info!("generated to {}", out);
     Ok(out)

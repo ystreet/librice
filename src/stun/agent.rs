@@ -9,7 +9,7 @@
 //! STUN agent
 
 use std::net::SocketAddr;
-use std::sync::{Arc, Weak, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use std::time::Duration;
 
@@ -52,12 +52,12 @@ struct StunAgentState {
 impl StunAgent {
     pub fn new(channel: Arc<UdpSocketChannel>) -> Self {
         Self {
-            inner : Arc::new(StunAgentInner {
+            inner: Arc::new(StunAgentInner {
                 state: Mutex::new(StunAgentState::new()),
                 channel,
                 stun_broadcaster: Arc::new(ChannelBroadcast::default()),
                 data_broadcaster: Arc::new(ChannelBroadcast::default()),
-            })
+            }),
         }
     }
 
@@ -94,10 +94,7 @@ impl StunAgent {
         self.inner.channel.send_to(&buf, to).await
     }
 
-    fn receive_task_loop(
-        inner_weak: Weak<StunAgentInner>,
-        channel: Arc<UdpSocketChannel>,
-    ) {
+    fn receive_task_loop(inner_weak: Weak<StunAgentInner>, channel: Arc<UdpSocketChannel>) {
         // XXX: can we remove this demuxing task?
         // retrieve stream outside task to avoid a race
         let s = channel.receive_stream();
@@ -105,12 +102,12 @@ impl StunAgent {
             async move {
                 futures::pin_mut!(s);
                 while let Some((data, from)) = s.next().await {
-                    let inner = match Weak::upgrade (&inner_weak) {
+                    let inner = match Weak::upgrade(&inner_weak) {
                         Some(inner) => inner,
                         None => {
                             info!("Receive task exit");
-                            break
-                        },
+                            break;
+                        }
                     };
                     match Message::from_bytes(&data) {
                         Ok(msg) => {
