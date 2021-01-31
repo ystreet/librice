@@ -124,7 +124,7 @@ impl StunAgent {
                                     inner.stun_broadcaster.broadcast((msg, data, from)).await;
                                 }
                                 HandleStunReply::Failure(err) => {
-                                    error!("Failed to handle {}. {:?}", msg, err);
+                                    warn!("Failed to handle {}. {:?}", msg, err);
                                 }
                                 _ => {}
                             }
