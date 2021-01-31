@@ -42,10 +42,10 @@ static CONN_CHECK_COUNT: AtomicUsize = AtomicUsize::new(0);
 #[derive(Debug)]
 struct ConnCheck {
     conncheck_id: usize,
-    pub pair: CandidatePair,
-    state: Mutex<ConnCheckState>,
-    pub agent: StunAgent,
     nominate: bool,
+    pair: CandidatePair,
+    state: Mutex<ConnCheckState>,
+    agent: StunAgent,
 }
 
 #[derive(Debug)]
@@ -102,6 +102,22 @@ impl ConnCheck {
             );
             handle.abort();
             inner.state = CandidatePairState::Failed;
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ConnCheckDebug {
+    id: usize,
+    nominating: bool,
+    pair: CandidatePair,
+}
+impl ConnCheckDebug {
+    fn from_conncheck(conncheck: &Arc<ConnCheck>) -> Self {
+        Self {
+            id: conncheck.conncheck_id,
+            nominating: conncheck.nominate,
+            pair: conncheck.pair.clone(),
         }
     }
 }
@@ -196,22 +212,20 @@ impl ConnCheckListInner {
             if check.nominate() != self.triggered[idx].nominate() {
                 let existing = self.triggered.remove(idx).unwrap();
                 debug!(
-                    "removing existing triggered conncheck {} for {:?} nominate {}",
-                    existing.conncheck_id, existing.pair, existing.nominate
+                    "removing existing triggered {:?}",
+                    ConnCheckDebug::from_conncheck(&existing)
                 );
             } else {
                 debug!(
-                    "not adding duplicate triggered conncheck {} for {:?} nominate {}",
-                    self.triggered[idx].conncheck_id,
-                    self.triggered[idx].pair,
-                    self.triggered[idx].nominate
+                    "not adding duplicate triggered {:?}",
+                    ConnCheckDebug::from_conncheck(&self.triggered[idx])
                 );
                 return;
             }
         }
         debug!(
-            "adding triggered conncheck {} for {:?} nominate {}",
-            check.conncheck_id, check.pair, check.nominate
+            "adding triggered {:?}",
+            ConnCheckDebug::from_conncheck(&check)
         );
         self.triggered.push_front(check)
     }
@@ -1100,8 +1114,8 @@ impl ConnCheckListSet {
         tie_breaker: u64,
     ) -> Result<(), AgentError> {
         debug!(
-            "performing connectivity check {} {:?} nominate {}",
-            conncheck.conncheck_id, conncheck.pair, conncheck.nominate
+            "performing connectivity {:?}",
+            ConnCheckDebug::from_conncheck(&conncheck)
         );
         match connectivity_check_cancellable(
             conncheck.clone(),
@@ -1220,10 +1234,8 @@ impl ConnCheckListSet {
         //     subsequent steps.
         if let Some(check) = checklist.next_triggered() {
             trace!(
-                "found trigerred check {} for {:?} nominate {}",
-                check.conncheck_id,
-                check.pair,
-                check.nominate
+                "found trigerred {:?}",
+                ConnCheckDebug::from_conncheck(&check)
             );
             Some(check)
         // 3.  If there are one or more candidate pairs in the Waiting state,
@@ -1233,12 +1245,7 @@ impl ConnCheckListSet {
         //     connectivity check on that pair, puts the candidate pair state to
         //     In-Progress, and aborts the subsequent steps.
         } else if let Some(check) = checklist.next_waiting() {
-            trace!(
-                "found waiting check {} for {:?} nominate {}",
-                check.conncheck_id,
-                check.pair,
-                check.nominate
-            );
+            trace!("found waiting {:?}", ConnCheckDebug::from_conncheck(&check));
             Some(check)
         } else {
             // TODO: cache this locally somewhere
@@ -1273,12 +1280,7 @@ impl ConnCheckListSet {
             trace!("current foundations not waiting or in progress: {:?}", next);
 
             if let Some(check) = checklist.next_frozen(&next) {
-                trace!(
-                    "found frozen check {} for {:?} nominate {}",
-                    check.conncheck_id,
-                    check.pair,
-                    check.nominate
-                );
+                trace!("found frozen {:?}", ConnCheckDebug::from_conncheck(&check));
                 check.set_state(CandidatePairState::InProgress);
                 Some(check)
             } else {

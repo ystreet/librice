@@ -18,7 +18,7 @@ use futures::Stream;
 use crate::agent::{AgentError, AgentMessage};
 use crate::candidate::{Candidate, CandidatePair};
 
-use crate::socket::{SocketChannel, UdpConnectionChannel, UdpSocketChannel};
+use crate::socket::{SocketChannel, UdpConnectionChannel};
 
 use crate::stun::agent::StunAgent;
 use crate::stun::message::MessageIntegrityCredentials;
@@ -124,16 +124,15 @@ impl Component {
             .collect::<Vec<_>>()
             .await;
 
-        let agents = {
-            let mut inner = self.inner.lock().unwrap();
-            for channel in schannels.iter() {
+        let agents: Vec<_> = schannels
+            .iter()
+            .map(|channel| {
                 let agent = StunAgent::new(channel.clone());
                 agent.set_local_credentials(local_credentials.clone());
                 agent.set_remote_credentials(remote_credentials.clone());
-                inner.agents.push(agent);
-            }
-            inner.agents.clone()
-        };
+                agent
+            })
+            .collect();
 
         info!("retreived sockets");
         Ok(
@@ -194,18 +193,15 @@ impl Component {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ComponentInner {
-    pub(crate) id: usize,
+struct ComponentInner {
+    id: usize,
     state: ComponentState,
     selected_pair: Option<SelectedPair>,
-    socket: Option<Arc<UdpSocketChannel>>,
     channel: Option<Arc<SocketChannel>>,
     receive_send_channel: async_channel::Sender<Vec<u8>>,
     receive_receive_channel: async_channel::Receiver<Vec<u8>>,
-    pub(crate) stun_agent: Option<StunAgent>,
     stun_servers: Vec<SocketAddr>,
     turn_servers: Vec<SocketAddr>,
-    agents: Vec<StunAgent>,
 }
 
 impl ComponentInner {
@@ -215,14 +211,11 @@ impl ComponentInner {
             id,
             state: ComponentState::New,
             selected_pair: None,
-            socket: None,
             channel: None,
             receive_send_channel: recv_s,
             receive_receive_channel: recv_r,
-            stun_agent: None,
             stun_servers: vec![],
             turn_servers: vec![],
-            agents: vec![],
         }
     }
 
@@ -260,6 +253,7 @@ mod tests {
     use super::*;
     use crate::agent::Agent;
     use crate::candidate::*;
+    use crate::socket::*;
     use crate::stun::message::*;
     use async_std::net::UdpSocket;
 

@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use async_std::net::UdpSocket;
 use async_std::prelude::*;
 
-use crate::utils::ChannelBroadcast;
+use crate::utils::{ChannelBroadcast, DebugWrapper};
 
 #[derive(Debug)]
 pub enum SocketChannel {
@@ -47,9 +47,9 @@ impl SocketChannel {
 
 #[derive(Debug)]
 pub struct UdpSocketChannel {
-    socket: Arc<UdpSocket>,
+    socket: DebugWrapper<Arc<UdpSocket>>,
     sender_broadcast: Arc<ChannelBroadcast<(Vec<u8>, SocketAddr)>>,
-    inner: Mutex<UdpSocketChannelInner>,
+    inner: DebugWrapper<Mutex<UdpSocketChannelInner>>,
 }
 
 #[derive(Debug)]
@@ -62,11 +62,14 @@ impl UdpSocketChannelInner {}
 impl UdpSocketChannel {
     pub fn new(socket: UdpSocket) -> Self {
         Self {
-            socket: Arc::new(socket),
+            socket: DebugWrapper::wrap(Arc::new(socket), "..."),
             sender_broadcast: Arc::new(ChannelBroadcast::default()),
-            inner: Mutex::new(UdpSocketChannelInner {
-                receive_loop_started: false,
-            }),
+            inner: DebugWrapper::wrap(
+                Mutex::new(UdpSocketChannelInner {
+                    receive_loop_started: false,
+                }),
+                "...",
+            ),
         }
     }
 
@@ -79,7 +82,7 @@ impl UdpSocketChannel {
     }
 
     pub fn socket(&self) -> Arc<UdpSocket> {
-        self.socket.clone()
+        (*self.socket).clone()
     }
 
     fn socket_receive_stream(socket: Arc<UdpSocket>) -> impl Stream<Item = (Vec<u8>, SocketAddr)> {
@@ -120,7 +123,7 @@ impl UdpSocketChannel {
             //let (send, recv) = futures::channel::oneshot::channel();
             if !inner.receive_loop_started {
                 async_std::task::spawn({
-                    let socket = self.socket.clone();
+                    let socket = (*self.socket).clone();
                     let broadcaser = self.sender_broadcast.clone();
                     async move { UdpSocketChannel::receive_loop(socket, &broadcaser).await }
                 });

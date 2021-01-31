@@ -39,8 +39,8 @@ impl<T> std::ops::Deref for DebugWrapper<T> {
     }
 }
 impl<T> DebugWrapper<T> {
-    pub(crate) fn wrap(func: T, name: &'static str) -> Self {
-        Self(name, func)
+    pub(crate) fn wrap(obj: T, name: &'static str) -> Self {
+        Self(name, obj)
     }
 }
 
@@ -52,7 +52,7 @@ struct MaybeSender<T: std::fmt::Debug> {
 
 #[derive(Debug)]
 pub(crate) struct ChannelBroadcast<T: std::fmt::Debug> {
-    senders: Mutex<Vec<MaybeSender<T>>>,
+    senders: DebugWrapper<Mutex<Vec<MaybeSender<T>>>>,
 }
 
 impl<T> Default for ChannelBroadcast<T>
@@ -61,7 +61,7 @@ where
 {
     fn default() -> Self {
         Self {
-            senders: Mutex::new(vec![]),
+            senders: DebugWrapper::wrap(Mutex::new(vec![]), "..."),
         }
     }
 }

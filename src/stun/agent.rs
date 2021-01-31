@@ -25,12 +25,12 @@ use crate::agent::AgentError;
 use crate::stun::message::*;
 
 use crate::socket::UdpSocketChannel;
-use crate::utils::ChannelBroadcast;
+use crate::utils::{ChannelBroadcast, DebugWrapper};
 
 /// Implementation of a STUN agent
 #[derive(Debug, Clone)]
 pub struct StunAgent {
-    pub(crate) inner: Arc<StunAgentInner>,
+    pub(crate) inner: DebugWrapper<Arc<StunAgentInner>>,
 }
 
 #[derive(Debug)]
@@ -52,12 +52,15 @@ struct StunAgentState {
 impl StunAgent {
     pub fn new(channel: Arc<UdpSocketChannel>) -> Self {
         Self {
-            inner: Arc::new(StunAgentInner {
-                state: Mutex::new(StunAgentState::new()),
-                channel,
-                stun_broadcaster: Arc::new(ChannelBroadcast::default()),
-                data_broadcaster: Arc::new(ChannelBroadcast::default()),
-            }),
+            inner: DebugWrapper::wrap(
+                Arc::new(StunAgentInner {
+                    state: Mutex::new(StunAgentState::new()),
+                    channel,
+                    stun_broadcaster: Arc::new(ChannelBroadcast::default()),
+                    data_broadcaster: Arc::new(ChannelBroadcast::default()),
+                }),
+                "...",
+            ),
         }
     }
 
