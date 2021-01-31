@@ -8,7 +8,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use async_std::net::{SocketAddr, UdpSocket};
+use async_std::net::{SocketAddr};
 
 use futures::future::AbortHandle;
 use futures::channel::oneshot;
@@ -16,7 +16,7 @@ use futures::prelude::*;
 use futures::Stream;
 
 use crate::agent::{AgentError, AgentMessage};
-use crate::candidate::Candidate;
+use crate::candidate::{Candidate, CandidatePair};
 
 use crate::socket::{SocketChannel, UdpConnectionChannel, UdpSocketChannel};
 
@@ -92,45 +92,6 @@ impl Component {
         }
     }
 
-    // XXX: temporary for bring up
-    #[allow(clippy::await_holding_lock)] /* !!! FIXME !!! */
-    pub async fn set_local_addr(&self, addr: SocketAddr) -> Result<(), AgentError> {
-        let mut inner = self.inner.lock().unwrap();
-        inner.set_local_addr(addr).await
-    }
-
-    // XXX: temporary for bring up
-    #[allow(clippy::await_holding_lock)] /* !!! FIXME !!! */
-    pub async fn set_local_channel(
-        &self,
-        channel: Arc<UdpSocketChannel>,
-    ) -> Result<(), AgentError> {
-        let mut inner = self.inner.lock().unwrap();
-        inner.set_local_channel(channel).await
-    }
-
-    // XXX: temporary for bring up
-    #[allow(clippy::await_holding_lock)] /* !!! FIXME !!! */
-    pub async fn set_remote_addr(&self, addr: SocketAddr) -> Result<(), AgentError> {
-        let mut inner = self.inner.lock().unwrap();
-        inner.set_remote_addr(addr).await
-    }
-
-    // XXX: temporary for bring up
-    pub fn local_addr(&self) -> Option<SocketAddr> {
-        let inner = self.inner.lock().unwrap();
-        inner.socket.clone().and_then(move |s| s.local_addr().ok())
-    }
-
-    // XXX: temporary for bring up
-    pub fn remote_addr(&self) -> Option<SocketAddr> {
-        let inner = self.inner.lock().unwrap();
-        inner
-            .channel
-            .clone()
-            .and_then(move |s| s.remote_addr().ok())
-    }
-
     /// Retrieve a Stream that produces data sent to this component from a peer
     pub fn receive_stream(&self) -> impl Stream<Item = Vec<u8>> {
         let inner = self.inner.lock().unwrap();
@@ -197,6 +158,7 @@ impl Component {
         let sender = self.inner.lock().unwrap().receive_send_channel.clone();
         let (ready_send, ready_recv) = oneshot::channel();
 
+        error!("Component {} adding agent for receive", self.id);
         let (abortable, abort_handle) = futures::future::abortable(async move {
             let mut data_recv_stream = agent.data_receive_stream();
             if ready_send.send(()).is_err() {
@@ -216,13 +178,21 @@ impl Component {
 
         abort_handle
     }
+
+    pub(crate) fn set_selected_pair(&self, selected: SelectedPair) {
+        self.inner.lock().unwrap().set_selected_pair(selected)
+    }
+
+    pub fn selected_pair(&self) -> Option<CandidatePair> {
+        self.inner.lock().unwrap().selected_pair.clone().map(|selected| selected.candidate_pair)
+    }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ComponentInner {
     pub(crate) id: usize,
     state: ComponentState,
-    //selected_pair: Option<CandidatePair>,
+    selected_pair: Option<SelectedPair>,
     socket: Option<Arc<UdpSocketChannel>>,
     channel: Option<Arc<SocketChannel>>,
     receive_send_channel: async_channel::Sender<Vec<u8>>,
@@ -239,7 +209,7 @@ impl ComponentInner {
         Self {
             id,
             state: ComponentState::New,
-            //selected_pair: None,
+            selected_pair: None,
             socket: None,
             channel: None,
             receive_send_channel: recv_s,
@@ -251,42 +221,29 @@ impl ComponentInner {
         }
     }
 
-    // XXX: temporary for bring-up
-    pub async fn set_local_addr(&mut self, addr: SocketAddr) -> Result<(), AgentError> {
-        let udp = UdpSocket::bind(addr).await?;
-        self.set_local_channel(Arc::new(UdpSocketChannel::new(udp)))
-            .await
-    }
-
-    // XXX: temporary for bring-up
-    pub async fn set_local_channel(
-        &mut self,
-        channel: Arc<UdpSocketChannel>,
-    ) -> Result<(), AgentError> {
-        self.socket = Some(channel.clone());
-        self.state = ComponentState::Connecting;
-        let send_channel = self.receive_send_channel.clone();
-        async_std::task::spawn(async move {
-            let mut recv_stream = channel.receive_stream();
-            while let Some(data) = recv_stream.next().await {
-                if send_channel.send(data.0).await.is_err() {
-                    break;
-                }
-            }
-        });
-        Ok(())
-    }
-
-    // XXX: temporary for bring-up
-    pub async fn set_remote_addr(&mut self, addr: SocketAddr) -> Result<(), AgentError> {
-        let socket = self.socket.clone().ok_or(AgentError::ResourceNotFound)?;
+    fn set_selected_pair(&mut self, selected: SelectedPair) {
+        let remote_addr = selected.candidate_pair.remote.address;
+        let local_channel = selected.local_stun_agent.inner.channel.clone();
+        debug!("Component {} selecting pair {:?}", self.id, selected.candidate_pair);
+        self.selected_pair = Some(selected);
         self.channel = Some(Arc::new(SocketChannel::Udp(UdpConnectionChannel::new(
-            socket.clone(),
-            addr,
+            local_channel,
+            remote_addr,
         ))));
-        self.stun_agent = Some(StunAgent::new(socket));
-        self.state = ComponentState::Connected;
-        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SelectedPair {
+    candidate_pair: CandidatePair,
+    local_stun_agent: StunAgent,
+}
+impl SelectedPair {
+    pub(crate) fn new (candidate_pair: CandidatePair, local_stun_agent: StunAgent) -> Self {
+        Self {
+            candidate_pair,
+            local_stun_agent,
+        }
     }
 }
 
@@ -294,7 +251,9 @@ impl ComponentInner {
 mod tests {
     use super::*;
     use crate::agent::Agent;
-    use crate::stun::message::ShortTermCredentials;
+    use crate::stun::message::*;
+    use crate::candidate::*;
+    use async_std::net::UdpSocket;
 
     fn init() {
         let _ = env_logger::builder().is_test(true).try_init();
@@ -346,51 +305,32 @@ mod tests {
     }
 
     #[test]
-    fn set_addrs() {
-        init();
-        async_std::task::block_on(async move {
-            let a = Agent::default();
-            let s = a.add_stream();
-            let c = s.add_component().unwrap();
-            assert_eq!(c.state(), ComponentState::New);
-            c.set_local_addr("127.0.0.1:0".parse().unwrap())
-                .await
-                .unwrap();
-            assert_eq!(c.state(), ComponentState::Connecting);
-            c.set_remote_addr("127.0.0.1:9000".parse().unwrap())
-                .await
-                .unwrap();
-            assert_eq!(c.state(), ComponentState::Connected);
-        });
-    }
-
-    #[test]
     fn send_recv() {
         init();
         async_std::task::block_on(async move {
             let a = Agent::default();
             let s = a.add_stream();
             let send = s.add_component().unwrap();
-            // XXX: not technically valid usage but works for now
-            let recv = s.add_component().unwrap();
-            send.set_local_addr("127.0.0.1:0".parse().unwrap())
-                .await
-                .unwrap();
-            recv.set_local_addr("127.0.0.1:0".parse().unwrap())
-                .await
-                .unwrap();
-            send.set_remote_addr(recv.local_addr().unwrap())
-                .await
-                .unwrap();
-            recv.set_remote_addr(send.local_addr().unwrap())
-                .await
-                .unwrap();
+
+            let local_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let remote_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let remote_channel = UdpSocketChannel::new(remote_socket);
+            let local_agent = StunAgent::new(Arc::new(UdpSocketChannel::new(local_socket)));
+
+            let local_cand = Candidate::new(CandidateType::Host, TransportType::Udp, "0", 0, local_agent.inner.channel.local_addr().unwrap(), local_agent.inner.channel.local_addr().unwrap(), None);
+            let remote_cand = Candidate::new(CandidateType::Host, TransportType::Udp, "0", 0, remote_channel.local_addr().unwrap(), remote_channel.local_addr().unwrap(), None);
+            let candidate_pair = CandidatePair::new(send.id, local_cand, remote_cand);
+            let selected_pair = SelectedPair::new (candidate_pair, local_agent);
+
+            send.set_selected_pair(selected_pair.clone());
+            assert_eq!(selected_pair.candidate_pair, send.selected_pair().unwrap());
+
             let data = vec![3; 4];
-            let recv_stream = recv.receive_stream();
+            let recv_stream = remote_channel.receive_stream();
             futures::pin_mut!(recv_stream);
             send.send(&data).await.unwrap();
             let res = recv_stream.next().await.unwrap();
-            assert_eq!(data, res);
+            assert_eq!(data, res.0);
         });
     }
 
@@ -450,7 +390,7 @@ mod tests {
                 .await
                 .unwrap();
             futures::pin_mut!(send_stream);
-            let send_cand = send_stream.next().await.unwrap();
+            let (send_cand, send_agent) = send_stream.next().await.unwrap();
 
             // XXX: not technically valid usage but works for now
             let recv = s.add_component().unwrap();
@@ -460,18 +400,19 @@ mod tests {
                 .unwrap();
             futures::pin_mut!(recv_stream);
             // assumes the first candidate works
-            let recv_cand = recv_stream.next().await.unwrap();
+            let (recv_cand, recv_agent) = recv_stream.next().await.unwrap();
 
-            send.set_local_channel(send_cand.1.inner.channel.clone())
-                .await
-                .unwrap();
-            recv.set_local_channel(recv_cand.1.inner.channel.clone())
-                .await
-                .unwrap();
-            send.set_remote_addr(recv_cand.0.address).await.unwrap();
-            recv.set_remote_addr(send_cand.0.address).await.unwrap();
-            assert_eq!(send.state(), ComponentState::Connected);
-            assert_eq!(recv.state(), ComponentState::Connected);
+            let send_candidate_pair = CandidatePair::new(send.id, send_cand.clone(), recv_cand.clone());
+            let send_selected_pair = SelectedPair::new (send_candidate_pair, send_agent.clone());
+            send.add_recv_agent(send_agent).await;
+            send.set_selected_pair(send_selected_pair.clone());
+            assert_eq!(send_selected_pair.candidate_pair, send.selected_pair().unwrap());
+
+            let recv_candidate_pair = CandidatePair::new(recv.id, recv_cand, send_cand);
+            let recv_selected_pair = SelectedPair::new (recv_candidate_pair, recv_agent.clone());
+            recv.add_recv_agent(recv_agent).await;
+            recv.set_selected_pair(recv_selected_pair.clone());
+            assert_eq!(recv_selected_pair.candidate_pair, recv.selected_pair().unwrap());
 
             // two-way connection has been setup
             let data = vec![3; 4];

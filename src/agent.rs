@@ -158,6 +158,7 @@ impl Agent {
 
     /// Close the agent loop
     pub async fn close(&self) -> Result<(), AgentError> {
+        info!("closing agent");
         self.tasks.stop().await
     }
 
@@ -190,13 +191,13 @@ mod tests {
             let lstream = lagent.add_stream();
             lstream.set_local_credentials(lcreds.clone());
             lstream.set_remote_credentials(rcreds.clone());
-            let _lcomp = lstream.add_component().unwrap();
+            let lcomp = lstream.add_component().unwrap();
 
             let mut r_msg_s = ragent.message_channel();
             let rstream = ragent.add_stream();
             rstream.set_local_credentials(rcreds);
             rstream.set_remote_credentials(lcreds);
-            let _rcomp = rstream.add_component();
+            let rcomp = rstream.add_component().unwrap();
 
             async_std::task::spawn({
                 let agent = lagent.clone();
@@ -267,8 +268,24 @@ mod tests {
             ragent.start().unwrap();
 
             futures::join!(lgather, rgather);
+            error!("gather done");
+
+            let rcomp_recv_stream = rcomp.receive_stream();
+            let data = vec![5;8];
+            lcomp.send(&data).await.unwrap();
+            futures::pin_mut!(rcomp_recv_stream);
+            let received = rcomp_recv_stream.next().await.unwrap();
+            assert_eq!(data, received);
+
+            let lcomp_recv_stream = lcomp.receive_stream();
+            let data = vec![3;8];
+            rcomp.send(&data).await.unwrap();
+            futures::pin_mut!(lcomp_recv_stream);
+            let received = lcomp_recv_stream.next().await.unwrap();
+            assert_eq!(data, received);
 
             futures::try_join!(lagent.close(), ragent.close()).unwrap();
+            error!("closed");
         });
     }
 }
