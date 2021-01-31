@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use futures::future::{AbortHandle, Abortable};
+use futures::channel::oneshot;
 use futures::prelude::*;
 use futures_timer::Delay;
 
@@ -541,7 +542,7 @@ impl ConnCheckList {
         let component_id = component.id;
         debug!("adding local component {} {:?}", component_id, local);
         let weak_inner = Arc::downgrade(&self.inner);
-        let (stun_send, stun_recv) = async_channel::bounded(1);
+        let (stun_send, stun_recv) = oneshot::channel();
 
         // We need to listen for and respond to stun binding requests for the local candidate
         let (abortable, stun_abort_handle) = futures::future::abortable({
@@ -550,7 +551,7 @@ impl ConnCheckList {
             async move {
                 let drop_log = DropLogger::new("dropping stun receive stream");
                 let mut recv_stun = agent.stun_receive_stream();
-                if stun_send.send(0u32).await.is_err() {
+                if stun_send.send(()).is_err() {
                     return;
                 }
                 while let Some((msg, data, from)) = recv_stun.next().await {
@@ -588,7 +589,7 @@ impl ConnCheckList {
         });
 
         async_std::task::spawn(abortable);
-        if stun_recv.recv().await.is_err() {
+        if stun_recv.await.is_err() {
             warn!("Failed to start listening task");
             return;
         }
