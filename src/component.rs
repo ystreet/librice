@@ -27,7 +27,7 @@ use crate::utils::ChannelBroadcast;
 pub const RTP: usize = 1;
 pub const RTCP: usize = 2;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Component {
     pub id: usize,
     broadcast: Arc<ChannelBroadcast<AgentMessage>>,
@@ -152,7 +152,7 @@ impl Component {
         &self,
         local_credentials: MessageIntegrityCredentials,
         remote_credentials: MessageIntegrityCredentials,
-    ) -> Result<impl Stream<Item = (Candidate, Arc<StunAgent>)>, AgentError> {
+    ) -> Result<impl Stream<Item = (Candidate, StunAgent)>, AgentError> {
         let stun_servers = {
             let inner = self.inner.lock().unwrap();
             inner.stun_servers.clone()
@@ -165,7 +165,7 @@ impl Component {
         let agents = {
             let mut inner = self.inner.lock().unwrap();
             for channel in schannels.iter() {
-                let agent = Arc::new(StunAgent::new(channel.clone()));
+                let agent = StunAgent::new(channel.clone());
                 agent.set_local_credentials(local_credentials.clone());
                 agent.set_remote_credentials(remote_credentials.clone());
                 inner.agents.push(agent);
@@ -182,7 +182,7 @@ impl Component {
                         agents
                             .iter()
                             .find(|agent| {
-                                agent.channel.local_addr().ok() == channel.local_addr().ok()
+                                agent.inner.channel.local_addr().ok() == channel.local_addr().ok()
                             })
                             .unwrap()
                             .clone(),
@@ -192,7 +192,7 @@ impl Component {
         )
     }
 
-    pub(crate) async fn add_recv_agent(&self, agent: Arc<StunAgent>) -> AbortHandle {
+    pub(crate) async fn add_recv_agent(&self, agent: StunAgent) -> AbortHandle {
         let sender = self.inner.lock().unwrap().receive_send_channel.clone();
         let (ready_send, mut ready_recv) = async_channel::bounded(1);
 
@@ -226,10 +226,10 @@ pub(crate) struct ComponentInner {
     channel: Option<Arc<SocketChannel>>,
     receive_send_channel: async_channel::Sender<Vec<u8>>,
     receive_receive_channel: async_channel::Receiver<Vec<u8>>,
-    pub(crate) stun_agent: Option<Arc<StunAgent>>,
+    pub(crate) stun_agent: Option<StunAgent>,
     stun_servers: Vec<SocketAddr>,
     turn_servers: Vec<SocketAddr>,
-    agents: Vec<Arc<StunAgent>>,
+    agents: Vec<StunAgent>,
 }
 
 impl ComponentInner {
@@ -283,7 +283,7 @@ impl ComponentInner {
             socket.clone(),
             addr,
         ))));
-        self.stun_agent = Some(Arc::new(StunAgent::new(socket)));
+        self.stun_agent = Some(StunAgent::new(socket));
         self.state = ComponentState::Connected;
         Ok(())
     }
@@ -407,7 +407,7 @@ mod tests {
                 .unwrap();
             let addr1 = socket1.local_addr().unwrap();
             let channel1 = Arc::new(UdpSocketChannel::new(socket1));
-            let stun = Arc::new(StunAgent::new(channel1.clone()));
+            let stun = StunAgent::new(channel1.clone());
             send.add_recv_agent(stun).await;
 
             let socket2 = UdpSocket::bind("127.0.0.1:0".parse::<SocketAddr>().unwrap())
@@ -415,7 +415,7 @@ mod tests {
                 .unwrap();
             let addr2 = socket2.local_addr().unwrap();
             let channel2 = Arc::new(UdpSocketChannel::new(socket2));
-            let stun = Arc::new(StunAgent::new(channel2.clone()));
+            let stun = StunAgent::new(channel2.clone());
             send.add_recv_agent(stun).await;
 
             let mut recv_stream = send.receive_stream();
@@ -461,10 +461,10 @@ mod tests {
             // assumes the first candidate works
             let recv_cand = recv_stream.next().await.unwrap();
 
-            send.set_local_channel(send_cand.1.channel.clone())
+            send.set_local_channel(send_cand.1.inner.channel.clone())
                 .await
                 .unwrap();
-            recv.set_local_channel(recv_cand.1.channel.clone())
+            recv.set_local_channel(recv_cand.1.inner.channel.clone())
                 .await
                 .unwrap();
             send.set_remote_addr(recv_cand.0.address).await.unwrap();

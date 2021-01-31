@@ -6,8 +6,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+//! STUN agent
+
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Weak, Mutex};
 
 use std::time::Duration;
 
@@ -25,9 +27,15 @@ use crate::stun::message::*;
 use crate::socket::UdpSocketChannel;
 use crate::utils::ChannelBroadcast;
 
-#[derive(Debug)]
+/// Implementation of a STUN agent
+#[derive(Debug, Clone)]
 pub struct StunAgent {
-    state: Arc<Mutex<StunAgentState>>,
+    pub(crate) inner: Arc<StunAgentInner>,
+}
+
+#[derive(Debug)]
+pub(crate) struct StunAgentInner {
+    state: Mutex<StunAgentState>,
     pub(crate) channel: Arc<UdpSocketChannel>,
     stun_broadcaster: Arc<ChannelBroadcast<(Message, Vec<u8>, SocketAddr)>>,
     data_broadcaster: Arc<ChannelBroadcast<(Vec<u8>, SocketAddr)>>,
@@ -44,14 +52,16 @@ struct StunAgentState {
 impl StunAgent {
     pub fn new(channel: Arc<UdpSocketChannel>) -> Self {
         Self {
-            state: Arc::new(Mutex::new(StunAgentState::new())),
-            channel,
-            stun_broadcaster: Arc::new(ChannelBroadcast::default()),
-            data_broadcaster: Arc::new(ChannelBroadcast::default()),
+            inner : Arc::new(StunAgentInner {
+                state: Mutex::new(StunAgentState::new()),
+                channel,
+                stun_broadcaster: Arc::new(ChannelBroadcast::default()),
+                data_broadcaster: Arc::new(ChannelBroadcast::default()),
+            })
         }
     }
 
-    fn maybe_store_message(state: Arc<Mutex<StunAgentState>>, msg: Message) {
+    fn maybe_store_message(state: &Mutex<StunAgentState>, msg: Message) {
         if msg.has_class(MessageClass::Request) {
             let mut state = state.lock().unwrap();
             state.outstanding_requests.insert(msg.transaction_id(), msg);
@@ -59,36 +69,34 @@ impl StunAgent {
     }
 
     pub fn set_local_credentials(&self, credentials: MessageIntegrityCredentials) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.inner.state.lock().unwrap();
         state.local_credentials = Some(credentials)
     }
 
     pub fn local_credentials(&self) -> Option<MessageIntegrityCredentials> {
-        let state = self.state.lock().unwrap();
+        let state = self.inner.state.lock().unwrap();
         state.local_credentials.clone()
     }
 
     pub fn set_remote_credentials(&self, credentials: MessageIntegrityCredentials) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.inner.state.lock().unwrap();
         state.remote_credentials = Some(credentials)
     }
 
     pub fn remote_credentials(&self) -> Option<MessageIntegrityCredentials> {
-        let state = self.state.lock().unwrap();
+        let state = self.inner.state.lock().unwrap();
         state.remote_credentials.clone()
     }
 
     pub async fn send(&self, msg: Message, to: SocketAddr) -> Result<(), std::io::Error> {
-        StunAgent::maybe_store_message(self.state.clone(), msg.clone());
+        StunAgent::maybe_store_message(&self.inner.state, msg.clone());
         let buf = msg.to_bytes();
-        self.channel.send_to(&buf, to).await
+        self.inner.channel.send_to(&buf, to).await
     }
 
     fn receive_task_loop(
-        state: Arc<Mutex<StunAgentState>>,
+        inner_weak: Weak<StunAgentInner>,
         channel: Arc<UdpSocketChannel>,
-        data_broadcaster: Arc<ChannelBroadcast<(Vec<u8>, SocketAddr)>>,
-        stun_broadcaster: Arc<ChannelBroadcast<(Message, Vec<u8>, SocketAddr)>>,
     ) {
         // XXX: can we remove this demuxing task?
         // retrieve stream outside task to avoid a race
@@ -97,16 +105,23 @@ impl StunAgent {
             async move {
                 futures::pin_mut!(s);
                 while let Some((data, from)) = s.next().await {
+                    let inner = match Weak::upgrade (&inner_weak) {
+                        Some(inner) => inner,
+                        None => {
+                            info!("Receive task exit");
+                            break
+                        },
+                    };
                     match Message::from_bytes(&data) {
                         Ok(msg) => {
                             debug!("received from {:?} {}", from, msg);
                             let handle = {
-                                let mut state = state.lock().unwrap();
+                                let mut state = inner.state.lock().unwrap();
                                 state.handle_stun(msg.clone())
                             };
                             match handle {
                                 HandleStunReply::Broadcast(msg) => {
-                                    stun_broadcaster.broadcast((msg, data, from)).await;
+                                    inner.stun_broadcaster.broadcast((msg, data, from)).await;
                                 }
                                 HandleStunReply::Failure(err) => {
                                     error!("Failed to handle {}. {:?}", msg, err);
@@ -114,7 +129,7 @@ impl StunAgent {
                                 _ => {}
                             }
                         }
-                        Err(_) => data_broadcaster.broadcast((data, from)).await,
+                        Err(_) => inner.data_broadcaster.broadcast((data, from)).await,
                     }
                 }
             }
@@ -123,14 +138,10 @@ impl StunAgent {
 
     fn ensure_receive_task_loop(&self) {
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.inner.state.lock().unwrap();
             if !state.receive_loop_started {
-                StunAgent::receive_task_loop(
-                    self.state.clone(),
-                    self.channel.clone(),
-                    self.data_broadcaster.clone(),
-                    self.stun_broadcaster.clone(),
-                );
+                let inner_weak = Arc::downgrade(&self.inner);
+                StunAgent::receive_task_loop(inner_weak, self.inner.channel.clone());
                 state.receive_loop_started = true;
             }
         }
@@ -144,7 +155,7 @@ impl StunAgent {
         F: Fn(&(Vec<u8>, SocketAddr)) -> bool + Send + Sync + 'static,
     {
         self.ensure_receive_task_loop();
-        self.data_broadcaster.channel_with_filter(filter)
+        self.inner.data_broadcaster.channel_with_filter(filter)
     }
 
     pub fn data_receive_stream(&self) -> impl Stream<Item = (Vec<u8>, SocketAddr)> {
@@ -159,7 +170,7 @@ impl StunAgent {
         F: Fn(&(Message, Vec<u8>, SocketAddr)) -> bool + Send + Sync + 'static,
     {
         self.ensure_receive_task_loop();
-        self.stun_broadcaster.channel_with_filter(filter)
+        self.inner.stun_broadcaster.channel_with_filter(filter)
     }
 
     pub fn stun_receive_stream(&self) -> impl Stream<Item = (Message, Vec<u8>, SocketAddr)> {
@@ -178,7 +189,7 @@ impl StunAgent {
             Delay::new(Duration::from_millis(*timeout)).await;
             info!("sending {} to {}", msg, to);
             let buf = msg.to_bytes();
-            self.channel.send_to(&buf, to).await?;
+            self.inner.channel.send_to(&buf, to).await?;
         }
 
         // on failure, abort the receiver waiting
@@ -194,7 +205,7 @@ impl StunAgent {
         if !msg.has_class(MessageClass::Request) {
             return Err(AgentError::WrongImplementation);
         }
-        Self::maybe_store_message(self.state.clone(), msg.clone());
+        Self::maybe_store_message(&self.inner.state, msg.clone());
         let tid = msg.transaction_id();
         let (recv_abort_handle, recv_registration) = futures::future::AbortHandle::new_pair();
         let (send_abortable, send_abort_handle) =

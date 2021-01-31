@@ -43,7 +43,7 @@ struct ConnCheck {
     conncheck_id: usize,
     pub pair: CandidatePair,
     state: Mutex<ConnCheckState>,
-    pub agent: Arc<StunAgent>,
+    pub agent: StunAgent,
     nominate: bool,
 }
 
@@ -54,7 +54,7 @@ struct ConnCheckState {
 }
 
 impl ConnCheck {
-    fn new(pair: CandidatePair, agent: Arc<StunAgent>, nominate: bool) -> Self {
+    fn new(pair: CandidatePair, agent: StunAgent, nominate: bool) -> Self {
         Self {
             conncheck_id: CONN_CHECK_COUNT.fetch_add(1, Ordering::SeqCst),
             pair,
@@ -121,7 +121,7 @@ pub struct ConnCheckList {
 struct ConnCheckLocalCandidate {
     component_id: usize,
     candidate: Candidate,
-    stun_agent: Arc<StunAgent>,
+    stun_agent: StunAgent,
     stun_recv_abort: AbortHandle,
     data_recv_abort: AbortHandle,
 }
@@ -347,7 +347,7 @@ impl ConnCheckList {
         weak_inner: Weak<Mutex<ConnCheckListInner>>,
         component_id: usize,
         local: &Candidate,
-        agent: Arc<StunAgent>,
+        agent: StunAgent,
         msg: &Message,
         data: &[u8],
         from: SocketAddr,
@@ -536,7 +536,7 @@ impl ConnCheckList {
         &self,
         component: &Arc<Component>,
         local: Candidate,
-        agent: Arc<StunAgent>,
+        agent: StunAgent,
     ) {
         let component_id = component.id;
         debug!("adding local component {} {:?}", component_id, local);
@@ -1332,55 +1332,10 @@ mod tests {
         let _ = env_logger::builder().is_test(true).try_init();
     }
 
-    #[test]
-    fn get_candidates() {
-        init();
-        async_std::task::block_on(async move {
-            let agent = Agent::default();
-            let stream = agent.add_stream();
-            let component = stream.add_component().unwrap();
-            let local_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-            let local_channel = Arc::new(UdpSocketChannel::new(local_socket));
-            let local_addr = local_channel.local_addr().unwrap();
-            let local_candidate = Candidate::new(
-                CandidateType::Host,
-                TransportType::Udp,
-                "0",
-                0,
-                local_addr,
-                local_addr,
-                None,
-            );
-            let remote_addr: SocketAddr = "127.0.0.1:9998".parse().unwrap();
-            let remote_candidate = Candidate::new(
-                CandidateType::Host,
-                TransportType::Udp,
-                "0",
-                0,
-                remote_addr,
-                remote_addr,
-                None,
-            );
-            let list = ConnCheckList::new();
-            let local_agent = Arc::new(StunAgent::new(local_channel));
-            list.add_local_candidate(&component, local_candidate.clone(), local_agent)
-                .await;
-            list.add_remote_candidate(component.id, remote_candidate.clone());
-
-            // The candidate list is only what we put in
-            let locals = list.get_local_candidates();
-            assert_eq!(locals.len(), 1);
-            assert_eq!(locals[0], local_candidate);
-            let remotes = list.get_remote_candidates();
-            assert_eq!(remotes.len(), 1);
-            assert_eq!(remotes[0], remote_candidate);
-        })
-    }
-
     struct Peer {
         channel: Arc<UdpSocketChannel>,
         candidate: Candidate,
-        agent: Arc<StunAgent>,
+        agent: StunAgent,
     }
 
     async fn construct_peer_with_foundation(foundation: &str) -> Peer {
@@ -1396,7 +1351,7 @@ mod tests {
             None,
         );
         let channel = Arc::new(UdpSocketChannel::new(socket));
-        let agent = Arc::new(StunAgent::new(channel.clone()));
+        let agent = StunAgent::new(channel.clone());
 
         Peer {
             channel,
@@ -1409,11 +1364,37 @@ mod tests {
         construct_peer_with_foundation("0").await
     }
 
+    #[test]
+    fn get_candidates() {
+        init();
+        async_std::task::block_on(async move {
+            let agent = Agent::default();
+            let stream = agent.add_stream();
+            let component = stream.add_component().unwrap();
+
+            let local = construct_peer().await;
+            let remote = construct_peer().await;
+
+            let list = ConnCheckList::new();
+            list.add_local_candidate(&component, local.candidate.clone(), local.agent.clone())
+                .await;
+            list.add_remote_candidate(component.id, remote.candidate.clone());
+
+            // The candidate list is only what we put in
+            let locals = list.get_local_candidates();
+            assert_eq!(locals.len(), 1);
+            assert_eq!(locals[0], local.candidate);
+            let remotes = list.get_remote_candidates();
+            assert_eq!(remotes.len(), 1);
+            assert_eq!(remotes[0], remote.candidate);
+        })
+    }
+
     // simplified version of ConnCheckList handle_binding_request that doesn't
     // update any state like ConnCheckList or even do peer-reflexive candidate
     // things
     async fn handle_binding_request(
-        agent: &Arc<StunAgent>,
+        agent: &StunAgent,
         msg: &Message,
         data: &[u8],
         from: SocketAddr,
