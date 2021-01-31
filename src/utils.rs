@@ -20,7 +20,7 @@ impl DropLogger {
 
 impl Drop for DropLogger {
     fn drop(&mut self) {
-        error!("{}", self.msg);
+        info!("{}", self.msg);
     }
 }
 

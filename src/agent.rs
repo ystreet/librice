@@ -80,7 +80,6 @@ pub(crate) type AgentFuture = Pin<Box<dyn Future<Output = Result<(), AgentError>
 impl AgentInner {
     fn new() -> Self {
         let mut rnd = rand::thread_rng();
-        error!("new agent");
         Self {
             streams: vec![],
             checklistset: None,
@@ -268,7 +267,6 @@ mod tests {
             ragent.start().unwrap();
 
             futures::join!(lgather, rgather);
-            error!("gather done");
 
             let rcomp_recv_stream = rcomp.receive_stream();
             let data = vec![5; 8];
@@ -285,7 +283,6 @@ mod tests {
             assert_eq!(data, received);
 
             futures::try_join!(lagent.close(), ragent.close()).unwrap();
-            error!("closed");
         });
     }
 }

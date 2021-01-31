@@ -76,7 +76,7 @@ impl Component {
         if let Some(new_state) = {
             let mut inner = self.inner.lock().unwrap();
             if inner.state != state {
-                error!(
+                info!(
                     "Component {} changing state from {:?} to {:?}",
                     self.id, inner.state, state
                 );
@@ -157,7 +157,7 @@ impl Component {
         let sender = self.inner.lock().unwrap().receive_send_channel.clone();
         let (ready_send, ready_recv) = oneshot::channel();
 
-        error!("Component {} adding agent for receive", self.id);
+        debug!("Component {} adding agent for receive", self.id);
         let (abortable, abort_handle) = futures::future::abortable(async move {
             let mut data_recv_stream = agent.data_receive_stream();
             if ready_send.send(()).is_err() {
