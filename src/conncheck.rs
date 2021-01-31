@@ -194,12 +194,12 @@ impl ConnCheckListInner {
         {
             if check.nominate() != self.triggered[idx].nominate() {
                 let existing = self.triggered.remove(idx).unwrap();
-                error!(
+                debug!(
                     "removing existing triggered conncheck {} for {:?} nominate {}",
                     existing.conncheck_id, existing.pair, existing.nominate
                 );
             } else {
-                error!(
+                debug!(
                     "not adding duplicate triggered conncheck {} for {:?} nominate {}",
                     self.triggered[idx].conncheck_id,
                     self.triggered[idx].pair,
@@ -208,7 +208,7 @@ impl ConnCheckListInner {
                 return;
             }
         }
-        error!(
+        debug!(
             "adding triggered conncheck {} for {:?} nominate {}",
             check.conncheck_id, check.pair, check.nominate
         );
@@ -303,7 +303,7 @@ impl ConnCheckListInner {
                 .iter()
                 .filter_map(|component| component.upgrade())
                 .find(|component| component.id == component_id);
-            error!("trying to signal component {:?} {:?}", ret, self.components);
+            debug!("trying to signal component {:?} {:?}", ret, self.components);
             return ret;
         } else {
             warn!(
@@ -352,14 +352,14 @@ impl ConnCheckList {
         data: &[u8],
         from: SocketAddr,
     ) -> Result<Option<Message>, AgentError> {
+        trace!("have request {}", msg);
+
         let local_credentials = agent
             .local_credentials()
             .ok_or(AgentError::ResourceNotFound)?;
         let remote_credentials = agent
             .remote_credentials()
             .ok_or(AgentError::ResourceNotFound)?;
-
-        error!("have request");
 
         if let Some(error_msg) = Message::check_attribute_types(
             msg,
@@ -386,9 +386,8 @@ impl ConnCheckList {
         };
 
         let peer_nominating = if let Some(use_candidate_raw) = msg.get_attribute::<RawAttribute>(USE_CANDIDATE) {
-            error!("have use-candidate attr");
             if UseCandidate::from_raw(&use_candidate_raw).is_ok() {
-                error!("have valid use-candidate attr");
+                debug!("have valid use-candidate attr");
                 true
             } else {
                 return Ok(Some(Message::bad_request(msg)?));
@@ -401,7 +400,7 @@ impl ConnCheckList {
             let checklist = weak_inner.upgrade().ok_or(AgentError::ConnectionClosed)?;
             let mut checklist = checklist.lock().unwrap();
 
-            error!(
+            debug!(
                 "have request peer nominating {} list state {:?}",
                 peer_nominating, checklist.state
             );
@@ -443,7 +442,7 @@ impl ConnCheckList {
             let pair = CandidatePair::new(component_id, local.clone(), remote);
             if let Some(mut check) = checklist.take_matching_check(&pair) {
                 // When the pair is already on the checklist:
-                error!(
+                trace!(
                     "found existing check {} for pair {:?}",
                     check.conncheck_id, pair
                 );
@@ -452,7 +451,7 @@ impl ConnCheckList {
                     // done.
                     CandidatePairState::Succeeded => {
                         if peer_nominating {
-                            error!("existing pair succeeded -> nominate");
+                            info!("existing pair succeeded -> nominate");
                             check = Arc::new(ConnCheck::new(
                                 check.pair.clone(),
                                 check.agent.clone(),
@@ -556,7 +555,7 @@ impl ConnCheckList {
                 }
                 while let Some((msg, data, from)) = recv_stun.next().await {
                     // RFC8445 Section 7.3. STUN Server Procedures
-                    error!("got from {} msg {}", from, msg);
+                    trace!("got from {} msg {}", from, msg);
                     if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
                         match ConnCheckList::handle_binding_request(
                             weak_inner.clone(),
@@ -594,7 +593,7 @@ impl ConnCheckList {
             return;
         }
         let data_abort_handle = component.add_recv_agent(agent.clone()).await;
-        error!("added recv task for candidate {:?}", local);
+        trace!("added recv task for candidate {:?}", local);
 
         {
             let mut inner = self.inner.lock().unwrap();
@@ -614,11 +613,11 @@ impl ConnCheckList {
                 }
             });
             if existing.is_none() {
-                error!("adding component {:?}", component);
+                debug!("adding component {:?}", component);
                 inner.component_ids.push(component_id);
                 inner.components.push(Arc::downgrade(component));
             } else {
-                error!("not adding component {} twice", component_id);
+                trace!("not adding component {} twice", component_id);
             }
         }
     }
@@ -815,7 +814,7 @@ impl ConnCheckList {
     }
 
     fn add_valid(&self, pair: CandidatePair) {
-        error!("adding valid {:?}", pair);
+        debug!("adding valid {:?}", pair);
         self.inner.lock().unwrap().valid.push(pair);
     }
 
@@ -889,7 +888,6 @@ impl ConnCheckList {
                 }
             })
             .collect();
-        //error!("retrigger? {:?}", retrigerred);
         if retrigerred.iter().all(|pair| pair.is_some()) {
             let _: Vec<_> = retrigerred
                 .iter()
@@ -1065,7 +1063,7 @@ impl ConnCheckListSet {
         controlling: bool,
         tie_breaker: u64,
     ) -> Result<(), AgentError> {
-        error!(
+        debug!(
             "performing connectivity check {} {:?} nominate {}",
             conncheck.conncheck_id, conncheck.pair, conncheck.nominate
         );
@@ -1111,7 +1109,7 @@ impl ConnCheckListSet {
                 if let Some(_check) = checklist.get_matching_check(&ok_pair) {
                     checklist.add_valid(ok_pair.clone());
                     if conncheck.nominate() {
-                        error!("ConnCheck {} Succeeded -> nominate", conncheck.conncheck_id);
+                        info!("ConnCheck {} Succeeded -> nominate", conncheck.conncheck_id);
                         checklist
                             .nominated_pair(conncheck.pair.component_id, &conncheck.pair)
                             .await;
@@ -1128,7 +1126,7 @@ impl ConnCheckListSet {
                         if let Some(check) = checklist.get_matching_check(&ok_pair) {
                             checklist.add_valid(check.pair.clone());
                             if conncheck.nominate() {
-                                error!(
+                                info!(
                                     "ConnCheck {} Succeeded -> nominate",
                                     conncheck.conncheck_id
                                 );
@@ -1164,7 +1162,7 @@ impl ConnCheckListSet {
                     checklist.add_valid(conncheck.pair.clone());
 
                     if conncheck.nominate() {
-                        error!("ConnCheck {} Succeeded -> nominate", conncheck.conncheck_id);
+                        info!("ConnCheck {} Succeeded -> nominate", conncheck.conncheck_id);
                         checklist
                             .nominated_pair(conncheck.pair.component_id, &conncheck.pair)
                             .await;
@@ -1272,7 +1270,7 @@ impl ConnCheckListSet {
             let mut any_running = false;
             let mut processed = false;
             for checklist in self.checklists.iter() {
-                error!("current checklist state {:?}", checklist.state());
+                trace!("current checklist state {:?}", checklist.state());
                 if checklist.state() == CheckListState::Running {
                     any_running = true;
                 }
@@ -1369,6 +1367,7 @@ mod tests {
                 .await;
             list.add_remote_candidate(component.id, remote_candidate.clone());
 
+            // The candidate list is only what we put in
             let locals = list.get_local_candidates();
             assert_eq!(locals.len(), 1);
             assert_eq!(locals[0], local_candidate);
@@ -1644,7 +1643,6 @@ mod tests {
     fn checklists_initial_thaw() {
         init();
         async_std::task::block_on(async move {
-            error!("start");
             let agent = Arc::new(Agent::default());
             let stream = agent.add_stream();
             let component = stream.add_component().unwrap();
@@ -1658,7 +1656,6 @@ mod tests {
             let local3 = construct_peer_with_foundation("1").await;
             let remote3 = construct_peer_with_foundation("1").await;
 
-            error!("peers constructed");
             list1
                 .add_local_candidate(&component, local1.candidate.clone(), local1.agent)
                 .await;
