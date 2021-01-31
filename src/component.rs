@@ -8,10 +8,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use async_std::net::{SocketAddr};
+use async_std::net::SocketAddr;
 
-use futures::future::AbortHandle;
 use futures::channel::oneshot;
+use futures::future::AbortHandle;
 use futures::prelude::*;
 use futures::Stream;
 
@@ -184,7 +184,12 @@ impl Component {
     }
 
     pub fn selected_pair(&self) -> Option<CandidatePair> {
-        self.inner.lock().unwrap().selected_pair.clone().map(|selected| selected.candidate_pair)
+        self.inner
+            .lock()
+            .unwrap()
+            .selected_pair
+            .clone()
+            .map(|selected| selected.candidate_pair)
     }
 }
 
@@ -224,7 +229,10 @@ impl ComponentInner {
     fn set_selected_pair(&mut self, selected: SelectedPair) {
         let remote_addr = selected.candidate_pair.remote.address;
         let local_channel = selected.local_stun_agent.inner.channel.clone();
-        debug!("Component {} selecting pair {:?}", self.id, selected.candidate_pair);
+        debug!(
+            "Component {} selecting pair {:?}",
+            self.id, selected.candidate_pair
+        );
         self.selected_pair = Some(selected);
         self.channel = Some(Arc::new(SocketChannel::Udp(UdpConnectionChannel::new(
             local_channel,
@@ -239,7 +247,7 @@ pub(crate) struct SelectedPair {
     local_stun_agent: StunAgent,
 }
 impl SelectedPair {
-    pub(crate) fn new (candidate_pair: CandidatePair, local_stun_agent: StunAgent) -> Self {
+    pub(crate) fn new(candidate_pair: CandidatePair, local_stun_agent: StunAgent) -> Self {
         Self {
             candidate_pair,
             local_stun_agent,
@@ -251,8 +259,8 @@ impl SelectedPair {
 mod tests {
     use super::*;
     use crate::agent::Agent;
-    use crate::stun::message::*;
     use crate::candidate::*;
+    use crate::stun::message::*;
     use async_std::net::UdpSocket;
 
     fn init() {
@@ -317,10 +325,26 @@ mod tests {
             let remote_channel = UdpSocketChannel::new(remote_socket);
             let local_agent = StunAgent::new(Arc::new(UdpSocketChannel::new(local_socket)));
 
-            let local_cand = Candidate::new(CandidateType::Host, TransportType::Udp, "0", 0, local_agent.inner.channel.local_addr().unwrap(), local_agent.inner.channel.local_addr().unwrap(), None);
-            let remote_cand = Candidate::new(CandidateType::Host, TransportType::Udp, "0", 0, remote_channel.local_addr().unwrap(), remote_channel.local_addr().unwrap(), None);
+            let local_cand = Candidate::new(
+                CandidateType::Host,
+                TransportType::Udp,
+                "0",
+                0,
+                local_agent.inner.channel.local_addr().unwrap(),
+                local_agent.inner.channel.local_addr().unwrap(),
+                None,
+            );
+            let remote_cand = Candidate::new(
+                CandidateType::Host,
+                TransportType::Udp,
+                "0",
+                0,
+                remote_channel.local_addr().unwrap(),
+                remote_channel.local_addr().unwrap(),
+                None,
+            );
             let candidate_pair = CandidatePair::new(send.id, local_cand, remote_cand);
-            let selected_pair = SelectedPair::new (candidate_pair, local_agent);
+            let selected_pair = SelectedPair::new(candidate_pair, local_agent);
 
             send.set_selected_pair(selected_pair.clone());
             assert_eq!(selected_pair.candidate_pair, send.selected_pair().unwrap());
@@ -402,17 +426,24 @@ mod tests {
             // assumes the first candidate works
             let (recv_cand, recv_agent) = recv_stream.next().await.unwrap();
 
-            let send_candidate_pair = CandidatePair::new(send.id, send_cand.clone(), recv_cand.clone());
-            let send_selected_pair = SelectedPair::new (send_candidate_pair, send_agent.clone());
+            let send_candidate_pair =
+                CandidatePair::new(send.id, send_cand.clone(), recv_cand.clone());
+            let send_selected_pair = SelectedPair::new(send_candidate_pair, send_agent.clone());
             send.add_recv_agent(send_agent).await;
             send.set_selected_pair(send_selected_pair.clone());
-            assert_eq!(send_selected_pair.candidate_pair, send.selected_pair().unwrap());
+            assert_eq!(
+                send_selected_pair.candidate_pair,
+                send.selected_pair().unwrap()
+            );
 
             let recv_candidate_pair = CandidatePair::new(recv.id, recv_cand, send_cand);
-            let recv_selected_pair = SelectedPair::new (recv_candidate_pair, recv_agent.clone());
+            let recv_selected_pair = SelectedPair::new(recv_candidate_pair, recv_agent.clone());
             recv.add_recv_agent(recv_agent).await;
             recv.set_selected_pair(recv_selected_pair.clone());
-            assert_eq!(recv_selected_pair.candidate_pair, recv.selected_pair().unwrap());
+            assert_eq!(
+                recv_selected_pair.candidate_pair,
+                recv.selected_pair().unwrap()
+            );
 
             // two-way connection has been setup
             let data = vec![3; 4];

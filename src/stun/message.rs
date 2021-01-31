@@ -805,7 +805,10 @@ impl Message {
     /// assert_eq!(message.get_attribute::<RawAttribute>(1.into()).unwrap(), attr);
     /// ```
     pub fn get_attribute<A: Attribute>(&self, atype: AttributeType) -> Option<A> {
-        self.attributes.iter().find(|attr| attr.get_type() == atype).and_then(|raw| A::from_raw(raw).ok())
+        self.attributes
+            .iter()
+            .find(|attr| attr.get_type() == atype)
+            .and_then(|raw| A::from_raw(raw).ok())
     }
 
     /// Returns an iterator over the attributes in the [`Message`].
@@ -1019,7 +1022,9 @@ mod tests {
         assert_eq!(msg.method(), src.method());
         let err = msg.get_attribute::<ErrorCode>(ERROR_CODE).unwrap();
         assert_eq!(err.code(), 420);
-        let unknown_attrs = msg.get_attribute::<UnknownAttributes>(UNKNOWN_ATTRIBUTES).unwrap();
+        let unknown_attrs = msg
+            .get_attribute::<UnknownAttributes>(UNKNOWN_ATTRIBUTES)
+            .unwrap();
         assert!(unknown_attrs.has_attribute(SOFTWARE));
     }
 
@@ -1068,12 +1073,16 @@ mod tests {
         msg.add_message_integrity(&credentials).unwrap();
         let bytes: Vec<_> = msg.clone().into();
         msg.validate_integrity(&bytes, &credentials).unwrap();
-        let orig_integrity = msg.get_attribute::<MessageIntegrity>(MESSAGE_INTEGRITY).unwrap();
+        let orig_integrity = msg
+            .get_attribute::<MessageIntegrity>(MESSAGE_INTEGRITY)
+            .unwrap();
         // validates the fingerprint of the data when available
         let new_msg = Message::from_bytes(&bytes).unwrap();
         let software = new_msg.get_attribute::<Software>(SOFTWARE).unwrap();
         assert_eq!(software.software(), software_str);
-        let new_integrity = new_msg.get_attribute::<MessageIntegrity>(MESSAGE_INTEGRITY).unwrap();
+        let new_integrity = new_msg
+            .get_attribute::<MessageIntegrity>(MESSAGE_INTEGRITY)
+            .unwrap();
         assert_eq!(orig_integrity.hmac(), new_integrity.hmac());
         new_msg.validate_integrity(&bytes, &credentials).unwrap();
     }
@@ -1106,7 +1115,9 @@ mod tests {
         assert!(res.has_method(src.method()));
         let err = res.get_attribute::<ErrorCode>(ERROR_CODE).unwrap();
         assert_eq!(err.code(), 420);
-        let unknown = res.get_attribute::<UnknownAttributes>(UNKNOWN_ATTRIBUTES).unwrap();
+        let unknown = res
+            .get_attribute::<UnknownAttributes>(UNKNOWN_ATTRIBUTES)
+            .unwrap();
         assert!(unknown.has_attribute(PRIORITY));
     }
 
@@ -1230,7 +1241,9 @@ mod tests {
 
         // XOR_MAPPED_ADDRESS
         assert!(msg.has_attribute(XOR_MAPPED_ADDRESS));
-        let raw = msg.get_attribute::<RawAttribute>(XOR_MAPPED_ADDRESS).unwrap();
+        let raw = msg
+            .get_attribute::<RawAttribute>(XOR_MAPPED_ADDRESS)
+            .unwrap();
         assert!(matches!(XorMappedAddress::try_from(&raw), Ok(_)));
         let xor_mapped_addres = XorMappedAddress::try_from(&raw).unwrap();
         assert_eq!(
@@ -1300,7 +1313,9 @@ mod tests {
 
         // XOR_MAPPED_ADDRESS
         assert!(msg.has_attribute(XOR_MAPPED_ADDRESS));
-        let raw = msg.get_attribute::<RawAttribute>(XOR_MAPPED_ADDRESS).unwrap();
+        let raw = msg
+            .get_attribute::<RawAttribute>(XOR_MAPPED_ADDRESS)
+            .unwrap();
         assert!(matches!(XorMappedAddress::try_from(&raw), Ok(_)));
         let xor_mapped_addres = XorMappedAddress::try_from(&raw).unwrap();
         assert_eq!(

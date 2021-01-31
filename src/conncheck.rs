@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use futures::future::{AbortHandle, Abortable};
 use futures::channel::oneshot;
+use futures::future::{AbortHandle, Abortable};
 use futures::prelude::*;
 use futures_timer::Delay;
 
@@ -305,23 +305,34 @@ impl ConnCheckListInner {
                     // for each component of the data stream), that pair becomes the
                     // selected pair for that agent and is used for sending and receiving
                     // data for that component of the data stream.
-                    self.valid.iter().fold(vec![], |mut component_ids_selected, valid_pair| {
-                        // Only nominate one valid candidatePair
-                        if component_ids_selected.iter().find(|&comp_id| comp_id == &valid_pair.component_id).is_none() {
-                            if let Some(component) = &component {
-                                let local_agent = self.local_candidates.iter().find(|cand| {
-                                    cand.candidate == pair.local
-                                }).map(|cand| cand.stun_agent.clone());
-                                if let Some(local_agent) = local_agent {
-                                    component.set_selected_pair(SelectedPair::new(pair.clone(), local_agent));
-                                } else {
-                                    panic!("Cannot find existing local stun agent!");
+                    self.valid
+                        .iter()
+                        .fold(vec![], |mut component_ids_selected, valid_pair| {
+                            // Only nominate one valid candidatePair
+                            if component_ids_selected
+                                .iter()
+                                .find(|&comp_id| comp_id == &valid_pair.component_id)
+                                .is_none()
+                            {
+                                if let Some(component) = &component {
+                                    let local_agent = self
+                                        .local_candidates
+                                        .iter()
+                                        .find(|cand| cand.candidate == pair.local)
+                                        .map(|cand| cand.stun_agent.clone());
+                                    if let Some(local_agent) = local_agent {
+                                        component.set_selected_pair(SelectedPair::new(
+                                            pair.clone(),
+                                            local_agent,
+                                        ));
+                                    } else {
+                                        panic!("Cannot find existing local stun agent!");
+                                    }
                                 }
+                                component_ids_selected.push(valid_pair.component_id);
                             }
-                            component_ids_selected.push(valid_pair.component_id);
-                        }
-                        component_ids_selected
-                    });
+                            component_ids_selected
+                        });
                     info!("checklist state change from {:?} to Completed", self.state);
                     self.state = CheckListState::Completed;
                 }
@@ -408,16 +419,17 @@ impl ConnCheckList {
             }
         };
 
-        let peer_nominating = if let Some(use_candidate_raw) = msg.get_attribute::<RawAttribute>(USE_CANDIDATE) {
-            if UseCandidate::from_raw(&use_candidate_raw).is_ok() {
-                debug!("have valid use-candidate attr");
-                true
+        let peer_nominating =
+            if let Some(use_candidate_raw) = msg.get_attribute::<RawAttribute>(USE_CANDIDATE) {
+                if UseCandidate::from_raw(&use_candidate_raw).is_ok() {
+                    debug!("have valid use-candidate attr");
+                    true
+                } else {
+                    return Ok(Some(Message::bad_request(msg)?));
+                }
             } else {
-                return Ok(Some(Message::bad_request(msg)?));
-            }
-        } else {
-            false
-        };
+                false
+            };
         let mut component = None;
         {
             let checklist = weak_inner.upgrade().ok_or(AgentError::ConnectionClosed)?;
@@ -467,7 +479,8 @@ impl ConnCheckList {
                 // When the pair is already on the checklist:
                 trace!(
                     "found existing check {} for pair {:?}",
-                    check.conncheck_id, pair
+                    check.conncheck_id,
+                    pair
                 );
                 match check.state() {
                     // If the state of that pair is Succeeded, nothing further is
@@ -1149,10 +1162,7 @@ impl ConnCheckListSet {
                         if let Some(check) = checklist.get_matching_check(&ok_pair) {
                             checklist.add_valid(check.pair.clone());
                             if conncheck.nominate() {
-                                info!(
-                                    "ConnCheck {} Succeeded -> nominate",
-                                    conncheck.conncheck_id
-                                );
+                                info!("ConnCheck {} Succeeded -> nominate", conncheck.conncheck_id);
                                 checklist
                                     .nominated_pair(conncheck.pair.component_id, &conncheck.pair)
                                     .await;
