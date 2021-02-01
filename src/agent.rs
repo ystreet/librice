@@ -162,10 +162,34 @@ impl Agent {
     }
 
     pub fn set_controlling(&self, controlling: bool) {
-        self.inner.lock().unwrap().controlling = controlling
+        let mut inner = self.inner.lock().unwrap();
+        info!(
+            "agent set controlling from {} to {}",
+            inner.controlling, controlling
+        );
+        inner.controlling = controlling
+    }
+
+    pub fn controlling(&self) -> bool {
+        self.inner.lock().unwrap().controlling
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    fn init() {
+        let _ = env_logger::builder().is_test(true).try_init();
+    }
+
+    #[test]
+    fn controlling() {
+        init();
+        let agent = Agent::default();
+        agent.set_controlling(true);
+        assert_eq!(agent.controlling(), true);
+        agent.set_controlling(false);
+        assert_eq!(agent.controlling(), false);
+    }
 }
