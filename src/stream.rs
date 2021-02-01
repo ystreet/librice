@@ -491,6 +491,30 @@ mod tests {
             let local_cands = s.get_local_candidates();
             info!("gathered local candidates {:?}", local_cands);
             assert!(!local_cands.is_empty());
+            assert!(matches!(
+                s.gather_candidates().await,
+                Err(AgentError::AlreadyInProgress)
+            ));
+        });
+    }
+
+    #[test]
+    fn getters_setters() {
+        init();
+        let lcreds = Credentials::new("luser".into(), "lpass".into());
+        let rcreds = Credentials::new("ruser".into(), "rpass".into());
+
+        async_std::task::block_on(async move {
+            let agent = Arc::new(Agent::default());
+            let stream = agent.add_stream();
+            assert!(stream.get_component(0).is_none());
+            let comp = stream.add_component().unwrap();
+            assert_eq!(comp.id, stream.get_component(comp.id).unwrap().id);
+
+            stream.set_local_credentials(lcreds.clone());
+            assert_eq!(stream.get_local_credentials().unwrap(), lcreds);
+            stream.set_remote_credentials(rcreds.clone());
+            assert_eq!(stream.get_remote_credentials().unwrap(), rcreds);
         });
     }
 
