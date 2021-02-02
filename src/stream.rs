@@ -369,30 +369,50 @@ impl Stream {
             )
         };
 
-        // TODO: parallelize
-        for component in components.iter().cloned().filter_map(|c| c) {
+        let mut gather = futures::stream::select_all(vec![]);
+        for component in components.iter().filter_map(|c| c.as_ref()) {
             component.set_state(ComponentState::Connecting).await;
-            let s = component
-                .gather_stream(local_credentials.clone(), remote_credentials.clone(), stun_servers.clone())
-                .await?;
-            futures::pin_mut!(s);
-            while let Some((cand, agent)) = s.next().await {
-                self.checklist
-                    .add_local_candidate(&component, cand.clone(), agent)
-                    .await;
-                self.broadcast
-                    .broadcast(AgentMessage::NewLocalCandidate(component.clone(), cand))
-                    .await;
-            }
-            debug!(
-                "gathering completed for stream {} component {}",
-                self.id, component.id
+            let cstream = Box::pin(
+                component
+                    .gather_stream(
+                        local_credentials.clone(),
+                        remote_credentials.clone(),
+                        stun_servers.clone(),
+                    )
+                    .await?
+                    .map(move |(cand, agent)| (cand, agent, component)),
             );
+            // make a stream that notifies after completing
+            let stream = futures::stream::unfold(cstream, move |cstream| async move {
+                let (f, cstream) = cstream.into_future().await;
+                match f {
+                    Some(v) => Some((v, cstream)),
+                    None => {
+                        debug!(
+                            "gathering completed for stream {} component {}",
+                            self.id, component.id
+                        );
+                        self.broadcast
+                            .broadcast(AgentMessage::GatheringCompleted(component.clone()))
+                            .await;
+                        None
+                    }
+                }
+            });
+            gather.push(Box::pin(stream));
+        }
+
+        futures::pin_mut!(gather);
+        while let Some((cand, agent, component)) = gather.next().await {
+            self.checklist
+                .add_local_candidate(&component, cand.clone(), agent)
+                .await;
             self.broadcast
-                .broadcast(AgentMessage::GatheringCompleted(component.clone()))
+                .broadcast(AgentMessage::NewLocalCandidate(component.clone(), cand))
                 .await;
         }
-        // TODO: find STUN/TURN reflexive candidates
+
+        // TODO: find TURN reflexive candidates
         Ok(())
     }
 
