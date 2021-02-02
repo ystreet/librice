@@ -54,7 +54,7 @@ pub struct UdpSocketChannel {
 
 #[derive(Debug)]
 struct UdpSocketChannelInner {
-    receive_loop_started: bool,
+    receive_loop: Option<async_std::task::JoinHandle<()>>,
 }
 
 impl UdpSocketChannelInner {}
@@ -65,9 +65,7 @@ impl UdpSocketChannel {
             socket: DebugWrapper::wrap(Arc::new(socket), "..."),
             sender_broadcast: Arc::new(ChannelBroadcast::default()),
             inner: DebugWrapper::wrap(
-                Mutex::new(UdpSocketChannelInner {
-                    receive_loop_started: false,
-                }),
+                Mutex::new(UdpSocketChannelInner { receive_loop: None }),
                 "...",
             ),
         }
@@ -100,7 +98,7 @@ impl UdpSocketChannel {
 
     async fn receive_loop(
         socket: Arc<UdpSocket>,
-        broadcaster: &ChannelBroadcast<(Vec<u8>, SocketAddr)>,
+        broadcaster: Arc<ChannelBroadcast<(Vec<u8>, SocketAddr)>>,
     ) {
         let stream = UdpSocketChannel::socket_receive_stream(socket);
         futures::pin_mut!(stream);
@@ -121,13 +119,12 @@ impl UdpSocketChannel {
         {
             let mut inner = self.inner.lock().unwrap();
             //let (send, recv) = futures::channel::oneshot::channel();
-            if !inner.receive_loop_started {
-                async_std::task::spawn({
+            if inner.receive_loop.is_none() {
+                inner.receive_loop = Some(async_std::task::spawn({
                     let socket = (*self.socket).clone();
-                    let broadcaser = self.sender_broadcast.clone();
-                    async move { UdpSocketChannel::receive_loop(socket, &broadcaser).await }
-                });
-                inner.receive_loop_started = true;
+                    let broadcaster = self.sender_broadcast.clone();
+                    async move { UdpSocketChannel::receive_loop(socket, broadcaster).await }
+                }));
             }
         }
         self.sender_broadcast.channel()
