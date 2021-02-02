@@ -8,6 +8,7 @@
 
 use std::error::Error;
 use std::fmt::Display;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
@@ -73,6 +74,7 @@ pub(crate) struct AgentInner {
     checklistset: Option<Arc<ConnCheckListSet>>,
     controlling: bool,
     tie_breaker: u64,
+    pub(crate) stun_servers: Vec<SocketAddr>,
 }
 
 pub(crate) type AgentFuture = Pin<Box<dyn Future<Output = Result<(), AgentError>> + Send>>;
@@ -85,6 +87,7 @@ impl AgentInner {
             checklistset: None,
             controlling: false,
             tie_breaker: rnd.gen::<u64>(),
+            stun_servers: vec![],
         }
     }
 }
@@ -172,6 +175,12 @@ impl Agent {
 
     pub fn controlling(&self) -> bool {
         self.inner.lock().unwrap().controlling
+    }
+
+    pub fn add_stun_server(&self, addr: SocketAddr) {
+        let mut inner = self.inner.lock().unwrap();
+        info!("Adding stun server {}", addr);
+        inner.stun_servers.push(addr);
     }
 }
 

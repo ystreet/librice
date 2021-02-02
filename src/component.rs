@@ -114,11 +114,8 @@ impl Component {
         &self,
         local_credentials: MessageIntegrityCredentials,
         remote_credentials: MessageIntegrityCredentials,
+        stun_servers: Vec<SocketAddr>,
     ) -> Result<impl Stream<Item = (Candidate, StunAgent)>, AgentError> {
-        let stun_servers = {
-            let inner = self.inner.lock().unwrap();
-            inner.stun_servers.clone()
-        };
         let schannels = crate::gathering::iface_udp_sockets()?
             .filter_map(move |s| async move { s.ok() })
             .collect::<Vec<_>>()
@@ -135,22 +132,11 @@ impl Component {
             .collect();
 
         info!("retreived sockets");
-        Ok(
-            crate::gathering::gather_component(self.id, schannels, stun_servers)?.map(
-                move |(cand, channel)| {
-                    (
-                        cand,
-                        agents
-                            .iter()
-                            .find(|agent| {
-                                agent.inner.channel.local_addr().ok() == channel.local_addr().ok()
-                            })
-                            .unwrap()
-                            .clone(),
-                    )
-                },
-            ),
-        )
+        Ok(crate::gathering::gather_component(
+            self.id,
+            agents,
+            stun_servers,
+        )?)
     }
 
     pub(crate) async fn add_recv_agent(&self, agent: StunAgent) -> AbortHandle {
@@ -200,8 +186,6 @@ struct ComponentInner {
     channel: Option<Arc<SocketChannel>>,
     receive_send_channel: async_channel::Sender<Vec<u8>>,
     receive_receive_channel: async_channel::Receiver<Vec<u8>>,
-    stun_servers: Vec<SocketAddr>,
-    turn_servers: Vec<SocketAddr>,
 }
 
 impl ComponentInner {
@@ -214,8 +198,6 @@ impl ComponentInner {
             channel: None,
             receive_send_channel: recv_s,
             receive_receive_channel: recv_r,
-            stun_servers: vec![],
-            turn_servers: vec![],
         }
     }
 
@@ -404,7 +386,7 @@ mod tests {
             let send = s.add_component().unwrap();
             // assumes the first candidate works
             let send_stream = send
-                .gather_stream(send_credentials.clone(), recv_credentials.clone())
+                .gather_stream(send_credentials.clone(), recv_credentials.clone(), vec![])
                 .await
                 .unwrap();
             futures::pin_mut!(send_stream);
@@ -413,7 +395,7 @@ mod tests {
             // XXX: not technically valid usage but works for now
             let recv = s.add_component().unwrap();
             let recv_stream = recv
-                .gather_stream(recv_credentials, send_credentials)
+                .gather_stream(recv_credentials, send_credentials, vec![])
                 .await
                 .unwrap();
             futures::pin_mut!(recv_stream);

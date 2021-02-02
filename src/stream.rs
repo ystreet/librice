@@ -345,6 +345,12 @@ impl Stream {
     /// });
     /// ```
     pub async fn gather_candidates(&self) -> Result<(), AgentError> {
+        let stun_servers = {
+            let agent = Weak::upgrade(&self.agent).ok_or(AgentError::ResourceNotFound)?;
+            let inner = agent.lock().unwrap();
+            inner.stun_servers.clone()
+        };
+
         let (components, local_credentials, remote_credentials) = {
             let mut state = self.state.lock().unwrap();
             if state.gathering {
@@ -367,7 +373,7 @@ impl Stream {
         for component in components.iter().cloned().filter_map(|c| c) {
             component.set_state(ComponentState::Connecting).await;
             let s = component
-                .gather_stream(local_credentials.clone(), remote_credentials.clone())
+                .gather_stream(local_credentials.clone(), remote_credentials.clone(), stun_servers.clone())
                 .await?;
             futures::pin_mut!(s);
             while let Some((cand, agent)) = s.next().await {
