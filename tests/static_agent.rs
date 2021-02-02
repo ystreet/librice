@@ -8,11 +8,17 @@
 
 use std::sync::Arc;
 
+use async_std::net::UdpSocket;
+
+use futures::future::{AbortHandle, Abortable, Aborted};
 use futures::StreamExt;
 
 use librice::agent::{Agent, AgentMessage};
 use librice::component::ComponentState;
 use librice::stream::Credentials;
+
+#[macro_use]
+extern crate log;
 
 mod common;
 
@@ -20,9 +26,17 @@ mod common;
 fn agent_static_connection() {
     common::debug_init();
     async_std::task::block_on(async move {
+        let stun_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let stun_addr = stun_socket.local_addr().unwrap();
+        let (abort_handle, abort_registration) = AbortHandle::new_pair();
+        let abortable = Abortable::new(common::stund(stun_socket), abort_registration);
+        let stun_server = async_std::task::spawn(abortable);
+
         let lagent = Arc::new(Agent::default());
+        lagent.add_stun_server(stun_addr);
         lagent.set_controlling(true);
         let ragent = Arc::new(Agent::default());
+        ragent.add_stun_server(stun_addr);
 
         let lcreds = Credentials::new("luser".into(), "lpass".into());
         let rcreds = Credentials::new("ruser".into(), "rpass".into());
@@ -101,11 +115,15 @@ fn agent_static_connection() {
         futures::try_join!(lstream.gather_candidates(), rstream.gather_candidates()).unwrap();
 
         futures::try_join!(lgatherdone_recv.recv(), rgatherdone_recv.recv()).unwrap();
+        drop(lgatherdone_recv);
+        drop(rgatherdone_recv);
+        trace!("gathered");
 
         lagent.start().unwrap();
         ragent.start().unwrap();
 
         futures::join!(lgather, rgather);
+        trace!("connected");
 
         let rcomp_recv_stream = rcomp.receive_stream();
         let data = vec![5; 8];
@@ -120,7 +138,14 @@ fn agent_static_connection() {
         futures::pin_mut!(lcomp_recv_stream);
         let received = lcomp_recv_stream.next().await.unwrap();
         assert_eq!(data, received);
+        trace!("sent/received");
 
         futures::try_join!(lagent.close(), ragent.close()).unwrap();
+        trace!("agents closed");
+
+        abort_handle.abort();
+        trace!("agents aborted");
+        assert!(matches!(stun_server.await, Err(Aborted)));
+        trace!("done");
     });
 }

@@ -9,6 +9,7 @@
 //! STUN agent
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use std::time::Duration;
@@ -27,6 +28,8 @@ use crate::stun::message::*;
 use crate::socket::UdpSocketChannel;
 use crate::utils::{ChannelBroadcast, DebugWrapper};
 
+static STUN_AGENT_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 /// Implementation of a STUN agent
 #[derive(Debug, Clone)]
 pub struct StunAgent {
@@ -35,6 +38,7 @@ pub struct StunAgent {
 
 #[derive(Debug)]
 pub(crate) struct StunAgentInner {
+    id: usize,
     state: Mutex<StunAgentState>,
     pub(crate) channel: Arc<UdpSocketChannel>,
     stun_broadcaster: Arc<ChannelBroadcast<(Message, Vec<u8>, SocketAddr)>>,
@@ -43,6 +47,7 @@ pub(crate) struct StunAgentInner {
 
 #[derive(Debug)]
 struct StunAgentState {
+    id: usize,
     receive_loop_started: bool,
     outstanding_requests: HashMap<u128, Message>,
     local_credentials: Option<MessageIntegrityCredentials>,
@@ -51,10 +56,12 @@ struct StunAgentState {
 
 impl StunAgent {
     pub fn new(channel: Arc<UdpSocketChannel>) -> Self {
+        let id = STUN_AGENT_COUNT.fetch_add(1, Ordering::SeqCst);
         Self {
             inner: DebugWrapper::wrap(
                 Arc::new(StunAgentInner {
-                    state: Mutex::new(StunAgentState::new()),
+                    id,
+                    state: Mutex::new(StunAgentState::new(id)),
                     channel,
                     stun_broadcaster: Arc::new(ChannelBroadcast::default()),
                     data_broadcaster: Arc::new(ChannelBroadcast::default()),
@@ -67,6 +74,7 @@ impl StunAgent {
     fn maybe_store_message(state: &Mutex<StunAgentState>, msg: Message) {
         if msg.has_class(MessageClass::Request) {
             let mut state = state.lock().unwrap();
+            trace!("{} storing request {}", state.id, msg);
             state.outstanding_requests.insert(msg.transaction_id(), msg);
         }
     }
@@ -114,7 +122,7 @@ impl StunAgent {
                     };
                     match Message::from_bytes(&data) {
                         Ok(msg) => {
-                            debug!("received from {:?} {}", from, msg);
+                            debug!("{} received from {:?} {}", inner.id, from, msg);
                             let handle = {
                                 let mut state = inner.state.lock().unwrap();
                                 state.handle_stun(msg.clone())
@@ -124,7 +132,7 @@ impl StunAgent {
                                     inner.stun_broadcaster.broadcast((msg, data, from)).await;
                                 }
                                 HandleStunReply::Failure(err) => {
-                                    warn!("Failed to handle {}. {:?}", msg, err);
+                                    warn!("{} Failed to handle {}. {:?}", inner.id, msg, err);
                                 }
                                 _ => {}
                             }
@@ -187,7 +195,7 @@ impl StunAgent {
         let timeouts: [u64; 7] = [0, 500, 1500, 3500, 7500, 15500, 31500];
         for timeout in timeouts.iter() {
             Delay::new(Duration::from_millis(*timeout)).await;
-            info!("sending {} to {}", msg, to);
+            info!("{} sending {} to {}", self.inner.id, msg, to);
             let buf = msg.to_bytes();
             self.inner.channel.send_to(&buf, to).await?;
         }
@@ -248,8 +256,9 @@ impl From<AgentError> for HandleStunReply {
 }
 
 impl StunAgentState {
-    fn new() -> Self {
+    fn new(id: usize) -> Self {
         Self {
+            id,
             outstanding_requests: HashMap::new(),
             local_credentials: None,
             remote_credentials: None,
@@ -263,7 +272,7 @@ impl StunAgentState {
             if let Some(_orig_request) = self.outstanding_requests.remove(&msg.transaction_id()) {
                 return HandleStunReply::Broadcast(msg);
             } else {
-                debug!("unmatched stun response, dropping");
+                debug!("{}, unmatched stun response, dropping {}", self.id, msg);
                 // unmatched response -> drop
                 return HandleStunReply::Ignore;
             }

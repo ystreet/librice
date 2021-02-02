@@ -15,6 +15,8 @@ use std::io;
 
 use futures::prelude::*;
 
+use librice::stun::agent::StunAgent;
+
 fn main() -> io::Result<()> {
     env_logger::init();
     task::block_on(async move {
@@ -23,14 +25,14 @@ fn main() -> io::Result<()> {
         let stun_servers = ["127.0.0.1:3478".parse().unwrap()].to_vec();
         //let stun_servers = ["172.253.56.127:19302".parse().unwrap()].to_vec();
 
-        let schannels = librice::gathering::iface_udp_sockets()
+        let agents = librice::gathering::iface_udp_sockets()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e))?
-            .filter_map(move |s| async move { s.ok() })
+            .filter_map(|channel| async move { channel.ok().map(StunAgent::new) })
             .collect::<Vec<_>>()
             .await;
 
         info!("retreived sockets");
-        let gather_stream = librice::gathering::gather_component(1, schannels, stun_servers)
+        let gather_stream = librice::gathering::gather_component(1, agents, stun_servers)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e))?;
         futures::pin_mut!(gather_stream);
         while let Some(candidate) = gather_stream.next().await {

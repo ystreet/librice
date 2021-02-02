@@ -21,6 +21,7 @@ use get_if_addrs::get_if_addrs;
 use crate::agent::AgentError;
 use crate::candidate::{Candidate, CandidateType, TransportType};
 use crate::socket::{SocketChannel, UdpConnectionChannel, UdpSocketChannel};
+use crate::stun::agent::StunAgent;
 use crate::stun::attribute::*;
 use crate::stun::message::*;
 
@@ -65,10 +66,9 @@ pub fn iface_udp_sockets(
     )
 }
 
-fn generate_bind_request(from: SocketAddr) -> std::io::Result<Message> {
-    let mtype = MessageType::from_class_method(MessageClass::Request, BINDING);
-    let mut out = Message::new(mtype, Message::generate_transaction());
-    out.add_attribute(XorMappedAddress::new(from, out.transaction_id()).to_raw())
+fn generate_bind_request() -> std::io::Result<Message> {
+    let mut out = Message::new_request(BINDING);
+    out.add_fingerprint()
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid message"))?;
 
     info!("generated to {}", out);
@@ -150,7 +150,7 @@ async fn gather_stun_xor_address(
     // @schannel and wait for the response (or timeout).
     let remote_addr = schannel.remote_addr().unwrap();
 
-    let msg = generate_bind_request(from)?;
+    let msg = generate_bind_request()?;
     let transaction_id = msg.transaction_id();
 
     let (recv_abort_handle, recv_registration) = futures::future::AbortHandle::new_pair();
@@ -197,24 +197,27 @@ fn udp_socket_host_gather_candidate(
 
 pub fn gather_component(
     component_id: usize,
-    schannels: Vec<Arc<UdpSocketChannel>>,
+    local_agents: Vec<StunAgent>,
     stun_servers: Vec<SocketAddr>,
-) -> Result<impl Stream<Item = (Candidate, Arc<UdpSocketChannel>)>, AgentError> {
+) -> Result<impl Stream<Item = (Candidate, StunAgent)>, AgentError> {
     let futures = futures::stream::FuturesUnordered::new();
 
-    for f in schannels.iter().enumerate().map(|(i, schannel)| {
+    for f in local_agents.iter().enumerate().map(|(i, agent)| {
+        let schannel = agent.inner.channel.clone();
         futures::future::ready(
             udp_socket_host_gather_candidate(schannel.socket(), (i * 10) as u8)
-                .map(|ga| (ga, schannel.clone())),
+                .map(|ga| (ga, agent.clone())),
         )
     }) {
         futures.push(f.boxed_local());
     }
 
-    for (i, schannel) in schannels.iter().cloned().enumerate() {
+    for (i, agent) in local_agents.iter().cloned().enumerate() {
+        let schannel = agent.inner.channel.clone();
         for stun_server in stun_servers.iter() {
             futures.push(
                 {
+                    let agent = agent.clone();
                     let schannel = schannel.clone();
                     let stun_server = *stun_server;
                     let local_addr = schannel.local_addr().unwrap();
@@ -225,7 +228,7 @@ pub fn gather_component(
                         )));
                         gather_stun_xor_address(local_addr, (i * 10) as u8, chan)
                             .await
-                            .map(move |ga| (ga, schannel))
+                            .map(move |ga| (ga, agent))
                     }
                 }
                 .boxed_local(),
