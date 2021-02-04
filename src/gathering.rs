@@ -20,7 +20,7 @@ use get_if_addrs::get_if_addrs;
 
 use crate::agent::AgentError;
 use crate::candidate::{Candidate, CandidateType, TransportType};
-use crate::socket::{SocketChannel, UdpConnectionChannel, UdpSocketChannel};
+use crate::socket::UdpSocketChannel;
 use crate::stun::agent::StunAgent;
 use crate::stun::attribute::*;
 use crate::stun::message::*;
@@ -77,7 +77,8 @@ fn generate_bind_request() -> std::io::Result<Message> {
 
 async fn send_message_with_retransmissions_delay(
     msg: Message,
-    schannel: Arc<SocketChannel>,
+    agent: StunAgent,
+    stun_server: SocketAddr,
     recv_abort_handle: AbortHandle,
 ) -> Result<SocketAddr, AgentError> {
     // FIXME: fix these timeout values
@@ -85,9 +86,7 @@ async fn send_message_with_retransmissions_delay(
     for timeout in timeouts.iter() {
         Delay::new(Duration::from_secs(*timeout)).await;
         info!("sending {}", msg);
-        let buf = msg.to_bytes();
-        trace!("sending {:?}", buf);
-        schannel.send(&buf).await?;
+        agent.send(msg.clone(), stun_server).await?;
     }
 
     // on failure, abort the receiver waiting
@@ -97,36 +96,19 @@ async fn send_message_with_retransmissions_delay(
 
 async fn listen_for_xor_address_response(
     transaction_id: u128,
-    schannel: Arc<SocketChannel>,
+    agent: StunAgent,
     send_abort_handle: AbortHandle,
 ) -> Result<SocketAddr, AgentError> {
-    let mut s = schannel.receive_stream();
-    while let Some(buf) = s.next().await {
-        let from = schannel.remote_addr().unwrap();
-        trace!("got from {:?} data {:?}", from, buf);
+    let mut s = agent.stun_receive_stream_filter(move |(msg, _data, _addr)| msg.transaction_id() == transaction_id);
+    while let Some((msg, _data, addr)) = s.next().await {
+        info!("got response from {:?} {}", addr, msg);
 
-        // XXX: Too restrictive?
-        if let Ok(msg) = Message::from_bytes(&buf) {
-            if msg.get_type().class() != MessageClass::Success {
-                continue;
-            }
-            if msg.transaction_id() != transaction_id {
-                continue;
-            }
-
-            info!("got response from {:?} {}", from, msg);
-
-            // TODO: handle ALTERNATIVE-SERVER attribute for redirects
-
-            // ignore failed parsing, retransmissions may produce a better value
-            if let Some(attr) = msg.get_attribute(XOR_MAPPED_ADDRESS) {
-                if let Ok(attr) = XorMappedAddress::from_raw(&attr) {
-                    debug!("got external address {:?}", attr.addr(transaction_id));
-                    // we don't need any more retransmissions
-                    send_abort_handle.abort();
-                    return Ok(attr.addr(transaction_id));
-                }
-            }
+        // ignore failed parsing, retransmissions may produce a better value
+        if let Some(attr) = msg.get_attribute::<XorMappedAddress>(XOR_MAPPED_ADDRESS) {
+            debug!("got external address {:?}", attr.addr(transaction_id));
+            // we don't need any more retransmissions
+            send_abort_handle.abort();
+            return Ok(attr.addr(transaction_id));
         }
     }
     Err(AgentError::ConnectionClosed)
@@ -144,22 +126,19 @@ struct GatherCandidateAddress {
 async fn gather_stun_xor_address(
     from: SocketAddr,
     local_preference: u8,
-    schannel: Arc<SocketChannel>,
+    agent: StunAgent,
+    stun_server: SocketAddr,
 ) -> Result<GatherCandidateAddress, AgentError> {
-    // perform an unauthenticated stun binding request against the stun server pointed to by
-    // @schannel and wait for the response (or timeout).
-    let remote_addr = schannel.remote_addr().unwrap();
-
     let msg = generate_bind_request()?;
     let transaction_id = msg.transaction_id();
 
     let (recv_abort_handle, recv_registration) = futures::future::AbortHandle::new_pair();
     let (send_abortable, send_abort_handle) = futures::future::abortable(
-        send_message_with_retransmissions_delay(msg, schannel.clone(), recv_abort_handle),
+        send_message_with_retransmissions_delay(msg, agent.clone(), stun_server, recv_abort_handle),
     );
 
     let recv_abortable = futures::future::Abortable::new(
-        listen_for_xor_address_response(transaction_id, schannel, send_abort_handle),
+        listen_for_xor_address_response(transaction_id, agent, send_abort_handle),
         recv_registration,
     );
 
@@ -177,7 +156,7 @@ async fn gather_stun_xor_address(
         local_preference,
         address: addr,
         base: from,
-        related: Some(remote_addr),
+        related: Some(stun_server),
     })
 }
 
@@ -222,11 +201,7 @@ pub fn gather_component(
                     let stun_server = *stun_server;
                     let local_addr = schannel.local_addr().unwrap();
                     async move {
-                        let chan = Arc::new(SocketChannel::Udp(UdpConnectionChannel::new(
-                            schannel.clone(),
-                            stun_server,
-                        )));
-                        gather_stun_xor_address(local_addr, (i * 10) as u8, chan)
+                        gather_stun_xor_address(local_addr, (i * 10) as u8, agent.clone(), stun_server)
                             .await
                             .map(move |ga| (ga, agent))
                     }
