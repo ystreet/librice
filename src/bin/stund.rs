@@ -11,7 +11,6 @@ use std::net::SocketAddr;
 
 use async_std::io;
 use async_std::net::UdpSocket;
-use async_std::sync::Arc;
 use async_std::task;
 
 #[macro_use]
@@ -20,7 +19,7 @@ extern crate log;
 use futures::StreamExt;
 
 use librice::agent::*;
-use librice::socket::UdpSocketChannel;
+use librice::socket::{SocketChannel, UdpSocketChannel};
 use librice::stun::agent::*;
 use librice::stun::attribute::*;
 use librice::stun::message::*;
@@ -54,7 +53,7 @@ fn main() -> io::Result<()> {
 
     task::block_on(async move {
         let socket = UdpSocket::bind("127.0.0.1:3478").await?;
-        let channel = Arc::new(UdpSocketChannel::new(socket));
+        let channel = SocketChannel::Udp(UdpSocketChannel::new(socket));
         let stun_agent = StunAgent::new(channel);
 
         let mut data_stream = stun_agent.data_receive_stream();

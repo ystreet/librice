@@ -8,14 +8,13 @@
 
 use std::fmt::Display;
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use async_std::net::UdpSocket;
 
 use futures::StreamExt;
 
 use librice::agent::*;
-use librice::socket::UdpSocketChannel;
+use librice::socket::{SocketChannel, UdpSocketChannel};
 use librice::stun::agent::*;
 use librice::stun::attribute::*;
 use librice::stun::message::*;
@@ -50,7 +49,7 @@ fn handle_binding_request(msg: &Message, from: SocketAddr) -> Result<Message, Ag
 
 pub async fn stund(socket: UdpSocket) -> std::io::Result<()> {
     let addr = socket.local_addr()?;
-    let channel = Arc::new(UdpSocketChannel::new(socket));
+    let channel = SocketChannel::Udp(UdpSocketChannel::new(socket));
     let stun_agent = StunAgent::new(channel);
 
     let mut data_stream = stun_agent.data_receive_stream();

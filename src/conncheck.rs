@@ -1368,7 +1368,7 @@ mod tests {
     }
 
     struct Peer {
-        channel: Arc<UdpSocketChannel>,
+        channel: SocketChannel,
         candidate: Candidate,
         agent: StunAgent,
     }
@@ -1385,7 +1385,7 @@ mod tests {
             addr,
             None,
         );
-        let channel = Arc::new(UdpSocketChannel::new(socket));
+        let channel = SocketChannel::Udp(UdpSocketChannel::new(socket));
         let agent = StunAgent::new(channel.clone());
 
         Peer {

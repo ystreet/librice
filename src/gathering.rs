@@ -20,7 +20,7 @@ use get_if_addrs::get_if_addrs;
 
 use crate::agent::AgentError;
 use crate::candidate::{Candidate, CandidateType, TransportType};
-use crate::socket::UdpSocketChannel;
+use crate::socket::{SocketChannel, UdpSocketChannel};
 use crate::stun::agent::StunAgent;
 use crate::stun::attribute::*;
 use crate::stun::message::*;
@@ -44,7 +44,7 @@ fn candidate_is_redundant_with(a: &Candidate, b: &Candidate) -> bool {
 }
 
 pub fn iface_udp_sockets(
-) -> Result<impl Stream<Item = Result<Arc<UdpSocketChannel>, std::io::Error>>, AgentError> {
+) -> Result<impl Stream<Item = Result<SocketChannel, std::io::Error>>, AgentError> {
     let mut ifaces = get_if_addrs()?;
     // We only care about non-loopback interfaces for now
     // TODO: remove 'Deprecated IPv4-compatible IPv6 addresses [RFC4291]'
@@ -59,7 +59,7 @@ pub fn iface_udp_sockets(
 
     Ok(
         futures::stream::iter(ifaces.into_iter()).then(|iface| async move {
-            Ok(Arc::new(UdpSocketChannel::new(
+            Ok(SocketChannel::Udp(UdpSocketChannel::new(
                 UdpSocket::bind(SocketAddr::new(iface.clone().ip(), 0)).await?,
             )))
         }),
@@ -99,7 +99,9 @@ async fn listen_for_xor_address_response(
     agent: StunAgent,
     send_abort_handle: AbortHandle,
 ) -> Result<SocketAddr, AgentError> {
-    let mut s = agent.stun_receive_stream_filter(move |(msg, _data, _addr)| msg.transaction_id() == transaction_id);
+    let mut s = agent.stun_receive_stream_filter(move |(msg, _data, _addr)| {
+        msg.transaction_id() == transaction_id
+    });
     while let Some((msg, _data, addr)) = s.next().await {
         info!("got response from {:?} {}", addr, msg);
 
@@ -181,12 +183,15 @@ pub fn gather_component(
 ) -> Result<impl Stream<Item = (Candidate, StunAgent)>, AgentError> {
     let futures = futures::stream::FuturesUnordered::new();
 
-    for f in local_agents.iter().enumerate().map(|(i, agent)| {
-        let schannel = agent.inner.channel.clone();
-        futures::future::ready(
-            udp_socket_host_gather_candidate(schannel.socket(), (i * 10) as u8)
-                .map(|ga| (ga, agent.clone())),
-        )
+    for f in local_agents.iter().enumerate().filter_map(|(i, agent)| {
+        if let SocketChannel::Udp(schannel) = &agent.inner.channel {
+            Some(futures::future::ready(
+                udp_socket_host_gather_candidate(schannel.socket(), (i * 10) as u8)
+                    .map(|ga| (ga, agent.clone())),
+            ))
+        } else {
+            None
+        }
     }) {
         futures.push(f.boxed_local());
     }
@@ -201,9 +206,14 @@ pub fn gather_component(
                     let stun_server = *stun_server;
                     let local_addr = schannel.local_addr().unwrap();
                     async move {
-                        gather_stun_xor_address(local_addr, (i * 10) as u8, agent.clone(), stun_server)
-                            .await
-                            .map(move |ga| (ga, agent))
+                        gather_stun_xor_address(
+                            local_addr,
+                            (i * 10) as u8,
+                            agent.clone(),
+                            stun_server,
+                        )
+                        .await
+                        .map(move |ga| (ga, agent))
                     }
                 }
                 .boxed_local(),

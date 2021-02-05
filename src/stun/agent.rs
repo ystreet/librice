@@ -25,7 +25,7 @@ use crate::agent::AgentError;
 
 use crate::stun::message::*;
 
-use crate::socket::UdpSocketChannel;
+use crate::socket::SocketChannel;
 use crate::utils::{ChannelBroadcast, DebugWrapper};
 
 static STUN_AGENT_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -40,7 +40,7 @@ pub struct StunAgent {
 pub(crate) struct StunAgentInner {
     id: usize,
     state: Mutex<StunAgentState>,
-    pub(crate) channel: Arc<UdpSocketChannel>,
+    pub(crate) channel: SocketChannel,
     stun_broadcaster: Arc<ChannelBroadcast<(Message, Vec<u8>, SocketAddr)>>,
     data_broadcaster: Arc<ChannelBroadcast<(Vec<u8>, SocketAddr)>>,
 }
@@ -55,7 +55,7 @@ struct StunAgentState {
 }
 
 impl StunAgent {
-    pub fn new(channel: Arc<UdpSocketChannel>) -> Self {
+    pub fn new(channel: SocketChannel) -> Self {
         let id = STUN_AGENT_COUNT.fetch_add(1, Ordering::SeqCst);
         Self {
             inner: DebugWrapper::wrap(
@@ -105,10 +105,10 @@ impl StunAgent {
         self.inner.channel.send_to(&buf, to).await
     }
 
-    fn receive_task_loop(inner_weak: Weak<StunAgentInner>, channel: Arc<UdpSocketChannel>) {
+    fn receive_task_loop(inner_weak: Weak<StunAgentInner>, channel: SocketChannel) {
         // XXX: can we remove this demuxing task?
         // retrieve stream outside task to avoid a race
-        let s = channel.receive_stream();
+        let s = channel.receive_stream().unwrap();
         async_std::task::spawn({
             async move {
                 futures::pin_mut!(s);
