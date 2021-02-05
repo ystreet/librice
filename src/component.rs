@@ -183,7 +183,7 @@ struct ComponentInner {
     id: usize,
     state: ComponentState,
     selected_pair: Option<SelectedPair>,
-    channel: Option<Arc<SocketChannel>>,
+    channel: Option<SocketChannel>,
     receive_send_channel: async_channel::Sender<Vec<u8>>,
     receive_receive_channel: async_channel::Receiver<Vec<u8>>,
 }
@@ -209,10 +209,13 @@ impl ComponentInner {
             self.id, selected.candidate_pair
         );
         self.selected_pair = Some(selected);
-        self.channel = Some(Arc::new(SocketChannel::Udp(UdpConnectionChannel::new(
-            local_channel,
-            remote_addr,
-        ))));
+        let new_channel = match local_channel {
+            SocketChannel::Udp(c) => {
+                SocketChannel::UdpConnection(UdpConnectionChannel::new(c, remote_addr))
+            }
+            sc => sc,
+        };
+        self.channel = Some(new_channel);
     }
 }
 
@@ -299,7 +302,8 @@ mod tests {
             let local_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
             let remote_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
             let remote_channel = UdpSocketChannel::new(remote_socket);
-            let local_agent = StunAgent::new(Arc::new(UdpSocketChannel::new(local_socket)));
+            let local_agent =
+                StunAgent::new(SocketChannel::Udp(UdpSocketChannel::new(local_socket)));
 
             let local_cand = Candidate::new(
                 CandidateType::Host,
@@ -347,7 +351,7 @@ mod tests {
                 .await
                 .unwrap();
             let addr1 = socket1.local_addr().unwrap();
-            let channel1 = Arc::new(UdpSocketChannel::new(socket1));
+            let channel1 = SocketChannel::Udp(UdpSocketChannel::new(socket1));
             let stun = StunAgent::new(channel1.clone());
             send.add_recv_agent(stun).await;
 
@@ -355,7 +359,7 @@ mod tests {
                 .await
                 .unwrap();
             let addr2 = socket2.local_addr().unwrap();
-            let channel2 = Arc::new(UdpSocketChannel::new(socket2));
+            let channel2 = SocketChannel::Udp(UdpSocketChannel::new(socket2));
             let stun = StunAgent::new(channel2.clone());
             send.add_recv_agent(stun).await;
 

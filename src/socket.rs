@@ -13,43 +13,71 @@ use async_std::net::UdpSocket;
 use async_std::prelude::*;
 
 use crate::utils::{ChannelBroadcast, DebugWrapper};
+use futures::StreamExt;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SocketChannel {
-    Udp(UdpConnectionChannel),
+    Udp(UdpSocketChannel),
+    UdpConnection(UdpConnectionChannel),
 }
 
 impl SocketChannel {
-    pub fn receive_stream(&self) -> impl Stream<Item = Vec<u8>> {
-        match self {
-            SocketChannel::Udp(c) => c.receive_stream(),
-        }
+    pub fn receive_stream(
+        &self,
+    ) -> Result<impl Stream<Item = (Vec<u8>, SocketAddr)>, std::io::Error> {
+        Ok(match self {
+            SocketChannel::Udp(c) => c.receive_stream().left_stream(),
+            SocketChannel::UdpConnection(c) => {
+                let remote_addr = c.remote_addr()?;
+                c.receive_stream()
+                    .map(move |data| (data, remote_addr))
+                    .right_stream()
+            },
+        })
     }
 
     pub async fn send(&self, data: &[u8]) -> std::io::Result<()> {
         match self {
-            SocketChannel::Udp(c) => c.send(data).await,
+            SocketChannel::UdpConnection(c) => c.send(data).await,
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Implementation not available",
+            )),
         }
     }
 
+    pub async fn send_to(&self, data: &[u8], to: SocketAddr) -> std::io::Result<()> {
+        match self {
+            SocketChannel::Udp(c) => c.send_to(data, to).await,
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Implementation not available",
+            )),
+        }
+    }
     pub fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
         match self {
             SocketChannel::Udp(c) => c.local_addr(),
+            SocketChannel::UdpConnection(c) => c.local_addr(),
         }
     }
 
     pub fn remote_addr(&self) -> Result<SocketAddr, std::io::Error> {
         match self {
-            SocketChannel::Udp(c) => c.remote_addr(),
+            SocketChannel::UdpConnection(c) => c.remote_addr(),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Implementation not available",
+            )),
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UdpSocketChannel {
     socket: DebugWrapper<Arc<UdpSocket>>,
     sender_broadcast: Arc<ChannelBroadcast<(Vec<u8>, SocketAddr)>>,
-    inner: DebugWrapper<Mutex<UdpSocketChannelInner>>,
+    inner: DebugWrapper<Arc<Mutex<UdpSocketChannelInner>>>,
 }
 
 #[derive(Debug)]
@@ -65,7 +93,7 @@ impl UdpSocketChannel {
             socket: DebugWrapper::wrap(Arc::new(socket), "..."),
             sender_broadcast: Arc::new(ChannelBroadcast::default()),
             inner: DebugWrapper::wrap(
-                Mutex::new(UdpSocketChannelInner { receive_loop: None }),
+                Arc::new(Mutex::new(UdpSocketChannelInner { receive_loop: None })),
                 "...",
             ),
         }
@@ -131,29 +159,29 @@ impl UdpSocketChannel {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UdpConnectionChannel {
-    channel: Arc<UdpSocketChannel>,
+    channel: UdpSocketChannel,
     to: SocketAddr,
 }
 
 impl UdpConnectionChannel {
-    pub fn new(channel: Arc<UdpSocketChannel>, to: SocketAddr) -> Self {
+    pub fn new(channel: UdpSocketChannel, to: SocketAddr) -> Self {
         Self { channel, to }
     }
 
     pub fn receive_stream(&self) -> impl Stream<Item = Vec<u8>> {
         let channel = self.channel.clone();
         let to = self.to;
-        channel.receive_stream().filter_map(
-            move |(data, from)| {
+        channel
+            .receive_stream()
+            .filter_map(move |(data, from)| async move {
                 if from == to {
                     Some(data)
                 } else {
                     None
                 }
-            },
-        )
+            })
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
@@ -194,20 +222,21 @@ mod tests {
         })
     }
 
-    async fn setup_udp_channel() -> Arc<UdpSocketChannel> {
+    async fn setup_udp_channel() -> UdpSocketChannel {
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
         let socket = UdpSocket::bind(addr).await.unwrap();
-        Arc::new(UdpSocketChannel::new(socket))
+        UdpSocketChannel::new(socket)
     }
 
-    fn recv_data(channel: Arc<UdpConnectionChannel>) -> impl Future<Output = Vec<u8>> {
+    fn recv_data(channel: SocketChannel) -> impl Future<Output = (Vec<u8>, SocketAddr)> {
         let result = Arc::new(Mutex::new(None));
         // retrieve the recv channel before starting the task otherwise, there is a race starting
         // the task against the a sender in the current thread.
-        let mut recv = channel.receive_stream();
+        let recv = channel.receive_stream().unwrap();
         let f = task::spawn({
             let result = result.clone();
             async move {
+                futures::pin_mut!(recv);
                 let val = recv.next().await.unwrap();
                 let mut result = result.lock().unwrap();
                 result.replace(val);
@@ -219,8 +248,48 @@ mod tests {
         }
     }
 
+    async fn send_to_and_receive(send_socket: SocketChannel, recv_socket: SocketChannel) {
+        let from = send_socket.local_addr().unwrap();
+        let to = recv_socket.local_addr().unwrap();
+
+        // send data and assert that it is received
+        let recv = recv_data(recv_socket);
+        let data = vec![4; 4];
+        send_socket.send_to(&data.clone(), to).await.unwrap();
+        let result = recv.await;
+        assert_eq!(result.0, data);
+        assert_eq!(result.1, from);
+    }
+
     #[test]
-    fn send_recv() {
+    fn udp_channel_send_recv() {
+        init();
+        task::block_on(async move {
+            // set up sockets
+            let udp1 = SocketChannel::Udp(setup_udp_channel().await);
+            let udp2 = SocketChannel::Udp(setup_udp_channel().await);
+
+            send_to_and_receive(udp1, udp2).await;
+        });
+    }
+
+    async fn send_and_receive(send_socket: SocketChannel, recv_socket: SocketChannel) {
+        // this won't work unless the sockets are pointing at each other
+        assert_eq!(send_socket.local_addr().unwrap(), recv_socket.remote_addr().unwrap());
+        assert_eq!(recv_socket.local_addr().unwrap(), send_socket.remote_addr().unwrap());
+        let from = send_socket.local_addr().unwrap();
+
+        // send data and assert that it is received
+        let recv = recv_data(recv_socket);
+        let data = vec![4; 4];
+        send_socket.send(&data.clone()).await.unwrap();
+        let result = recv.await;
+        assert_eq!(result.0, data);
+        assert_eq!(result.1, from);
+    }
+
+    #[test]
+    fn udp_connection_send_recv() {
         init();
         task::block_on(async move {
             // set up sockets
@@ -229,15 +298,30 @@ mod tests {
             let udp2 = setup_udp_channel().await;
             let to = udp2.local_addr().unwrap();
 
-            let socket_channel1 = Arc::new(UdpConnectionChannel::new(udp1, to));
-            let socket_channel2 = Arc::new(UdpConnectionChannel::new(udp2, from));
-            // send data and assert that it is received
-            let recv = recv_data(socket_channel2);
-            let data = vec![4; 4];
-            socket_channel1.send(&data.clone()).await.unwrap();
-            let result = recv.await;
-            assert_eq!(data, result);
+            let socket_channel1 = SocketChannel::UdpConnection(UdpConnectionChannel::new(udp1, to));
+            let socket_channel2 = SocketChannel::UdpConnection(UdpConnectionChannel::new(udp2, from));
+
+            send_and_receive(socket_channel1, socket_channel2).await;
         });
+    }
+
+    async fn send_and_double_receive(send_socket: SocketChannel, recv_socket: SocketChannel) {
+        // this won't work unless the sockets are pointing at each other
+        assert_eq!(send_socket.local_addr().unwrap(), recv_socket.remote_addr().unwrap());
+        assert_eq!(recv_socket.local_addr().unwrap(), send_socket.remote_addr().unwrap());
+        let from = send_socket.local_addr().unwrap();
+
+        // send data and assert that it is received on both receive channels
+        let recv1 = recv_data(recv_socket.clone());
+        let recv2 = recv_data(recv_socket);
+        let data = vec![4; 4];
+        send_socket.send(&data.clone()).await.unwrap();
+        let result = recv1.await;
+        assert_eq!(result.0, data);
+        assert_eq!(result.1, from);
+        let result = recv2.await;
+        assert_eq!(result.0, data);
+        assert_eq!(result.1, from);
     }
 
     #[test]
@@ -250,18 +334,11 @@ mod tests {
             let udp2 = setup_udp_channel().await;
             let to = udp2.local_addr().unwrap();
 
-            let socket_channel1 = Arc::new(UdpConnectionChannel::new(udp1, to));
-            let socket_channel2 = Arc::new(UdpConnectionChannel::new(udp2, from));
+            let socket_channel1 = SocketChannel::UdpConnection(UdpConnectionChannel::new(udp1, to));
+            let socket_channel2 = SocketChannel::UdpConnection(UdpConnectionChannel::new(udp2, from));
 
             // send data and assert that it is received on both receive channels
-            let recv1 = recv_data(socket_channel2.clone());
-            let recv2 = recv_data(socket_channel2);
-            let data = vec![4; 4];
-            socket_channel1.send(&data.clone()).await.unwrap();
-            let result = recv1.await;
-            assert_eq!(data, result);
-            let result = recv2.await;
-            assert_eq!(data, result);
+            send_and_double_receive(socket_channel1, socket_channel2).await;
         });
     }
 
@@ -275,25 +352,15 @@ mod tests {
             let udp2 = setup_udp_channel().await;
             let to = udp2.local_addr().unwrap();
 
-            let socket_channel1 = Arc::new(UdpConnectionChannel::new(udp1, to));
-            let socket_channel2 = Arc::new(UdpConnectionChannel::new(udp2, from));
+            let socket_channel1 = SocketChannel::UdpConnection(UdpConnectionChannel::new(udp1, to));
+            let socket_channel2 = SocketChannel::UdpConnection(UdpConnectionChannel::new(udp2, from));
 
             // send data and assert that it is received on both receive channels
-            let recv1 = recv_data(socket_channel2.clone());
-            let recv2 = recv_data(socket_channel2.clone());
-            let data = vec![4; 4];
-            socket_channel1.send(&data.clone()).await.unwrap();
-            let result = recv1.await;
-            assert_eq!(data, result);
-            let result = recv2.await;
-            assert_eq!(data, result);
+            send_and_double_receive(socket_channel1.clone(), socket_channel2.clone()).await;
 
             // previous receivers should have been dropped as not connected anymore
             // XXX: doesn't currently test the actual drop just that nothing errors
-            let recv1 = recv_data(socket_channel2);
-            socket_channel1.send(&data.clone()).await.unwrap();
-            let result = recv1.await;
-            assert_eq!(data, result);
+            send_and_receive(socket_channel1, socket_channel2).await;
         });
     }
 }
