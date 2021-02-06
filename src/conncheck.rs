@@ -1372,30 +1372,67 @@ mod tests {
         agent: StunAgent,
     }
 
-    async fn construct_peer_with_foundation(foundation: &str) -> Peer {
-        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let addr = socket.local_addr().unwrap();
-        let candidate = Candidate::new(
-            CandidateType::Host,
-            TransportType::Udp,
-            foundation,
-            0,
-            addr,
-            addr,
-            None,
-        );
-        let channel = SocketChannel::Udp(UdpSocketChannel::new(socket));
-        let agent = StunAgent::new(channel.clone());
+    impl Peer {
+        async fn default() -> Self {
+            Peer::builder().build().await
+        }
 
-        Peer {
-            channel,
-            candidate,
-            agent,
+        fn builder<'this>() -> PeerBuilder<'this> {
+            PeerBuilder::default()
         }
     }
 
-    async fn construct_peer() -> Peer {
-        construct_peer_with_foundation("0").await
+    struct PeerBuilder<'this> {
+        channel: Option<SocketChannel>,
+        foundation: Option<&'this str>,
+    }
+
+    impl<'this> PeerBuilder<'this> {
+        fn channel(mut self, channel: SocketChannel) -> Self {
+            self.channel = Some(channel);
+            self
+        }
+
+        fn foundation(mut self, foundation: &'this str) -> Self {
+            self.foundation = Some(foundation);
+            self
+        }
+
+        async fn build(self) -> Peer {
+            let channel = match self.channel {
+                Some(c) => c,
+                None => {
+                    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+                    SocketChannel::Udp(UdpSocketChannel::new(socket))
+                }
+            };
+            let addr = channel.local_addr().unwrap();
+            let candidate = Candidate::new(
+                CandidateType::Host,
+                TransportType::Udp,
+                self.foundation.unwrap_or("0"),
+                0,
+                addr,
+                addr,
+                None,
+            );
+            let agent = StunAgent::new(channel.clone());
+
+            Peer {
+                channel,
+                candidate,
+                agent,
+            }
+        }
+    }
+
+    impl<'this> Default for PeerBuilder<'this> {
+        fn default() -> Self {
+            Self {
+                channel: None,
+                foundation: None,
+            }
+        }
     }
 
     #[test]
@@ -1406,8 +1443,8 @@ mod tests {
             let stream = agent.add_stream();
             let component = stream.add_component().unwrap();
 
-            let local = construct_peer().await;
-            let remote = construct_peer().await;
+            let local = Peer::default().await;
+            let remote = Peer::default().await;
 
             let list = ConnCheckList::new();
             list.add_local_candidate(&component, local.candidate.clone(), local.agent.clone())
@@ -1476,7 +1513,7 @@ mod tests {
                 password: "remote".to_owned(),
             });
             // start the remote peer
-            let remote = construct_peer().await;
+            let remote = Peer::default().await;
             remote
                 .agent
                 .set_local_credentials(remote_credentials.clone());
@@ -1484,7 +1521,7 @@ mod tests {
                 .agent
                 .set_remote_credentials(local_credentials.clone());
             // set up the local peer
-            let local = construct_peer().await;
+            let local = Peer::default().await;
             local.agent.set_local_credentials(local_credentials);
             local.agent.set_remote_credentials(remote_credentials);
 
@@ -1556,8 +1593,8 @@ mod tests {
             let agent = Agent::default();
             let stream = agent.add_stream();
             let component = stream.add_component().unwrap();
-            let local = construct_peer().await;
-            let remote = construct_peer().await;
+            let local = Peer::default().await;
+            let remote = Peer::default().await;
             let pair = CandidatePair::new(
                 component.id,
                 local.candidate.clone(),
@@ -1606,12 +1643,12 @@ mod tests {
             let stream = agent.add_stream();
             let component1 = stream.add_component().unwrap();
             let component2 = stream.add_component().unwrap();
-            let local1 = construct_peer().await;
-            let remote1 = construct_peer().await;
-            let local2 = construct_peer().await;
-            let remote2 = construct_peer().await;
-            let local3 = construct_peer().await;
-            let remote3 = construct_peer().await;
+            let local1 = Peer::default().await;
+            let remote1 = Peer::default().await;
+            let local2 = Peer::default().await;
+            let remote2 = Peer::default().await;
+            let local3 = Peer::default().await;
+            let remote3 = Peer::default().await;
 
             let list = ConnCheckList::new();
             list.add_local_candidate(&component1, local1.candidate.clone(), local1.agent)
@@ -1665,12 +1702,12 @@ mod tests {
             let list1 = ConnCheckList::new();
             let list2 = ConnCheckList::new();
 
-            let local1 = construct_peer_with_foundation("0").await;
-            let remote1 = construct_peer_with_foundation("0").await;
-            let local2 = construct_peer_with_foundation("0").await;
-            let remote2 = construct_peer_with_foundation("0").await;
-            let local3 = construct_peer_with_foundation("1").await;
-            let remote3 = construct_peer_with_foundation("1").await;
+            let local1 = Peer::builder().foundation("0").build().await;
+            let remote1 = Peer::builder().foundation("0").build().await;
+            let local2 = Peer::builder().foundation("0").build().await;
+            let remote2 = Peer::builder().foundation("0").build().await;
+            let local3 = Peer::builder().foundation("1").build().await;
+            let remote3 = Peer::builder().foundation("1").build().await;
 
             list1
                 .add_local_candidate(&component1, local1.candidate.clone(), local1.agent)
