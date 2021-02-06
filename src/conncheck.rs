@@ -571,7 +571,7 @@ impl ConnCheckList {
         msg.validate_integrity(data, &remote_credentials)?;
 
         let mut response = Message::new_success(msg);
-        response.add_attribute(XorMappedAddress::new(from, msg.transaction_id()).to_raw())?;
+        response.add_attribute(XorMappedAddress::new(from, msg.transaction_id()))?;
         response.add_message_integrity(&local_credentials)?;
         response.add_fingerprint()?;
 
@@ -673,7 +673,6 @@ impl ConnCheckList {
     }
 
     pub(crate) fn add_remote_candidate(&self, component_id: usize, remote: Candidate) {
-        debug!("adding remote component {} {:?}", component_id, remote);
         {
             let mut inner = self.inner.lock().unwrap();
             inner.add_remote_candidate(component_id, remote);
@@ -978,14 +977,14 @@ async fn connectivity_check(
         let mut msg = Message::new_request(BINDING);
 
         // XXX: this needs to be the priority as if the candidate was peer-reflexive
-        msg.add_attribute(Priority::new(conncheck.pair.local.priority).into())?;
+        msg.add_attribute(Priority::new(conncheck.pair.local.priority))?;
         if controlling {
-            msg.add_attribute(IceControlling::new(tie_breaker).into())?;
+            msg.add_attribute(IceControlling::new(tie_breaker))?;
         } else {
-            msg.add_attribute(IceControlled::new(tie_breaker).into())?;
+            msg.add_attribute(IceControlled::new(tie_breaker))?;
         }
         if nominate {
-            msg.add_attribute(UseCandidate::new().into())?;
+            msg.add_attribute(UseCandidate::new())?;
         }
         msg.add_message_integrity(&conncheck.agent.local_credentials().unwrap())?;
         msg.add_fingerprint()?;
@@ -1459,7 +1458,7 @@ mod tests {
         msg.validate_integrity(data, &remote_credentials)?;
 
         let mut response = Message::new_success(msg);
-        response.add_attribute(XorMappedAddress::new(from, msg.transaction_id()).to_raw())?;
+        response.add_attribute(XorMappedAddress::new(from, msg.transaction_id()))?;
         response.add_message_integrity(&local_credentials)?;
         response.add_fingerprint()?;
         agent.send(response, from).await?;
