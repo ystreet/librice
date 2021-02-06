@@ -43,7 +43,7 @@ fn handle_binding_request(msg: &Message, from: SocketAddr) -> Result<Message, Ag
     }
 
     let mut response = Message::new_success(msg);
-    response.add_attribute(XorMappedAddress::new(from, msg.transaction_id()).to_raw())?;
+    response.add_attribute(XorMappedAddress::new(from, msg.transaction_id()))?;
     response.add_fingerprint()?;
     Ok(response)
 }

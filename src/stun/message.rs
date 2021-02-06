@@ -769,7 +769,7 @@ impl Message {
     /// assert!(message.add_attribute(attr.clone()).is_ok());
     /// assert!(message.add_attribute(attr).is_err());
     /// ```
-    pub fn add_attribute(&mut self, attr: RawAttribute) -> Result<(), AgentError> {
+    pub fn add_attribute<A: Attribute>(&mut self, attr: A) -> Result<(), AgentError> {
         if attr.get_type() == MESSAGE_INTEGRITY {
             return Err(AgentError::WrongImplementation);
         }
@@ -786,7 +786,7 @@ impl Message {
         if self.has_attribute(FINGERPRINT) {
             return Err(AgentError::AlreadyExists);
         }
-        self.attributes.push(attr);
+        self.attributes.push(attr.to_raw());
         Ok(())
     }
 
@@ -841,7 +841,7 @@ impl Message {
     /// let error_code = error_msg.get_attribute::<ErrorCode>(ERROR_CODE).unwrap();
     /// assert_eq!(error_code.code(), 400);
     ///
-    /// message.add_attribute(Username::new("user").unwrap().into());
+    /// message.add_attribute(Username::new("user").unwrap());
     /// // If a Username is in the message but is not advertised as supported then an
     /// // 'UNKNOWN-ATTRIBUTES' error response is returned
     /// let error_msg = Message::check_attribute_types(&message, &[], &[]).unwrap();
@@ -911,10 +911,10 @@ impl Message {
         attributes: &[AttributeType],
     ) -> Result<Message, AgentError> {
         let mut out = Message::new_error(src);
-        out.add_attribute(Software::new("stund - librice v0.1")?.to_raw())?;
-        out.add_attribute(ErrorCode::new(420, "Unknown Attributes")?.to_raw())?;
+        out.add_attribute(Software::new("stund - librice v0.1")?)?;
+        out.add_attribute(ErrorCode::new(420, "Unknown Attributes")?)?;
         if !attributes.is_empty() {
-            out.add_attribute(UnknownAttributes::new(&attributes).to_raw())?;
+            out.add_attribute(UnknownAttributes::new(&attributes))?;
         }
         Ok(out)
     }
@@ -935,8 +935,8 @@ impl Message {
     /// ```
     pub fn bad_request(src: &Message) -> Result<Message, AgentError> {
         let mut out = Message::new_error(src);
-        out.add_attribute(Software::new("stund - librice v0.1")?.to_raw())?;
-        out.add_attribute(ErrorCode::new(400, "Bad Request")?.to_raw())?;
+        out.add_attribute(Software::new("stund - librice v0.1")?)?;
+        out.add_attribute(ErrorCode::new(400, "Bad Request")?)?;
         Ok(out)
     }
 
@@ -1044,7 +1044,7 @@ mod tests {
         init();
         let mut msg = Message::new_request(BINDING);
         let software_str = "s";
-        msg.add_attribute(Software::new(software_str).unwrap().into())
+        msg.add_attribute(Software::new(software_str).unwrap())
             .unwrap();
         msg.add_fingerprint().unwrap();
         let orig_fingerprint = msg.get_attribute::<Fingerprint>(FINGERPRINT).unwrap();
@@ -1068,7 +1068,7 @@ mod tests {
         let credentials = MessageIntegrityCredentials::ShortTerm(ShortTermCredentials {
             password: "secret".to_owned(),
         });
-        msg.add_attribute(Software::new(software_str).unwrap().into())
+        msg.add_attribute(Software::new(software_str).unwrap())
             .unwrap();
         msg.add_message_integrity(&credentials).unwrap();
         let bytes: Vec<_> = msg.clone().into();
@@ -1090,9 +1090,8 @@ mod tests {
     #[test]
     fn valid_attributes() {
         let mut src = Message::new_request(BINDING);
-        src.add_attribute(Username::new("123").unwrap().into())
-            .unwrap();
-        src.add_attribute(Priority::new(123).into()).unwrap();
+        src.add_attribute(Username::new("123").unwrap()).unwrap();
+        src.add_attribute(Priority::new(123)).unwrap();
 
         // success case
         let res = Message::check_attribute_types(&src, &[USERNAME, PRIORITY], &[USERNAME]);
