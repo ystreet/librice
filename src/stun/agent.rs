@@ -71,6 +71,10 @@ impl StunAgent {
         }
     }
 
+    pub fn channel(&self) -> SocketChannel {
+        self.inner.channel.clone()
+    }
+
     fn maybe_store_message(state: &Mutex<StunAgentState>, msg: Message) {
         if msg.has_class(MessageClass::Request) {
             let mut state = state.lock().unwrap();
@@ -99,10 +103,16 @@ impl StunAgent {
         state.remote_credentials.clone()
     }
 
-    pub async fn send(&self, msg: Message, to: SocketAddr) -> Result<(), std::io::Error> {
+    pub async fn send_to(&self, msg: Message, to: SocketAddr) -> Result<(), std::io::Error> {
         StunAgent::maybe_store_message(&self.inner.state, msg.clone());
         let buf = msg.to_bytes();
         self.inner.channel.send_to(&buf, to).await
+    }
+
+    pub async fn send(&self, msg: Message) -> Result<(), std::io::Error> {
+        StunAgent::maybe_store_message(&self.inner.state, msg.clone());
+        let buf = msg.to_bytes();
+        self.inner.channel.send(&buf).await
     }
 
     fn receive_task_loop(inner_weak: Weak<StunAgentInner>, channel: SocketChannel) {
@@ -155,6 +165,8 @@ impl StunAgent {
         }
     }
 
+    // FIXME: need to combine receive streams to not race when only requesting a single receive
+    // stream with any sent data
     pub fn data_receive_stream_filter<F>(
         &self,
         filter: F,
@@ -162,8 +174,9 @@ impl StunAgent {
     where
         F: Fn(&(Vec<u8>, SocketAddr)) -> bool + Send + Sync + 'static,
     {
+        let ret = self.inner.data_broadcaster.channel_with_filter(filter);
         self.ensure_receive_task_loop();
-        self.inner.data_broadcaster.channel_with_filter(filter)
+        ret
     }
 
     pub fn data_receive_stream(&self) -> impl Stream<Item = (Vec<u8>, SocketAddr)> {
@@ -177,8 +190,9 @@ impl StunAgent {
     where
         F: Fn(&(Message, Vec<u8>, SocketAddr)) -> bool + Send + Sync + 'static,
     {
+        let ret = self.inner.stun_broadcaster.channel_with_filter(filter);
         self.ensure_receive_task_loop();
-        self.inner.stun_broadcaster.channel_with_filter(filter)
+        ret
     }
 
     pub fn stun_receive_stream(&self) -> impl Stream<Item = (Message, Vec<u8>, SocketAddr)> {

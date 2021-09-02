@@ -16,7 +16,7 @@ use futures::prelude::*;
 use futures::Stream;
 
 use crate::agent::{AgentError, AgentMessage};
-use crate::candidate::{Candidate, CandidatePair};
+use crate::candidate::{Candidate, CandidatePair, TransportType};
 
 use crate::socket::{SocketChannel, UdpConnectionChannel};
 
@@ -114,7 +114,7 @@ impl Component {
         &self,
         local_credentials: MessageIntegrityCredentials,
         remote_credentials: MessageIntegrityCredentials,
-        stun_servers: Vec<SocketAddr>,
+        stun_servers: Vec<(TransportType, SocketAddr)>,
     ) -> Result<impl Stream<Item = (Candidate, StunAgent)>, AgentError> {
         let schannels = crate::gathering::iface_udp_sockets()?
             .filter_map(move |s| async move { s.ok() })

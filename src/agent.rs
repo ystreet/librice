@@ -21,6 +21,7 @@ use crate::conncheck::ConnCheckListSet;
 use crate::stream::Stream;
 use crate::tasks::TaskList;
 use crate::utils::ChannelBroadcast;
+use crate::candidate::TransportType;
 
 #[derive(Debug)]
 pub enum AgentError {
@@ -74,7 +75,7 @@ pub(crate) struct AgentInner {
     checklistset: Option<Arc<ConnCheckListSet>>,
     controlling: bool,
     tie_breaker: u64,
-    pub(crate) stun_servers: Vec<SocketAddr>,
+    pub(crate) stun_servers: Vec<(TransportType, SocketAddr)>,
 }
 
 pub(crate) type AgentFuture = Pin<Box<dyn Future<Output = Result<(), AgentError>> + Send>>;
@@ -177,10 +178,10 @@ impl Agent {
         self.inner.lock().unwrap().controlling
     }
 
-    pub fn add_stun_server(&self, addr: SocketAddr) {
+    pub fn add_stun_server(&self, ttype: TransportType, addr: SocketAddr) {
         let mut inner = self.inner.lock().unwrap();
         info!("Adding stun server {}", addr);
-        inner.stun_servers.push(addr);
+        inner.stun_servers.push((ttype, addr));
     }
 }
 

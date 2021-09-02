@@ -70,7 +70,7 @@ fn main() -> io::Result<()> {
                 match handle_binding_request(&msg, from) {
                     Ok(response) => {
                         info!("sending response to {}: {}", from, response);
-                        warn_on_err(stun_agent.send(response, from).await, ())
+                        warn_on_err(stun_agent.send_to(response, from).await, ())
                     }
                     Err(err) => warn!("error: {}", err),
                 }

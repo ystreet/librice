@@ -16,13 +16,14 @@ use std::io;
 use futures::prelude::*;
 
 use librice::stun::agent::StunAgent;
+use librice::stun::TransportType;
 
 fn main() -> io::Result<()> {
     env_logger::init();
     task::block_on(async move {
         // non-existent
         //let stun_servers = ["192.168.1.200:3000".parse().unwrap()].to_vec();
-        let stun_servers = ["127.0.0.1:3478".parse().unwrap()].to_vec();
+        let stun_servers = [(TransportType::Udp, "127.0.0.1:3478".parse().unwrap())].to_vec();
         //let stun_servers = ["172.253.56.127:19302".parse().unwrap()].to_vec();
 
         let agents = librice::gathering::iface_udp_sockets()
