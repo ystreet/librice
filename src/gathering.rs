@@ -90,10 +90,15 @@ async fn gather_stun_xor_address(
 ) -> Result<GatherCandidateAddress, AgentError> {
     let msg = generate_bind_request()?;
 
-    agent.stun_request_transaction(&msg, stun_server).await
+    agent
+        .stun_request_transaction(&msg, stun_server)
+        .await
         .and_then(move |(response, _msg_data, from)| {
             if let Some(attr) = response.get_attribute::<XorMappedAddress>(XOR_MAPPED_ADDRESS) {
-                debug!("got external address {:?}", attr.addr(response.transaction_id()));
+                debug!(
+                    "got external address {:?}",
+                    attr.addr(response.transaction_id())
+                );
                 // we don't need any more retransmissions
                 return Ok(GatherCandidateAddress {
                     ctype: CandidateType::ServerReflexive,
@@ -105,7 +110,7 @@ async fn gather_stun_xor_address(
                 });
             }
             Err(AgentError::Malformed)
-    })
+        })
 }
 
 fn udp_socket_host_gather_candidate(
@@ -130,17 +135,17 @@ pub fn gather_component(
 ) -> Result<impl Stream<Item = (Candidate, StunAgent)>, AgentError> {
     let futures = futures::stream::FuturesUnordered::new();
 
-    for f in local_agents.iter().enumerate().filter_map(|(i, agent)| {
-        match &agent.inner.channel {
-            SocketChannel::Udp(schannel) => {
-                Some(futures::future::ready(
-                    udp_socket_host_gather_candidate(schannel.socket(), (i * 10) as u8)
-                        .map(|ga| (ga, agent.clone())),
-                ))
-            },
+    for f in local_agents
+        .iter()
+        .enumerate()
+        .filter_map(|(i, agent)| match &agent.inner.channel {
+            SocketChannel::Udp(schannel) => Some(futures::future::ready(
+                udp_socket_host_gather_candidate(schannel.socket(), (i * 10) as u8)
+                    .map(|ga| (ga, agent.clone())),
+            )),
             _ => None,
-        }
-    }) {
+        })
+    {
         futures.push(f.boxed_local());
     }
 
@@ -155,7 +160,7 @@ pub fn gather_component(
                             (i * 10) as u8,
                             agent.clone(),
                             stun_server.0,
-                            stun_server.1
+                            stun_server.1,
                         )
                         .await
                         .map(move |ga| (ga, agent))

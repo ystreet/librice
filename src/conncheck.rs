@@ -45,9 +45,9 @@ struct ConnCheck {
     conncheck_id: usize,
     nominate: bool,
     pair: CandidatePair,
-    #[derivative(Debug="ignore")]
+    #[derivative(Debug = "ignore")]
     state: Mutex<ConnCheckState>,
-    #[derivative(Debug="ignore")]
+    #[derivative(Debug = "ignore")]
     agent: StunAgent,
 }
 
@@ -98,10 +98,7 @@ impl ConnCheck {
         let mut inner = self.state.lock().unwrap();
         let abort_handle = inner.abort_handle.take();
         if let Some(handle) = abort_handle {
-            debug!(
-                "conncheck cancelling for {:?}",
-                self
-            );
+            debug!("conncheck cancelling for {:?}", self);
             handle.abort();
             inner.state = CandidatePairState::Failed;
         }
@@ -288,22 +285,19 @@ impl ConnCheckListInner {
                 let existing = self.triggered.remove(idx).unwrap();
                 debug!(
                     "checklist {} removing existing triggered {:?}",
-                    self.checklist_id,
-                    existing
+                    self.checklist_id, existing
                 );
             } else {
                 debug!(
                     "checklist {} not adding duplicate triggered {:?}",
-                    self.checklist_id,
-                    &self.triggered[idx]
+                    self.checklist_id, &self.triggered[idx]
                 );
                 return;
             }
         }
         debug!(
             "checklist {} adding triggered {:?}",
-            self.checklist_id,
-            &check
+            self.checklist_id, &check
         );
         self.triggered.push_front(check)
     }
@@ -508,7 +502,9 @@ impl ConnCheckList {
         let mut inner = self.inner.lock().unwrap();
         trace!(
             "checklist {} state change from {:?} to {:?}",
-            self.checklist_id, inner.state, state
+            self.checklist_id,
+            inner.state,
+            state
         );
         inner.state = state;
     }
@@ -762,7 +758,12 @@ impl ConnCheckList {
                             .await
                             {
                                 Ok(Some(response)) => {
-                                    trace!("checklist {} component {} sending response {}", checklist_id, component_id, response);
+                                    trace!(
+                                        "checklist {} component {} sending response {}",
+                                        checklist_id,
+                                        component_id,
+                                        response
+                                    );
                                     if let Err(e) = agent.send_to(response, from).await {
                                         warn!("error! {:?}", e);
                                         break;
@@ -831,11 +832,7 @@ impl ConnCheckList {
         {
             let mut inner = self.inner.lock().unwrap();
             inner.add_remote_candidate(component_id, remote);
-            if inner
-                .component_ids
-                .iter()
-                .any(|&v| v == component_id)
-            {
+            if inner.component_ids.iter().any(|&v| v == component_id) {
                 inner.component_ids.push(component_id);
             }
         }
@@ -1208,10 +1205,7 @@ impl ConnCheckListSet {
         controlling: bool,
         tie_breaker: u64,
     ) -> Result<(), AgentError> {
-        trace!(
-            "performing connectivity {:?}",
-            &conncheck
-        );
+        trace!("performing connectivity {:?}", &conncheck);
         match ConnCheckListSet::connectivity_check_cancellable(
             conncheck.clone(),
             controlling,
@@ -1241,8 +1235,7 @@ impl ConnCheckListSet {
             Ok(ConnCheckResponse::Success(conncheck, addr)) => {
                 debug!(
                     "checklist {} succeeded in finding connection {:?}",
-                    checklist.checklist_id,
-                    conncheck
+                    checklist.checklist_id, conncheck
                 );
                 conncheck.set_state(CandidatePairState::Succeeded);
 
@@ -1700,7 +1693,9 @@ mod tests {
             task::spawn(async move {
                 while let Some(stun_or_data) = remote_data_stream.next().await {
                     match stun_or_data {
-                        StunOrData::Data(data, from) => debug!("received from {} data: {:?}", from, data),
+                        StunOrData::Data(data, from) => {
+                            debug!("received from {} data: {:?}", from, data)
+                        }
                         StunOrData::Stun(msg, data, from) => {
                             debug!("received from {}: {:?}", from, msg);
                             if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
@@ -1723,7 +1718,9 @@ mod tests {
             task::spawn(async move {
                 while let Some(stun_or_data) = local_data_stream.next().await {
                     match stun_or_data {
-                        StunOrData::Data(data, from) => debug!("received from {} data: {:?}", from, data),
+                        StunOrData::Data(data, from) => {
+                            debug!("received from {} data: {:?}", from, data)
+                        }
                         StunOrData::Stun(msg, data, from) => {
                             debug!("received from {}: {}", from, msg);
                             if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {

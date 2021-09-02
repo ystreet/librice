@@ -6,8 +6,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use async_std::prelude::*;
 use async_std::net::{TcpListener, TcpStream};
+use async_std::prelude::*;
 
 use futures::future::{AbortHandle, Abortable, Aborted};
 

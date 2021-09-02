@@ -16,12 +16,12 @@ use futures::prelude::*;
 use rand::prelude::*;
 
 use crate::candidate::Candidate;
+use crate::candidate::TransportType;
 use crate::component::{Component, ComponentState};
 use crate::conncheck::ConnCheckListSet;
 use crate::stream::Stream;
 use crate::tasks::TaskList;
 use crate::utils::ChannelBroadcast;
-use crate::candidate::TransportType;
 
 #[derive(Debug)]
 pub enum AgentError {

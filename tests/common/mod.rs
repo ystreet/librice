@@ -9,12 +9,12 @@
 use std::fmt::Display;
 use std::net::SocketAddr;
 
-use async_std::net::{UdpSocket, TcpListener};
+use async_std::net::{TcpListener, UdpSocket};
 
 use futures::StreamExt;
 
 use librice::agent::*;
-use librice::socket::{SocketChannel, UdpSocketChannel, TcpChannel};
+use librice::socket::{SocketChannel, TcpChannel, UdpSocketChannel};
 use librice::stun::agent::*;
 use librice::stun::attribute::*;
 use librice::stun::message::*;
@@ -73,7 +73,7 @@ pub async fn handle_stun(stun_agent: StunAgent) -> std::io::Result<()> {
                         Err(err) => warn!("error: {}", err),
                     }
                 }
-            },
+            }
         }
     }
     Ok(())
