@@ -145,13 +145,15 @@ impl Component {
 
         debug!("Component {} adding agent for receive", self.id);
         let (abortable, abort_handle) = futures::future::abortable(async move {
-            let mut data_recv_stream = agent.data_receive_stream();
+            let mut data_recv_stream = agent.receive_stream();
             if ready_send.send(()).is_err() {
                 return;
             }
-            while let Some(data) = data_recv_stream.next().await {
-                if let Err(e) = sender.send(data.0).await {
-                    warn!("error receiving {:?}", e);
+            while let Some(stun_or_data) = data_recv_stream.next().await {
+                if let Some((data, _from)) = stun_or_data.data() {
+                    if let Err(e) = sender.send(data).await {
+                        warn!("error receiving {:?}", e);
+                    }
                 }
             }
             debug!("receive loop exited");
@@ -272,18 +274,16 @@ mod tests {
             });
             assert_eq!(c.state(), ComponentState::New);
             c.set_state(ComponentState::Connecting).await;
-            while let Some(AgentMessage::ComponentStateChange(_, state)) = msg_channel.next().await
+            if let Some(AgentMessage::ComponentStateChange(_, state)) = msg_channel.next().await
             {
                 assert_eq!(state, ComponentState::Connecting);
-                break;
             }
             // duplicate states ignored
             c.set_state(ComponentState::Connecting).await;
             c.set_state(ComponentState::Connected).await;
-            while let Some(AgentMessage::ComponentStateChange(_, state)) = msg_channel.next().await
+            if let Some(AgentMessage::ComponentStateChange(_, state)) = msg_channel.next().await
             {
                 assert_eq!(state, ComponentState::Connected);
-                break;
             }
 
             a.close().await.unwrap();
