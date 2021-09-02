@@ -16,6 +16,7 @@ use futures::StreamExt;
 use librice::agent::{Agent, AgentMessage};
 use librice::component::ComponentState;
 use librice::stream::Credentials;
+use librice::candidate::TransportType;
 
 #[macro_use]
 extern crate log;
@@ -29,14 +30,14 @@ fn agent_static_connection() {
         let stun_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let stun_addr = stun_socket.local_addr().unwrap();
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
-        let abortable = Abortable::new(common::stund(stun_socket), abort_registration);
-        let stun_server = async_std::task::spawn(abortable);
+        let stun_server = Abortable::new(common::stund_udp(stun_socket), abort_registration);
+        let stun_server = async_std::task::spawn(stun_server);
 
         let lagent = Arc::new(Agent::default());
-        lagent.add_stun_server(stun_addr);
+        lagent.add_stun_server(TransportType::Udp, stun_addr);
         lagent.set_controlling(true);
         let ragent = Arc::new(Agent::default());
-        ragent.add_stun_server(stun_addr);
+        ragent.add_stun_server(TransportType::Udp, stun_addr);
 
         let lcreds = Credentials::new("luser".into(), "lpass".into());
         let rcreds = Credentials::new("ruser".into(), "rpass".into());

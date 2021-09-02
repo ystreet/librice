@@ -9,6 +9,9 @@
 #[macro_use]
 extern crate log;
 
+#[macro_use]
+extern crate derivative;
+
 pub mod agent;
 pub mod candidate;
 pub mod component;

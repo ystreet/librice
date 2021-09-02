@@ -7,6 +7,7 @@
 // except according to those terms.
 
 use std::net::SocketAddr;
+pub use crate::stun::TransportType;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
@@ -25,12 +26,6 @@ pub enum CandidateType {
     PeerReflexive,
     ServerReflexive,
     Relayed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransportType {
-    Udp,
-    Tcp,
 }
 
 impl Candidate {

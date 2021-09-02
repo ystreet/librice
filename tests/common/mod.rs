@@ -9,12 +9,12 @@
 use std::fmt::Display;
 use std::net::SocketAddr;
 
-use async_std::net::UdpSocket;
+use async_std::net::{UdpSocket, TcpListener};
 
 use futures::StreamExt;
 
 use librice::agent::*;
-use librice::socket::{SocketChannel, UdpSocketChannel};
+use librice::socket::{SocketChannel, UdpSocketChannel, TcpChannel};
 use librice::stun::agent::*;
 use librice::stun::attribute::*;
 use librice::stun::message::*;
@@ -47,19 +47,19 @@ fn handle_binding_request(msg: &Message, from: SocketAddr) -> Result<Message, Ag
     Ok(response)
 }
 
-pub async fn stund(socket: UdpSocket) -> std::io::Result<()> {
-    let addr = socket.local_addr()?;
-    let channel = SocketChannel::Udp(UdpSocketChannel::new(socket));
-    let stun_agent = StunAgent::new(channel);
-
+pub async fn handle_stun(stun_agent: StunAgent) -> std::io::Result<()> {
+    let mut stun_stream = stun_agent.stun_receive_stream();
     let mut data_stream = stun_agent.data_receive_stream();
+
+    let channel = stun_agent.channel();
+    let addr = channel.local_addr()?;
+
     let tj = async_std::task::spawn(async move {
         while let Some((data, from)) = data_stream.next().await {
             info!("received from {} data: {:?}", from, data);
         }
     });
 
-    let mut stun_stream = stun_agent.stun_receive_stream();
     debug!("starting stun server at {}", addr);
     while let Some((msg, _msg_data, from)) = stun_stream.next().await {
         info!("received from {}: {}", from, msg);
@@ -67,13 +67,43 @@ pub async fn stund(socket: UdpSocket) -> std::io::Result<()> {
             match handle_binding_request(&msg, from) {
                 Ok(response) => {
                     info!("sending response to {}: {}", from, response);
-                    warn_on_err(stun_agent.send(response, from).await, ())
+                    /* XXX: probably want a explicity vfunc/check for this rather than relying on
+                     * th error */
+                    match channel.remote_addr() {
+                        Ok(_) => warn_on_err(stun_agent.send(response).await, ()),
+                        Err(_) => warn_on_err(stun_agent.send_to(response, from).await, ()),
+                    }
                 }
                 Err(err) => warn!("error: {}", err),
             }
         }
     }
     tj.await;
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn stund_udp(socket: UdpSocket) -> std::io::Result<()> {
+    let addr = socket.local_addr()?;
+    let channel = SocketChannel::Udp(UdpSocketChannel::new(socket));
+    let stun_agent = StunAgent::new(channel);
+
+    handle_stun(stun_agent).await.unwrap();
+    debug!("stopping stun server at {}", addr);
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub async fn stund_tcp(listener: TcpListener) -> std::io::Result<()> {
+    let mut incoming = listener.incoming();
+    let addr = listener.local_addr()?;
+    while let Some(Ok(stream)) = incoming.next().await {
+        async_std::task::spawn(async move {
+            let channel = SocketChannel::Tcp(TcpChannel::new(stream));
+            let stun_agent = StunAgent::new(channel);
+            handle_stun(stun_agent).await.unwrap();
+        });
+    }
     debug!("stopping stun server at {}", addr);
     Ok(())
 }
