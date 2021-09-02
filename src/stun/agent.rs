@@ -234,7 +234,7 @@ impl StunAgent {
         let tid = msg.transaction_id();
         let (recv_abort_handle, recv_registration) = futures::future::AbortHandle::new_pair();
         let (send_abortable, send_abort_handle) =
-            futures::future::abortable(self.send_request(&msg, recv_abort_handle, addr));
+            futures::future::abortable(self.send_request(msg, recv_abort_handle, addr));
 
         let mut receive_s =
             self.receive_stream_filter(move |stun_or_data| {
