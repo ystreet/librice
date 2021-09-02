@@ -31,14 +31,12 @@ use crate::utils::{ChannelBroadcast, DebugWrapper};
 static STUN_AGENT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone)]
-pub enum StunOrData
-{
+pub enum StunOrData {
     Stun(Message, Vec<u8>, SocketAddr),
     Data(Vec<u8>, SocketAddr),
 }
 
-impl StunOrData
-{
+impl StunOrData {
     pub fn stun(self) -> Option<(Message, Vec<u8>, SocketAddr)> {
         match self {
             StunOrData::Stun(msg, data, addr) => Some((msg, data, addr)),
@@ -50,7 +48,7 @@ impl StunOrData
             StunOrData::Data(data, addr) => Some((data, addr)),
             _ => None,
         }
-   }
+    }
 }
 
 /// Implementation of a STUN agent
@@ -64,7 +62,7 @@ pub(crate) struct StunAgentInner {
     id: usize,
     state: Mutex<StunAgentState>,
     pub(crate) channel: SocketChannel,
-    broadcaster : Arc<ChannelBroadcast<StunOrData>>,
+    broadcaster: Arc<ChannelBroadcast<StunOrData>>,
 }
 
 #[derive(Debug)]
@@ -160,7 +158,10 @@ impl StunAgent {
                             };
                             match handle {
                                 HandleStunReply::Broadcast(msg) => {
-                                    inner.broadcaster.broadcast(StunOrData::Stun(msg, data, from)).await;
+                                    inner
+                                        .broadcaster
+                                        .broadcast(StunOrData::Stun(msg, data, from))
+                                        .await;
                                 }
                                 HandleStunReply::Failure(err) => {
                                     warn!("{} Failed to handle {}. {:?}", inner.id, msg, err);
@@ -168,7 +169,12 @@ impl StunAgent {
                                 _ => {}
                             }
                         }
-                        Err(_) => inner.broadcaster.broadcast(StunOrData::Data(data, from)).await,
+                        Err(_) => {
+                            inner
+                                .broadcaster
+                                .broadcast(StunOrData::Data(data, from))
+                                .await
+                        }
                     }
                 }
             }
@@ -186,10 +192,7 @@ impl StunAgent {
         }
     }
 
-    pub fn receive_stream_filter<F>(
-        &self,
-        filter: F,
-    ) -> impl Stream<Item = StunOrData>
+    pub fn receive_stream_filter<F>(&self, filter: F) -> impl Stream<Item = StunOrData>
     where
         F: Fn(&StunOrData) -> bool + Send + Sync + 'static,
     {
@@ -236,13 +239,10 @@ impl StunAgent {
         let (send_abortable, send_abort_handle) =
             futures::future::abortable(self.send_request(msg, recv_abort_handle, addr));
 
-        let mut receive_s =
-            self.receive_stream_filter(move |stun_or_data| {
-                match stun_or_data {
-                    StunOrData::Stun(msg, _, _) => tid == msg.transaction_id(),
-                    _ => false,
-                }
-            });
+        let mut receive_s = self.receive_stream_filter(move |stun_or_data| match stun_or_data {
+            StunOrData::Stun(msg, _, _) => tid == msg.transaction_id(),
+            _ => false,
+        });
         let recv_abortable = futures::future::Abortable::new(
             receive_s.next().then(|msg| async move {
                 send_abort_handle.abort();

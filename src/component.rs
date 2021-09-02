@@ -274,15 +274,13 @@ mod tests {
             });
             assert_eq!(c.state(), ComponentState::New);
             c.set_state(ComponentState::Connecting).await;
-            if let Some(AgentMessage::ComponentStateChange(_, state)) = msg_channel.next().await
-            {
+            if let Some(AgentMessage::ComponentStateChange(_, state)) = msg_channel.next().await {
                 assert_eq!(state, ComponentState::Connecting);
             }
             // duplicate states ignored
             c.set_state(ComponentState::Connecting).await;
             c.set_state(ComponentState::Connected).await;
-            if let Some(AgentMessage::ComponentStateChange(_, state)) = msg_channel.next().await
-            {
+            if let Some(AgentMessage::ComponentStateChange(_, state)) = msg_channel.next().await {
                 assert_eq!(state, ComponentState::Connected);
             }
 

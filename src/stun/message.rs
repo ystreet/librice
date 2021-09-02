@@ -861,9 +861,7 @@ impl Message {
             .iter_attributes()
             .map(|a| a.get_type())
             // attribute types that require comprehension but are not supported by the caller
-            .filter(|&at| {
-                at.comprehension_required() && !supported.iter().any(|&a| a == at)
-            })
+            .filter(|&at| at.comprehension_required() && !supported.iter().any(|&a| a == at))
             .collect();
         if !unsupported.is_empty() {
             debug!(
@@ -875,11 +873,7 @@ impl Message {
         let has_required_attribute_missing = required_in_msg
             .iter()
             // attribute types we need in the message -> failure -> Bad Request
-            .any(|&at| {
-                !msg.iter_attributes()
-                    .map(|a| a.get_type())
-                    .any(|a| a == at)
-            });
+            .any(|&at| !msg.iter_attributes().map(|a| a.get_type()).any(|a| a == at));
         if has_required_attribute_missing {
             debug!("Message is missing required attributes");
             return Message::bad_request(msg).ok();

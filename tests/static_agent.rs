@@ -14,9 +14,9 @@ use futures::future::{AbortHandle, Abortable, Aborted};
 use futures::StreamExt;
 
 use librice::agent::{Agent, AgentMessage};
+use librice::candidate::TransportType;
 use librice::component::ComponentState;
 use librice::stream::Credentials;
-use librice::candidate::TransportType;
 
 #[macro_use]
 extern crate log;

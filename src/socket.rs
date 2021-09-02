@@ -260,15 +260,11 @@ struct TcpChannelInner {
 }
 
 impl TcpChannel {
-    pub fn new (stream: TcpStream) -> Self {
+    pub fn new(stream: TcpStream) -> Self {
         Self {
             channel: stream,
             sender_broadcast: Arc::new(ChannelBroadcast::default()),
-            inner: Arc::new(Mutex::new(
-                TcpChannelInner {
-                    receive_loop: None,
-                }
-                )),
+            inner: Arc::new(Mutex::new(TcpChannelInner { receive_loop: None })),
             write_lock: Arc::new(async_std::sync::Mutex::new(())),
         }
     }
@@ -326,8 +322,8 @@ impl TcpChannel {
 pub(crate) mod tests {
     use super::*;
     use crate::agent::AgentError;
-    use async_std::task;
     use async_std::net::TcpListener;
+    use async_std::task;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     #[derive(Debug, Clone)]
@@ -667,9 +663,7 @@ pub(crate) mod tests {
             let local_addr = listener.local_addr().unwrap();
             let mut incoming = listener.incoming();
             let tcp2 = incoming.next();
-            let tcp1 = task::spawn(async move {
-                TcpStream::connect(local_addr).await
-            });
+            let tcp1 = task::spawn(async move { TcpStream::connect(local_addr).await });
             let tcp2 = tcp2.await.unwrap().unwrap();
             let tcp1 = tcp1.await.unwrap();
 
