@@ -862,7 +862,7 @@ impl Message {
             .map(|a| a.get_type())
             // attribute types that require comprehension but are not supported by the caller
             .filter(|&at| {
-                at.comprehension_required() && supported.iter().position(|&a| a == at).is_none()
+                at.comprehension_required() && !supported.iter().any(|&a| a == at)
             })
             .collect();
         if !unsupported.is_empty() {
@@ -876,10 +876,9 @@ impl Message {
             .iter()
             // attribute types we need in the message -> failure -> Bad Request
             .any(|&at| {
-                msg.iter_attributes()
+                !msg.iter_attributes()
                     .map(|a| a.get_type())
-                    .position(|a| a == at)
-                    .is_none()
+                    .any(|a| a == at)
             });
         if has_required_attribute_missing {
             debug!("Message is missing required attributes");
@@ -914,7 +913,7 @@ impl Message {
         out.add_attribute(Software::new("stund - librice v0.1")?)?;
         out.add_attribute(ErrorCode::new(420, "Unknown Attributes")?)?;
         if !attributes.is_empty() {
-            out.add_attribute(UnknownAttributes::new(&attributes))?;
+            out.add_attribute(UnknownAttributes::new(attributes))?;
         }
         Ok(out)
     }

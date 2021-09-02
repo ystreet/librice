@@ -405,7 +405,7 @@ impl Stream {
         futures::pin_mut!(gather);
         while let Some((cand, agent, component)) = gather.next().await {
             self.checklist
-                .add_local_candidate(&component, cand.clone(), agent)
+                .add_local_candidate(component, cand.clone(), agent)
                 .await;
             self.broadcast
                 .broadcast(AgentMessage::NewLocalCandidate(component.clone(), cand))
