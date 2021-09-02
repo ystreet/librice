@@ -423,10 +423,9 @@ impl ConnCheckListInner {
                         .iter()
                         .fold(vec![], |mut component_ids_selected, valid_pair| {
                             // Only nominate one valid candidatePair
-                            if component_ids_selected
+                            if !component_ids_selected
                                 .iter()
-                                .find(|&comp_id| comp_id == &valid_pair.component_id)
-                                .is_none()
+                                .any(|&comp_id| comp_id == valid_pair.component_id)
                             {
                                 if let Some(component) = &component {
                                     let local_agent = self
@@ -742,37 +741,39 @@ impl ConnCheckList {
             let local = local.clone();
             async move {
                 let drop_log = DropLogger::new("dropping stun receive stream");
-                let mut recv_stun = agent.stun_receive_stream();
+                let mut recv_stun = agent.receive_stream();
                 if stun_send.send(()).is_err() {
                     return;
                 }
-                while let Some((msg, data, from)) = recv_stun.next().await {
-                    // RFC8445 Section 7.3. STUN Server Procedures
-                    trace!("got from {} msg {}", from, msg);
-                    if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
-                        match ConnCheckList::handle_binding_request(
-                            weak_inner.clone(),
-                            component_id,
-                            &local,
-                            agent.clone(),
-                            &msg,
-                            &data,
-                            from,
-                        )
-                        .await
-                        {
-                            Ok(Some(response)) => {
-                                trace!("checklist {} component {} sending response {}", checklist_id, component_id, response);
-                                if let Err(e) = agent.send_to(response, from).await {
+                while let Some(stun_or_data) = recv_stun.next().await {
+                    if let Some((msg, data, from)) = stun_or_data.stun() {
+                        // RFC8445 Section 7.3. STUN Server Procedures
+                        trace!("got from {} msg {}", from, msg);
+                        if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
+                            match ConnCheckList::handle_binding_request(
+                                weak_inner.clone(),
+                                component_id,
+                                &local,
+                                agent.clone(),
+                                &msg,
+                                &data,
+                                from,
+                            )
+                            .await
+                            {
+                                Ok(Some(response)) => {
+                                    trace!("checklist {} component {} sending response {}", checklist_id, component_id, response);
+                                    if let Err(e) = agent.send_to(response, from).await {
+                                        warn!("error! {:?}", e);
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
                                     warn!("error! {:?}", e);
                                     break;
                                 }
+                                _ => (),
                             }
-                            Err(e) => {
-                                warn!("error! {:?}", e);
-                                break;
-                            }
-                            _ => (),
                         }
                     }
                 }
@@ -833,8 +834,7 @@ impl ConnCheckList {
             if inner
                 .component_ids
                 .iter()
-                .find(|&v| v == &component_id)
-                .is_none()
+                .any(|&v| v == component_id)
             {
                 inner.component_ids.push(component_id);
             }
@@ -891,10 +891,9 @@ impl ConnCheckList {
             .pairs
             .iter_mut()
             .filter(|check| {
-                thawn_foundations
+                !thawn_foundations
                     .iter()
-                    .find(|&foundation| &check.pair.get_foundation() == foundation)
-                    .is_none()
+                    .any(|foundation| &check.pair.get_foundation() == foundation)
             })
             .collect();
         // sort by component_id
@@ -1108,7 +1107,7 @@ impl ConnCheckList {
                 });
                 // FIXME: Nominate when there are two valid candidates
                 // what if there is only ever one valid?
-                if valid.iter().count() >= 1 {
+                if !valid.is_empty() {
                     valid.iter().cloned().next()
                 } else {
                     None
@@ -1692,57 +1691,52 @@ mod tests {
             local.agent.set_local_credentials(local_credentials);
             local.agent.set_remote_credentials(remote_credentials);
 
-            let mut remote_data_stream = remote.agent.data_receive_stream();
-            task::spawn(async move {
-                while let Some((data, from)) = remote_data_stream.next().await {
-                    debug!("received from {} data: {:?}", from, data);
-                }
-            });
+            // retrieve the streams before starting async tasks to avoid data being sent but never
+            // received
+            let mut local_data_stream = local.agent.receive_stream();
+            let mut remote_data_stream = remote.agent.receive_stream();
 
-            let mut remote_stun_stream = remote.agent.stun_receive_stream();
-            task::spawn({
-                let agent = remote.agent.clone();
-                async move {
-                    while let Some((msg, data, from)) = remote_stun_stream.next().await {
-                        debug!("received from {}: {:?}", from, msg);
-                        if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
-                            agent
-                                .send_to(
-                                    handle_binding_request(&agent, &msg, &data, from)
-                                        .await
-                                        .unwrap(),
-                                    from,
-                                )
-                                .await
-                                .unwrap();
+            let agent = remote.agent.clone();
+            task::spawn(async move {
+                while let Some(stun_or_data) = remote_data_stream.next().await {
+                    match stun_or_data {
+                        StunOrData::Data(data, from) => debug!("received from {} data: {:?}", from, data),
+                        StunOrData::Stun(msg, data, from) => {
+                            debug!("received from {}: {:?}", from, msg);
+                            if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
+                                agent
+                                    .send_to(
+                                        handle_binding_request(&agent, &msg, &data, from)
+                                            .await
+                                            .unwrap(),
+                                        from,
+                                    )
+                                    .await
+                                    .unwrap();
+                            }
                         }
                     }
                 }
             });
 
-            let mut data_stream = local.agent.data_receive_stream();
+            let agent = local.agent.clone();
             task::spawn(async move {
-                while let Some((data, from)) = data_stream.next().await {
-                    debug!("received from {} data: {:?}", from, data);
-                }
-            });
-
-            let mut stun_stream = local.agent.stun_receive_stream();
-            task::spawn({
-                let agent = local.agent.clone();
-                async move {
-                    while let Some((msg, data, from)) = stun_stream.next().await {
-                        debug!("received from {}: {}", from, msg);
-                        if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
-                            agent
-                                .send_to(
-                                    handle_binding_request(&agent, &msg, &data, from)
-                                        .await
-                                        .unwrap(),
-                                    from,
-                                )
-                                .await
-                                .unwrap();
+                while let Some(stun_or_data) = local_data_stream.next().await {
+                    match stun_or_data {
+                        StunOrData::Data(data, from) => debug!("received from {} data: {:?}", from, data),
+                        StunOrData::Stun(msg, data, from) => {
+                            debug!("received from {}: {}", from, msg);
+                            if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
+                                agent
+                                    .send_to(
+                                        handle_binding_request(&agent, &msg, &data, from)
+                                            .await
+                                            .unwrap(),
+                                        from,
+                                    )
+                                    .await
+                                    .unwrap();
+                            }
                         }
                     }
                 }
@@ -1973,7 +1967,7 @@ mod tests {
 
             let remote_s_recv = remote1.channel.receive_stream().unwrap();
             futures::pin_mut!(remote_s_recv);
-            let local_s_recv = local1.agent.stun_receive_stream();
+            let local_s_recv = local1.agent.receive_stream();
             futures::pin_mut!(local_s_recv);
 
             let broadcast = Arc::new(ChannelBroadcast::default());

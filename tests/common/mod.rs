@@ -48,37 +48,34 @@ fn handle_binding_request(msg: &Message, from: SocketAddr) -> Result<Message, Ag
 }
 
 pub async fn handle_stun(stun_agent: StunAgent) -> std::io::Result<()> {
-    let mut stun_stream = stun_agent.stun_receive_stream();
-    let mut data_stream = stun_agent.data_receive_stream();
+    let mut receive_stream = stun_agent.receive_stream();
 
     let channel = stun_agent.channel();
     let addr = channel.local_addr()?;
 
-    let tj = async_std::task::spawn(async move {
-        while let Some((data, from)) = data_stream.next().await {
-            info!("received from {} data: {:?}", from, data);
-        }
-    });
-
     debug!("starting stun server at {}", addr);
-    while let Some((msg, _msg_data, from)) = stun_stream.next().await {
-        info!("received from {}: {}", from, msg);
-        if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
-            match handle_binding_request(&msg, from) {
-                Ok(response) => {
-                    info!("sending response to {}: {}", from, response);
-                    /* XXX: probably want a explicity vfunc/check for this rather than relying on
-                     * th error */
-                    match channel.remote_addr() {
-                        Ok(_) => warn_on_err(stun_agent.send(response).await, ()),
-                        Err(_) => warn_on_err(stun_agent.send_to(response, from).await, ()),
+    while let Some(stun_or_data) = receive_stream.next().await {
+        match stun_or_data {
+            StunOrData::Data(data, from) => info!("received from {} data: {:?}", from, data),
+            StunOrData::Stun(msg, _data, from) => {
+                info!("received from {}: {}", from, msg);
+                if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
+                    match handle_binding_request(&msg, from) {
+                        Ok(response) => {
+                            info!("sending response to {}: {}", from, response);
+                            /* XXX: probably want a explicity vfunc/check for this rather than relying on
+                             * th error */
+                            match channel.remote_addr() {
+                                Ok(_) => warn_on_err(stun_agent.send(response).await, ()),
+                                Err(_) => warn_on_err(stun_agent.send_to(response, from).await, ()),
+                            }
+                        }
+                        Err(err) => warn!("error: {}", err),
                     }
                 }
-                Err(err) => warn!("error: {}", err),
-            }
+            },
         }
     }
-    tj.await;
     Ok(())
 }
 
