@@ -14,7 +14,7 @@ use futures::future::{AbortHandle, Abortable, Aborted};
 use librice::stun::message::*;
 
 #[macro_use]
-extern crate log;
+extern crate tracing;
 
 mod common;
 

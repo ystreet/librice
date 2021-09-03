@@ -11,9 +11,7 @@ documentation = "https://docs.rs/librice"
 repository = "https://github.com/ystreet/librice"
 
 [dependencies]
-log = "0.4"
 byteorder = "1"
-env_logger = "0.8"
 get_if_addrs = "0.5"
 async-std = "1"
 async-channel = "1"
@@ -24,3 +22,7 @@ crc = "1"
 sha-1 = "0.9"
 hmac = "0.10"
 derivative = "2"
+tracing = { version = "0.1", features = ["log"] }
+tracing-futures = { version = "0.2", default-features = false, features = ["std", "std-future"] }
+tracing-subscriber = "0.2"
+once_cell = "1"

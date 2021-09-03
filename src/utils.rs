@@ -124,7 +124,7 @@ mod tests {
     use async_std::task;
 
     fn init() {
-        let _ = env_logger::builder().is_test(true).try_init();
+        crate::tests::test_init_log();
     }
 
     #[test]

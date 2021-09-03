@@ -19,7 +19,7 @@ use librice::component::ComponentState;
 use librice::stream::Credentials;
 
 #[macro_use]
-extern crate log;
+extern crate tracing;
 
 mod common;
 

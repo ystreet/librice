@@ -93,7 +93,7 @@ mod tests {
     use std::sync::Arc;
 
     fn init() {
-        let _ = env_logger::builder().is_test(true).try_init();
+        crate::tests::test_init_log();
     }
 
     #[test]

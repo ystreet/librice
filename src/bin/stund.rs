@@ -14,7 +14,9 @@ use async_std::net::UdpSocket;
 use async_std::task;
 
 #[macro_use]
-extern crate log;
+extern crate tracing;
+
+use tracing_subscriber::EnvFilter;
 
 use futures::StreamExt;
 
@@ -49,7 +51,9 @@ fn handle_binding_request(msg: &Message, from: SocketAddr) -> Result<Message, Ag
 }
 
 fn main() -> io::Result<()> {
-    env_logger::init();
+    if let Ok(filter) = EnvFilter::try_from_default_env() {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
 
     task::block_on(async move {
         let socket = UdpSocket::bind("127.0.0.1:3478").await?;
