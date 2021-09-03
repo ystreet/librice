@@ -8,13 +8,17 @@
 
 use std::net::UdpSocket;
 
+use tracing_subscriber::EnvFilter;
+
 #[macro_use]
-extern crate log;
+extern crate tracing;
 
 use librice::stun::message::*;
 
 fn main() -> std::io::Result<()> {
-    env_logger::init();
+    if let Ok(filter) = EnvFilter::try_from_default_env() {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
 
     let socket = UdpSocket::bind("0.0.0.0:0")?;
     //let to = "172.253.56.127:19302";

@@ -7,7 +7,7 @@
 // except according to those terms.
 
 #[macro_use]
-extern crate log;
+extern crate tracing;
 
 #[macro_use]
 extern crate derivative;
@@ -22,3 +22,19 @@ pub mod stream;
 pub mod stun;
 mod tasks;
 mod utils;
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use once_cell::sync::Lazy;
+    use tracing_subscriber::EnvFilter;
+
+    static TRACING: Lazy<()> = Lazy::new(|| {
+        if let Ok(filter) = EnvFilter::try_from_default_env() {
+            tracing_subscriber::fmt().with_env_filter(filter).init();
+        }
+    });
+
+    pub fn test_init_log() {
+        Lazy::force(&TRACING);
+    }
+}

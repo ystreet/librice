@@ -7,7 +7,9 @@
 // except according to those terms.
 
 #[macro_use]
-extern crate log;
+extern crate tracing;
+
+use tracing_subscriber::EnvFilter;
 
 use async_std::task;
 
@@ -19,7 +21,9 @@ use librice::stun::agent::StunAgent;
 use librice::stun::TransportType;
 
 fn main() -> io::Result<()> {
-    env_logger::init();
+    if let Ok(filter) = EnvFilter::try_from_default_env() {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
     task::block_on(async move {
         // non-existent
         //let stun_servers = ["192.168.1.200:3000".parse().unwrap()].to_vec();

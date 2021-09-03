@@ -6,8 +6,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use once_cell::sync::Lazy;
+
 use std::fmt::Display;
 use std::net::SocketAddr;
+
+use tracing_subscriber::EnvFilter;
 
 use async_std::net::{TcpListener, UdpSocket};
 
@@ -20,7 +24,13 @@ use librice::stun::attribute::*;
 use librice::stun::message::*;
 
 pub fn debug_init() {
-    let _ = env_logger::builder().is_test(true).try_init();
+    static TRACING: Lazy<()> = Lazy::new(|| {
+        if let Ok(filter) = EnvFilter::try_from_default_env() {
+            tracing_subscriber::fmt().with_env_filter(filter).init();
+        }
+    });
+
+    Lazy::force(&TRACING);
 }
 
 fn warn_on_err<T, E>(res: Result<T, E>, default: T) -> T
