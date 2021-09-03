@@ -21,7 +21,7 @@ use std::convert::TryInto;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use crate::agent::AgentError;
-use crate::stun::message::MAGIC_COOKIE;
+use crate::stun::message::{MAGIC_COOKIE, TransactionId};
 
 use byteorder::{BigEndian, ByteOrder};
 
@@ -881,16 +881,16 @@ impl XorMappedAddress {
     /// # use librice::stun::attribute::*;
     /// # use std::net::SocketAddr;
     /// let addr = "127.0.0.1:1234".parse().unwrap();
-    /// let mapped_addr = XorMappedAddress::new(addr, 0x5678);
-    /// assert_eq!(mapped_addr.addr(0x5678), addr);
+    /// let mapped_addr = XorMappedAddress::new(addr, 0x5678.into());
+    /// assert_eq!(mapped_addr.addr(0x5678.into()), addr);
     /// ```
-    pub fn new(addr: SocketAddr, transaction: u128) -> Self {
+    pub fn new(addr: SocketAddr, transaction: TransactionId) -> Self {
         Self {
             addr: XorMappedAddress::xor_addr(addr, transaction),
         }
     }
 
-    fn xor_addr(addr: SocketAddr, transaction: u128) -> SocketAddr {
+    fn xor_addr(addr: SocketAddr, transaction: TransactionId) -> SocketAddr {
         match addr {
             SocketAddr::V4(addr) => {
                 let port = addr.port() ^ (MAGIC_COOKIE >> 16) as u16;
@@ -901,6 +901,7 @@ impl XorMappedAddress {
             }
             SocketAddr::V6(addr) => {
                 let port = addr.port() ^ (MAGIC_COOKIE >> 16) as u16;
+                let transaction: u128 = transaction.into();
                 let const_octets = ((MAGIC_COOKIE as u128) << 96
                     | (transaction & 0x0000_0000_ffff_ffff_ffff_ffff_ffff_ffff))
                     .to_be_bytes();
@@ -919,10 +920,10 @@ impl XorMappedAddress {
     /// # use librice::stun::attribute::*;
     /// # use std::net::SocketAddr;
     /// let addr = "[::1]:1234".parse().unwrap();
-    /// let mapped_addr = XorMappedAddress::new(addr, 0x5678);
-    /// assert_eq!(mapped_addr.addr(0x5678), addr);
+    /// let mapped_addr = XorMappedAddress::new(addr, 0x5678.into());
+    /// assert_eq!(mapped_addr.addr(0x5678.into()), addr);
     /// ```
-    pub fn addr(&self, transaction: u128) -> SocketAddr {
+    pub fn addr(&self, transaction: TransactionId) -> SocketAddr {
         XorMappedAddress::xor_addr(self.addr, transaction)
     }
 }
@@ -930,7 +931,7 @@ impl XorMappedAddress {
 impl std::fmt::Display for XorMappedAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.addr {
-            SocketAddr::V4(_) => write!(f, "{}: {:?}", self.get_type(), self.addr(0x0)),
+            SocketAddr::V4(_) => write!(f, "{}: {:?}", self.get_type(), self.addr(0x0.into())),
             SocketAddr::V6(addr) => write!(f, "{}: XOR({:?})", self.get_type(), addr),
         }
     }
@@ -1634,7 +1635,7 @@ mod tests {
     #[test]
     fn xor_mapped_address() {
         init();
-        let transaction_id = 0x9876_5432_1098_7654_3210_9876;
+        let transaction_id = 0x9876_5432_1098_7654_3210_9876.into();
         let addrs = &["192.168.0.1:40000".parse().unwrap()];
         for addr in addrs {
             let mapped = XorMappedAddress::new(*addr, transaction_id);

@@ -69,7 +69,7 @@ pub(crate) struct StunAgentInner {
 struct StunAgentState {
     id: usize,
     receive_loop_started: bool,
-    outstanding_requests: HashMap<u128, Message>,
+    outstanding_requests: HashMap<TransactionId, Message>,
     local_credentials: Option<MessageIntegrityCredentials>,
     remote_credentials: Option<MessageIntegrityCredentials>,
 }
