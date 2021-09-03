@@ -250,6 +250,29 @@ impl TryFrom<&[u8]> for MessageType {
     }
 }
 
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
+pub struct TransactionId {
+    id: u128,
+}
+
+impl From<u128> for TransactionId {
+    fn from(id: u128) -> Self {
+        Self {
+            id: id & 0xffff_ffff_ffff_ffff_ffff_ffff,
+        }
+    }
+}
+impl From<TransactionId> for u128 {
+    fn from(id: TransactionId) -> Self {
+        id.id
+    }
+}
+impl std::fmt::Display for TransactionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#x}", self.id)
+    }
+}
+
 /// The structure that encapsulates the entirety of a STUN message
 ///
 /// Contains the [`MessageType`], a transaction ID, and a list of STUN
@@ -257,7 +280,7 @@ impl TryFrom<&[u8]> for MessageType {
 #[derive(Debug, Clone)]
 pub struct Message {
     msg_type: MessageType,
-    transaction: u128, /* 96-bits valid */
+    transaction: TransactionId,
     attributes: Vec<RawAttribute>,
 }
 
@@ -265,7 +288,7 @@ impl std::fmt::Display for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Message(class: {:?}, method: {} ({:#x}), transaction: {:#x}, attributes: ",
+            "Message(class: {:?}, method: {} ({:#x}), transaction: {}, attributes: ",
             self.get_type().class(),
             self.get_type().method(),
             self.get_type().method(),
@@ -305,11 +328,11 @@ impl Message {
     /// ```
     /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
     /// let mtype = MessageType::from_class_method(MessageClass::Indication, BINDING);
-    /// let message = Message::new(mtype, 0);
+    /// let message = Message::new(mtype, 0.into());
     /// assert!(message.has_class(MessageClass::Indication));
     /// assert!(message.has_method(BINDING));
     /// ```
-    pub fn new(mtype: MessageType, transaction: u128) -> Self {
+    pub fn new(mtype: MessageType, transaction: TransactionId) -> Self {
         Self {
             msg_type: mtype,
             transaction,
@@ -482,14 +505,14 @@ impl Message {
     /// let message = Message::new(mtype, transaction_id);
     /// assert_eq!(message.transaction_id(), transaction_id);
     /// ```
-    pub fn transaction_id(&self) -> u128 {
+    pub fn transaction_id(&self) -> TransactionId {
         self.transaction
     }
 
-    pub fn generate_transaction() -> u128 {
+    pub fn generate_transaction() -> TransactionId {
         use rand::{thread_rng, Rng};
         let mut rng = thread_rng();
-        rng.gen::<u128>() & 0x0000_0000_ffff_ffff_ffff_ffff_ffff_ffff
+        rng.gen::<u128>().into()
     }
 
     /// Serialize a `Message` to network bytes
@@ -499,7 +522,7 @@ impl Message {
     /// ```
     /// # use librice::stun::attribute::{RawAttribute, Attribute};
     /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
-    /// let mut message = Message::new(MessageType::from_class_method(MessageClass::Request, BINDING), 1000);
+    /// let mut message = Message::new(MessageType::from_class_method(MessageClass::Request, BINDING), 1000.into());
     /// let attr = RawAttribute::new(1.into(), &[3]);
     /// assert!(message.add_attribute(attr).is_ok());
     /// assert_eq!(message.to_bytes(), vec![0, 1, 0, 8, 33, 18, 164, 66, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 232, 0, 1, 0, 1, 3, 0, 0, 0]);
@@ -512,7 +535,8 @@ impl Message {
         let mut ret = Vec::with_capacity(20 + attr_size);
         ret.extend(self.msg_type.to_bytes());
         ret.resize(20, 0);
-        let tid = (MAGIC_COOKIE as u128) << 96 | self.transaction & 0xffff_ffff_ffff_ffff_ffff_ffff;
+        let transaction: u128 = self.transaction.into();
+        let tid = (MAGIC_COOKIE as u128) << 96 | transaction & 0xffff_ffff_ffff_ffff_ffff_ffff;
         BigEndian::write_u128(&mut ret[4..20], tid);
         BigEndian::write_u16(&mut ret[2..4], attr_size as u16);
         for attr in &self.attributes {
@@ -534,7 +558,7 @@ impl Message {
     /// let msg_attr = message.get_attribute::<RawAttribute>(1.into()).unwrap();
     /// assert_eq!(msg_attr, attr);
     /// assert_eq!(message.get_type(), MessageType::from_class_method(MessageClass::Request, BINDING));
-    /// assert_eq!(message.transaction_id(), 1000);
+    /// assert_eq!(message.transaction_id(), 1000.into());
     /// ```
     pub fn from_bytes(data: &[u8]) -> Result<Self, AgentError> {
         let orig_data = data;
@@ -563,8 +587,7 @@ impl Message {
             );
             return Err(AgentError::Malformed);
         }
-        let tid = tid & 0x0000_0000_ffff_ffff_ffff_ffff_ffff_ffff;
-        let mut ret = Self::new(mtype, tid);
+        let mut ret = Self::new(mtype, tid.into());
 
         let mut data_offset = 20;
         let mut data = &data[20..];
@@ -991,7 +1014,7 @@ mod tests {
             for c in classes {
                 let mtype = MessageType::from_class_method(c, m);
                 for tid in (0x18..0xffff_ffff_ffff_ffff_ff).step_by(0xfedc_ba98_7654_3210) {
-                    let mut msg = Message::new(mtype, tid);
+                    let mut msg = Message::new(mtype, tid.into());
                     let attr = RawAttribute::new(1.into(), &[3]);
                     assert!(msg.add_attribute(attr.clone()).is_ok());
                     let data = msg.to_bytes();
@@ -1000,7 +1023,7 @@ mod tests {
                     let msg_attr = msg.get_attribute::<RawAttribute>(1.into()).unwrap();
                     assert_eq!(msg_attr, attr);
                     assert_eq!(msg.get_type(), mtype);
-                    assert_eq!(msg.transaction_id(), tid);
+                    assert_eq!(msg.transaction_id(), tid.into());
                 }
             }
         }
@@ -1149,7 +1172,7 @@ mod tests {
         let msg = Message::from_bytes(&data).unwrap();
         assert!(msg.has_class(MessageClass::Request));
         assert!(msg.has_method(BINDING));
-        assert_eq!(msg.transaction_id(), 0xb7e7_a701_bc34_d686_fa87_dfae);
+        assert_eq!(msg.transaction_id(), 0xb7e7_a701_bc34_d686_fa87_dfae.into());
 
         // SOFTWARE
         assert!(msg.has_attribute(SOFTWARE));
@@ -1222,7 +1245,7 @@ mod tests {
         let msg = Message::from_bytes(&data).unwrap();
         assert!(msg.has_class(MessageClass::Success));
         assert!(msg.has_method(BINDING));
-        assert_eq!(msg.transaction_id(), 0xb7e7_a701_bc34_d686_fa87_dfae);
+        assert_eq!(msg.transaction_id(), 0xb7e7_a701_bc34_d686_fa87_dfae.into());
 
         // SOFTWARE
         assert!(msg.has_attribute(SOFTWARE));
@@ -1294,7 +1317,7 @@ mod tests {
         let msg = Message::from_bytes(&data).unwrap();
         assert!(msg.has_class(MessageClass::Success));
         assert!(msg.has_method(BINDING));
-        assert_eq!(msg.transaction_id(), 0xb7e7_a701_bc34_d686_fa87_dfae);
+        assert_eq!(msg.transaction_id(), 0xb7e7_a701_bc34_d686_fa87_dfae.into());
 
         // SOFTWARE
         assert!(msg.has_attribute(SOFTWARE));
@@ -1311,7 +1334,7 @@ mod tests {
         assert!(matches!(XorMappedAddress::try_from(&raw), Ok(_)));
         let xor_mapped_addres = XorMappedAddress::try_from(&raw).unwrap();
         assert_eq!(
-            xor_mapped_addres.addr(msg.transaction_id()),
+            xor_mapped_addres.addr(msg.transaction_id().into()),
             "[2001:db8:1234:5678:11:2233:4455:6677]:32853"
                 .parse()
                 .unwrap()
@@ -1374,7 +1397,7 @@ mod tests {
         let msg = Message::from_bytes(&data).unwrap();
         assert!(msg.has_class(MessageClass::Request));
         assert!(msg.has_method(BINDING));
-        assert_eq!(msg.transaction_id(), 0x78ad_3433_c6ad_72c0_29da_412e);
+        assert_eq!(msg.transaction_id(), 0x78ad_3433_c6ad_72c0_29da_412e.into());
 
         let long_term = LongTermCredentials {
             username: "\u{30DE}\u{30C8}\u{30EA}\u{30C3}\u{30AF}\u{30B9}".to_owned(),
