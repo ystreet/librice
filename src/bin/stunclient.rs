@@ -6,25 +6,53 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::net::UdpSocket;
+use std::env;
+use std::net::{SocketAddr, UdpSocket};
+use std::process::exit;
+use std::str::FromStr;
+use std::{
+    io::{Read, Write},
+    net::TcpStream,
+};
 
 use tracing_subscriber::EnvFilter;
 
 #[macro_use]
 extern crate tracing;
 
+use librice::candidate::TransportType;
 use librice::stun::message::*;
 
-fn main() -> std::io::Result<()> {
-    if let Ok(filter) = EnvFilter::try_from_default_env() {
-        tracing_subscriber::fmt().with_env_filter(filter).init();
-    }
+fn usage() {
+    println!("stunclient [protocol] [address:port]");
+    println!();
+    println!("\tprotocol: can be either \'udp\' or \'tcp\'");
+}
 
+fn tcp_message(out: Message, to: SocketAddr) -> Result<(), std::io::Error> {
+    let mut socket = TcpStream::connect(to).unwrap();
+
+    info!("generated to {}", out);
+    let buf = out.to_bytes();
+    trace!("generated to {:?}", buf);
+    socket.write_all(&buf)?;
+    let mut buf = [0; 1500];
+    let amt = socket.read(&mut buf)?;
+    let buf = &buf[..amt];
+    trace!("got {:?}", buf);
+    let msg = Message::from_bytes(buf)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid message"))?;
+    info!(
+        "got from {:?} to {:?} {}",
+        socket.peer_addr().unwrap(),
+        socket.local_addr().unwrap(),
+        msg
+    );
+    Ok(())
+}
+
+fn udp_message(out: Message, to: SocketAddr) -> Result<(), std::io::Error> {
     let socket = UdpSocket::bind("0.0.0.0:0")?;
-    //let to = "172.253.56.127:19302";
-    let to = "127.0.0.1:3478";
-
-    let out = Message::new_request(BINDING);
 
     info!("generated to {}", out);
     let buf = out.to_bytes();
@@ -43,4 +71,39 @@ fn main() -> std::io::Result<()> {
         msg
     );
     Ok(())
+}
+
+fn main() -> std::io::Result<()> {
+    if let Ok(filter) = EnvFilter::try_from_default_env() {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
+
+    let args: Vec<String> = env::args().collect();
+    let proto = if args.len() > 1 {
+        if args[1] == "udp" {
+            TransportType::Udp
+        } else if args[1] == "tcp" {
+            TransportType::Tcp
+        } else {
+            usage();
+            exit(1);
+        }
+    } else {
+        TransportType::Udp
+    };
+
+    let to: SocketAddr = SocketAddr::from_str(if args.len() > 2 {
+        &args[2]
+    } else {
+        "127.0.0.1:3478"
+    })
+    .unwrap();
+
+    let mut msg = Message::new_request(BINDING);
+    msg.add_fingerprint().unwrap();
+
+    match proto {
+        TransportType::Udp => udp_message(msg, to),
+        TransportType::Tcp => tcp_message(msg, to),
+    }
 }
