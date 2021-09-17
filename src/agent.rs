@@ -10,6 +10,7 @@ use std::error::Error;
 use std::fmt::Display;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 
 use futures::prelude::*;
@@ -64,6 +65,7 @@ pub enum AgentMessage {
 
 #[derive(Debug)]
 pub struct Agent {
+    id: usize,
     inner: Arc<Mutex<AgentInner>>,
     broadcast: Arc<ChannelBroadcast<AgentMessage>>,
     tasks: Arc<TaskList>,
@@ -71,6 +73,7 @@ pub struct Agent {
 
 #[derive(Debug)]
 pub(crate) struct AgentInner {
+    id: usize,
     streams: Vec<Arc<Stream>>,
     checklistset: Option<Arc<ConnCheckListSet>>,
     controlling: bool,
@@ -81,9 +84,10 @@ pub(crate) struct AgentInner {
 pub(crate) type AgentFuture = Pin<Box<dyn Future<Output = Result<(), AgentError>> + Send>>;
 
 impl AgentInner {
-    fn new() -> Self {
+    fn new(id: usize) -> Self {
         let mut rnd = rand::thread_rng();
         Self {
+            id,
             streams: vec![],
             checklistset: None,
             controlling: false,
@@ -93,10 +97,14 @@ impl AgentInner {
     }
 }
 
+static AGENT_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 impl Default for Agent {
     fn default() -> Self {
+        let id = AGENT_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Agent {
-            inner: Arc::new(Mutex::new(AgentInner::new())),
+            id,
+            inner: Arc::new(Mutex::new(AgentInner::new(id))),
             broadcast: Arc::new(ChannelBroadcast::default()),
             tasks: Arc::new(TaskList::new()),
         }
@@ -129,11 +137,27 @@ impl Agent {
     }
 
     /// Run the agent loop
+    #[tracing::instrument(
+        name = "ice_loop",
+        err,
+        skip(self),
+        fields(
+            ice_id = self.id
+        )
+    )]
     pub async fn run_loop(&self) -> Result<(), AgentError> {
         self.tasks.iterate_tasks().await
     }
 
     // XXX: TEMPORARY needs to become dynamic for trickle-ice
+    #[tracing::instrument(
+        name = "ice_start",
+        err,
+        skip(self),
+        fields(
+            ice_id = self.id
+        )
+    )]
     pub fn start(&self) -> Result<(), AgentError> {
         let set = {
             let mut inner = self.inner.lock().unwrap();
@@ -160,11 +184,25 @@ impl Agent {
     }
 
     /// Close the agent loop
+    #[tracing::instrument(
+        name = "ice_close",
+        skip(self),
+        fields(
+            ice_id = self.id
+        )
+    )]
     pub async fn close(&self) -> Result<(), AgentError> {
         info!("closing agent");
         self.tasks.stop().await
     }
 
+    #[tracing::instrument(
+        name = "ice_set_controlling",
+        skip(self),
+        fields(
+            ice_id = self.id
+        )
+    )]
     pub fn set_controlling(&self, controlling: bool) {
         let mut inner = self.inner.lock().unwrap();
         info!(

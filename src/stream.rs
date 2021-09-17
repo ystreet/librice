@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use futures::prelude::*;
+use tracing_futures::Instrument;
 
 use crate::agent::{AgentError, AgentInner, AgentMessage};
 use crate::component::{Component, ComponentState};
@@ -219,11 +220,14 @@ impl Stream {
     /// let credentials = Credentials {ufrag: "1".to_owned(), passwd: "2".to_owned()};
     /// stream.set_local_credentials(credentials);
     /// ```
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            stream_id = self.id
+        )
+    )]
     pub fn set_local_credentials(&self, credentials: Credentials) {
-        info!(
-            "stream {} setting local credentials {:?}",
-            self.id, credentials
-        );
+        info!("setting");
         let mut state = self.state.lock().unwrap();
         state.local_credentials = Some(credentials);
     }
@@ -260,11 +264,14 @@ impl Stream {
     /// let credentials = Credentials {ufrag: "1".to_owned(), passwd: "2".to_owned()};
     /// stream.set_remote_credentials(credentials);
     /// ```
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            stream_id = self.id
+        )
+    )]
     pub fn set_remote_credentials(&self, credentials: Credentials) {
-        info!(
-            "stream {} setting remote credentials {:?}",
-            self.id, credentials
-        );
+        info!("setting");
         let mut state = self.state.lock().unwrap();
         state.remote_credentials = Some(credentials);
     }
@@ -309,6 +316,12 @@ impl Stream {
     /// );
     /// stream.add_remote_candidate(component.id, candidate).unwrap();
     /// ```
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            stream_id = self.id
+        )
+    )]
     pub fn add_remote_candidate(
         &self,
         component_id: usize,
@@ -344,6 +357,13 @@ impl Stream {
     ///     stream.gather_candidates().await.unwrap();
     /// });
     /// ```
+    #[tracing::instrument(
+        name = "gather_stream",
+        skip(self),
+        fields(
+            stream_id = ?self.id
+        )
+    )]
     pub async fn gather_candidates(&self) -> Result<(), AgentError> {
         let stun_servers = {
             let agent = Weak::upgrade(&self.agent).ok_or(AgentError::ResourceNotFound)?;
@@ -383,21 +403,22 @@ impl Stream {
                     .map(move |(cand, agent)| (cand, agent, component)),
             );
             // make a stream that notifies after completing
-            let stream = futures::stream::unfold(cstream, move |cstream| async move {
-                let (f, cstream) = cstream.into_future().await;
-                match f {
-                    Some(v) => Some((v, cstream)),
-                    None => {
-                        debug!(
-                            "gathering completed for stream {} component {}",
-                            self.id, component.id
-                        );
-                        self.broadcast
-                            .broadcast(AgentMessage::GatheringCompleted(component.clone()))
-                            .await;
-                        None
+            let stream = futures::stream::unfold(cstream, move |cstream| {
+                let span = debug_span!("gather_component", component.id);
+                async move {
+                    let (f, cstream) = cstream.into_future().await;
+                    match f {
+                        Some(v) => Some((v, cstream)),
+                        None => {
+                            info!("gathering completed");
+                            self.broadcast
+                                .broadcast(AgentMessage::GatheringCompleted(component.clone()))
+                                .await;
+                            None
+                        }
                     }
                 }
+                .instrument(span)
             });
             gather.push(Box::pin(stream));
         }
@@ -412,7 +433,6 @@ impl Stream {
                 .await;
         }
 
-        // TODO: find TURN reflexive candidates
         Ok(())
     }
 

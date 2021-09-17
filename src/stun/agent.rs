@@ -20,6 +20,7 @@ use futures::future::AbortHandle;
 use futures::future::Either;
 use futures::prelude::*;
 use futures_timer::Delay;
+use tracing_futures::Instrument;
 
 use crate::agent::AgentError;
 
@@ -54,6 +55,7 @@ impl StunOrData {
 /// Implementation of a STUN agent
 #[derive(Debug, Clone)]
 pub struct StunAgent {
+    pub(crate) id: usize,
     pub(crate) inner: DebugWrapper<Arc<StunAgentInner>>,
 }
 
@@ -78,6 +80,7 @@ impl StunAgent {
     pub fn new(channel: SocketChannel) -> Self {
         let id = STUN_AGENT_COUNT.fetch_add(1, Ordering::SeqCst);
         Self {
+            id,
             inner: DebugWrapper::wrap(
                 Arc::new(StunAgentInner {
                     id,
@@ -134,24 +137,28 @@ impl StunAgent {
         self.inner.channel.send(&buf).await
     }
 
-    fn receive_task_loop(inner_weak: Weak<StunAgentInner>, channel: SocketChannel) {
+    fn receive_task_loop(
+        inner_weak: Weak<StunAgentInner>,
+        channel: SocketChannel,
+        inner_id: usize,
+    ) {
         // XXX: can we remove this demuxing task?
         // retrieve stream outside task to avoid a race
         let s = channel.receive_stream().unwrap();
         async_std::task::spawn({
+            let span = debug_span!("stun_recv_loop", stun.id = inner_id);
             async move {
                 futures::pin_mut!(s);
                 while let Some((data, from)) = s.next().await {
                     let inner = match Weak::upgrade(&inner_weak) {
                         Some(inner) => inner,
                         None => {
-                            info!("Receive task exit");
                             break;
                         }
                     };
                     match Message::from_bytes(&data) {
                         Ok(msg) => {
-                            debug!("{} received from {:?} {}", inner.id, from, msg);
+                            debug!("received from {:?} {}", from, msg);
                             let handle = {
                                 let mut state = inner.state.lock().unwrap();
                                 state.handle_stun(msg.clone())
@@ -164,7 +171,7 @@ impl StunAgent {
                                         .await;
                                 }
                                 HandleStunReply::Failure(err) => {
-                                    warn!("{} Failed to handle {}. {:?}", inner.id, msg, err);
+                                    warn!("Failed to handle {}. {:?}", msg, err);
                                 }
                                 _ => {}
                             }
@@ -177,7 +184,9 @@ impl StunAgent {
                         }
                     }
                 }
+                debug!("task exit");
             }
+            .instrument(span)
         });
     }
 
@@ -186,7 +195,7 @@ impl StunAgent {
             let mut state = self.inner.state.lock().unwrap();
             if !state.receive_loop_started {
                 let inner_weak = Arc::downgrade(&self.inner);
-                StunAgent::receive_task_loop(inner_weak, self.inner.channel.clone());
+                StunAgent::receive_task_loop(inner_weak, self.inner.channel.clone(), self.inner.id);
                 state.receive_loop_started = true;
             }
         }
@@ -205,6 +214,15 @@ impl StunAgent {
         self.receive_stream_filter(|_| true)
     }
 
+    #[tracing::instrument(
+        name = "stun_send_request",
+        level = "debug",
+        err,
+        skip(self, msg, recv_abort_handle),
+        fields(
+            msg.transaction_id = %msg.transaction_id()
+        )
+    )]
     async fn send_request(
         &self,
         msg: &Message,
@@ -215,7 +233,7 @@ impl StunAgent {
         let timeouts: [u64; 7] = [0, 500, 1500, 3500, 7500, 15500, 31500];
         for timeout in timeouts.iter() {
             Delay::new(Duration::from_millis(*timeout)).await;
-            info!("{} sending {} to {}", self.inner.id, msg, to);
+            trace!("sending {}", msg);
             let buf = msg.to_bytes();
             self.inner.channel.send_to(&buf, to).await?;
         }
@@ -225,6 +243,17 @@ impl StunAgent {
         Err(AgentError::TimedOut)
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        err,
+        skip(self, msg, addr),
+        fields(
+            agent_id = %self.inner.id,
+            transaction_id = %msg.transaction_id(),
+            target_addr = ?addr,
+            source_addr = ?self.inner.channel.local_addr()
+        ),
+    )]
     pub async fn stun_request_transaction(
         &self,
         msg: &Message,
