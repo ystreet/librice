@@ -10,18 +10,17 @@ use std::fmt::Display;
 use std::net::SocketAddr;
 
 use async_std::io;
-use async_std::net::UdpSocket;
+use async_std::net::{TcpListener, UdpSocket};
 use async_std::task;
 
 #[macro_use]
 extern crate tracing;
 
+use futures::StreamExt;
 use tracing_subscriber::EnvFilter;
 
-use futures::StreamExt;
-
 use librice::agent::*;
-use librice::socket::{SocketChannel, UdpSocketChannel};
+use librice::socket::{SocketChannel, TcpChannel, UdpSocketChannel};
 use librice::stun::agent::*;
 use librice::stun::attribute::*;
 use librice::stun::message::*;
@@ -50,34 +49,60 @@ fn handle_binding_request(msg: &Message, from: SocketAddr) -> Result<Message, Ag
     Ok(response)
 }
 
+fn handle_stun_or_data(stun_or_data: StunOrData) -> Option<(Message, SocketAddr)> {
+    match stun_or_data {
+        StunOrData::Data(data, from) => info!("received from {} data: {:?}", from, data),
+        StunOrData::Stun(msg, _data, from) => {
+            info!("received from {}: {}", from, msg);
+            if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
+                match handle_binding_request(&msg, from) {
+                    Ok(response) => {
+                        info!("sending response to {}: {}", from, response);
+                        return Some((response, from));
+                    }
+                    Err(err) => warn!("error: {}", err),
+                }
+            }
+        }
+    }
+    None
+}
+
 fn main() -> io::Result<()> {
     if let Ok(filter) = EnvFilter::try_from_default_env() {
         tracing_subscriber::fmt().with_env_filter(filter).init();
     }
 
     task::block_on(async move {
-        let socket = UdpSocket::bind("127.0.0.1:3478").await?;
-        let channel = SocketChannel::Udp(UdpSocketChannel::new(socket));
-        let stun_agent = StunAgent::new(channel);
+        let udp_socket = UdpSocket::bind("127.0.0.1:3478").await?;
+        let udp_channel = SocketChannel::Udp(UdpSocketChannel::new(udp_socket));
+        let udp_stun_agent = StunAgent::new(udp_channel);
+        let mut receive_stream = udp_stun_agent.receive_stream();
 
-        let mut receive_stream = stun_agent.receive_stream();
-        while let Some(stun_or_data) = receive_stream.next().await {
-            match stun_or_data {
-                StunOrData::Data(data, from) => info!("received from {} data: {:?}", from, data),
-                StunOrData::Stun(msg, _data, from) => {
-                    info!("received from {}: {}", from, msg);
-                    if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
-                        match handle_binding_request(&msg, from) {
-                            Ok(response) => {
-                                info!("sending response to {}: {}", from, response);
-                                warn_on_err(stun_agent.send_to(response, from).await, ())
-                            }
-                            Err(err) => warn!("error: {}", err),
-                        }
-                    }
+        task::spawn(async move {
+            while let Some(stun_or_data) = receive_stream.next().await {
+                if let Some((response, to)) = handle_stun_or_data(stun_or_data) {
+                    warn_on_err(udp_stun_agent.send_to(response, to).await, ());
                 }
             }
+        });
+
+        let tcp_listener = TcpListener::bind("127.0.0.1:3478").await?;
+        let mut incoming = tcp_listener.incoming();
+        while let Some(Ok(stream)) = incoming.next().await {
+            let tcp_channel = SocketChannel::Tcp(TcpChannel::new(stream));
+            let tcp_stun_agent = StunAgent::new(tcp_channel);
+            let mut receive_stream = tcp_stun_agent.receive_stream();
+
+            task::spawn(async move {
+                while let Some(stun_or_data) = receive_stream.next().await {
+                    if let Some((response, _to)) = handle_stun_or_data(stun_or_data) {
+                        warn_on_err(tcp_stun_agent.send(response).await, ());
+                    }
+                }
+            });
         }
+
         Ok(())
     })
 }
