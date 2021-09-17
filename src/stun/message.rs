@@ -33,6 +33,7 @@ pub const BINDING: u16 = 0x0001;
 
 /// Structure for holding the required credentials for handling long-term STUN credentials
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LongTermCredentials {
     pub username: String,
     pub password: String,
@@ -41,12 +42,14 @@ pub struct LongTermCredentials {
 
 /// Structure for holding the required credentials for handling short-term STUN credentials
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ShortTermCredentials {
     pub password: String,
 }
 
 /// Enum for holding the credentials used to sign or verify a [`Message`]
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum MessageIntegrityCredentials {
     ShortTerm(ShortTermCredentials),
     LongTerm(LongTermCredentials),
@@ -594,7 +597,6 @@ impl Message {
         let mut seen_message_integrity = false;
         while !data.is_empty() {
             let attr = RawAttribute::from_bytes(data)?;
-            let padded_len = padded_attr_size(&attr);
 
             if seen_message_integrity && attr.get_type() != FINGERPRINT {
                 // only attribute valid after MESSAGE_INTEGRITY is FINGERPRINT
@@ -608,6 +610,10 @@ impl Message {
             if attr.get_type() == MESSAGE_INTEGRITY {
                 seen_message_integrity = true;
                 // need credentials to validate the integrity of the message
+            }
+            let padded_len = padded_attr_size(&attr);
+            if padded_len > data.len() {
+                return Err(AgentError::NotEnoughData);
             }
             if attr.get_type() == FINGERPRINT {
                 let f = Fingerprint::from_raw(&attr)?;
@@ -680,6 +686,9 @@ impl Message {
                     .map_err(|_| AgentError::IntegrityCheckFailed);
             }
             let padded_len = padded_attr_size(&attr);
+            if padded_len > data.len() {
+                return Err(AgentError::Malformed);
+            }
             data = &data[padded_len..];
             data_offset += padded_len;
         }
@@ -1105,6 +1114,7 @@ mod tests {
 
     #[test]
     fn valid_attributes() {
+        init();
         let mut src = Message::new_request(BINDING);
         src.add_attribute(Username::new("123").unwrap()).unwrap();
         src.add_attribute(Priority::new(123)).unwrap();
@@ -1138,6 +1148,7 @@ mod tests {
 
     #[test]
     fn rfc5769_vector1() {
+        init();
         // https://tools.ietf.org/html/rfc5769#section-2.1
         let data = vec![
             0x00, 0x01, 0x00, 0x58, // Request type message length
@@ -1218,6 +1229,7 @@ mod tests {
 
     #[test]
     fn rfc5769_vector2() {
+        init();
         // https://tools.ietf.org/html/rfc5769#section-2.2
         let data = vec![
             0x01, 0x01, 0x00, 0x3c, // Response type message length
@@ -1270,10 +1282,9 @@ mod tests {
         let credentials = MessageIntegrityCredentials::ShortTerm(ShortTermCredentials {
             password: "VOkJxbRl1RmTxUk/WvJxBt".to_owned(),
         });
-        assert!(matches!(
-            msg.validate_integrity(&data, &credentials),
-            Ok(())
-        ));
+        let ret = msg.validate_integrity(&data, &credentials);
+        debug!("{:?}", ret);
+        assert!(matches!(ret, Ok(())));
 
         // FINGERPRINT is checked by Message::from_bytes() when present
         assert!(msg.has_attribute(FINGERPRINT));
@@ -1287,6 +1298,7 @@ mod tests {
 
     #[test]
     fn rfc5769_vector3() {
+        init();
         // https://tools.ietf.org/html/rfc5769#section-2.3
         let data = vec![
             0x01, 0x01, 0x00, 0x48, // Response type and message length
@@ -1361,6 +1373,7 @@ mod tests {
 
     #[test]
     fn rfc5769_vector4() {
+        init();
         // https://tools.ietf.org/html/rfc5769#section-2.4
         let data = vec![
             0x00, 0x01, 0x00, 0x60, //    Request type and message length
