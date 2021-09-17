@@ -21,7 +21,7 @@ use std::convert::TryInto;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use crate::agent::AgentError;
-use crate::stun::message::{MAGIC_COOKIE, TransactionId};
+use crate::stun::message::{TransactionId, MAGIC_COOKIE};
 
 use byteorder::{BigEndian, ByteOrder};
 

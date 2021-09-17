@@ -14,6 +14,7 @@ use futures::channel::oneshot;
 use futures::future::AbortHandle;
 use futures::prelude::*;
 use futures::Stream;
+use tracing_futures::Instrument;
 
 use crate::agent::{AgentError, AgentMessage};
 use crate::candidate::{Candidate, CandidatePair, TransportType};
@@ -75,12 +76,7 @@ impl Component {
     pub(crate) async fn set_state(self: &Arc<Self>, state: ComponentState) {
         if let Some(new_state) = {
             let mut inner = self.inner.lock().unwrap();
-            if inner.state != state {
-                info!(
-                    "Component {} changing state from {:?} to {:?}",
-                    self.id, inner.state, state
-                );
-                inner.state = state;
+            if inner.set_state(state) {
                 Some(state)
             } else {
                 None
@@ -132,32 +128,39 @@ impl Component {
             .collect();
 
         info!("retreived sockets");
-        Ok(crate::gathering::gather_component(
-            self.id,
-            agents,
-            stun_servers,
-        )?)
+        crate::gathering::gather_component(self.id, agents, stun_servers)
     }
 
+    #[tracing::instrument(
+        skip(self, agent),
+        fields(
+            component_id = self.id,
+            agent_id = agent.id
+        )
+    )]
     pub(crate) async fn add_recv_agent(&self, agent: StunAgent) -> AbortHandle {
         let sender = self.inner.lock().unwrap().receive_send_channel.clone();
         let (ready_send, ready_recv) = oneshot::channel();
 
-        debug!("Component {} adding agent for receive", self.id);
-        let (abortable, abort_handle) = futures::future::abortable(async move {
-            let mut data_recv_stream = agent.receive_stream();
-            if ready_send.send(()).is_err() {
-                return;
-            }
-            while let Some(stun_or_data) = data_recv_stream.next().await {
-                if let Some((data, _from)) = stun_or_data.data() {
-                    if let Err(e) = sender.send(data).await {
-                        warn!("error receiving {:?}", e);
+        debug!("adding");
+        let span = debug_span!("component_recv");
+        let (abortable, abort_handle) = futures::future::abortable(
+            async move {
+                let mut data_recv_stream = agent.receive_stream();
+                if ready_send.send(()).is_err() {
+                    return;
+                }
+                while let Some(stun_or_data) = data_recv_stream.next().await {
+                    if let Some((data, _from)) = stun_or_data.data() {
+                        if let Err(e) = sender.send(data).await {
+                            warn!("error receiving {:?}", e);
+                        }
                     }
                 }
+                debug!("receive loop exited");
             }
-            debug!("receive loop exited");
-        });
+            .instrument(span),
+        );
 
         async_std::task::spawn(abortable);
 
@@ -203,13 +206,34 @@ impl ComponentInner {
         }
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip(self, state)
+        fields(
+            old_state = ?self.state,
+            new_state = ?state
+        )
+    )]
+    fn set_state(&mut self, state: ComponentState) -> bool {
+        if self.state != state {
+            debug!("setting");
+            self.state = state;
+            true
+        } else {
+            false
+        }
+    }
+
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            component_id = self.id
+        )
+    )]
     fn set_selected_pair(&mut self, selected: SelectedPair) {
         let remote_addr = selected.candidate_pair.remote.address;
         let local_channel = selected.local_stun_agent.inner.channel.clone();
-        debug!(
-            "Component {} selecting pair {:?}",
-            self.id, selected.candidate_pair
-        );
+        debug!("setting");
         self.selected_pair = Some(selected);
         let new_channel = match local_channel {
             SocketChannel::Udp(c) => {

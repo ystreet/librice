@@ -16,6 +16,7 @@ use futures::channel::oneshot;
 use futures::future::{AbortHandle, Abortable};
 use futures::prelude::*;
 use futures_timer::Delay;
+use tracing_futures::Instrument;
 
 use crate::candidate::{Candidate, CandidatePair, CandidateType, TransportType};
 
@@ -53,16 +54,40 @@ struct ConnCheck {
 
 #[derive(Debug)]
 struct ConnCheckState {
+    conncheck_id: usize,
     state: CandidatePairState,
     abort_handle: Option<AbortHandle>,
 }
 
+impl ConnCheckState {
+    #[tracing::instrument(
+        name = "set_check_state",
+        level = "debug",
+        skip(self, state),
+        fields(
+            ?self.conncheck_id,
+            old_state = ?self.state,
+            new_state = ?state
+        )
+    )]
+    fn set_state(&mut self, state: CandidatePairState) {
+        if state == CandidatePairState::Succeeded || state == CandidatePairState::Failed {
+            debug!("aborting recv task");
+            let _ = self.abort_handle.take();
+        }
+        debug!("updating state");
+        self.state = state;
+    }
+}
+
 impl ConnCheck {
     fn new(pair: CandidatePair, agent: StunAgent, nominate: bool) -> Self {
+        let conncheck_id = CONN_CHECK_COUNT.fetch_add(1, Ordering::SeqCst);
         Self {
-            conncheck_id: CONN_CHECK_COUNT.fetch_add(1, Ordering::SeqCst),
+            conncheck_id,
             pair,
             state: Mutex::new(ConnCheckState {
+                conncheck_id,
                 state: CandidatePairState::Frozen,
                 abort_handle: None,
             }),
@@ -78,32 +103,38 @@ impl ConnCheck {
     fn set_state(&self, state: CandidatePairState) {
         let mut inner = self.state.lock().unwrap();
         // TODO: validate state change
-        trace!(
-            "conncheck state change from '{:?}' to '{:?}' for {:?}",
-            inner.state,
-            state,
-            self
-        );
-        if state == CandidatePairState::Succeeded || state == CandidatePairState::Failed {
-            let _ = inner.abort_handle.take();
-        }
-        inner.state = state;
+        inner.set_state(state)
     }
 
     fn nominate(&self) -> bool {
         self.nominate
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip(self),
+        fields(
+            self.state
+        )
+    )]
     fn cancel(&self) {
         let mut inner = self.state.lock().unwrap();
         let abort_handle = inner.abort_handle.take();
         if let Some(handle) = abort_handle {
             debug!("conncheck cancelling for {:?}", self);
             handle.abort();
-            inner.state = CandidatePairState::Failed;
+            inner.set_state(CandidatePairState::Failed);
         }
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        err,
+        skip(conncheck),
+        fields(
+            conncheck.conncheck_id
+        )
+    )]
     async fn connectivity_check(
         conncheck: Arc<ConnCheck>,
         controlling: bool,
@@ -244,24 +275,44 @@ impl ConnCheckListInner {
         self.controlling
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip(self),
+        fields(
+            self.checklist_id,
+            self.controlling
+        )
+    )]
     fn set_controlling(&mut self, controlling: bool) {
         self.controlling = controlling
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip(self),
+        fields(
+            self.checklist_id,
+            self.state
+        )
+    )]
+    fn set_state(&mut self, state: CheckListState) {
+        debug!("old state {:?}", self.state);
+        self.state = state
+    }
+
+    #[tracing::instrument(
+        level = "debug",
+        skip(self),
+        fields(
+            self.checklist_id
+        )
+    )]
     fn find_remote_candidate(
         &self,
         component_id: usize,
         ttype: TransportType,
         addr: SocketAddr,
     ) -> Option<Candidate> {
-        trace!(
-            "checklist {} looking for comp {}, {:?} {:?} in {:?}",
-            self.checklist_id,
-            component_id,
-            ttype,
-            addr,
-            self.remote_candidates
-        );
         self.remote_candidates
             .iter()
             .find(|&remote| {
@@ -272,6 +323,14 @@ impl ConnCheckListInner {
             .map(|(_, cand)| cand.clone())
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip(self, check),
+        fields(
+            self.checklist_id,
+            check.conncheck_id
+        )
+    )]
     fn add_triggered(&mut self, check: Arc<ConnCheck>) {
         if let Some(idx) = self
             .triggered
@@ -283,30 +342,27 @@ impl ConnCheckListInner {
             // long time and delay the connection process
             if check.nominate() && !self.triggered[idx].nominate() {
                 let existing = self.triggered.remove(idx).unwrap();
-                debug!(
-                    "checklist {} removing existing triggered {:?}",
-                    self.checklist_id, existing
-                );
+                debug!("removing existing triggered {:?}", existing);
             } else {
-                debug!(
-                    "checklist {} not adding duplicate triggered {:?}",
-                    self.checklist_id, &self.triggered[idx]
-                );
+                debug!("not adding duplicate triggered");
                 return;
             }
         }
-        debug!(
-            "checklist {} adding triggered {:?}",
-            self.checklist_id, &check
-        );
+        debug!("adding triggered");
         self.triggered.push_front(check)
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip(self)
+        fields(
+            self.checklist_id,
+            remote.ctype = ?remote.candidate_type,
+            remote.foundation = ?remote.foundation,
+            remote.address = ?remote.address
+        )
+    )]
     fn add_remote_candidate(&mut self, component_id: usize, remote: Candidate) {
-        debug!(
-            "checklist {} adding remote component {} {:?}",
-            self.checklist_id, component_id, remote
-        );
         self.remote_candidates.push((component_id, remote));
     }
 
@@ -354,16 +410,28 @@ impl ConnCheckListInner {
         self.pairs.push_front(check)
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip(self, pair),
+        fields(
+            checklist_id = self.checklist_id,
+            component_id = component_id,
+            pair.transport_type = ?pair.local.transport_type,
+            pair.local.ctype = ?pair.local.candidate_type,
+            pair.local.foundation = ?pair.local.foundation,
+            pair.local.address = ?pair.local.address,
+            pair.remote.ctype = ?pair.remote.candidate_type,
+            pair.remote.foundation = ?pair.remote.foundation,
+            pair.remote.address = ?pair.remote.address,
+        )
+    )]
     fn nominated_pair(
         &mut self,
         component_id: usize,
         pair: &CandidatePair,
     ) -> Option<Arc<Component>> {
         if let Some(idx) = self.valid.iter().position(|valid_pair| valid_pair == pair) {
-            info!(
-                "checklist {} nominated component {} pair {:?}",
-                self.checklist_id, component_id, pair
-            );
+            info!("nominated");
             self.valid[idx].nominate();
             let component = self
                 .components
@@ -440,26 +508,159 @@ impl ConnCheckListInner {
                             }
                             component_ids_selected
                         });
-                    debug!(
-                        "checklist {} state change from {:?} to Completed",
-                        self.checklist_id, self.state
-                    );
-                    self.state = CheckListState::Completed;
+                    self.set_state(CheckListState::Completed);
                 }
             }
             debug!(
-                "checklist {} trying to signal component {:?}",
-                self.checklist_id, component
+                "trying to signal component {:?}",
+                component.clone().map(|c| c.id)
             );
             return component;
         } else {
-            warn!(
-                "checklist {} unknown nominated component {} pair {:?}",
-                self.checklist_id, component_id, pair
-            );
+            warn!("unknown nomination");
         }
         None
     }
+
+    #[tracing::instrument(
+        level = "debug",
+        err
+        skip(self, local, agent, from, priority)
+        fields(
+            checklist_id = self.checklist_id,
+            state = ?self.state,
+        )
+    )]
+    fn handle_binding_request(
+        &mut self,
+        peer_nominating: bool,
+        component_id: usize,
+        local: &Candidate,
+        agent: StunAgent,
+        from: SocketAddr,
+        priority: u32,
+    ) -> Result<Option<Arc<Component>>, AgentError> {
+        let remote = self
+            .find_remote_candidate(component_id, local.transport_type, from)
+            .unwrap_or_else(|| {
+                // If the source transport address of the request does not match any
+                // existing remote candidates, it represents a new peer-reflexive remote
+                // candidate.  This candidate is constructed as follows:
+                //
+                //   o  The priority is the value of the PRIORITY attribute in the Binding
+                //      request.
+                //   o  The type is peer reflexive.
+                //   o  The component ID is the component ID of the local candidate to
+                //      which the request was sent.
+                //   o  The foundation is an arbitrary value, different from the
+                //      foundations of all other remote candidates.  If any subsequent
+                //      candidate exchanges contain this peer-reflexive candidate, it will
+                //      signal the actual foundation for the candidate.
+                let cand = Candidate::new(
+                    CandidateType::PeerReflexive,
+                    local.transport_type,
+                    /* FIXME */ "rflx",
+                    priority,
+                    from,
+                    from,
+                    None,
+                );
+                debug!("new reflexive remote {:?}", cand);
+                self.add_remote_candidate(component_id, cand.clone());
+                cand
+            });
+        // RFC 8445 Section 7.3.1.4. Triggered Checks
+        let pair = CandidatePair::new(component_id, local.clone(), remote);
+        if let Some(mut check) = self.take_matching_check(&pair) {
+            // When the pair is already on the checklist:
+            trace!("found existing check {:?}", check);
+            match check.state() {
+                // If the state of that pair is Succeeded, nothing further is
+                // done.
+                CandidatePairState::Succeeded => {
+                    if peer_nominating {
+                        debug!("existing pair succeeded -> nominate");
+                        check = Arc::new(ConnCheck::new(
+                            check.pair.clone(),
+                            check.agent.clone(),
+                            true,
+                        ));
+                        check.set_state(CandidatePairState::Succeeded);
+                        self.add_check(check);
+                        if let Some(component) = self.nominated_pair(pair.component_id, &pair) {
+                            return Ok(Some(component));
+                        }
+                    }
+                }
+                // If the state of that pair is In-Progress, the agent cancels the
+                // In-Progress transaction.  Cancellation means that the agent
+                // will not retransmit the Binding requests associated with the
+                // connectivity-check transaction, will not treat the lack of
+                // response to be a failure, but will wait the duration of the
+                // transaction timeout for a response.  In addition, the agent
+                // MUST enqueue the pair in the triggered checklist associated
+                // with the checklist, and set the state of the pair to Waiting,
+                // in order to trigger a new connectivity check of the pair.
+                // Creating a new connectivity check enables validating
+                // In-Progress pairs as soon as possible, without having to wait
+                // for retransmissions of the Binding requests associated with the
+                // original connectivity-check transaction.
+                CandidatePairState::InProgress => {
+                    check.cancel();
+                    if peer_nominating {
+                        check = Arc::new(ConnCheck::new(
+                            check.pair.clone(),
+                            check.agent.clone(),
+                            true,
+                        ));
+                    }
+                    check.set_state(CandidatePairState::Waiting);
+                    self.add_triggered(check);
+                }
+                // If the state of that pair is Waiting, Frozen, or Failed, the
+                // agent MUST enqueue the pair in the triggered checklist
+                // associated with the checklist (if not already present), and set
+                // the state of the pair to Waiting, in order to trigger a new
+                // connectivity check of the pair.  Note that a state change of
+                // the pair from Failed to Waiting might also trigger a state
+                // change of the associated checklist.
+                CandidatePairState::Waiting
+                | CandidatePairState::Frozen
+                | CandidatePairState::Failed => {
+                    if peer_nominating {
+                        check = Arc::new(ConnCheck::new(
+                            check.pair.clone(),
+                            check.agent.clone(),
+                            true,
+                        ));
+                    }
+                    check.set_state(CandidatePairState::Waiting);
+                    // FIXME: add iff not already triggered
+                    self.add_triggered(check);
+                }
+            }
+        } else {
+            debug!("creating new check for pair {:?}", pair);
+            let check = Arc::new(ConnCheck::new(pair, agent.clone(), peer_nominating));
+            check.set_state(CandidatePairState::Waiting);
+            self.pairs.push_back(check.clone());
+            self.add_triggered(check);
+        }
+
+        Ok(None)
+    }
+}
+
+fn binding_success_response(
+    msg: &Message,
+    from: SocketAddr,
+    local_credentials: MessageIntegrityCredentials,
+) -> Result<Message, AgentError> {
+    let mut response = Message::new_success(msg);
+    response.add_attribute(XorMappedAddress::new(from, msg.transaction_id()))?;
+    response.add_message_integrity(&local_credentials)?;
+    response.add_fingerprint()?;
+    Ok(response)
 }
 
 #[derive(Debug)]
@@ -498,14 +699,16 @@ impl ConnCheckList {
         self.inner.lock().unwrap().state
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip(self)
+        fields(
+            checklist_id = self.checklist_id
+        )
+    )]
     fn set_state(&self, state: CheckListState) {
         let mut inner = self.inner.lock().unwrap();
-        trace!(
-            "checklist {} state change from {:?} to {:?}",
-            self.checklist_id,
-            inner.state,
-            state
-        );
+        trace!("old state {:?}", inner.state);
         inner.state = state;
     }
 
@@ -513,6 +716,13 @@ impl ConnCheckList {
         self.inner.lock().unwrap().controlling()
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip(self),
+        fields(
+            checklist_id = self.checklist_id
+        )
+    )]
     fn set_controlling(&self, controlling: bool) {
         self.inner.lock().unwrap().set_controlling(controlling)
     }
@@ -552,13 +762,6 @@ impl ConnCheckList {
             // failure -> send error response
             return Ok(Some(error_msg));
         }
-        let priority = match msg.get_attribute::<Priority>(PRIORITY) {
-            Some(p) => p.priority(),
-            None => {
-                return Ok(Some(Message::bad_request(msg)?));
-            }
-        };
-
         let peer_nominating =
             if let Some(use_candidate_raw) = msg.get_attribute::<RawAttribute>(USE_CANDIDATE) {
                 if UseCandidate::from_raw(&use_candidate_raw).is_ok() {
@@ -569,153 +772,58 @@ impl ConnCheckList {
             } else {
                 false
             };
-        let mut component = None;
-        {
-            let checklist = weak_inner.upgrade().ok_or(AgentError::ConnectionClosed)?;
-            let mut checklist = checklist.lock().unwrap();
 
-            debug!(
-                "checklist {} have request peer nominating {} list state {:?}",
-                checklist.checklist_id, peer_nominating, checklist.state
-            );
-            if checklist.state == CheckListState::Completed && !peer_nominating {
-                // ignore binding requests if we are completed
-                return Ok(None);
+        let priority = match msg.get_attribute::<Priority>(PRIORITY) {
+            Some(p) => p.priority(),
+            None => {
+                return Ok(Some(Message::bad_request(msg)?));
             }
-
-            let remote = checklist
-                .find_remote_candidate(component_id, local.transport_type, from)
-                .unwrap_or_else(|| {
-                    // If the source transport address of the request does not match any
-                    // existing remote candidates, it represents a new peer-reflexive remote
-                    // candidate.  This candidate is constructed as follows:
-                    //
-                    //   o  The priority is the value of the PRIORITY attribute in the Binding
-                    //      request.
-                    //   o  The type is peer reflexive.
-                    //   o  The component ID is the component ID of the local candidate to
-                    //      which the request was sent.
-                    //   o  The foundation is an arbitrary value, different from the
-                    //      foundations of all other remote candidates.  If any subsequent
-                    //      candidate exchanges contain this peer-reflexive candidate, it will
-                    //      signal the actual foundation for the candidate.
-                    let cand = Candidate::new(
-                        CandidateType::PeerReflexive,
-                        local.transport_type,
-                        /* FIXME */ "rflx",
-                        priority,
-                        from,
-                        from,
-                        None,
-                    );
-                    debug!(
-                        "checklist {} new reflexive remote {:?}",
-                        checklist.checklist_id, cand
-                    );
-                    checklist.add_remote_candidate(component_id, cand.clone());
-                    cand
-                });
-            // RFC 8445 Section 7.3.1.4. Triggered Checks
-            let pair = CandidatePair::new(component_id, local.clone(), remote);
-            if let Some(mut check) = checklist.take_matching_check(&pair) {
-                // When the pair is already on the checklist:
-                trace!(
-                    "checklist {} found existing check {:?}",
-                    checklist.checklist_id,
-                    check
-                );
-                match check.state() {
-                    // If the state of that pair is Succeeded, nothing further is
-                    // done.
-                    CandidatePairState::Succeeded => {
-                        if peer_nominating {
-                            debug!(
-                                "checklist {} existing pair succeeded -> nominate",
-                                checklist.checklist_id
-                            );
-                            check = Arc::new(ConnCheck::new(
-                                check.pair.clone(),
-                                check.agent.clone(),
-                                true,
-                            ));
-                            check.set_state(CandidatePairState::Succeeded);
-                            checklist.add_check(check);
-                            component = checklist.nominated_pair(pair.component_id, &pair);
-                        }
-                    }
-                    // If the state of that pair is In-Progress, the agent cancels the
-                    // In-Progress transaction.  Cancellation means that the agent
-                    // will not retransmit the Binding requests associated with the
-                    // connectivity-check transaction, will not treat the lack of
-                    // response to be a failure, but will wait the duration of the
-                    // transaction timeout for a response.  In addition, the agent
-                    // MUST enqueue the pair in the triggered checklist associated
-                    // with the checklist, and set the state of the pair to Waiting,
-                    // in order to trigger a new connectivity check of the pair.
-                    // Creating a new connectivity check enables validating
-                    // In-Progress pairs as soon as possible, without having to wait
-                    // for retransmissions of the Binding requests associated with the
-                    // original connectivity-check transaction.
-                    CandidatePairState::InProgress => {
-                        check.cancel();
-                        if peer_nominating {
-                            check = Arc::new(ConnCheck::new(
-                                check.pair.clone(),
-                                check.agent.clone(),
-                                true,
-                            ));
-                        }
-                        check.set_state(CandidatePairState::Waiting);
-                        checklist.add_triggered(check);
-                    }
-                    // If the state of that pair is Waiting, Frozen, or Failed, the
-                    // agent MUST enqueue the pair in the triggered checklist
-                    // associated with the checklist (if not already present), and set
-                    // the state of the pair to Waiting, in order to trigger a new
-                    // connectivity check of the pair.  Note that a state change of
-                    // the pair from Failed to Waiting might also trigger a state
-                    // change of the associated checklist.
-                    CandidatePairState::Waiting
-                    | CandidatePairState::Frozen
-                    | CandidatePairState::Failed => {
-                        if peer_nominating {
-                            check = Arc::new(ConnCheck::new(
-                                check.pair.clone(),
-                                check.agent.clone(),
-                                true,
-                            ));
-                        }
-                        check.set_state(CandidatePairState::Waiting);
-                        // FIXME: add iff not already triggered
-                        checklist.add_triggered(check);
-                    }
-                }
-            } else {
-                debug!(
-                    "checklist {} creating new check for pair {:?}",
-                    checklist.checklist_id, pair
-                );
-                let check = Arc::new(ConnCheck::new(pair, agent.clone(), peer_nominating));
-                check.set_state(CandidatePairState::Waiting);
-                checklist.pairs.push_back(check.clone());
-                checklist.add_triggered(check);
-            }
-        }
+        };
 
         msg.validate_integrity(data, &remote_credentials)?;
 
-        let mut response = Message::new_success(msg);
-        response.add_attribute(XorMappedAddress::new(from, msg.transaction_id()))?;
-        response.add_message_integrity(&local_credentials)?;
-        response.add_fingerprint()?;
+        let response = {
+            let checklist = weak_inner.upgrade().ok_or(AgentError::ConnectionClosed)?;
+            let mut checklist = checklist.lock().unwrap();
 
-        if let Some(component) = component {
+            if checklist.state == CheckListState::Completed && !peer_nominating {
+                // ignore binding requests if we are completed
+                trace!("ignoring binding request as we have completed");
+                return Ok(None);
+            }
+
+            checklist.handle_binding_request(
+                peer_nominating,
+                component_id,
+                local,
+                agent,
+                from,
+                priority,
+            )?
+        };
+        if let Some(component) = response {
             component.set_state(ComponentState::Connected).await;
         }
-
-        Ok(Some(response))
+        Ok(Some(binding_success_response(
+            msg,
+            from,
+            local_credentials,
+        )?))
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip(self, component, local, agent),
+        fields(
+            checklist_id = self.checklist_id,
+            component_id = component.id,
+            local.ttype = ?local.transport_type,
+            local.ctype = ?local.candidate_type,
+            local.foundation,
+            local.priority,
+            local.address = ?local.address
+        )
+    )]
     pub(crate) async fn add_local_candidate(
         &self,
         component: &Arc<Component>,
@@ -723,11 +831,7 @@ impl ConnCheckList {
         agent: StunAgent,
     ) {
         let component_id = component.id;
-        let checklist_id = self.checklist_id;
-        debug!(
-            "checklist {} adding local component {} {:?}",
-            self.checklist_id, component_id, local
-        );
+        info!("adding");
         let weak_inner = Arc::downgrade(&self.inner);
         let (stun_send, stun_recv) = oneshot::channel();
 
@@ -735,6 +839,7 @@ impl ConnCheckList {
         let (abortable, stun_abort_handle) = futures::future::abortable({
             let agent = agent.clone();
             let local = local.clone();
+            let span = debug_span!("conncheck_component_recv_loop");
             async move {
                 let drop_log = DropLogger::new("dropping stun receive stream");
                 let mut recv_stun = agent.receive_stream();
@@ -744,7 +849,6 @@ impl ConnCheckList {
                 while let Some(stun_or_data) = recv_stun.next().await {
                     if let Some((msg, data, from)) = stun_or_data.stun() {
                         // RFC8445 Section 7.3. STUN Server Procedures
-                        trace!("got from {} msg {}", from, msg);
                         if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
                             match ConnCheckList::handle_binding_request(
                                 weak_inner.clone(),
@@ -758,12 +862,7 @@ impl ConnCheckList {
                             .await
                             {
                                 Ok(Some(response)) => {
-                                    trace!(
-                                        "checklist {} component {} sending response {}",
-                                        checklist_id,
-                                        component_id,
-                                        response
-                                    );
+                                    trace!("sending response {}", response);
                                     if let Err(e) = agent.send_to(response, from).await {
                                         warn!("error! {:?}", e);
                                         break;
@@ -780,6 +879,7 @@ impl ConnCheckList {
                 }
                 drop(drop_log);
             }
+            .instrument(span)
         });
 
         async_std::task::spawn(abortable);
@@ -812,18 +912,11 @@ impl ConnCheckList {
                 }
             });
             if existing.is_none() {
-                debug!(
-                    "checklist {} adding component {:?}",
-                    self.checklist_id, component
-                );
+                debug!("adding component {:?}", component);
                 inner.component_ids.push(component_id);
                 inner.components.push(Arc::downgrade(component));
             } else {
-                trace!(
-                    "checklist {} not adding component {} again",
-                    self.checklist_id,
-                    component_id
-                );
+                trace!("not adding component {} again", component_id);
             }
         }
     }
@@ -838,6 +931,13 @@ impl ConnCheckList {
         }
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip(self),
+        fields(
+            checklist_id = self.checklist_id
+        )
+    )]
     fn generate_checks(&self) {
         let mut inner = self.inner.lock().unwrap();
         let mut checks = vec![];
@@ -851,6 +951,7 @@ impl ConnCheckList {
                         local.candidate.clone(),
                         remote.clone(),
                     );
+                    debug!("generated pair {:?}", pair);
                     checks.push(Arc::new(ConnCheck::new(
                         pair,
                         local.stun_agent.clone(),
@@ -859,20 +960,19 @@ impl ConnCheckList {
                 }
             }
         }
-        let pairs = checks.iter().map(|c| &c.pair).collect::<Vec<_>>();
-        debug!(
-            "checklist {} generated checks for pairs {:?}",
-            self.checklist_id, pairs
-        );
         inner.pairs.extend(checks);
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip(self, thawn_foundations)
+        fields(
+            checklist_id = self.checklist_id
+        )
+    )]
     fn initial_thaw(&self, thawn_foundations: &mut Vec<String>) {
         let mut inner = self.inner.lock().unwrap();
-        debug!(
-            "checklist {} state change from {:?} to Running",
-            self.checklist_id, inner.state
-        );
+        debug!("state change from {:?} to Running", inner.state);
         inner.state = CheckListState::Running;
 
         let _: Vec<_> = inner
@@ -916,15 +1016,6 @@ impl ConnCheckList {
             }
         });
 
-        debug!(
-            "checklist {} thawing foundations {:?}",
-            self.checklist_id, seen_foundations
-        );
-        debug!(
-            "checklist {} thawing connchecks {:?}",
-            self.checklist_id, maybe_thaw
-        );
-
         // set them to waiting
         let _: Vec<_> = maybe_thaw
             .iter_mut()
@@ -952,6 +1043,13 @@ impl ConnCheckList {
     }
 
     // note this will change the state of the returned check to InProgress to avoid a race
+    #[tracing::instrument(
+        level = "debug",
+        skip(self),
+        fields(
+            checklist_id = self.checklist_id
+        )
+    )]
     fn next_waiting(&self) -> Option<Arc<ConnCheck>> {
         self.inner
             .lock()
@@ -974,6 +1072,13 @@ impl ConnCheckList {
     }
 
     // note this will change the returned check state to waiting to avoid a race
+    #[tracing::instrument(
+        level = "debug",
+        skip(self),
+        fields(
+            checklist_id = self.checklist_id
+        )
+    )]
     fn next_frozen(&self, from_foundations: &[String]) -> Option<Arc<ConnCheck>> {
         self.inner
             .lock()
@@ -1029,14 +1134,28 @@ impl ConnCheckList {
             })
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip(self),
+        fields(
+            checklist_id = self.checklist_id
+        )
+    )]
     fn add_valid(&self, pair: CandidatePair) {
-        debug!("checklist {} adding valid {:?}", self.checklist_id, pair);
         self.inner.lock().unwrap().valid.push(pair);
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip(self),
+        fields(
+            checklist_id = self.checklist_id
+        )
+    )]
     fn remove_valid(&self, pair: &CandidatePair) {
         let mut inner = self.inner.lock().unwrap();
         if let Some(idx) = inner.valid.iter().position(|valid_pair| valid_pair == pair) {
+            debug!("removing");
             inner.valid.remove(idx);
         }
     }
@@ -1198,6 +1317,16 @@ impl ConnCheckListSet {
         .await
     }
 
+    #[tracing::instrument(
+        name = "perform_conncheck"
+        level = "debug",
+        err,
+        skip(conncheck, checklist, checklists),
+        fields(
+            checklist_id = checklist.checklist_id,
+            conncheck_id = conncheck.conncheck_id
+        )
+    )]
     async fn perform_conncheck(
         conncheck: Arc<ConnCheck>,
         checklist: Arc<ConnCheckList>,
@@ -1233,10 +1362,7 @@ impl ConnCheckListSet {
             }
             Ok(ConnCheckResponse::RoleConflict(_conncheck)) => error!("Unhandled Role Conflict"),
             Ok(ConnCheckResponse::Success(conncheck, addr)) => {
-                debug!(
-                    "checklist {} succeeded in finding connection {:?}",
-                    checklist.checklist_id, conncheck
-                );
+                debug!("succeeded in finding connection {:?}", conncheck);
                 conncheck.set_state(CandidatePairState::Succeeded);
 
                 let mut pair_dealt_with = false;
@@ -1321,11 +1447,7 @@ impl ConnCheckListSet {
         //     puts the candidate pair state to In-Progress, and aborts the
         //     subsequent steps.
         if let Some(check) = checklist.next_triggered() {
-            trace!(
-                "checklist {} next check was a trigerred check {:?}",
-                checklist.checklist_id,
-                check
-            );
+            trace!("next check was a trigerred check {:?}", check);
             Some(check)
         // 3.  If there are one or more candidate pairs in the Waiting state,
         //     the agent picks the highest-priority candidate pair (if there are
@@ -1334,11 +1456,7 @@ impl ConnCheckListSet {
         //     connectivity check on that pair, puts the candidate pair state to
         //     In-Progress, and aborts the subsequent steps.
         } else if let Some(check) = checklist.next_waiting() {
-            trace!(
-                "checklist {} next check was a waiting check {:?}",
-                checklist.checklist_id,
-                check
-            );
+            trace!("next check was a waiting check {:?}", check);
             Some(check)
         } else {
             // TODO: cache this locally somewhere
@@ -1370,30 +1488,20 @@ impl ConnCheckListSet {
                 })
                 .collect();
             let next: Vec<_> = foundations_not_waiting_in_progress.into_iter().collect();
-            trace!(
-                "checklist {} current foundations not waiting or in progress: {:?}",
-                checklist.checklist_id,
-                next
-            );
+            trace!("current foundations not waiting or in progress: {:?}", next);
 
             if let Some(check) = checklist.next_frozen(&next) {
-                trace!(
-                    "checklist {} next check was a frozen check {:?}",
-                    checklist.checklist_id,
-                    check
-                );
+                trace!("next check was a frozen check {:?}", check);
                 check.set_state(CandidatePairState::InProgress);
                 Some(check)
             } else {
-                trace!(
-                    "checklist {} no next check for stream",
-                    checklist.checklist_id
-                );
+                trace!("no next check for stream");
                 None
             }
         }
     }
 
+    #[tracing::instrument(name = "ConnCheckList Loop", level = "debug", err, skip(self))]
     pub(crate) async fn agent_conncheck_process(&self) -> Result<(), AgentError> {
         // perform initial set up
         for checklist in self.checklists.iter() {

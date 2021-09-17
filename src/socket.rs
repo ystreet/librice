@@ -70,6 +70,14 @@ impl SocketChannel {
         })
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        err,
+        skip(self, data),
+        fields(
+            data.size = data.len()
+        )
+    )]
     pub async fn send(&self, data: &[u8]) -> std::io::Result<()> {
         match self {
             SocketChannel::UdpConnection(c) => c.send(data).await,
@@ -83,6 +91,14 @@ impl SocketChannel {
         }
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        err,
+        skip(self, data),
+        fields(
+            data.size = data.len()
+        )
+    )]
     pub async fn send_to(&self, data: &[u8], to: SocketAddr) -> std::io::Result<()> {
         match self {
             SocketChannel::Udp(c) => c.send_to(data, to).await,
@@ -158,7 +174,6 @@ impl UdpSocketChannel {
 
     fn socket_receive_stream(socket: Arc<UdpSocket>) -> impl Stream<Item = (Vec<u8>, SocketAddr)> {
         // stream that continuosly reads from a udp socket
-        info!("starting udp receive stream for {:?}", socket.local_addr());
         futures::stream::unfold(socket, |socket| async move {
             let mut data = vec![0; 1500];
             socket.recv_from(&mut data).await.ok().map(|(len, from)| {
@@ -169,6 +184,14 @@ impl UdpSocketChannel {
         })
     }
 
+    #[tracing::instrument(
+        name = "udp_receive_loop",
+        level = "debug",
+        skip(socket, broadcaster)
+        fields(
+            local_addr = ?socket.local_addr(),
+        )
+    )]
     async fn receive_loop(
         socket: Arc<UdpSocket>,
         broadcaster: Arc<ChannelBroadcast<(Vec<u8>, SocketAddr)>>,
@@ -176,11 +199,12 @@ impl UdpSocketChannel {
         let stream = UdpSocketChannel::socket_receive_stream(socket);
         futures::pin_mut!(stream);
 
+        debug!("loop starting");
         // send data to the receive channels
         while let Some(res) = stream.next().await {
             broadcaster.broadcast(res).await;
         }
-        trace!("UdpSocket receive loop exited");
+        trace!("loop exited");
     }
 
     pub async fn send_to(&self, data: &[u8], to: SocketAddr) -> std::io::Result<()> {
@@ -301,10 +325,20 @@ impl TcpChannel {
         self.sender_broadcast.channel()
     }
 
+    #[tracing::instrument(
+        name = "tcp_receive_loop",
+        level = "debug",
+        skip(stream, broadcaster)
+        fields(
+            local_addr = ?stream.local_addr(),
+            remote_addr = ?stream.peer_addr(),
+        )
+    )]
     async fn receive_loop(stream: TcpStream, broadcaster: Arc<ChannelBroadcast<Vec<u8>>>) {
         futures::pin_mut!(stream);
         let mut scratch = vec![0; 2048];
 
+        trace!("loop starting");
         // send data to the receive channels
         while let Some(size) = stream.read(&mut scratch).await.ok() {
             if size == 0 {
@@ -314,7 +348,7 @@ impl TcpChannel {
             broadcaster.broadcast(scratch[..size].to_vec()).await;
             scratch.iter_mut().map(|v| *v = 0).count();
         }
-        trace!("TCP receive loop exited");
+        trace!("loop exited");
     }
 }
 
