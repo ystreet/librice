@@ -22,6 +22,8 @@ use futures::prelude::*;
 use futures_timer::Delay;
 use tracing_futures::Instrument;
 
+use byteorder::{BigEndian, ByteOrder};
+
 use crate::agent::AgentError;
 
 use crate::stun::message::*;
@@ -30,6 +32,8 @@ use crate::socket::SocketChannel;
 use crate::utils::{ChannelBroadcast, DebugWrapper};
 
 static STUN_AGENT_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+const MAX_STUN_MESSAGE_SIZE: usize = 1500 * 2;
 
 #[derive(Debug, Clone)]
 pub enum StunOrData {
@@ -144,10 +148,49 @@ impl StunAgent {
     ) {
         // XXX: can we remove this demuxing task?
         // retrieve stream outside task to avoid a race
-        let s = channel.receive_stream().unwrap();
+        let recv_stream = channel.receive_stream().unwrap();
+        let message_based = channel.produces_complete_messages();
+        let local_addr = channel.local_addr();
         async_std::task::spawn({
-            let span = debug_span!("stun_recv_loop", stun.id = inner_id);
+            let span = debug_span!("stun_recv_loop", stun.id = inner_id, ?local_addr);
             async move {
+                let buf = Vec::with_capacity(2048);
+                futures::pin_mut!(recv_stream);
+                let s = stream::unfold((recv_stream, buf), |(mut recv_stream, mut buf)| async move {
+                    let mut ret = None;
+                    while let Some((data, from)) = recv_stream.next().await {
+                        if message_based {
+                            ret = Some(((data, from), (recv_stream, buf)));
+                            break;
+                        } else {
+                            // we need to buffer up until we have enough data for each STUN
+                            // message. This assumes that no other data is being sent over
+                            // this socket
+                            buf.extend_from_slice(&data);
+                            if buf.len() < 20 {
+                                trace!("not enough data, buf length {} too short (< 20)", buf.len());
+                                continue;
+                            } else {
+                                let mlength = BigEndian::read_u16(&buf[2..]) as usize;
+                                if mlength > MAX_STUN_MESSAGE_SIZE {
+                                    warn!("stun message length ({}) is absurd > {}", mlength, MAX_STUN_MESSAGE_SIZE);
+                                    break;
+                                }
+                                if mlength + 20 > buf.len() {
+                                    trace!("not enough data, buf length {} less than advertised size {}", buf.len(), mlength + 20);
+                                    continue;
+                                }
+                                let (data, _rest) = buf.split_at(mlength + 20);
+                                let data = data.to_vec();
+                                buf.drain(..mlength + 20);
+                                ret = Some(((data, from), (recv_stream, buf)));
+                                break;
+                            }
+                        }
+                    }
+                    ret
+                });
+
                 futures::pin_mut!(s);
                 while let Some((data, from)) = s.next().await {
                     let inner = match Weak::upgrade(&inner_weak) {
@@ -176,7 +219,8 @@ impl StunAgent {
                                 _ => {}
                             }
                         }
-                        Err(_) => {
+                        Err(e) => {
+                            warn!("{:?}", e);
                             inner
                                 .broadcaster
                                 .broadcast(StunOrData::Data(data, from))
@@ -327,5 +371,71 @@ impl StunAgentState {
             }
         }
         HandleStunReply::Broadcast(msg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::socket::TcpChannel;
+    use crate::stun::attribute::{SOFTWARE, Software};
+    use async_std::task;
+    use async_std::net::{TcpListener, TcpStream};
+
+    fn init() {
+        crate::tests::test_init_log();
+    }
+
+    #[test]
+    fn split_tcp_write_read() {
+        init();
+        task::block_on(async move {
+            // ensure that if data comes in split, that the delineation between messages is
+            // maintained.
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr1 = listener.local_addr().unwrap();
+            let mut incoming = listener.incoming();
+            let mut tcp1 = TcpStream::connect(addr1).await.unwrap();
+            let addr2 = tcp1.local_addr().unwrap();
+            let tcp2 = incoming.next().await.unwrap().unwrap();
+            let agent = StunAgent::new(SocketChannel::Tcp(TcpChannel::new(tcp2)));
+
+            let software_str = "ab";
+            let mut msg = Message::new_request(48);
+            msg.add_attribute(Software::new(software_str).unwrap()).unwrap();
+            msg.add_fingerprint().unwrap();
+            let mut bytes = msg.to_bytes();
+            let mut msg = Message::new_request(32);
+            let software_str2 = "AB";
+            msg.add_attribute(Software::new(software_str2).unwrap()).unwrap();
+            bytes.extend(msg.to_bytes());
+
+            let mut receive_stream = agent.receive_stream();
+            // split the write into 3 parts to ensure the reader buffers up correctly in all cases
+            tcp1.write_all(&bytes[..19]).await.unwrap();
+            // waits to ensure the tcp stack actually splits these reads
+            task::sleep(Duration::from_millis (10)).await;
+            tcp1.write_all(&bytes[19..30]).await.unwrap();
+            task::sleep(Duration::from_millis (10)).await;
+            tcp1.write_all(&bytes[30..40]).await.unwrap();
+            task::sleep(Duration::from_millis (10)).await;
+            tcp1.write_all(&bytes[40..60]).await.unwrap();
+            task::sleep(Duration::from_millis (10)).await;
+            tcp1.write_all(&bytes[60..]).await.unwrap();
+
+            let stun_or_data = receive_stream.next().await.unwrap();
+            assert!(matches!(stun_or_data, StunOrData::Stun(_, _, _)));
+            let (stun_msg, _data, from) = stun_or_data.stun().unwrap();
+            assert_eq!(from, addr2);
+            let attr: Software = stun_msg.get_attribute(SOFTWARE).unwrap();
+            assert_eq!(attr.software(), software_str);
+
+            let stun_or_data = receive_stream.next().await.unwrap();
+            assert!(matches!(stun_or_data, StunOrData::Stun(_, _, _)));
+            let (stun_msg, _data, from) = stun_or_data.stun().unwrap();
+            assert_eq!(from, addr2);
+            let attr: Software = stun_msg.get_attribute(SOFTWARE).unwrap();
+            assert_eq!(attr.software(), software_str2);
+        });
     }
 }

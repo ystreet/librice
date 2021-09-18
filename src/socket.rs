@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use async_std::net::{TcpStream, UdpSocket};
 use async_std::prelude::*;
 
+use crate::candidate::TransportType;
 use crate::utils::{ChannelBroadcast, DebugWrapper};
 use futures::StreamExt;
 #[cfg(not(test))]
@@ -110,6 +111,7 @@ impl SocketChannel {
             )),
         }
     }
+
     pub fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
         match self {
             SocketChannel::Udp(c) => c.local_addr(),
@@ -130,6 +132,26 @@ impl SocketChannel {
                 std::io::ErrorKind::NotFound,
                 "Implementation not available",
             )),
+        }
+    }
+
+    pub(crate) fn produces_complete_messages(&self) -> bool {
+        match self {
+            SocketChannel::Udp(_) => true,
+            SocketChannel::UdpConnection(_) => true,
+            SocketChannel::Tcp(_) => false,
+            #[cfg(test)]
+            SocketChannel::AsyncChannel(c) => c.produces_complete_messages(),
+        }
+    }
+
+    pub fn transport_type(&self) -> TransportType {
+        match self {
+            SocketChannel::Udp(_) => TransportType::Udp,
+            SocketChannel::UdpConnection(_) => TransportType::Udp,
+            SocketChannel::Tcp(_) => TransportType::Tcp,
+            #[cfg(test)]
+            SocketChannel::AsyncChannel(_) => TransportType::AsyncChannel,
         }
     }
 }
@@ -512,6 +534,10 @@ pub(crate) mod tests {
         pub fn receive_stream(&self) -> impl Stream<Item = (Vec<u8>, SocketAddr)> {
             error!("receive stream for {}", self.addr);
             self.router.receiver(self.addr)
+        }
+
+        pub fn produces_complete_messages(&self )-> bool {
+            true
         }
     }
 
