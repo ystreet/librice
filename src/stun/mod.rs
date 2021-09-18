@@ -15,4 +15,6 @@ pub mod pacer;
 pub enum TransportType {
     Udp,
     Tcp,
+    #[cfg(test)]
+    AsyncChannel
 }
