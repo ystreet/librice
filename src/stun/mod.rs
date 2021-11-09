@@ -6,6 +6,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use std::error::Error;
+use std::str::FromStr;
+
 pub mod agent;
 pub mod attribute;
 pub mod message;
@@ -16,5 +19,32 @@ pub enum TransportType {
     Udp,
     Tcp,
     #[cfg(test)]
-    AsyncChannel
+    AsyncChannel,
+}
+
+#[derive(Debug)]
+pub enum ParseTransportTypeError {
+    UnknownTransport,
+}
+
+impl Error for ParseTransportTypeError {}
+
+impl std::fmt::Display for ParseTransportTypeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl FromStr for TransportType {
+    type Err = ParseTransportTypeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "UDP" => Ok(TransportType::Udp),
+            "TCP" => Ok(TransportType::Tcp),
+            #[cfg(test)]
+            "AsyncChannel" => Ok(TransportType::AsyncChannel),
+            _ => Err(ParseTransportTypeError::UnknownTransport),
+        }
+    }
 }
