@@ -38,6 +38,11 @@ impl<T> std::ops::Deref for DebugWrapper<T> {
         &self.1
     }
 }
+impl<T> std::ops::DerefMut for DebugWrapper<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.1
+    }
+}
 impl<T> DebugWrapper<T> {
     pub(crate) fn wrap(obj: T, name: &'static str) -> Self {
         Self(name, obj)
@@ -98,8 +103,10 @@ where
         let mut removed = vec![];
         for (i, channel) in channels.iter().enumerate() {
             if (channel.filter)(&data) {
+                trace!("passed filter");
                 // XXX: maybe a parallel send?
-                if channel.sender.send(data.clone()).await.is_err() {
+                if let Err(e) = channel.sender.send(data.clone()).await {
+                    trace!("sender has errored with {:?}", e);
                     removed.push(i);
                 }
             }

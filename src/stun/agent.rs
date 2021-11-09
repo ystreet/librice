@@ -22,39 +22,14 @@ use futures::prelude::*;
 use futures_timer::Delay;
 use tracing_futures::Instrument;
 
-use byteorder::{BigEndian, ByteOrder};
-
 use crate::agent::AgentError;
 
+use crate::socket::*;
 use crate::stun::message::*;
 
-use crate::socket::SocketChannel;
 use crate::utils::{ChannelBroadcast, DebugWrapper};
 
 static STUN_AGENT_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-const MAX_STUN_MESSAGE_SIZE: usize = 1500 * 2;
-
-#[derive(Debug, Clone)]
-pub enum StunOrData {
-    Stun(Message, Vec<u8>, SocketAddr),
-    Data(Vec<u8>, SocketAddr),
-}
-
-impl StunOrData {
-    pub fn stun(self) -> Option<(Message, Vec<u8>, SocketAddr)> {
-        match self {
-            StunOrData::Stun(msg, data, addr) => Some((msg, data, addr)),
-            _ => None,
-        }
-    }
-    pub fn data(self) -> Option<(Vec<u8>, SocketAddr)> {
-        match self {
-            StunOrData::Data(data, addr) => Some((data, addr)),
-            _ => None,
-        }
-    }
-}
 
 /// Implementation of a STUN agent
 #[derive(Debug, Clone)]
@@ -67,7 +42,7 @@ pub struct StunAgent {
 pub(crate) struct StunAgentInner {
     id: usize,
     state: Mutex<StunAgentState>,
-    pub(crate) channel: SocketChannel,
+    pub(crate) channel: StunChannel,
     broadcaster: Arc<ChannelBroadcast<StunOrData>>,
 }
 
@@ -81,7 +56,7 @@ struct StunAgentState {
 }
 
 impl StunAgent {
-    pub fn new(channel: SocketChannel) -> Self {
+    pub fn new(channel: StunChannel) -> Self {
         let id = STUN_AGENT_COUNT.fetch_add(1, Ordering::SeqCst);
         Self {
             id,
@@ -97,7 +72,7 @@ impl StunAgent {
         }
     }
 
-    pub fn channel(&self) -> SocketChannel {
+    pub fn channel(&self) -> StunChannel {
         self.inner.channel.clone()
     }
 
@@ -131,76 +106,43 @@ impl StunAgent {
 
     pub async fn send_to(&self, msg: Message, to: SocketAddr) -> Result<(), std::io::Error> {
         StunAgent::maybe_store_message(&self.inner.state, msg.clone());
-        let buf = msg.to_bytes();
-        self.inner.channel.send_to(&buf, to).await
+        debug!("channel {:?}", self.inner.channel);
+        self.inner
+            .channel
+            .send(StunOrData::Stun(msg, vec![], to))
+            .await
     }
 
     pub async fn send(&self, msg: Message) -> Result<(), std::io::Error> {
-        StunAgent::maybe_store_message(&self.inner.state, msg.clone());
-        let buf = msg.to_bytes();
-        self.inner.channel.send(&buf).await
+        let to = self.inner.channel.remote_addr()?;
+        self.send_to(msg, to).await
     }
 
-    fn receive_task_loop(
-        inner_weak: Weak<StunAgentInner>,
-        channel: SocketChannel,
-        inner_id: usize,
-    ) {
+    fn receive_task_loop(inner_weak: Weak<StunAgentInner>, channel: StunChannel, inner_id: usize) {
         // XXX: can we remove this demuxing task?
         // retrieve stream outside task to avoid a race
-        let recv_stream = channel.receive_stream().unwrap();
-        let message_based = channel.produces_complete_messages();
+        let recv_stream = channel.receive_stream();
         let local_addr = channel.local_addr();
+        debug!(
+            "starting stun_recv_loop stun.id={} local_addr={:?}",
+            inner_id, local_addr
+        );
         async_std::task::spawn({
             let span = debug_span!("stun_recv_loop", stun.id = inner_id, ?local_addr);
             async move {
-                let buf = Vec::with_capacity(2048);
                 futures::pin_mut!(recv_stream);
-                let s = stream::unfold((recv_stream, buf), |(mut recv_stream, mut buf)| async move {
-                    let mut ret = None;
-                    while let Some((data, from)) = recv_stream.next().await {
-                        if message_based {
-                            ret = Some(((data, from), (recv_stream, buf)));
-                            break;
-                        } else {
-                            // we need to buffer up until we have enough data for each STUN
-                            // message. This assumes that no other data is being sent over
-                            // this socket
-                            buf.extend_from_slice(&data);
-                            if buf.len() < 20 {
-                                trace!("not enough data, buf length {} too short (< 20)", buf.len());
-                                continue;
-                            } else {
-                                let mlength = BigEndian::read_u16(&buf[2..]) as usize;
-                                if mlength > MAX_STUN_MESSAGE_SIZE {
-                                    warn!("stun message length ({}) is absurd > {}", mlength, MAX_STUN_MESSAGE_SIZE);
-                                    break;
-                                }
-                                if mlength + 20 > buf.len() {
-                                    trace!("not enough data, buf length {} less than advertised size {}", buf.len(), mlength + 20);
-                                    continue;
-                                }
-                                let (data, _rest) = buf.split_at(mlength + 20);
-                                let data = data.to_vec();
-                                buf.drain(..mlength + 20);
-                                ret = Some(((data, from), (recv_stream, buf)));
-                                break;
-                            }
-                        }
-                    }
-                    ret
-                });
 
-                futures::pin_mut!(s);
-                while let Some((data, from)) = s.next().await {
+                debug!("started");
+                while let Some(stun_or_data) = recv_stream.next().await {
+                    debug!("got {:?}", stun_or_data);
                     let inner = match Weak::upgrade(&inner_weak) {
                         Some(inner) => inner,
                         None => {
                             break;
                         }
                     };
-                    match Message::from_bytes(&data) {
-                        Ok(msg) => {
+                    match stun_or_data {
+                        StunOrData::Stun(msg, data, from) => {
                             debug!("received from {:?} {}", from, msg);
                             let handle = {
                                 let mut state = inner.state.lock().unwrap();
@@ -219,8 +161,7 @@ impl StunAgent {
                                 _ => {}
                             }
                         }
-                        Err(e) => {
-                            warn!("{:?}", e);
+                        StunOrData::Data(data, from) => {
                             inner
                                 .broadcaster
                                 .broadcast(StunOrData::Data(data, from))
@@ -269,7 +210,7 @@ impl StunAgent {
     )]
     async fn send_request(
         &self,
-        msg: &Message,
+        msg: Message,
         recv_abort_handle: AbortHandle,
         to: SocketAddr,
     ) -> Result<(), AgentError> {
@@ -278,8 +219,10 @@ impl StunAgent {
         for timeout in timeouts.iter() {
             Delay::new(Duration::from_millis(*timeout)).await;
             trace!("sending {}", msg);
-            let buf = msg.to_bytes();
-            self.inner.channel.send_to(&buf, to).await?;
+            self.inner
+                .channel
+                .send(StunOrData::Stun(msg.clone(), vec![], to))
+                .await?;
         }
 
         // on failure, abort the receiver waiting
@@ -310,10 +253,10 @@ impl StunAgent {
         let tid = msg.transaction_id();
         let (recv_abort_handle, recv_registration) = futures::future::AbortHandle::new_pair();
         let (send_abortable, send_abort_handle) =
-            futures::future::abortable(self.send_request(msg, recv_abort_handle, addr));
+            futures::future::abortable(self.send_request(msg.clone(), recv_abort_handle, addr));
 
         let mut receive_s = self.receive_stream_filter(move |stun_or_data| match stun_or_data {
-            StunOrData::Stun(msg, _, _) => tid == msg.transaction_id(),
+            StunOrData::Stun(msg, _, from) => tid == msg.transaction_id() && from == &addr,
             _ => false,
         });
         let recv_abortable = futures::future::Abortable::new(
@@ -375,15 +318,167 @@ impl StunAgentState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
-    use crate::socket::TcpChannel;
-    use crate::stun::attribute::{SOFTWARE, Software};
-    use async_std::task;
+    use crate::socket::{StunOnlyTcpChannel, UdpConnectionChannel};
+    use crate::stun::attribute::{Software, SOFTWARE};
     use async_std::net::{TcpListener, TcpStream};
+    use async_std::task;
 
     fn init() {
         crate::tests::test_init_log();
+    }
+
+    fn recv_data(channel: StunChannel) -> impl Future<Output = StunOrData> {
+        let result = Arc::new(Mutex::new(None));
+        // retrieve the recv channel before starting the task otherwise, there is a race starting
+        // the task against the a sender in the current thread.
+        let recv = channel.receive_stream();
+        let f = task::spawn({
+            let result = result.clone();
+            async move {
+                futures::pin_mut!(recv);
+                let val = recv.next().await.unwrap();
+                let mut result = result.lock().unwrap();
+                result.replace(val);
+            }
+        });
+        async move {
+            f.await;
+            result.lock().unwrap().take().unwrap()
+        }
+    }
+
+    async fn send_and_receive(send_socket: StunChannel, recv_socket: StunChannel) {
+        // this won't work unless the sockets are pointing at each other
+        assert_eq!(
+            send_socket.local_addr().unwrap(),
+            recv_socket.remote_addr().unwrap()
+        );
+        assert_eq!(
+            recv_socket.local_addr().unwrap(),
+            send_socket.remote_addr().unwrap()
+        );
+        let from = send_socket.local_addr().unwrap();
+        let to = send_socket.remote_addr().unwrap();
+
+        // send data and assert that it is received
+        let recv = recv_data(recv_socket);
+        let data = vec![4; 4];
+        send_socket
+            .send(StunOrData::Data(data.clone(), to))
+            .await
+            .unwrap();
+        let result = recv.await.data().unwrap();
+        assert_eq!(result.0, data);
+        assert_eq!(result.1, from);
+    }
+
+    #[test]
+    fn udp_connection_send_recv() {
+        init();
+        task::block_on(async move {
+            // set up sockets
+            let udp1 = crate::socket::tests::setup_udp_channel().await;
+            let from = udp1.local_addr().unwrap();
+            let udp2 = crate::socket::tests::setup_udp_channel().await;
+            let to = udp2.local_addr().unwrap();
+
+            let socket_channel1 = StunChannel::Udp(UdpConnectionChannel::new(udp1, to));
+            let socket_channel2 = StunChannel::Udp(UdpConnectionChannel::new(udp2, from));
+
+            send_and_receive(socket_channel1, socket_channel2).await;
+        });
+    }
+
+    async fn send_and_double_receive(send_socket: StunChannel, recv_socket: StunChannel) {
+        // this won't work unless the sockets are pointing at each other
+        assert_eq!(
+            send_socket.local_addr().unwrap(),
+            recv_socket.remote_addr().unwrap()
+        );
+        assert_eq!(
+            recv_socket.local_addr().unwrap(),
+            send_socket.remote_addr().unwrap()
+        );
+        let from = send_socket.local_addr().unwrap();
+        let to = send_socket.remote_addr().unwrap();
+
+        // send data and assert that it is received on both receive channels
+        let recv1 = recv_data(recv_socket.clone());
+        let recv2 = recv_data(recv_socket);
+        let data = vec![4; 4];
+        send_socket
+            .send(StunOrData::Data(data.clone(), to))
+            .await
+            .unwrap();
+        let result = recv1.await.data().unwrap();
+        assert_eq!(result.0, data);
+        assert_eq!(result.1, from);
+        let result = recv2.await.data().unwrap();
+        assert_eq!(result.0, data);
+        assert_eq!(result.1, from);
+    }
+
+    #[test]
+    fn send_multi_recv() {
+        init();
+        task::block_on(async move {
+            // set up sockets
+            let udp1 = crate::socket::tests::setup_udp_channel().await;
+            let from = udp1.local_addr().unwrap();
+            let udp2 = crate::socket::tests::setup_udp_channel().await;
+            let to = udp2.local_addr().unwrap();
+
+            let socket_channel1 = StunChannel::Udp(UdpConnectionChannel::new(udp1, to));
+            let socket_channel2 = StunChannel::Udp(UdpConnectionChannel::new(udp2, from));
+
+            // send data and assert that it is received on both receive channels
+            send_and_double_receive(socket_channel1, socket_channel2).await;
+        });
+    }
+
+    #[test]
+    fn send_multi_recv_with_drop() {
+        init();
+        task::block_on(async move {
+            // set up sockets
+            let udp1 = crate::socket::tests::setup_udp_channel().await;
+            let from = udp1.local_addr().unwrap();
+            let udp2 = crate::socket::tests::setup_udp_channel().await;
+            let to = udp2.local_addr().unwrap();
+
+            let socket_channel1 = StunChannel::Udp(UdpConnectionChannel::new(udp1, to));
+            let socket_channel2 = StunChannel::Udp(UdpConnectionChannel::new(udp2, from));
+
+            // send data and assert that it is received on both receive channels
+            send_and_double_receive(socket_channel1.clone(), socket_channel2.clone()).await;
+
+            // previous receivers should have been dropped as not connected anymore
+            // XXX: doesn't currently test the actual drop just that nothing errors
+            send_and_receive(socket_channel1, socket_channel2).await;
+        });
+    }
+
+    #[test]
+    fn tcp_connection_send_recv() {
+        init();
+        task::block_on(async move {
+            // set up sockets
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let local_addr = listener.local_addr().unwrap();
+            let mut incoming = listener.incoming();
+            let tcp2 = incoming.next();
+            let tcp1 = task::spawn(async move { TcpStream::connect(local_addr).await });
+            let _tcp2 = tcp2.await.unwrap().unwrap();
+            let _tcp1 = tcp1.await.unwrap();
+
+            // TODO: need the correct rfc framing to send data
+            //let socket_channel1 = StunChannel::Tcp(TcpChannel::new(tcp1));
+            //let socket_channel2 = StunChannel::Tcp(TcpChannel::new(tcp2));
+
+            //send_and_receive(socket_channel1, socket_channel2).await;
+        });
     }
 
     #[test]
@@ -398,32 +493,37 @@ mod tests {
             let mut tcp1 = TcpStream::connect(addr1).await.unwrap();
             let addr2 = tcp1.local_addr().unwrap();
             let tcp2 = incoming.next().await.unwrap().unwrap();
-            let agent = StunAgent::new(SocketChannel::Tcp(TcpChannel::new(tcp2)));
+            info!("connected");
+            let agent = StunAgent::new(StunChannel::Tcp(StunOnlyTcpChannel::new(tcp2)));
 
             let software_str = "ab";
             let mut msg = Message::new_request(48);
-            msg.add_attribute(Software::new(software_str).unwrap()).unwrap();
+            msg.add_attribute(Software::new(software_str).unwrap())
+                .unwrap();
             msg.add_fingerprint().unwrap();
             let mut bytes = msg.to_bytes();
             let mut msg = Message::new_request(32);
             let software_str2 = "AB";
-            msg.add_attribute(Software::new(software_str2).unwrap()).unwrap();
+            msg.add_attribute(Software::new(software_str2).unwrap())
+                .unwrap();
             bytes.extend(msg.to_bytes());
 
             let mut receive_stream = agent.receive_stream();
             // split the write into 3 parts to ensure the reader buffers up correctly in all cases
             tcp1.write_all(&bytes[..19]).await.unwrap();
             // waits to ensure the tcp stack actually splits these reads
-            task::sleep(Duration::from_millis (10)).await;
+            task::sleep(Duration::from_millis(10)).await;
             tcp1.write_all(&bytes[19..30]).await.unwrap();
-            task::sleep(Duration::from_millis (10)).await;
+            task::sleep(Duration::from_millis(10)).await;
             tcp1.write_all(&bytes[30..40]).await.unwrap();
-            task::sleep(Duration::from_millis (10)).await;
+            task::sleep(Duration::from_millis(10)).await;
             tcp1.write_all(&bytes[40..60]).await.unwrap();
-            task::sleep(Duration::from_millis (10)).await;
+            task::sleep(Duration::from_millis(10)).await;
             tcp1.write_all(&bytes[60..]).await.unwrap();
+            info!("written");
 
             let stun_or_data = receive_stream.next().await.unwrap();
+            info!("received1");
             assert!(matches!(stun_or_data, StunOrData::Stun(_, _, _)));
             let (stun_msg, _data, from) = stun_or_data.stun().unwrap();
             assert_eq!(from, addr2);
@@ -431,6 +531,7 @@ mod tests {
             assert_eq!(attr.software(), software_str);
 
             let stun_or_data = receive_stream.next().await.unwrap();
+            info!("received2");
             assert!(matches!(stun_or_data, StunOrData::Stun(_, _, _)));
             let (stun_msg, _data, from) = stun_or_data.stun().unwrap();
             assert_eq!(from, addr2);

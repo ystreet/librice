@@ -20,7 +20,7 @@ use futures::StreamExt;
 use tracing_subscriber::EnvFilter;
 
 use librice::agent::*;
-use librice::socket::{SocketChannel, TcpChannel, UdpSocketChannel};
+use librice::socket::*;
 use librice::stun::agent::*;
 use librice::stun::attribute::*;
 use librice::stun::message::*;
@@ -75,7 +75,7 @@ fn main() -> io::Result<()> {
 
     task::block_on(async move {
         let udp_socket = UdpSocket::bind("127.0.0.1:3478").await?;
-        let udp_channel = SocketChannel::Udp(UdpSocketChannel::new(udp_socket));
+        let udp_channel = StunChannel::UdpAny(UdpSocketChannel::new(udp_socket));
         let udp_stun_agent = StunAgent::new(udp_channel);
         let mut receive_stream = udp_stun_agent.receive_stream();
 
@@ -90,7 +90,7 @@ fn main() -> io::Result<()> {
         let tcp_listener = TcpListener::bind("127.0.0.1:3478").await?;
         let mut incoming = tcp_listener.incoming();
         while let Some(Ok(stream)) = incoming.next().await {
-            let tcp_channel = SocketChannel::Tcp(TcpChannel::new(stream));
+            let tcp_channel = StunChannel::Tcp(StunOnlyTcpChannel::new(stream));
             let tcp_stun_agent = StunAgent::new(tcp_channel);
             let mut receive_stream = tcp_stun_agent.receive_stream();
 

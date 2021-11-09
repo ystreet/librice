@@ -7,159 +7,66 @@
 // except according to those terms.
 
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use async_std::net::{TcpStream, UdpSocket};
-use async_std::prelude::*;
 
-use crate::candidate::TransportType;
+use futures::prelude::*;
+
+use async_trait::async_trait;
+use byteorder::{BigEndian, ByteOrder};
+
+use crate::stun::message::Message;
 use crate::utils::{ChannelBroadcast, DebugWrapper};
-use futures::StreamExt;
-#[cfg(not(test))]
-use futures::{future::Either, stream::Empty};
+
+const MAX_STUN_MESSAGE_SIZE: usize = 1500 * 2;
 
 #[derive(Debug, Clone)]
-pub enum SocketChannel {
-    Udp(UdpSocketChannel),
-    UdpConnection(UdpConnectionChannel),
-    Tcp(TcpChannel),
+pub enum StunChannel {
+    UdpAny(UdpSocketChannel),
+    Udp(UdpConnectionChannel),
+    Tcp(StunOnlyTcpChannel),
     #[cfg(test)]
     AsyncChannel(tests::AsyncChannel),
 }
 
-impl SocketChannel {
-    pub fn receive_stream(
-        &self,
-    ) -> Result<impl Stream<Item = (Vec<u8>, SocketAddr)>, std::io::Error> {
-        // so this is weird for a number of reasons:
-        // - Either's are for working around the different opaque types returning an impl Stream
-        // - We need to provide a type (cause the Either doesn't have one) for the the AsyncChannel
-        //   case when #[cfg(not(test))]
-        #[cfg(not(test))]
-        #[allow(unused_assignments)]
-        let mut ret: Option<Either<_, Either<_, Empty<_>>>> = None;
-        #[cfg(test)]
-        #[allow(unused_assignments)]
-        let mut ret = None;
-        ret = match self {
-            SocketChannel::Udp(c) => Some(c.receive_stream().left_stream().left_stream()),
-            SocketChannel::UdpConnection(c) => {
-                let remote_addr = c.remote_addr()?;
-                Some(
-                    c.receive_stream()
-                        .map(move |data| (data, remote_addr))
-                        .left_stream()
-                        .right_stream(),
-                )
-            }
-            SocketChannel::Tcp(c) => {
-                let remote_addr = c.remote_addr()?;
-                Some(
-                    c.receive_stream()
-                        .map(move |data| (data, remote_addr))
-                        .right_stream()
-                        .left_stream(),
-                )
-            }
-            #[cfg(test)]
-            SocketChannel::AsyncChannel(c) => {
-                Some(c.receive_stream().right_stream().right_stream())
-            }
-        };
-        ret.ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "Implementation not available")
-        })
-    }
+#[derive(Debug, Clone)]
+pub enum StunOrData {
+    Stun(Message, Vec<u8>, SocketAddr),
+    Data(Vec<u8>, SocketAddr),
+}
 
-    #[tracing::instrument(
-        level = "debug",
-        err,
-        skip(self, data),
-        fields(
-            data.size = data.len()
-        )
-    )]
-    pub async fn send(&self, data: &[u8]) -> std::io::Result<()> {
+impl StunOrData {
+    pub fn stun(self) -> Option<(Message, Vec<u8>, SocketAddr)> {
         match self {
-            SocketChannel::UdpConnection(c) => c.send(data).await,
-            SocketChannel::Tcp(c) => c.send(data).await,
-            #[cfg(test)]
-            SocketChannel::AsyncChannel(c) => c.send(data).await,
-            _ => Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Implementation not available",
-            )),
+            StunOrData::Stun(msg, data, addr) => Some((msg, data, addr)),
+            _ => None,
         }
     }
-
-    #[tracing::instrument(
-        level = "debug",
-        err,
-        skip(self, data),
-        fields(
-            data.size = data.len()
-        )
-    )]
-    pub async fn send_to(&self, data: &[u8], to: SocketAddr) -> std::io::Result<()> {
+    pub fn data(self) -> Option<(Vec<u8>, SocketAddr)> {
         match self {
-            SocketChannel::Udp(c) => c.send_to(data, to).await,
-            #[cfg(test)]
-            SocketChannel::AsyncChannel(c) => c.send_to(data, to).await,
-            _ => Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Implementation not available",
-            )),
+            StunOrData::Data(data, addr) => Some((data, addr)),
+            _ => None,
         }
     }
-
-    pub fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
+    pub fn addr(&self) -> SocketAddr {
         match self {
-            SocketChannel::Udp(c) => c.local_addr(),
-            SocketChannel::UdpConnection(c) => c.local_addr(),
-            SocketChannel::Tcp(c) => c.local_addr(),
-            #[cfg(test)]
-            SocketChannel::AsyncChannel(c) => c.local_addr(),
+            StunOrData::Stun(_msg, _data, addr) => *addr,
+            StunOrData::Data(_data, addr) => *addr,
         }
     }
+}
 
-    pub fn remote_addr(&self) -> Result<SocketAddr, std::io::Error> {
-        match self {
-            SocketChannel::UdpConnection(c) => c.remote_addr(),
-            SocketChannel::Tcp(c) => c.remote_addr(),
-            #[cfg(test)]
-            SocketChannel::AsyncChannel(c) => c.remote_addr(),
-            _ => Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Implementation not available",
-            )),
-        }
-    }
-
-    pub(crate) fn produces_complete_messages(&self) -> bool {
-        match self {
-            SocketChannel::Udp(_) => true,
-            SocketChannel::UdpConnection(_) => true,
-            SocketChannel::Tcp(_) => false,
-            #[cfg(test)]
-            SocketChannel::AsyncChannel(c) => c.produces_complete_messages(),
-        }
-    }
-
-    pub fn transport_type(&self) -> TransportType {
-        match self {
-            SocketChannel::Udp(_) => TransportType::Udp,
-            SocketChannel::UdpConnection(_) => TransportType::Udp,
-            SocketChannel::Tcp(_) => TransportType::Tcp,
-            #[cfg(test)]
-            SocketChannel::AsyncChannel(_) => TransportType::AsyncChannel,
-        }
-    }
+pub trait SocketAddresses {
+    fn local_addr(&self) -> Result<SocketAddr, std::io::Error>;
+    fn remote_addr(&self) -> Result<SocketAddr, std::io::Error>;
 }
 
 #[derive(Debug, Clone)]
 pub struct UdpSocketChannel {
     socket: DebugWrapper<Arc<UdpSocket>>,
-    sender_broadcast: Arc<ChannelBroadcast<(Vec<u8>, SocketAddr)>>,
+    pub(crate) sender_broadcast: Arc<ChannelBroadcast<(Vec<u8>, SocketAddr)>>,
     inner: DebugWrapper<Arc<Mutex<UdpSocketChannelInner>>>,
 }
 
@@ -182,28 +89,8 @@ impl UdpSocketChannel {
         }
     }
 
-    pub fn receive_channel(&self) -> async_channel::Receiver<(Vec<u8>, SocketAddr)> {
-        self.sender_broadcast.channel()
-    }
-
-    pub fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
-        self.socket.local_addr()
-    }
-
     pub fn socket(&self) -> Arc<UdpSocket> {
         (*self.socket).clone()
-    }
-
-    fn socket_receive_stream(socket: Arc<UdpSocket>) -> impl Stream<Item = (Vec<u8>, SocketAddr)> {
-        // stream that continuosly reads from a udp socket
-        futures::stream::unfold(socket, |socket| async move {
-            let mut data = vec![0; 1500];
-            socket.recv_from(&mut data).await.ok().map(|(len, from)| {
-                data.truncate(len);
-                //trace!("got {} bytes from {:?}", data.len(), from);
-                ((data, from), socket)
-            })
-        })
     }
 
     #[tracing::instrument(
@@ -218,77 +105,129 @@ impl UdpSocketChannel {
         socket: Arc<UdpSocket>,
         broadcaster: Arc<ChannelBroadcast<(Vec<u8>, SocketAddr)>>,
     ) {
-        let stream = UdpSocketChannel::socket_receive_stream(socket);
+        // stream that continuosly reads from a udp socket
+        let stream = futures::stream::unfold(socket, |socket| async move {
+            let mut data = vec![0; 1500];
+            socket.recv_from(&mut data).await.ok().map(|(len, from)| {
+                data.truncate(len);
+                ((data, from), socket)
+            })
+        });
         futures::pin_mut!(stream);
 
         debug!("loop starting");
         // send data to the receive channels
         while let Some(res) = stream.next().await {
+            trace!("have {:?}", res);
             broadcaster.broadcast(res).await;
         }
         trace!("loop exited");
     }
 
     pub async fn send_to(&self, data: &[u8], to: SocketAddr) -> std::io::Result<()> {
-        self.socket.send_to(data, &to).await?;
+        debug!("socket channel send_to {:?}, {:?}", data, to);
+        self.socket.send_to(data, to).await?;
         Ok(())
     }
 
-    pub fn receive_stream(&self) -> impl Stream<Item = (Vec<u8>, SocketAddr)> {
-        {
-            let mut inner = self.inner.lock().unwrap();
-            //let (send, recv) = futures::channel::oneshot::channel();
-            if inner.receive_loop.is_none() {
-                inner.receive_loop = Some(async_std::task::spawn({
-                    let socket = (*self.socket).clone();
-                    let broadcaster = self.sender_broadcast.clone();
-                    async move { UdpSocketChannel::receive_loop(socket, broadcaster).await }
-                }));
+    pub(crate) fn ensure_receive_loop(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.receive_loop.is_none() {
+            inner.receive_loop = Some(async_std::task::spawn({
+                let socket = (*self.socket).clone();
+                let broadcaster = self.sender_broadcast.clone();
+                async move { UdpSocketChannel::receive_loop(socket, broadcaster).await }
+            }));
+        }
+    }
+}
+
+impl SocketAddresses for UdpSocketChannel {
+    fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
+        self.socket.local_addr()
+    }
+
+    fn remote_addr(&self) -> Result<SocketAddr, std::io::Error> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Connection-less UDP socket doesn't have a remote address",
+        ))
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct UdpMessage<'a> {
+    pub(crate) addr: SocketAddr,
+    pub(crate) data: &'a [u8],
+}
+
+#[derive(Debug)]
+pub(crate) struct MutUdpMessage<'a> {
+    pub(crate) addr: SocketAddr,
+    pub(crate) data: &'a mut [u8],
+}
+
+#[async_trait]
+impl<'msg> SocketMessageSend<'msg, UdpMessage<'msg>> for UdpSocketChannel {
+    async fn send<'udp>(&self, msg: UdpMessage<'udp>) -> Result<(), std::io::Error> {
+        debug!("socket channel send {:?}", msg);
+        self.send_to(msg.data, msg.addr).await
+    }
+}
+
+#[async_trait]
+impl<'msg> SocketMessageRecv<MutUdpMessage<'msg>, usize> for UdpSocketChannel {
+    async fn max_recv_size(&self) -> Result<usize, std::io::Error> {
+        Ok(65535)
+    }
+
+    async fn recv<'udp>(&self, msg: &'udp mut MutUdpMessage) -> Result<usize, std::io::Error> {
+        let (length, from) = self.socket.recv_from(&mut msg.data).await?;
+        msg.addr = from;
+        Ok(length)
+    }
+}
+
+#[async_trait]
+impl<'msg> SocketMessageSend<'msg, StunOrData> for UdpSocketChannel {
+    async fn send<'udp>(&self, msg: StunOrData) -> Result<(), std::io::Error> {
+        debug!("socket channel send {:?}", msg);
+        match msg {
+            StunOrData::Data(_data, _to) => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Cannot send data over a connectionless stun-only UDP socket",
+            )),
+            StunOrData::Stun(msg, _data, addr) => {
+                let msg = UdpMessage {
+                    addr,
+                    data: &msg.to_bytes(),
+                };
+                self.send(msg).await
             }
         }
-        self.sender_broadcast.channel()
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct UdpConnectionChannel {
-    channel: UdpSocketChannel,
-    to: SocketAddr,
+impl ReceiveStream<StunOrData> for UdpSocketChannel {
+    fn receive_stream(&self) -> Pin<Box<dyn Stream<Item = StunOrData> + Send>> {
+        let channel = self.sender_broadcast.channel();
+        self.ensure_receive_loop();
+        Box::pin(channel.filter_map(|(data, from)| async move {
+            match Message::from_bytes(&data) {
+                Ok(msg) => Some(StunOrData::Stun(msg, data, from)),
+                // can we potentially get out-of-bounds data before things are set up?
+                Err(_) => Some(StunOrData::Data(data, from)),
+            }
+        }))
+    }
 }
 
-impl UdpConnectionChannel {
-    pub fn new(channel: UdpSocketChannel, to: SocketAddr) -> Self {
-        Self { channel, to }
-    }
-
-    pub fn receive_stream(&self) -> impl Stream<Item = Vec<u8>> {
-        let channel = self.channel.clone();
-        let to = self.to;
-        channel
-            .receive_stream()
-            .filter_map(move |(data, from)| async move {
-                if from == to {
-                    Some(data)
-                } else {
-                    None
-                }
-            })
-    }
-
-    pub fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
-        self.channel.local_addr()
-    }
-
-    pub fn remote_addr(&self) -> Result<SocketAddr, std::io::Error> {
-        Ok(self.to)
-    }
-
-    pub fn socket(&self) -> Arc<UdpSocket> {
-        self.channel.socket()
-    }
-
-    pub async fn send(&self, data: &[u8]) -> std::io::Result<()> {
-        self.channel.send_to(data, self.to).await
+impl ReceiveStream<(Vec<u8>, SocketAddr)> for UdpSocketChannel {
+    fn receive_stream(&self) -> Pin<Box<dyn Stream<Item = (Vec<u8>, SocketAddr)> + Send>> {
+        let channel = self.sender_broadcast.channel();
+        self.ensure_receive_loop();
+        debug!("retrieve socket channel stream {:?}", self.local_addr());
+        Box::pin(channel)
     }
 }
 
@@ -333,17 +272,19 @@ impl TcpChannel {
         Ok(())
     }
 
-    pub fn receive_stream(&self) -> impl Stream<Item = Vec<u8>> {
-        {
-            let mut inner = self.inner.lock().unwrap();
-            if inner.receive_loop.is_none() {
-                inner.receive_loop = Some(async_std::task::spawn({
-                    let socket = self.channel.clone();
-                    let broadcaster = self.sender_broadcast.clone();
-                    async move { TcpChannel::receive_loop(socket, broadcaster).await }
-                }));
-            }
+    fn ensure_receive_loop(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.receive_loop.is_none() {
+            inner.receive_loop = Some(async_std::task::spawn({
+                let socket = self.channel.clone();
+                let broadcaster = self.sender_broadcast.clone();
+                async move { TcpChannel::receive_loop(socket, broadcaster).await }
+            }));
         }
+    }
+
+    pub fn receive_stream(&self) -> impl Stream<Item = Vec<u8>> {
+        self.ensure_receive_loop();
         self.sender_broadcast.channel()
     }
 
@@ -374,11 +315,382 @@ impl TcpChannel {
     }
 }
 
+impl SocketAddresses for TcpChannel {
+    fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
+        self.channel.local_addr()
+    }
+
+    fn remote_addr(&self) -> Result<SocketAddr, std::io::Error> {
+        self.channel.peer_addr()
+    }
+}
+
+#[async_trait]
+pub trait SocketMessageSend<T, 'a>
+where
+    T: Send + std::fmt::Debug + 'a,
+{
+    async fn send<'b>(&self, msg: T) -> Result<(), std::io::Error>
+    where
+        T: 'b;
+}
+
+#[async_trait]
+pub(crate) trait SocketMessageRecv<T, R>
+where
+    T: Send + std::fmt::Debug,
+    R: Send + std::fmt::Debug,
+{
+    async fn max_recv_size(&self) -> Result<usize, std::io::Error>;
+    async fn recv<'b>(&self, msg: &'b mut T) -> Result<R, std::io::Error>
+    where
+        T: 'b;
+}
+
+pub(crate) trait ReceiveStream<T> {
+    fn receive_stream(&self) -> Pin<Box<dyn Stream<Item = T> + Send>>;
+}
+
+impl StunChannel {}
+
+impl SocketAddresses for StunChannel {
+    fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
+        match self {
+            StunChannel::UdpAny(c) => c.local_addr(),
+            StunChannel::Udp(c) => c.local_addr(),
+            StunChannel::Tcp(c) => c.local_addr(),
+            #[cfg(test)]
+            StunChannel::AsyncChannel(c) => c.local_addr(),
+        }
+    }
+
+    fn remote_addr(&self) -> Result<SocketAddr, std::io::Error> {
+        match self {
+            StunChannel::UdpAny(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "connection-less udp doesn't have a remote addr",
+            )),
+            StunChannel::Udp(c) => c.remote_addr(),
+            StunChannel::Tcp(c) => c.remote_addr(),
+            #[cfg(test)]
+            StunChannel::AsyncChannel(c) => c.remote_addr(),
+        }
+    }
+}
+
+#[async_trait]
+impl<'msg> SocketMessageSend<'msg, StunOrData> for StunChannel {
+    async fn send<'stun>(&self, msg: StunOrData) -> Result<(), std::io::Error> {
+        match self {
+            StunChannel::UdpAny(c) => c.send(msg).await,
+            StunChannel::Udp(c) => c.send(msg).await,
+            StunChannel::Tcp(c) => match msg {
+                StunOrData::Stun(msg, _data, _to) => c.send(msg).await,
+                StunOrData::Data(_data, _to) => Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Cannot send data over a Stun-only TCP connection",
+                )),
+            },
+            #[cfg(test)]
+            StunChannel::AsyncChannel(c) => c.send(msg).await,
+        }
+    }
+}
+
+impl ReceiveStream<StunOrData> for StunChannel {
+    fn receive_stream(&self) -> Pin<Box<dyn Stream<Item = StunOrData> + Send>> {
+        debug!("stun channel receive stream for {:?}", self);
+        match self {
+            StunChannel::UdpAny(c) => c.receive_stream(),
+            StunChannel::Udp(c) => c.receive_stream(),
+            StunChannel::Tcp(c) => c.receive_stream(),
+            #[cfg(test)]
+            StunChannel::AsyncChannel(c) => c.receive_stream(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UdpConnectionChannel {
+    channel: UdpSocketChannel,
+    to: SocketAddr,
+}
+
+impl UdpConnectionChannel {
+    pub fn new(channel: UdpSocketChannel, to: SocketAddr) -> Self {
+        Self { channel, to }
+    }
+}
+
+impl SocketAddresses for UdpConnectionChannel {
+    fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
+        self.channel.local_addr()
+    }
+
+    fn remote_addr(&self) -> Result<SocketAddr, std::io::Error> {
+        Ok(self.to)
+    }
+}
+
+impl ReceiveStream<StunOrData> for UdpConnectionChannel {
+    fn receive_stream(&self) -> Pin<Box<dyn Stream<Item = StunOrData> + Send>> {
+        let channel = self.channel.clone();
+        let to = self.to;
+        trace!(
+            "retrieving receive_stream for connection channel from {:?}, to {:?}",
+            channel.local_addr(),
+            to
+        );
+        Box::pin(
+            channel
+                .receive_stream()
+                .filter_map(move |(data, from)| async move {
+                    if from == to {
+                        trace!("passing through message {:?} {:?}", from, data);
+                        Some(match Message::from_bytes(&data) {
+                            Ok(msg) => StunOrData::Stun(msg, data, from),
+                            Err(_) => StunOrData::Data(data, from),
+                        })
+                    } else {
+                        trace!("filtered message out {:?} {:?}", from, to);
+                        None
+                    }
+                }),
+        )
+    }
+}
+
+#[async_trait]
+impl<'msg> SocketMessageSend<'msg, StunOrData> for UdpConnectionChannel {
+    async fn send<'udp>(&self, msg: StunOrData) -> Result<(), std::io::Error> {
+        let bytes = match msg {
+            StunOrData::Stun(msg, _data, _addr) => msg.to_bytes(),
+            StunOrData::Data(data, _addr) => data,
+        };
+        let msg = UdpMessage {
+            data: &bytes,
+            addr: self.to,
+        };
+        debug!("socket connection send {:?}", msg);
+        self.channel.send(msg).await
+    }
+}
+
+#[async_trait]
+impl<'msg> SocketMessageSend<'msg, &'msg [u8]> for UdpConnectionChannel {
+    async fn send<'udp>(&self, msg: &'udp [u8]) -> Result<(), std::io::Error> {
+        let msg = UdpMessage {
+            data: msg,
+            addr: self.to,
+        };
+        self.channel.send(msg).await
+    }
+}
+
+/*
+#[async_trait]
+impl<'msg> SocketMessageRecv<'msg> for UdpConnectionChannel
+{
+    type Message = &'msg [u8];
+
+    async fn max_recv_size(&self) -> Result<usize, std::io::Error> {
+        Ok(65535)
+    }
+
+    async fn recv (&self, msg: &'async_trait mut Self::Message) -> Result<usize, std::io::Error> {
+        let (length, from) = self.socket.recv_from(&mut msg.data).await?;
+        msg.addr = from;
+        Ok(length)
+    }
+}
+*/
+#[derive(Debug, Clone)]
+pub struct StunOnlyTcpChannel {
+    stream: DebugWrapper<TcpStream>,
+    running_buffer: Arc<Mutex<Option<TcpBuffer>>>,
+}
+
+impl StunOnlyTcpChannel {
+    pub fn new(stream: TcpStream) -> Self {
+        Self {
+            stream: DebugWrapper::wrap(stream, "..."),
+            running_buffer: Arc::new(Mutex::new(Some(TcpBuffer::new(MAX_STUN_MESSAGE_SIZE)))),
+        }
+    }
+
+    #[tracing::instrument(
+        name = "tcp_recv",
+        err,
+        skip(stream, running),
+        fields(
+            remote.addr = ?stream.peer_addr()
+        )
+    )]
+    async fn inner_recv(
+        stream: &mut TcpStream,
+        running: Arc<Mutex<Option<TcpBuffer>>>,
+    ) -> Result<StunOrData, std::io::Error> {
+        let from = stream.peer_addr()?;
+        let mut buf = running.lock().unwrap().take().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Unsupported: multiple calls to recv()",
+            )
+        })?;
+
+        // If only stun is being sent over this connection, then we can figure out lengths
+        // ourselves but do need to buffer incoming data as required
+        while let Some(size) = stream.read(buf.ref_mut()).await.ok() {
+            trace!("recved {} bytes", size);
+            buf.read_size(size);
+            if size == 0 {
+                info!("connection closed");
+                *running.lock().unwrap() = Some(buf);
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "TCP connection closed",
+                ));
+            }
+            trace!("buf {:?}", buf);
+            // we need to buffer up until we have enough data for each STUN
+            // message. This assumes that no other data is being sent over
+            // this socket
+            if buf.len() < 20 {
+                trace!(
+                    "not enough data, buf length {} too short (< 20), reading again",
+                    buf.len()
+                );
+                continue;
+            } else {
+                let mlength = BigEndian::read_u16(&buf.buf[2..]) as usize;
+                if mlength > MAX_STUN_MESSAGE_SIZE {
+                    warn!(
+                        "stun message length ({}) is absurd > {}, aborting read",
+                        mlength, MAX_STUN_MESSAGE_SIZE
+                    );
+                    buf.take(buf.len());
+                    break;
+                }
+                if mlength + 20 > buf.len() {
+                    trace!(
+                        "not enough data, buf length {} less than advertised size {}, reading again",
+                        buf.len(),
+                        mlength + 20
+                    );
+                    continue;
+                }
+                let bytes = buf.take(mlength + 20);
+                trace!("have full message bytes {:?}", bytes);
+                match Message::from_bytes(&bytes) {
+                    Ok(msg) => {
+                        trace!("have message bytes {}", msg);
+                        *running.lock().unwrap() = Some(buf);
+                        return Ok(StunOrData::Stun(msg, bytes.to_vec(), from));
+                    }
+                    Err(e) => debug!("failed to parse STUN message: {:?}", e),
+                }
+            }
+        }
+        debug!("no more data");
+        Err(std::io::Error::new(
+            std::io::ErrorKind::WriteZero,
+            "No more data",
+        ))
+    }
+}
+
+impl SocketAddresses for StunOnlyTcpChannel {
+    fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
+        self.stream.local_addr()
+    }
+
+    fn remote_addr(&self) -> Result<SocketAddr, std::io::Error> {
+        self.stream.peer_addr()
+    }
+}
+
+#[async_trait]
+impl<'msg> SocketMessageSend<'msg, Message> for StunOnlyTcpChannel {
+    async fn send<'udp>(&self, msg: Message) -> Result<(), std::io::Error> {
+        let mut stream = self.stream.clone();
+        stream.write_all(&msg.to_bytes()).await
+    }
+}
+
+#[derive(Debug)]
+struct TcpBuffer {
+    buf: DebugWrapper<Vec<u8>>,
+    offset: usize,
+}
+
+impl TcpBuffer {
+    fn new(size: usize) -> Self {
+        Self {
+            buf: DebugWrapper::wrap(vec![0; size], "..."),
+            offset: 0,
+        }
+    }
+
+    fn take(&mut self, offset: usize) -> Vec<u8> {
+        if offset > self.buf.len() {
+            return vec![];
+        }
+        let (data, _rest) = self.buf.split_at(offset);
+        let data = data.to_vec();
+        self.buf.drain(..offset);
+        self.offset -= offset;
+        self.buf.extend(&vec![0; offset]);
+        data
+    }
+
+    fn ref_mut(&mut self) -> &mut [u8] {
+        &mut self.buf[self.offset..]
+    }
+
+    fn read_size(&mut self, size: usize) {
+        self.offset += size;
+    }
+
+    fn len(&self) -> usize {
+        self.offset
+    }
+}
+
+#[async_trait]
+impl SocketMessageRecv<(), StunOrData> for StunOnlyTcpChannel {
+    async fn max_recv_size(&self) -> Result<usize, std::io::Error> {
+        Ok(1)
+    }
+
+    async fn recv<'b>(&self, _msg: &'b mut ()) -> Result<StunOrData, std::io::Error> {
+        let mut stream = self.stream.clone();
+        let running = self.running_buffer.clone();
+        StunOnlyTcpChannel::inner_recv(&mut stream, running).await
+    }
+}
+
+impl ReceiveStream<StunOrData> for StunOnlyTcpChannel {
+    fn receive_stream(&self) -> Pin<Box<dyn Stream<Item = StunOrData> + Send>> {
+        let stream = self.stream.clone();
+        let running = self.running_buffer.clone();
+        // replace self.running_buffer when done? drop handler?
+        warn!("tcp receive stream");
+        Box::pin(stream::unfold(
+            (stream, running),
+            |(mut stream, running)| async move {
+                StunOnlyTcpChannel::inner_recv(&mut stream, running.clone())
+                    .await
+                    .ok()
+                    .map(|v| (v, (stream, running)))
+            },
+        ))
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use crate::agent::AgentError;
-    use async_std::net::TcpListener;
     use async_std::task;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
@@ -389,8 +701,7 @@ pub(crate) mod tests {
 
     #[derive(Debug)]
     struct ChannelRouterInner {
-        channels:
-            std::collections::HashMap<SocketAddr, Arc<ChannelBroadcast<(Vec<u8>, SocketAddr)>>>,
+        channels: std::collections::HashMap<SocketAddr, Arc<ChannelBroadcast<StunOrData>>>,
         last_generated_port: u16,
     }
 
@@ -418,7 +729,7 @@ pub(crate) mod tests {
             }
         }
 
-        fn receiver(&self, addr: SocketAddr) -> impl Stream<Item = (Vec<u8>, SocketAddr)> {
+        fn receiver(&self, addr: SocketAddr) -> impl Stream<Item = StunOrData> {
             let mut inner = self.inner.lock().unwrap();
             match inner.channels.get(&addr) {
                 Some(recv) => recv.clone(),
@@ -432,12 +743,14 @@ pub(crate) mod tests {
             .channel()
         }
 
-        async fn send(
-            &self,
-            data: &[u8],
-            to: SocketAddr,
-            from: SocketAddr,
-        ) -> Result<(), AgentError> {
+        async fn send(&self, msg: StunOrData, from: SocketAddr) -> Result<(), AgentError> {
+            let (msg, to) = match msg {
+                StunOrData::Stun(msg, _, to) => {
+                    let bytes = msg.to_bytes();
+                    (StunOrData::Stun(msg, bytes, from), to)
+                }
+                StunOrData::Data(data, to) => (StunOrData::Data(data, from), to),
+            };
             let broadcast = {
                 let inner = self.inner.lock().unwrap();
                 error!("send channels {:?}", inner.channels);
@@ -447,7 +760,7 @@ pub(crate) mod tests {
                     .ok_or(AgentError::ResourceNotFound)?
                     .clone()
             };
-            broadcast.broadcast((data.to_vec(), from)).await;
+            broadcast.broadcast(msg).await;
             Ok(())
         }
 
@@ -484,20 +797,25 @@ pub(crate) mod tests {
             router.add_channel(addr);
             ret
         }
+    }
 
-        pub fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
+    impl SocketAddresses for AsyncChannel {
+        fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
             Ok(self.addr)
         }
 
-        pub fn remote_addr(&self) -> Result<SocketAddr, std::io::Error> {
+        fn remote_addr(&self) -> Result<SocketAddr, std::io::Error> {
             self.peer_addr.ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::NotFound, "Implementation not available")
             })
         }
+    }
 
-        pub async fn send_to(&self, data: &[u8], to: SocketAddr) -> std::io::Result<()> {
+    #[async_trait]
+    impl<'msg> SocketMessageSend<'msg, StunOrData> for AsyncChannel {
+        async fn send<'udp>(&self, msg: StunOrData) -> Result<(), std::io::Error> {
             if let Some(peer_addr) = self.peer_addr {
-                if to != peer_addr {
+                if msg.addr() != peer_addr {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::NotFound,
                         "Implementation not available",
@@ -505,7 +823,7 @@ pub(crate) mod tests {
                 }
             }
 
-            self.router.send(data, to, self.addr).await.map_err(|_| {
+            self.router.send(msg, self.addr).await.map_err(|_| {
                 std::io::Error::new(
                     std::io::ErrorKind::ConnectionAborted,
                     "Channel failed to send",
@@ -513,31 +831,11 @@ pub(crate) mod tests {
             })?;
             Ok(())
         }
+    }
 
-        pub async fn send(&self, data: &[u8]) -> std::io::Result<()> {
-            let peer_addr = self.peer_addr.ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::NotFound, "Implementation not available")
-            })?;
-
-            self.router
-                .send(data, peer_addr, self.addr)
-                .await
-                .map_err(|_| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::ConnectionAborted,
-                        "Channel failed to send",
-                    )
-                })?;
-            Ok(())
-        }
-
-        pub fn receive_stream(&self) -> impl Stream<Item = (Vec<u8>, SocketAddr)> {
-            error!("receive stream for {}", self.addr);
-            self.router.receiver(self.addr)
-        }
-
-        pub fn produces_complete_messages(&self )-> bool {
-            true
+    impl ReceiveStream<StunOrData> for AsyncChannel {
+        fn receive_stream(&self) -> Pin<Box<dyn Stream<Item = StunOrData> + Send>> {
+            Box::pin(self.router.receiver(self.addr))
         }
     }
 
@@ -557,17 +855,17 @@ pub(crate) mod tests {
         })
     }
 
-    async fn setup_udp_channel() -> UdpSocketChannel {
+    pub(crate) async fn setup_udp_channel() -> UdpSocketChannel {
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
         let socket = UdpSocket::bind(addr).await.unwrap();
         UdpSocketChannel::new(socket)
     }
 
-    fn recv_data(channel: SocketChannel) -> impl Future<Output = (Vec<u8>, SocketAddr)> {
+    fn recv_data(channel: UdpSocketChannel) -> impl Future<Output = (Vec<u8>, SocketAddr)> {
         let result = Arc::new(Mutex::new(None));
         // retrieve the recv channel before starting the task otherwise, there is a race starting
         // the task against the a sender in the current thread.
-        let recv = channel.receive_stream().unwrap();
+        let recv = channel.receive_stream();
         let f = task::spawn({
             let result = result.clone();
             async move {
@@ -583,7 +881,7 @@ pub(crate) mod tests {
         }
     }
 
-    async fn send_to_and_receive(send_socket: SocketChannel, recv_socket: SocketChannel) {
+    async fn send_to_and_receive(send_socket: UdpSocketChannel, recv_socket: UdpSocketChannel) {
         let from = send_socket.local_addr().unwrap();
         let to = recv_socket.local_addr().unwrap();
 
@@ -601,136 +899,10 @@ pub(crate) mod tests {
         init();
         task::block_on(async move {
             // set up sockets
-            let udp1 = SocketChannel::Udp(setup_udp_channel().await);
-            let udp2 = SocketChannel::Udp(setup_udp_channel().await);
+            let udp1 = setup_udp_channel().await;
+            let udp2 = setup_udp_channel().await;
 
             send_to_and_receive(udp1, udp2).await;
-        });
-    }
-
-    async fn send_and_receive(send_socket: SocketChannel, recv_socket: SocketChannel) {
-        // this won't work unless the sockets are pointing at each other
-        assert_eq!(
-            send_socket.local_addr().unwrap(),
-            recv_socket.remote_addr().unwrap()
-        );
-        assert_eq!(
-            recv_socket.local_addr().unwrap(),
-            send_socket.remote_addr().unwrap()
-        );
-        let from = send_socket.local_addr().unwrap();
-
-        // send data and assert that it is received
-        let recv = recv_data(recv_socket);
-        let data = vec![4; 4];
-        send_socket.send(&data.clone()).await.unwrap();
-        let result = recv.await;
-        assert_eq!(result.0, data);
-        assert_eq!(result.1, from);
-    }
-
-    #[test]
-    fn udp_connection_send_recv() {
-        init();
-        task::block_on(async move {
-            // set up sockets
-            let udp1 = setup_udp_channel().await;
-            let from = udp1.local_addr().unwrap();
-            let udp2 = setup_udp_channel().await;
-            let to = udp2.local_addr().unwrap();
-
-            let socket_channel1 = SocketChannel::UdpConnection(UdpConnectionChannel::new(udp1, to));
-            let socket_channel2 =
-                SocketChannel::UdpConnection(UdpConnectionChannel::new(udp2, from));
-
-            send_and_receive(socket_channel1, socket_channel2).await;
-        });
-    }
-
-    async fn send_and_double_receive(send_socket: SocketChannel, recv_socket: SocketChannel) {
-        // this won't work unless the sockets are pointing at each other
-        assert_eq!(
-            send_socket.local_addr().unwrap(),
-            recv_socket.remote_addr().unwrap()
-        );
-        assert_eq!(
-            recv_socket.local_addr().unwrap(),
-            send_socket.remote_addr().unwrap()
-        );
-        let from = send_socket.local_addr().unwrap();
-
-        // send data and assert that it is received on both receive channels
-        let recv1 = recv_data(recv_socket.clone());
-        let recv2 = recv_data(recv_socket);
-        let data = vec![4; 4];
-        send_socket.send(&data.clone()).await.unwrap();
-        let result = recv1.await;
-        assert_eq!(result.0, data);
-        assert_eq!(result.1, from);
-        let result = recv2.await;
-        assert_eq!(result.0, data);
-        assert_eq!(result.1, from);
-    }
-
-    #[test]
-    fn send_multi_recv() {
-        init();
-        task::block_on(async move {
-            // set up sockets
-            let udp1 = setup_udp_channel().await;
-            let from = udp1.local_addr().unwrap();
-            let udp2 = setup_udp_channel().await;
-            let to = udp2.local_addr().unwrap();
-
-            let socket_channel1 = SocketChannel::UdpConnection(UdpConnectionChannel::new(udp1, to));
-            let socket_channel2 =
-                SocketChannel::UdpConnection(UdpConnectionChannel::new(udp2, from));
-
-            // send data and assert that it is received on both receive channels
-            send_and_double_receive(socket_channel1, socket_channel2).await;
-        });
-    }
-
-    #[test]
-    fn send_multi_recv_with_drop() {
-        init();
-        task::block_on(async move {
-            // set up sockets
-            let udp1 = setup_udp_channel().await;
-            let from = udp1.local_addr().unwrap();
-            let udp2 = setup_udp_channel().await;
-            let to = udp2.local_addr().unwrap();
-
-            let socket_channel1 = SocketChannel::UdpConnection(UdpConnectionChannel::new(udp1, to));
-            let socket_channel2 =
-                SocketChannel::UdpConnection(UdpConnectionChannel::new(udp2, from));
-
-            // send data and assert that it is received on both receive channels
-            send_and_double_receive(socket_channel1.clone(), socket_channel2.clone()).await;
-
-            // previous receivers should have been dropped as not connected anymore
-            // XXX: doesn't currently test the actual drop just that nothing errors
-            send_and_receive(socket_channel1, socket_channel2).await;
-        });
-    }
-
-    #[test]
-    fn tcp_connection_send_recv() {
-        init();
-        task::block_on(async move {
-            // set up sockets
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let local_addr = listener.local_addr().unwrap();
-            let mut incoming = listener.incoming();
-            let tcp2 = incoming.next();
-            let tcp1 = task::spawn(async move { TcpStream::connect(local_addr).await });
-            let tcp2 = tcp2.await.unwrap().unwrap();
-            let tcp1 = tcp1.await.unwrap();
-
-            let socket_channel1 = SocketChannel::Tcp(TcpChannel::new(tcp1));
-            let socket_channel2 = SocketChannel::Tcp(TcpChannel::new(tcp2));
-
-            send_and_receive(socket_channel1, socket_channel2).await;
         });
     }
 }

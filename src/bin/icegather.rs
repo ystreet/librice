@@ -9,6 +9,7 @@
 #[macro_use]
 extern crate tracing;
 
+use librice::socket::StunChannel;
 use tracing_subscriber::EnvFilter;
 
 use async_std::task;
@@ -32,7 +33,9 @@ fn main() -> io::Result<()> {
 
         let agents = librice::gathering::iface_udp_sockets()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e))?
-            .filter_map(|channel| async move { channel.ok().map(StunAgent::new) })
+            .filter_map(|channel| async move {
+                channel.ok().map(|c| StunAgent::new(StunChannel::UdpAny(c)))
+            })
             .collect::<Vec<_>>()
             .await;
 
