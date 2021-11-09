@@ -543,7 +543,9 @@ impl Message {
         BigEndian::write_u128(&mut ret[4..20], tid);
         BigEndian::write_u16(&mut ret[2..4], attr_size as u16);
         for attr in &self.attributes {
-            ret.extend(attr.to_bytes());
+            let bytes = attr.to_bytes();
+            trace!("attr {:?} produces {:?}", attr, bytes);
+            ret.extend(bytes);
         }
         ret
     }
@@ -681,6 +683,13 @@ impl Message {
                 let mut hmac_data = orig_data[..data_offset].to_vec();
                 BigEndian::write_u16(&mut hmac_data[2..4], data_offset as u16 + 24 - 20);
                 hmac.update(&hmac_data);
+                trace!(
+                    "validate msg key {:?} from credentials {:?} hmac {:?} data {:?}",
+                    key,
+                    credentials,
+                    msg_hmac,
+                    hmac_data
+                );
                 return hmac
                     .verify(msg_hmac)
                     .map_err(|_| AgentError::IntegrityCheckFailed);
@@ -740,6 +749,13 @@ impl Message {
         let hmac_data = bytes.to_vec();
         hmac.update(&hmac_data);
         let integrity = hmac.finalize().into_bytes();
+        trace!(
+            "add integrity key {:?} credentials {:?} hmac {:?} from data {:?}",
+            key,
+            credentials,
+            integrity,
+            hmac_data
+        );
         self.attributes
             .push(MessageIntegrity::new(integrity.into()).into());
         Ok(())
