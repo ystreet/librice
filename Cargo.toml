@@ -12,6 +12,7 @@ repository = "https://github.com/ystreet/librice"
 
 [dependencies]
 arbitrary = { version = "1", optional = true, features = ["derive"] }
+async-trait = "0.1"
 byteorder = "1"
 get_if_addrs = "0.5"
 async-std = "1"

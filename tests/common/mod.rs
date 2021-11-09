@@ -18,7 +18,7 @@ use async_std::net::{TcpListener, UdpSocket};
 use futures::StreamExt;
 
 use librice::agent::*;
-use librice::socket::{SocketChannel, TcpChannel, UdpSocketChannel};
+use librice::socket::*;
 use librice::stun::agent::*;
 use librice::stun::attribute::*;
 use librice::stun::message::*;
@@ -92,7 +92,7 @@ pub async fn handle_stun(stun_agent: StunAgent) -> std::io::Result<()> {
 #[allow(dead_code)]
 pub async fn stund_udp(socket: UdpSocket) -> std::io::Result<()> {
     let addr = socket.local_addr()?;
-    let channel = SocketChannel::Udp(UdpSocketChannel::new(socket));
+    let channel = StunChannel::UdpAny(UdpSocketChannel::new(socket));
     let stun_agent = StunAgent::new(channel);
 
     handle_stun(stun_agent).await.unwrap();
@@ -106,7 +106,7 @@ pub async fn stund_tcp(listener: TcpListener) -> std::io::Result<()> {
     let addr = listener.local_addr()?;
     while let Some(Ok(stream)) = incoming.next().await {
         async_std::task::spawn(async move {
-            let channel = SocketChannel::Tcp(TcpChannel::new(stream));
+            let channel = StunChannel::Tcp(StunOnlyTcpChannel::new(stream));
             let stun_agent = StunAgent::new(channel);
             handle_stun(stun_agent).await.unwrap();
         });

@@ -10,7 +10,6 @@ use std::sync::{Arc, Mutex};
 
 use async_std::net::SocketAddr;
 
-use futures::channel::oneshot;
 use futures::future::AbortHandle;
 use futures::prelude::*;
 use futures::Stream;
@@ -19,8 +18,9 @@ use tracing_futures::Instrument;
 use crate::agent::{AgentError, AgentMessage};
 use crate::candidate::{Candidate, CandidatePair, TransportType};
 
-use crate::socket::{SocketChannel, UdpConnectionChannel};
-
+use crate::socket::{
+    SocketAddresses, SocketMessageSend, StunChannel, StunOrData, UdpConnectionChannel,
+};
 use crate::stun::agent::StunAgent;
 use crate::stun::message::MessageIntegrityCredentials;
 
@@ -98,11 +98,14 @@ impl Component {
 
     /// Send data to the peer using the established communication channel
     pub async fn send(&self, data: &[u8]) -> Result<(), AgentError> {
-        let channel = {
+        let (channel, to) = {
             let inner = self.inner.lock().unwrap();
-            inner.channel.clone().ok_or(AgentError::ResourceNotFound)?
+            let channel = inner.channel.clone().ok_or(AgentError::ResourceNotFound)?;
+            let to = channel.remote_addr()?;
+            (channel, to)
         };
-        channel.send(data).await?;
+        debug!("channel {:?}", channel);
+        channel.send(StunOrData::Data(data.to_vec(), to)).await?;
         Ok(())
     }
 
@@ -120,7 +123,7 @@ impl Component {
         let agents: Vec<_> = schannels
             .iter()
             .map(|channel| {
-                let agent = StunAgent::new(channel.clone());
+                let agent = StunAgent::new(StunChannel::UdpAny(channel.clone()));
                 agent.set_local_credentials(local_credentials.clone());
                 agent.set_remote_credentials(remote_credentials.clone());
                 agent
@@ -134,23 +137,21 @@ impl Component {
     #[tracing::instrument(
         skip(self, agent),
         fields(
-            component_id = self.id,
-            agent_id = agent.id
+            component.id = self.id,
         )
     )]
     pub(crate) async fn add_recv_agent(&self, agent: StunAgent) -> AbortHandle {
         let sender = self.inner.lock().unwrap().receive_send_channel.clone();
-        let (ready_send, ready_recv) = oneshot::channel();
 
         debug!("adding");
         let span = debug_span!("component_recv");
         let (abortable, abort_handle) = futures::future::abortable(
             async move {
-                let mut data_recv_stream = agent.receive_stream();
-                if ready_send.send(()).is_err() {
-                    return;
-                }
-                while let Some(stun_or_data) = data_recv_stream.next().await {
+                // need to keep some reference to the StunAgent until the task completes
+                let mut recv_stream = agent.receive_stream();
+                info!("started");
+                while let Some(stun_or_data) = recv_stream.next().await {
+                    info!("got {:?}", stun_or_data);
                     if let Some((data, _from)) = stun_or_data.data() {
                         if let Err(e) = sender.send(data).await {
                             warn!("error receiving {:?}", e);
@@ -163,8 +164,6 @@ impl Component {
         );
 
         async_std::task::spawn(abortable);
-
-        ready_recv.await.unwrap();
 
         abort_handle
     }
@@ -188,7 +187,7 @@ struct ComponentInner {
     id: usize,
     state: ComponentState,
     selected_pair: Option<SelectedPair>,
-    channel: Option<SocketChannel>,
+    channel: Option<StunChannel>,
     receive_send_channel: async_channel::Sender<Vec<u8>>,
     receive_receive_channel: async_channel::Receiver<Vec<u8>>,
 }
@@ -236,9 +235,7 @@ impl ComponentInner {
         debug!("setting");
         self.selected_pair = Some(selected);
         let new_channel = match local_channel {
-            SocketChannel::Udp(c) => {
-                SocketChannel::UdpConnection(UdpConnectionChannel::new(c, remote_addr))
-            }
+            StunChannel::UdpAny(c) => StunChannel::Udp(UdpConnectionChannel::new(c, remote_addr)),
             sc => sc,
         };
         self.channel = Some(new_channel);
@@ -324,8 +321,10 @@ mod tests {
             let local_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
             let remote_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
             let remote_channel = UdpSocketChannel::new(remote_socket);
-            let local_agent =
-                StunAgent::new(SocketChannel::Udp(UdpSocketChannel::new(local_socket)));
+            let local_agent = StunAgent::new(StunChannel::Udp(UdpConnectionChannel::new(
+                UdpSocketChannel::new(local_socket),
+                remote_channel.local_addr().unwrap(),
+            )));
 
             let local_cand = Candidate::new(
                 CandidateType::Host,
@@ -355,7 +354,7 @@ mod tests {
             let recv_stream = remote_channel.receive_stream();
             futures::pin_mut!(recv_stream);
             send.send(&data).await.unwrap();
-            let res = recv_stream.next().await.unwrap();
+            let res: (Vec<u8>, SocketAddr) = recv_stream.next().await.unwrap();
             assert_eq!(data, res.0);
         });
     }
@@ -373,25 +372,42 @@ mod tests {
                 .await
                 .unwrap();
             let addr1 = socket1.local_addr().unwrap();
-            let channel1 = SocketChannel::Udp(UdpSocketChannel::new(socket1));
-            let stun = StunAgent::new(channel1.clone());
-            send.add_recv_agent(stun).await;
-
             let socket2 = UdpSocket::bind("127.0.0.1:0".parse::<SocketAddr>().unwrap())
                 .await
                 .unwrap();
             let addr2 = socket2.local_addr().unwrap();
-            let channel2 = SocketChannel::Udp(UdpSocketChannel::new(socket2));
+
+            let channel1 = StunChannel::Udp(UdpConnectionChannel::new(
+                UdpSocketChannel::new(socket1),
+                addr2,
+            ));
+            let stun = StunAgent::new(channel1.clone());
+            send.add_recv_agent(stun).await;
+
+            let channel2 = StunChannel::Udp(UdpConnectionChannel::new(
+                UdpSocketChannel::new(socket2),
+                addr1,
+            ));
             let stun = StunAgent::new(channel2.clone());
             send.add_recv_agent(stun).await;
 
             let mut recv_stream = send.receive_stream();
             let buf = vec![0, 1];
-            channel1.send_to(&buf, addr2).await.unwrap();
+            channel1
+                .send(StunOrData::Data(buf.clone(), addr2))
+                .await
+                .unwrap();
+            info!("send1");
             assert_eq!(&recv_stream.next().await.unwrap(), &buf);
+            info!("recv");
             let buf = vec![2, 3];
-            channel2.send_to(&buf, addr1).await.unwrap();
+            channel2
+                .send(StunOrData::Data(buf.clone(), addr1))
+                .await
+                .unwrap();
+            info!("send2");
             assert_eq!(&recv_stream.next().await.unwrap(), &buf);
+            info!("recv2");
         });
     }
 
@@ -452,14 +468,18 @@ mod tests {
             let recv_recv_stream = recv.receive_stream();
             futures::pin_mut!(recv_recv_stream);
             send.send(&data).await.unwrap();
+            info!("send1");
             let res = recv_recv_stream.next().await.unwrap();
+            info!("recv1");
             assert_eq!(data, res);
 
             let data = vec![2; 4];
             let send_recv_stream = send.receive_stream();
             futures::pin_mut!(send_recv_stream);
             recv.send(&data).await.unwrap();
+            info!("send2");
             let res = send_recv_stream.next().await.unwrap();
+            info!("recv2");
             assert_eq!(data, res);
         });
     }

@@ -1636,7 +1636,7 @@ mod tests {
     }
 
     struct Peer {
-        channel: SocketChannel,
+        channel: StunChannel,
         candidate: Candidate,
         agent: StunAgent,
     }
@@ -1652,12 +1652,12 @@ mod tests {
     }
 
     struct PeerBuilder<'this> {
-        channel: Option<SocketChannel>,
+        channel: Option<StunChannel>,
         foundation: Option<&'this str>,
     }
 
     impl<'this> PeerBuilder<'this> {
-        fn channel(mut self, channel: SocketChannel) -> Self {
+        fn channel(mut self, channel: StunChannel) -> Self {
             self.channel = Some(channel);
             self
         }
@@ -1672,7 +1672,7 @@ mod tests {
                 Some(c) => c,
                 None => {
                     let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-                    SocketChannel::Udp(UdpSocketChannel::new(socket))
+                    StunChannel::UdpAny(UdpSocketChannel::new(socket))
                 }
             };
             let addr = channel.local_addr().unwrap();
@@ -2031,7 +2031,7 @@ mod tests {
         foundation: &str,
     ) -> Peer {
         let addr = async_router.generate_addr();
-        let channel = SocketChannel::AsyncChannel(AsyncChannel::new(async_router, addr, None));
+        let channel = StunChannel::AsyncChannel(AsyncChannel::new(async_router, addr, None));
         Peer::builder()
             .channel(channel)
             .foundation(foundation)
@@ -2070,7 +2070,7 @@ mod tests {
                 .agent
                 .set_remote_credentials(MessageIntegrityCredentials::ShortTerm(lcreds.into()));
 
-            let remote_s_recv = remote1.channel.receive_stream().unwrap();
+            let remote_s_recv = remote1.channel.receive_stream();
             futures::pin_mut!(remote_s_recv);
             let local_s_recv = local1.agent.receive_stream();
             futures::pin_mut!(local_s_recv);
@@ -2107,6 +2107,7 @@ mod tests {
             // perform one tick which will start a connectivity check with the peer
             let set_ret = set_run.process_next().await;
             assert!(matches!(set_ret, CheckListSetProcess::HaveCheck(_)));
+            debug!("tick 1");
             let check_task = async_std::task::spawn(async move {
                 if let CheckListSetProcess::HaveCheck(check) = set_ret {
                     check.perform().await.unwrap();
@@ -2116,20 +2117,23 @@ mod tests {
             });
 
             // receive and respond to the connectivity check
-            let data = remote_s_recv.next().await.unwrap();
-            assert_eq!(data.1, local1.channel.local_addr().unwrap());
-            let msg = Message::from_bytes(&data.0).unwrap();
-            assert_eq!(msg.method(), BINDING);
-            assert_eq!(msg.class(), MessageClass::Request);
-            let resp = handle_binding_request(&remote1.agent, &msg, &data.0, data.1)
+            let data = remote_s_recv.next().await.unwrap().stun().unwrap();
+            debug!("received 1 {:?}", data);
+            assert_eq!(data.2, local1.channel.local_addr().unwrap());
+            assert_eq!(data.0.method(), BINDING);
+            assert_eq!(data.0.class(), MessageClass::Request);
+            let resp = handle_binding_request(&remote1.agent, &data.0, &data.1, data.2)
                 .await
                 .unwrap();
-            remote1.agent.send_to(resp, data.1).await.unwrap();
+            info!("handle request {:?}", resp);
+            remote1.agent.send_to(resp, data.2).await.unwrap();
 
             // wait for the response to reach the checklist and update the state
             check_task.await;
+            debug!("check 1 done");
             assert_eq!(check.state(), CandidatePairState::Succeeded);
             let _msg_success = local_s_recv.next().await.unwrap();
+            debug!("msg 1 received {:?}", _msg_success);
 
             // should have resulted in a nomination and therefore a triggered check (always a new
             // check one in our implementation)
@@ -2138,6 +2142,7 @@ mod tests {
 
             // perform one tick which will perform the nomination check
             let set_ret = set_run.process_next().await;
+            debug!("tick 2");
             assert!(matches!(set_ret, CheckListSetProcess::HaveCheck(_)));
             let check_task = async_std::task::spawn(async move {
                 if let CheckListSetProcess::HaveCheck(check) = set_ret {
@@ -2148,17 +2153,16 @@ mod tests {
             });
 
             // receive and respond to the connectivity check
-            let data = remote_s_recv.next().await.unwrap();
-            assert_eq!(data.1, local1.channel.local_addr().unwrap());
-            let msg = Message::from_bytes(&data.0).unwrap();
-            assert_eq!(msg.method(), BINDING);
-            assert_eq!(msg.class(), MessageClass::Request);
-            let resp = handle_binding_request(&remote1.agent, &msg, &data.0, data.1)
+            let data = remote_s_recv.next().await.unwrap().stun().unwrap();
+            assert_eq!(data.2, local1.channel.local_addr().unwrap());
+            assert_eq!(data.0.method(), BINDING);
+            assert_eq!(data.0.class(), MessageClass::Request);
+            let resp = handle_binding_request(&remote1.agent, &data.0, &data.1, data.2)
                 .await
                 .unwrap();
             remote1
                 .channel
-                .send_to(&resp.to_bytes(), data.1)
+                .send(StunOrData::Stun(resp, vec![], data.2))
                 .await
                 .unwrap();
 

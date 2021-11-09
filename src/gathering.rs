@@ -17,7 +17,7 @@ use get_if_addrs::get_if_addrs;
 
 use crate::agent::AgentError;
 use crate::candidate::{Candidate, CandidateType, TransportType};
-use crate::socket::{SocketChannel, UdpSocketChannel};
+use crate::socket::{StunChannel, UdpSocketChannel};
 use crate::stun::agent::StunAgent;
 use crate::stun::attribute::*;
 use crate::stun::message::*;
@@ -41,7 +41,7 @@ fn candidate_is_redundant_with(a: &Candidate, b: &Candidate) -> bool {
 }
 
 pub fn iface_udp_sockets(
-) -> Result<impl Stream<Item = Result<SocketChannel, std::io::Error>>, AgentError> {
+) -> Result<impl Stream<Item = Result<UdpSocketChannel, std::io::Error>>, AgentError> {
     let mut ifaces = get_if_addrs()?;
     // We only care about non-loopback interfaces for now
     // TODO: remove 'Deprecated IPv4-compatible IPv6 addresses [RFC4291]'
@@ -56,9 +56,9 @@ pub fn iface_udp_sockets(
 
     Ok(
         futures::stream::iter(ifaces.into_iter()).then(|iface| async move {
-            Ok(SocketChannel::Udp(UdpSocketChannel::new(
+            Ok(UdpSocketChannel::new(
                 UdpSocket::bind(SocketAddr::new(iface.clone().ip(), 0)).await?,
-            )))
+            ))
         }),
     )
 }
@@ -139,7 +139,7 @@ pub fn gather_component(
         .iter()
         .enumerate()
         .filter_map(|(i, agent)| match &agent.inner.channel {
-            SocketChannel::Udp(schannel) => Some(futures::future::ready(
+            StunChannel::UdpAny(schannel) => Some(futures::future::ready(
                 udp_socket_host_gather_candidate(schannel.socket(), (i * 10) as u8)
                     .map(|ga| (ga, agent.clone())),
             )),
