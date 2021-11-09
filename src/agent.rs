@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use futures::prelude::*;
 use rand::prelude::*;
 
+use crate::candidate::parse::ParseCandidateError;
 use crate::candidate::Candidate;
 use crate::candidate::TransportType;
 use crate::component::{Component, ComponentState};
@@ -39,6 +40,7 @@ pub enum AgentError {
     IntegrityCheckFailed,
     Aborted,
     TimedOut,
+    CandidateParse(ParseCandidateError),
     IoError(std::io::Error),
 }
 
@@ -53,6 +55,12 @@ impl Display for AgentError {
 impl From<std::io::Error> for AgentError {
     fn from(e: std::io::Error) -> Self {
         Self::IoError(e)
+    }
+}
+
+impl From<ParseCandidateError> for AgentError {
+    fn from(e: ParseCandidateError) -> Self {
+        Self::CandidateParse(e)
     }
 }
 

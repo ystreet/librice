@@ -7,7 +7,10 @@
 // except according to those terms.
 
 pub use crate::stun::TransportType;
+
+use std::error::Error;
 use std::net::SocketAddr;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
@@ -28,6 +31,33 @@ pub enum CandidateType {
     Relayed,
 }
 
+#[derive(Debug)]
+pub enum ParseCandidateTypeError {
+    UnknownCandidateType,
+}
+
+impl Error for ParseCandidateTypeError {}
+
+impl std::fmt::Display for ParseCandidateTypeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl FromStr for CandidateType {
+    type Err = ParseCandidateTypeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "host" => Ok(CandidateType::Host),
+            "prflx" => Ok(CandidateType::PeerReflexive),
+            "srflx" => Ok(CandidateType::ServerReflexive),
+            "relay" => Ok(CandidateType::Relayed),
+            _ => Err(ParseCandidateTypeError::UnknownCandidateType),
+        }
+    }
+}
+
 impl Candidate {
     pub fn new(
         ctype: CandidateType,
@@ -46,6 +76,125 @@ impl Candidate {
             address,
             base_address,
             related_address,
+        }
+    }
+}
+
+pub mod parse {
+    use std::{net::SocketAddr, str::FromStr};
+
+    use nom::bytes::complete::{tag, take_while1, take_while_m_n};
+    use nom::combinator::map_res;
+
+    use super::{Candidate, CandidateType, ParseCandidateTypeError};
+    use crate::stun::{ParseTransportTypeError, TransportType};
+
+    #[derive(Debug)]
+    pub enum ParseCandidateError {
+        NotCandidate,
+        BadFoundation,
+        BadComponentId,
+        BadTransportType,
+        BadPriority,
+        BadAddress,
+        BadCandidateType,
+        Malformed,
+    }
+
+    impl From<ParseTransportTypeError> for ParseCandidateError {
+        fn from(_: ParseTransportTypeError) -> Self {
+            ParseCandidateError::BadTransportType
+        }
+    }
+    impl From<ParseCandidateTypeError> for ParseCandidateError {
+        fn from(_: ParseCandidateTypeError) -> Self {
+            ParseCandidateError::BadCandidateType
+        }
+    }
+
+    fn is_alphabetic(c: char) -> bool {
+        c.is_alphabetic()
+    }
+
+    fn is_digit(c: char) -> bool {
+        c.is_digit(10)
+    }
+
+    fn is_ice_char(c: char) -> bool {
+        c.is_alphanumeric() || c == '+' || c == '-'
+    }
+
+    fn skip_spaces(s: &str) -> Result<&str, ParseCandidateError> {
+        let (s, _) = take_while1::<_, _, nom::error::Error<_>>(|c| c == ' ')(s)
+            .map_err(|_| ParseCandidateError::Malformed)?;
+        Ok(s)
+    }
+
+    fn is_part_of_socket_addr(c: char) -> bool {
+        c.is_digit(16) || c == '.' || c == ':'
+    }
+
+    // https://datatracker.ietf.org/doc/html/rfc8839#section-5.1
+    fn parse_candidate(s: &str) -> Result<Candidate, ParseCandidateError> {
+        let (s, _) = tag::<_, _, nom::error::Error<_>>("candidate")(s)
+            .map_err(|_| ParseCandidateError::NotCandidate)?;
+        let s = skip_spaces(s)?;
+        let (s, foundation) = take_while_m_n::<_, _, nom::error::Error<_>>(1, 32, is_ice_char)(s)
+            .map_err(|_| ParseCandidateError::BadFoundation)?;
+        let s = skip_spaces(s)?;
+        let (s, _component_id): (_, usize) = map_res(
+            take_while_m_n::<_, _, nom::error::Error<_>>(1, 3, is_digit),
+            str::parse,
+        )(s)
+        .map_err(|_| ParseCandidateError::BadComponentId)?;
+        let s = skip_spaces(s)?;
+        let (s, transport_type) = take_while1::<_, _, nom::error::Error<_>>(is_alphabetic)(s)
+            .map_err(|_| ParseCandidateError::BadTransportType)?;
+        let transport_type = TransportType::from_str(transport_type)?;
+        let s = skip_spaces(s)?;
+        let (s, priority) = map_res(
+            take_while1::<_, _, nom::error::Error<_>>(is_digit),
+            str::parse,
+        )(s)
+        .map_err(|_| ParseCandidateError::BadPriority)?;
+        let s = skip_spaces(s)?;
+        // FIXME: proper address parsing
+        let (s, connection_address) = map_res(
+            take_while1::<_, _, nom::error::Error<_>>(is_part_of_socket_addr),
+            |s: &str| s.parse(),
+        )(s)
+        .map_err(|_| ParseCandidateError::BadAddress)?;
+        let s = skip_spaces(s)?;
+        let (s, port) = map_res(
+            take_while1::<_, _, nom::error::Error<_>>(is_digit),
+            str::parse,
+        )(s)
+        .map_err(|_| ParseCandidateError::BadAddress)?;
+        let address = SocketAddr::new(connection_address, port);
+        let s = skip_spaces(s)?;
+        let (_s, candidate_type) = map_res(
+            take_while1::<_, _, nom::error::Error<_>>(is_alphabetic),
+            CandidateType::from_str,
+        )(s)
+        .map_err(|_| ParseCandidateError::BadCandidateType)?;
+        // TODO: extensions, raddr, etc things
+
+        Ok(Candidate::new(
+            candidate_type,
+            transport_type,
+            foundation,
+            priority,
+            address,
+            address,
+            None,
+        ))
+    }
+
+    impl FromStr for Candidate {
+        type Err = ParseCandidateError;
+
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
+            parse_candidate(s)
         }
     }
 }
@@ -133,15 +282,113 @@ mod tests {
             TransportType::Udp,
             "0",
             0,
-            addr.clone(),
+            addr,
             addr,
             None,
         );
         let mut pair = CandidatePair::new(1, cand.clone(), cand);
-        assert_eq!(pair.nominated(), false);
+        assert!(!pair.nominated());
         pair.nominate();
-        assert_eq!(pair.nominated(), true);
+        assert!(pair.nominated());
         pair.nominate();
-        assert_eq!(pair.nominated(), true);
+        assert!(pair.nominated());
+    }
+
+    mod parse {
+        use super::*;
+        use crate::candidate::parse::ParseCandidateError;
+
+        #[test]
+        fn udp_candidate() {
+            init();
+            let s = "candidate 0 0 UDP 1234 127.0.0.1 2345 host";
+            let cand = Candidate::from_str(s).unwrap();
+            debug!("cand {:?}", cand);
+            let addr = "127.0.0.1:2345".parse().unwrap();
+            assert_eq!(
+                cand,
+                Candidate::new(
+                    CandidateType::Host,
+                    TransportType::Udp,
+                    "0",
+                    1234,
+                    addr,
+                    addr,
+                    None
+                )
+            );
+        }
+        #[test]
+        fn candidate_not_candidate() {
+            init();
+            assert!(matches!(
+                Candidate::from_str("a"),
+                Err(ParseCandidateError::NotCandidate)
+            ));
+        }
+        #[test]
+        fn candidate_missing_space() {
+            init();
+            assert!(matches!(
+                Candidate::from_str("candidate0 0 UDP 1234 127.0.0.1 2345 host"),
+                Err(ParseCandidateError::Malformed)
+            ));
+        }
+        #[test]
+        fn candidate_bad_foundation() {
+            init();
+            assert!(matches!(
+                Candidate::from_str("candidate = 0 UDP 1234 127.0.0.1 2345 host"),
+                Err(ParseCandidateError::BadFoundation)
+            ));
+        }
+        #[test]
+        fn candidate_bad_component_id() {
+            init();
+            assert!(matches!(
+                Candidate::from_str("candidate 0 component-id UDP 1234 127.0.0.1 2345 host"),
+                Err(ParseCandidateError::BadComponentId)
+            ));
+        }
+        #[test]
+        fn candidate_bad_transport_type() {
+            init();
+            assert!(matches!(
+                Candidate::from_str("candidate 0 0 transport 1234 127.0.0.1 2345 host"),
+                Err(ParseCandidateError::BadTransportType)
+            ));
+        }
+        #[test]
+        fn candidate_bad_priority() {
+            init();
+            assert!(matches!(
+                Candidate::from_str("candidate 0 0 UDP priority 127.0.0.1 2345 host"),
+                Err(ParseCandidateError::BadPriority)
+            ));
+        }
+        #[test]
+        fn candidate_bad_address() {
+            init();
+            assert!(matches!(
+                Candidate::from_str("candidate 0 0 UDP 1234 address 2345 host"),
+                Err(ParseCandidateError::BadAddress)
+            ));
+        }
+        #[test]
+        fn candidate_bad_port() {
+            init();
+            assert!(matches!(
+                Candidate::from_str("candidate 0 0 UDP 1234 127.0.0.1 port host"),
+                Err(ParseCandidateError::BadAddress)
+            ));
+        }
+        #[test]
+        fn candidate_bad_candidate_type() {
+            init();
+            assert!(matches!(
+                Candidate::from_str("candidate 0 0 UDP 1234 127.0.0.1 2345 candidate-type"),
+                Err(ParseCandidateError::BadCandidateType)
+            ));
+        }
     }
 }
