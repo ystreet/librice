@@ -12,7 +12,7 @@ use std::str::FromStr;
 pub mod agent;
 pub mod attribute;
 pub mod message;
-pub mod pacer;
+//mod pacer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportType {

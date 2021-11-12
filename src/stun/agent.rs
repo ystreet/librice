@@ -19,13 +19,14 @@ use std::collections::HashMap;
 use futures::future::AbortHandle;
 use futures::future::Either;
 use futures::prelude::*;
-use futures_timer::Delay;
 use tracing_futures::Instrument;
 
 use crate::agent::AgentError;
 
 use crate::socket::*;
 use crate::stun::message::*;
+
+use crate::clock::{get_clock, Clock, ClockType};
 
 use crate::utils::{ChannelBroadcast, DebugWrapper};
 
@@ -35,6 +36,7 @@ static STUN_AGENT_COUNT: AtomicUsize = AtomicUsize::new(0);
 #[derive(Debug, Clone)]
 pub struct StunAgent {
     pub(crate) id: usize,
+    clock: Arc<dyn Clock>,
     pub(crate) inner: DebugWrapper<Arc<StunAgentInner>>,
 }
 
@@ -55,21 +57,53 @@ struct StunAgentState {
     remote_credentials: Option<MessageIntegrityCredentials>,
 }
 
-impl StunAgent {
-    pub fn new(channel: StunChannel) -> Self {
+pub(crate) struct StunAgentBuilder {
+    channel: StunChannel,
+    clock: Option<Arc<dyn Clock>>,
+}
+
+impl StunAgentBuilder {
+    fn new(channel: StunChannel) -> Self {
+        StunAgentBuilder {
+            channel,
+            clock: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = Some(clock);
+        self
+    }
+
+    pub fn build(self) -> StunAgent {
         let id = STUN_AGENT_COUNT.fetch_add(1, Ordering::SeqCst);
-        Self {
+        let clock = self
+            .clock
+            .unwrap_or_else(|| get_clock(ClockType::default()));
+        StunAgent {
             id,
+            clock,
             inner: DebugWrapper::wrap(
                 Arc::new(StunAgentInner {
                     id,
                     state: Mutex::new(StunAgentState::new(id)),
-                    channel,
+                    channel: self.channel,
                     broadcaster: Arc::new(ChannelBroadcast::default()),
                 }),
                 "...",
             ),
         }
+    }
+}
+
+impl StunAgent {
+    pub fn new(channel: StunChannel) -> Self {
+        Self::builder(channel).build()
+    }
+
+    pub(crate) fn builder(channel: StunChannel) -> StunAgentBuilder {
+        StunAgentBuilder::new(channel)
     }
 
     pub fn channel(&self) -> StunChannel {
@@ -217,7 +251,11 @@ impl StunAgent {
         // FIXME: configurable timeout values: RFC 4389 Secion 7.2.1
         let timeouts: [u64; 7] = [0, 500, 1500, 3500, 7500, 15500, 31500];
         for timeout in timeouts.iter() {
-            Delay::new(Duration::from_millis(*timeout)).await;
+            self.clock
+                .delay(Duration::from_millis(*timeout))
+                .await
+                .wait()
+                .await;
             trace!("sending {}", msg);
             self.inner
                 .channel
@@ -457,6 +495,37 @@ pub(crate) mod tests {
             // previous receivers should have been dropped as not connected anymore
             // XXX: doesn't currently test the actual drop just that nothing errors
             send_and_receive(socket_channel1, socket_channel2).await;
+        });
+    }
+
+    #[test]
+    fn send_udp_request_unanswered() {
+        init();
+        task::block_on(async move {
+            // set up sockets
+            let udp1 = crate::socket::tests::setup_udp_channel().await;
+            let from = udp1.local_addr().unwrap();
+            let udp2 = crate::socket::tests::setup_udp_channel().await;
+            let to = udp2.local_addr().unwrap();
+            let clock = Arc::new(crate::clock::tests::TestClock::default());
+
+            let agent = StunAgent::builder(StunChannel::Udp(UdpConnectionChannel::new(udp1, from)))
+                .clock(clock.clone())
+                .build();
+
+            let software_str = "ab";
+            let mut msg = Message::new_request(48);
+            msg.add_attribute(Software::new(software_str).unwrap())
+                .unwrap();
+            msg.add_fingerprint().unwrap();
+
+            let f = task::spawn(async move { agent.stun_request_transaction(&msg, to).await });
+
+            // advance through all the waits to get to the timeout return value
+            for _ in 0..6 {
+                clock.advance().await;
+            }
+            assert!(matches!(f.await, Err(AgentError::TimedOut)));
         });
     }
 

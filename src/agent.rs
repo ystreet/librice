@@ -174,12 +174,15 @@ impl Agent {
                 // TODO: ICE restart
                 return Ok(());
             }
-            let set = Arc::new(ConnCheckListSet::from_streams(
-                inner.streams.clone(),
-                self.broadcast.clone(),
-                self.tasks.clone(),
-                inner.controlling,
-            ));
+            let set = Arc::new(
+                ConnCheckListSet::builder(
+                    inner.streams.clone(),
+                    self.broadcast.clone(),
+                    self.tasks.clone(),
+                    inner.controlling,
+                )
+                .build(),
+            );
             inner.checklistset = Some(set.clone());
             set
         };
