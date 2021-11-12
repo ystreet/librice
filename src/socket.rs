@@ -26,7 +26,7 @@ const MAX_STUN_MESSAGE_SIZE: usize = 1500 * 2;
 pub enum StunChannel {
     UdpAny(UdpSocketChannel),
     Udp(UdpConnectionChannel),
-    Tcp(StunOnlyTcpChannel),
+    Tcp(TcpChannel),
     #[cfg(test)]
     AsyncChannel(tests::AsyncChannel),
 }
@@ -231,100 +231,6 @@ impl ReceiveStream<(Vec<u8>, SocketAddr)> for UdpSocketChannel {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct TcpChannel {
-    channel: TcpStream,
-    sender_broadcast: Arc<ChannelBroadcast<Vec<u8>>>,
-    inner: Arc<Mutex<TcpChannelInner>>,
-    write_lock: Arc<async_std::sync::Mutex<()>>,
-}
-
-#[derive(Debug)]
-struct TcpChannelInner {
-    receive_loop: Option<async_std::task::JoinHandle<()>>,
-}
-
-impl TcpChannel {
-    pub fn new(stream: TcpStream) -> Self {
-        Self {
-            channel: stream,
-            sender_broadcast: Arc::new(ChannelBroadcast::default()),
-            inner: Arc::new(Mutex::new(TcpChannelInner { receive_loop: None })),
-            write_lock: Arc::new(async_std::sync::Mutex::new(())),
-        }
-    }
-
-    pub fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
-        self.channel.local_addr()
-    }
-
-    pub fn remote_addr(&self) -> Result<SocketAddr, std::io::Error> {
-        self.channel.peer_addr()
-    }
-
-    pub async fn send(&self, data: &[u8]) -> std::io::Result<()> {
-        let mut written = 0;
-        let mut channel = self.channel.clone();
-        let _write_lock = self.write_lock.lock().await;
-        while written < data.len() {
-            written += channel.write(&data[written..]).await?;
-        }
-        Ok(())
-    }
-
-    fn ensure_receive_loop(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        if inner.receive_loop.is_none() {
-            inner.receive_loop = Some(async_std::task::spawn({
-                let socket = self.channel.clone();
-                let broadcaster = self.sender_broadcast.clone();
-                async move { TcpChannel::receive_loop(socket, broadcaster).await }
-            }));
-        }
-    }
-
-    pub fn receive_stream(&self) -> impl Stream<Item = Vec<u8>> {
-        self.ensure_receive_loop();
-        self.sender_broadcast.channel()
-    }
-
-    #[tracing::instrument(
-        name = "tcp_receive_loop",
-        level = "debug",
-        skip(stream, broadcaster)
-        fields(
-            local_addr = ?stream.local_addr(),
-            remote_addr = ?stream.peer_addr(),
-        )
-    )]
-    async fn receive_loop(stream: TcpStream, broadcaster: Arc<ChannelBroadcast<Vec<u8>>>) {
-        futures::pin_mut!(stream);
-        let mut scratch = vec![0; 2048];
-
-        trace!("loop starting");
-        // send data to the receive channels
-        while let Some(size) = stream.read(&mut scratch).await.ok() {
-            if size == 0 {
-                // connection was closed
-                break;
-            }
-            broadcaster.broadcast(scratch[..size].to_vec()).await;
-            scratch.iter_mut().map(|v| *v = 0).count();
-        }
-        trace!("loop exited");
-    }
-}
-
-impl SocketAddresses for TcpChannel {
-    fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
-        self.channel.local_addr()
-    }
-
-    fn remote_addr(&self) -> Result<SocketAddr, std::io::Error> {
-        self.channel.peer_addr()
-    }
-}
-
 #[async_trait]
 pub trait SocketMessageSend<T, 'a>
 where
@@ -384,13 +290,7 @@ impl<'msg> SocketMessageSend<'msg, StunOrData> for StunChannel {
         match self {
             StunChannel::UdpAny(c) => c.send(msg).await,
             StunChannel::Udp(c) => c.send(msg).await,
-            StunChannel::Tcp(c) => match msg {
-                StunOrData::Stun(msg, _data, _to) => c.send(msg).await,
-                StunOrData::Data(_data, _to) => Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "Cannot send data over a Stun-only TCP connection",
-                )),
-            },
+            StunChannel::Tcp(c) => c.send(msg).await,
             #[cfg(test)]
             StunChannel::AsyncChannel(c) => c.send(msg).await,
         }
@@ -505,12 +405,12 @@ impl<'msg> SocketMessageRecv<'msg> for UdpConnectionChannel
 }
 */
 #[derive(Debug, Clone)]
-pub struct StunOnlyTcpChannel {
+pub struct TcpChannel {
     stream: DebugWrapper<TcpStream>,
     running_buffer: Arc<Mutex<Option<TcpBuffer>>>,
 }
 
-impl StunOnlyTcpChannel {
+impl TcpChannel {
     pub fn new(stream: TcpStream) -> Self {
         Self {
             stream: DebugWrapper::wrap(stream, "..."),
@@ -538,8 +438,6 @@ impl StunOnlyTcpChannel {
             )
         })?;
 
-        // If only stun is being sent over this connection, then we can figure out lengths
-        // ourselves but do need to buffer incoming data as required
         while let Some(size) = stream.read(buf.ref_mut()).await.ok() {
             trace!("recved {} bytes", size);
             buf.read_size(size);
@@ -552,43 +450,53 @@ impl StunOnlyTcpChannel {
                 ));
             }
             trace!("buf {:?}", buf);
-            // we need to buffer up until we have enough data for each STUN
-            // message. This assumes that no other data is being sent over
-            // this socket
-            if buf.len() < 20 {
+            let data_length = if buf.len() >= 2 {
+                (BigEndian::read_u16(&buf.buf[..2]) as usize) + 2
+            } else {
+                usize::MAX
+            };
+
+            let mut may_be_stun = false;
+            let mlength = {
+                let mut ret = usize::MAX;
+                if buf.len() >= 20 {
+                    let tid = BigEndian::read_u128(&buf.buf[4..]);
+                    let cookie = (tid >> 96) as u32;
+
+                    // first two bits are always 0 for stun and the cookie value must match
+                    if buf.buf[0] & 0x3f == 0 && cookie == crate::stun::message::MAGIC_COOKIE {
+                        // XXX: use fingerprint if it exists
+                        ret = (BigEndian::read_u16(&buf.buf[2..4]) as usize) + 20;
+                        may_be_stun = true;
+                    }
+                }
+                ret
+            };
+
+            let min_length = data_length.min(mlength);
+            if min_length > buf.len() {
                 trace!(
-                    "not enough data, buf length {} too short (< 20), reading again",
-                    buf.len()
+                    "not enough data, buf length {} less than smallest advertised size {}, reading again",
+                    buf.len(),
+                    min_length
                 );
                 continue;
-            } else {
-                let mlength = BigEndian::read_u16(&buf.buf[2..]) as usize;
-                if mlength > MAX_STUN_MESSAGE_SIZE {
-                    warn!(
-                        "stun message length ({}) is absurd > {}, aborting read",
-                        mlength, MAX_STUN_MESSAGE_SIZE
-                    );
-                    buf.take(buf.len());
-                    break;
-                }
-                if mlength + 20 > buf.len() {
-                    trace!(
-                        "not enough data, buf length {} less than advertised size {}, reading again",
-                        buf.len(),
-                        mlength + 20
-                    );
-                    continue;
-                }
-                let bytes = buf.take(mlength + 20);
-                trace!("have full message bytes {:?}", bytes);
-                match Message::from_bytes(&bytes) {
+            }
+
+            if may_be_stun {
+                match Message::from_bytes(&buf.buf[..mlength]) {
                     Ok(msg) => {
                         trace!("have message bytes {}", msg);
+                        let bytes = buf.take(mlength);
                         *running.lock().unwrap() = Some(buf);
                         return Ok(StunOrData::Stun(msg, bytes.to_vec(), from));
                     }
                     Err(e) => debug!("failed to parse STUN message: {:?}", e),
                 }
+            } else if data_length <= buf.len() {
+                buf.take(2);
+                let bytes = buf.take(data_length - 2);
+                return Ok(StunOrData::Data(bytes.to_vec(), from));
             }
         }
         debug!("no more data");
@@ -599,7 +507,7 @@ impl StunOnlyTcpChannel {
     }
 }
 
-impl SocketAddresses for StunOnlyTcpChannel {
+impl SocketAddresses for TcpChannel {
     fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
         self.stream.local_addr()
     }
@@ -610,10 +518,59 @@ impl SocketAddresses for StunOnlyTcpChannel {
 }
 
 #[async_trait]
-impl<'msg> SocketMessageSend<'msg, Message> for StunOnlyTcpChannel {
+impl<'msg> SocketMessageSend<'msg, Message> for TcpChannel {
     async fn send<'udp>(&self, msg: Message) -> Result<(), std::io::Error> {
         let mut stream = self.stream.clone();
         stream.write_all(&msg.to_bytes()).await
+    }
+}
+
+// Framing as specified in RFC4571
+//
+// 16-bit length in network order (big-endian) followed by the data. The value of length does not
+// include the length field.
+#[derive(Debug)]
+pub(crate) struct RtpTcpFraming<'data> {
+    rtp: &'data [u8],
+}
+
+#[async_trait]
+impl<'msg> SocketMessageSend<'msg, RtpTcpFraming<'msg>> for TcpChannel {
+    async fn send<'udp>(&self, msg: RtpTcpFraming<'udp>) -> Result<(), std::io::Error> {
+        if msg.rtp.len() > u16::MAX as usize {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "data length too large for transport",
+            ));
+        }
+
+        let mut stream = self.stream.clone();
+        let mut len_bytes = [0; 2];
+        BigEndian::write_u16(&mut len_bytes, msg.rtp.len() as u16);
+        // XXX: may need to check this will not be interpreted as STUN and reject the send
+        stream.write_all(&len_bytes).await?;
+        stream.write_all(msg.rtp).await
+    }
+}
+
+#[async_trait]
+impl<'msg> SocketMessageSend<'msg, &'msg [u8]> for TcpChannel {
+    async fn send<'rtp>(&self, msg: &'rtp [u8]) -> Result<(), std::io::Error> {
+        let framed = RtpTcpFraming { rtp: msg };
+        self.send(framed).await
+    }
+}
+
+#[async_trait]
+impl<'msg> SocketMessageSend<'msg, StunOrData> for TcpChannel {
+    async fn send<'udp>(&self, msg: StunOrData) -> Result<(), std::io::Error> {
+        match msg {
+            StunOrData::Stun(msg, _data, _to) => self.send(msg).await,
+            StunOrData::Data(data, _to) => {
+                let bytes: &[u8] = &data;
+                self.send(bytes).await
+            }
+        }
     }
 }
 
@@ -657,7 +614,7 @@ impl TcpBuffer {
 }
 
 #[async_trait]
-impl SocketMessageRecv<(), StunOrData> for StunOnlyTcpChannel {
+impl SocketMessageRecv<(), StunOrData> for TcpChannel {
     async fn max_recv_size(&self) -> Result<usize, std::io::Error> {
         Ok(1)
     }
@@ -665,11 +622,11 @@ impl SocketMessageRecv<(), StunOrData> for StunOnlyTcpChannel {
     async fn recv<'b>(&self, _msg: &'b mut ()) -> Result<StunOrData, std::io::Error> {
         let mut stream = self.stream.clone();
         let running = self.running_buffer.clone();
-        StunOnlyTcpChannel::inner_recv(&mut stream, running).await
+        TcpChannel::inner_recv(&mut stream, running).await
     }
 }
 
-impl ReceiveStream<StunOrData> for StunOnlyTcpChannel {
+impl ReceiveStream<StunOrData> for TcpChannel {
     fn receive_stream(&self) -> Pin<Box<dyn Stream<Item = StunOrData> + Send>> {
         let stream = self.stream.clone();
         let running = self.running_buffer.clone();
@@ -678,7 +635,7 @@ impl ReceiveStream<StunOrData> for StunOnlyTcpChannel {
         Box::pin(stream::unfold(
             (stream, running),
             |(mut stream, running)| async move {
-                StunOnlyTcpChannel::inner_recv(&mut stream, running.clone())
+                TcpChannel::inner_recv(&mut stream, running.clone())
                     .await
                     .ok()
                     .map(|v| (v, (stream, running)))

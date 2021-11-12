@@ -90,7 +90,7 @@ fn main() -> io::Result<()> {
         let tcp_listener = TcpListener::bind("127.0.0.1:3478").await?;
         let mut incoming = tcp_listener.incoming();
         while let Some(Ok(stream)) = incoming.next().await {
-            let tcp_channel = StunChannel::Tcp(StunOnlyTcpChannel::new(stream));
+            let tcp_channel = StunChannel::Tcp(TcpChannel::new(stream));
             let tcp_stun_agent = StunAgent::new(tcp_channel);
             let mut receive_stream = tcp_stun_agent.receive_stream();
 

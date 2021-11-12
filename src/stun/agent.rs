@@ -358,7 +358,7 @@ impl StunAgentState {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::socket::{StunOnlyTcpChannel, UdpConnectionChannel};
+    use crate::socket::{TcpChannel, UdpConnectionChannel};
     use crate::stun::attribute::{Software, SOFTWARE};
     use async_std::net::{TcpListener, TcpStream};
     use async_std::task;
@@ -539,14 +539,14 @@ pub(crate) mod tests {
             let mut incoming = listener.incoming();
             let tcp2 = incoming.next();
             let tcp1 = task::spawn(async move { TcpStream::connect(local_addr).await });
-            let _tcp2 = tcp2.await.unwrap().unwrap();
-            let _tcp1 = tcp1.await.unwrap();
+            let tcp2 = tcp2.await.unwrap().unwrap();
+            let tcp1 = tcp1.await.unwrap();
 
             // TODO: need the correct rfc framing to send data
-            //let socket_channel1 = StunChannel::Tcp(TcpChannel::new(tcp1));
-            //let socket_channel2 = StunChannel::Tcp(TcpChannel::new(tcp2));
+            let socket_channel1 = StunChannel::Tcp(TcpChannel::new(tcp1));
+            let socket_channel2 = StunChannel::Tcp(TcpChannel::new(tcp2));
 
-            //send_and_receive(socket_channel1, socket_channel2).await;
+            send_and_receive(socket_channel1, socket_channel2).await;
         });
     }
 
@@ -563,7 +563,7 @@ pub(crate) mod tests {
             let addr2 = tcp1.local_addr().unwrap();
             let tcp2 = incoming.next().await.unwrap().unwrap();
             info!("connected");
-            let agent = StunAgent::new(StunChannel::Tcp(StunOnlyTcpChannel::new(tcp2)));
+            let agent = StunAgent::new(StunChannel::Tcp(TcpChannel::new(tcp2)));
 
             let software_str = "ab";
             let mut msg = Message::new_request(48);
