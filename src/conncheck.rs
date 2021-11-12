@@ -15,13 +15,13 @@ use std::time::Duration;
 use futures::channel::oneshot;
 use futures::future::{AbortHandle, Abortable};
 use futures::prelude::*;
-use futures_timer::Delay;
 use tracing_futures::Instrument;
 
 use crate::candidate::{Candidate, CandidatePair, CandidateType, TransportType};
 
 use crate::agent::{AgentError, AgentMessage};
 
+use crate::clock::{get_clock, Clock, ClockType};
 use crate::component::{Component, ComponentState, SelectedPair};
 use crate::stun::agent::StunAgent;
 use crate::stun::attribute::*;
@@ -1259,8 +1259,59 @@ enum ConnCheckResponse {
     Failure(Arc<ConnCheck>),
 }
 
+pub(crate) struct ConnCheckListSetBuilder {
+    streams: Vec<Arc<crate::stream::Stream>>,
+    broadcast: Arc<ChannelBroadcast<AgentMessage>>,
+    tasks: Arc<TaskList>,
+    controlling: bool,
+    clock: Option<Arc<dyn Clock>>,
+}
+
+impl ConnCheckListSetBuilder {
+    fn new(
+        streams: Vec<Arc<crate::stream::Stream>>,
+        broadcast: Arc<ChannelBroadcast<AgentMessage>>,
+        tasks: Arc<TaskList>,
+        controlling: bool,
+    ) -> Self {
+        Self {
+            streams,
+            broadcast,
+            tasks,
+            controlling,
+            clock: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = Some(clock);
+        self
+    }
+
+    pub(crate) fn build(self) -> ConnCheckListSet {
+        let checklists = self
+            .streams
+            .iter()
+            .map(|s| s.checklist.clone())
+            .inspect(|checklist| checklist.set_controlling(self.controlling))
+            .collect();
+        let clock = self
+            .clock
+            .unwrap_or_else(|| get_clock(ClockType::default()));
+
+        ConnCheckListSet {
+            clock,
+            broadcast: self.broadcast,
+            checklists,
+            tasks: self.tasks,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ConnCheckListSet {
+    clock: Arc<dyn Clock>,
     broadcast: Arc<ChannelBroadcast<AgentMessage>>,
     checklists: Vec<Arc<ConnCheckList>>,
     tasks: Arc<TaskList>,
@@ -1269,21 +1320,13 @@ pub(crate) struct ConnCheckListSet {
 impl ConnCheckListSet {
     // TODO: add/remove a stream after start
     // TODO: cancel when agent is stopped
-    pub(crate) fn from_streams(
+    pub(crate) fn builder(
         streams: Vec<Arc<crate::stream::Stream>>,
         broadcast: Arc<ChannelBroadcast<AgentMessage>>,
         tasks: Arc<TaskList>,
         controlling: bool,
-    ) -> Self {
-        Self {
-            broadcast,
-            checklists: streams
-                .iter()
-                .map(|s| s.checklist.clone())
-                .inspect(|checklist| checklist.set_controlling(controlling))
-                .collect(),
-            tasks,
-        }
+    ) -> ConnCheckListSetBuilder {
+        ConnCheckListSetBuilder::new(streams, broadcast, tasks, controlling)
     }
 
     async fn connectivity_check_cancellable(
@@ -1527,7 +1570,11 @@ impl ConnCheckListSet {
                 }
                 CheckListSetProcess::NothingToDo => (),
             }
-            Delay::new(Duration::from_millis(100 /* FIXME */)).await;
+            let delay = self
+                .clock
+                .delay(Duration::from_millis(100 /* FIXME */))
+                .await;
+            delay.wait().await;
         }
         Ok(())
     }
@@ -1623,6 +1670,7 @@ mod tests {
     use super::*;
     use crate::agent::Agent;
     use crate::candidate::*;
+    use crate::clock::ClockType;
     use crate::socket::tests::*;
     use crate::socket::*;
     use crate::stream::*;
@@ -1654,6 +1702,7 @@ mod tests {
     struct PeerBuilder<'this> {
         channel: Option<StunChannel>,
         foundation: Option<&'this str>,
+        clock: Option<Arc<dyn Clock>>,
     }
 
     impl<'this> PeerBuilder<'this> {
@@ -1664,6 +1713,11 @@ mod tests {
 
         fn foundation(mut self, foundation: &'this str) -> Self {
             self.foundation = Some(foundation);
+            self
+        }
+
+        fn clock(mut self, clock: Arc<dyn Clock>) -> Self {
+            self.clock = Some(clock);
             self
         }
 
@@ -1685,7 +1739,8 @@ mod tests {
                 addr,
                 None,
             );
-            let agent = StunAgent::new(channel.clone());
+            let clock = self.clock.unwrap_or_else(|| get_clock(ClockType::System));
+            let agent = StunAgent::builder(channel.clone()).clock(clock).build();
 
             Peer {
                 channel,
@@ -1700,6 +1755,7 @@ mod tests {
             Self {
                 channel: None,
                 foundation: None,
+                clock: None,
             }
         }
     }
@@ -2029,12 +2085,14 @@ mod tests {
     async fn construct_test_peer_with_foundation(
         async_router: ChannelRouter,
         foundation: &str,
+        clock: Arc<dyn Clock>,
     ) -> Peer {
         let addr = async_router.generate_addr();
         let channel = StunChannel::AsyncChannel(AsyncChannel::new(async_router, addr, None));
         Peer::builder()
             .channel(channel)
             .foundation(foundation)
+            .clock(clock)
             .build()
             .await
     }
@@ -2043,6 +2101,7 @@ mod tests {
     fn very_fine_control1() {
         init();
         async_std::task::block_on(async move {
+            let clock = Arc::new(crate::clock::tests::TestClock::default());
             let lcreds = Credentials::new("luser".into(), "lpass".into());
             let rcreds = Credentials::new("ruser".into(), "rpass".into());
             let router = ChannelRouter::default();
@@ -2051,7 +2110,8 @@ mod tests {
             stream.set_local_credentials(lcreds.clone());
             stream.set_remote_credentials(rcreds.clone());
             let component1 = stream.add_component().unwrap();
-            let local1 = construct_test_peer_with_foundation(router.clone(), "0").await;
+            let local1 =
+                construct_test_peer_with_foundation(router.clone(), "0", clock.clone()).await;
             local1
                 .agent
                 .set_local_credentials(MessageIntegrityCredentials::ShortTerm(
@@ -2062,7 +2122,8 @@ mod tests {
                 .set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
                     rcreds.clone().into(),
                 ));
-            let remote1 = construct_test_peer_with_foundation(router.clone(), "0").await;
+            let remote1 =
+                construct_test_peer_with_foundation(router.clone(), "0", clock.clone()).await;
             remote1
                 .agent
                 .set_local_credentials(MessageIntegrityCredentials::ShortTerm(rcreds.into()));
@@ -2078,7 +2139,9 @@ mod tests {
             let broadcast = Arc::new(ChannelBroadcast::default());
             let tasks = Arc::new(TaskList::new());
             let checklist_set =
-                ConnCheckListSet::from_streams(vec![stream.clone()], broadcast, tasks, true);
+                ConnCheckListSet::builder(vec![stream.clone()], broadcast, tasks, true)
+                    .clock(clock.clone())
+                    .build();
             let checklist = stream.checklist.clone();
 
             checklist
@@ -2136,7 +2199,7 @@ mod tests {
             debug!("msg 1 received {:?}", _msg_success);
 
             // should have resulted in a nomination and therefore a triggered check (always a new
-            // check one in our implementation)
+            // check in our implementation)
             let nominate_check = checklist.get_matching_check(&pair, Nominate::True).unwrap();
             assert!(checklist.is_trigerred(nominate_check));
 
