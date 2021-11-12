@@ -106,7 +106,7 @@ pub async fn stund_tcp(listener: TcpListener) -> std::io::Result<()> {
     let addr = listener.local_addr()?;
     while let Some(Ok(stream)) = incoming.next().await {
         async_std::task::spawn(async move {
-            let channel = StunChannel::Tcp(StunOnlyTcpChannel::new(stream));
+            let channel = StunChannel::Tcp(TcpChannel::new(stream));
             let stun_agent = StunAgent::new(channel);
             handle_stun(stun_agent).await.unwrap();
         });
