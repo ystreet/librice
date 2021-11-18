@@ -21,12 +21,49 @@ use tracing_subscriber::EnvFilter;
 extern crate tracing;
 
 use librice::candidate::TransportType;
+use librice::stun::attribute::*;
 use librice::stun::message::*;
 
 fn usage() {
     println!("stunclient [protocol] [address:port]");
     println!();
     println!("\tprotocol: can be either \'udp\' or \'tcp\'");
+}
+
+fn parse_response(response: Message) -> Result<(), std::io::Error> {
+    if Message::check_attribute_types(
+        &response,
+        &[XOR_MAPPED_ADDRESS, FINGERPRINT],
+        &[XOR_MAPPED_ADDRESS],
+    )
+    .is_some()
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Required attributes not found in response",
+        ));
+    }
+    if response.has_class(MessageClass::Success) {
+        // presence checked by check_attribute_types() above
+        let mapped_address = response
+            .get_attribute::<XorMappedAddress>(XOR_MAPPED_ADDRESS)
+            .unwrap();
+        let visible_addr = mapped_address.addr(response.transaction_id());
+        println!("found visible address {:?}", visible_addr);
+        Ok(())
+    } else if response.has_class(MessageClass::Error) {
+        println!("got error response {:?}", response);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Error response",
+        ))
+    } else {
+        println!("got unknown response {:?}", response);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "Unknown response",
+        ))
+    }
 }
 
 fn tcp_message(out: Message, to: SocketAddr) -> Result<(), std::io::Error> {
@@ -48,7 +85,8 @@ fn tcp_message(out: Message, to: SocketAddr) -> Result<(), std::io::Error> {
         socket.local_addr().unwrap(),
         msg
     );
-    Ok(())
+
+    parse_response(msg)
 }
 
 fn udp_message(out: Message, to: SocketAddr) -> Result<(), std::io::Error> {
@@ -70,7 +108,8 @@ fn udp_message(out: Message, to: SocketAddr) -> Result<(), std::io::Error> {
         socket.local_addr().unwrap(),
         msg
     );
-    Ok(())
+
+    parse_response(msg)
 }
 
 fn main() -> std::io::Result<()> {
@@ -99,6 +138,7 @@ fn main() -> std::io::Result<()> {
     })
     .unwrap();
 
+    println!("sending STUN message over {:?} to {}", proto, to);
     let mut msg = Message::new_request(BINDING);
     msg.add_fingerprint().unwrap();
 
