@@ -62,6 +62,12 @@ fn handle_stun_or_data(stun_or_data: StunOrData) -> Option<(Message, SocketAddr)
                     }
                     Err(err) => warn!("error: {}", err),
                 }
+            } else {
+                let mut response = Message::new_error(&msg);
+                response
+                    .add_attribute(ErrorCode::new(400, "Bad Request").unwrap())
+                    .unwrap();
+                return Some((response, from));
             }
         }
     }
