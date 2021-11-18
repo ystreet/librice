@@ -22,8 +22,6 @@ use byteorder::{BigEndian, ByteOrder};
 use crate::agent::AgentError;
 use crate::stun::attribute::*;
 
-use hmac::{Hmac, Mac, NewMac};
-
 /// The value of magic cookie (in network byte order) as specified in RFC5389, and RFC8489.
 pub const MAGIC_COOKIE: u32 = 0x2112A442;
 
@@ -625,8 +623,7 @@ impl Message {
                     &mut fingerprint_data[2..4],
                     (data_offset + padded_len - 20) as u16,
                 );
-                let calculated_fingerprint =
-                    crc::crc32::checksum_ieee(&fingerprint_data).to_be_bytes();
+                let calculated_fingerprint = Fingerprint::compute(&fingerprint_data);
                 if &calculated_fingerprint != msg_fingerprint {
                     warn!(
                         "fingerprint mismatch {:?} != {:?}",
@@ -678,11 +675,8 @@ impl Message {
                 // HMAC is computed using all the data up to (exclusive of) the MESSAGE_INTEGRITY
                 // but with a length field including the MESSAGE_INTEGRITY attribute...
                 let key = credentials.make_hmac_key();
-                let mut hmac =
-                    Hmac::<sha1::Sha1>::new_varkey(&key).map_err(|_| AgentError::Malformed)?;
                 let mut hmac_data = orig_data[..data_offset].to_vec();
                 BigEndian::write_u16(&mut hmac_data[2..4], data_offset as u16 + 24 - 20);
-                hmac.update(&hmac_data);
                 trace!(
                     "validate msg key {:?} from credentials {:?} hmac {:?} data {:?}",
                     key,
@@ -690,9 +684,7 @@ impl Message {
                     msg_hmac,
                     hmac_data
                 );
-                return hmac
-                    .verify(msg_hmac)
-                    .map_err(|_| AgentError::IntegrityCheckFailed);
+                return MessageIntegrity::verify(&hmac_data, &key, msg_hmac);
             }
             let padded_len = padded_attr_size(&attr);
             if padded_len > data.len() {
@@ -745,19 +737,16 @@ impl Message {
         let existing_len = BigEndian::read_u16(&bytes[2..4]);
         BigEndian::write_u16(&mut bytes[2..4], existing_len + 24);
         let key = credentials.make_hmac_key();
-        let mut hmac = Hmac::<sha1::Sha1>::new_varkey(&key).map_err(|_| AgentError::Malformed)?;
-        let hmac_data = bytes.to_vec();
-        hmac.update(&hmac_data);
-        let integrity = hmac.finalize().into_bytes();
+        let integrity = MessageIntegrity::compute(&bytes, &key)?;
         trace!(
             "add integrity key {:?} credentials {:?} hmac {:?} from data {:?}",
             key,
             credentials,
             integrity,
-            hmac_data
+            bytes
         );
         self.attributes
-            .push(MessageIntegrity::new(integrity.into()).into());
+            .push(MessageIntegrity::new(integrity).into());
         Ok(())
     }
 
@@ -787,7 +776,7 @@ impl Message {
         // rewrite the length to include the fingerprint attribute
         let existing_len = BigEndian::read_u16(&bytes[2..4]);
         BigEndian::write_u16(&mut bytes[2..4], existing_len + 8);
-        let fingerprint = crc::crc32::checksum_ieee(&bytes).to_be_bytes();
+        let fingerprint = Fingerprint::compute(&bytes);
         self.attributes.push(Fingerprint::new(fingerprint).into());
         Ok(())
     }
