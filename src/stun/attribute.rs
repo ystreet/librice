@@ -1331,12 +1331,54 @@ impl MessageIntegrity {
     ///
     /// ```
     /// # use librice::stun::attribute::*;
-    /// let hmac = [0;20];
+    /// let hmac = [0; 20];
     /// let integrity = MessageIntegrity::new(hmac);
     /// assert_eq!(integrity.hmac(), &hmac);
     /// ```
     pub fn hmac(&self) -> &[u8; 20] {
         &self.hmac
+    }
+
+    /// Compute the Message Integrity value of a chunk of data using a key
+    ///
+    /// Note: use `MessageIntegrity::verify` for the actual verification to ensure constant time
+    /// checks of the values to defeat certain types of timing attacks.
+    ///
+    /// # Examples
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let key = [40; 10];
+    /// let data = [10; 30];
+    /// let expected = [209, 217, 210, 15, 124, 78, 87, 181, 211, 233, 165, 180, 44, 142, 81, 233, 138, 186, 184, 97];
+    /// let integrity = MessageIntegrity::compute(&data, &key).unwrap();
+    /// assert_eq!(integrity, expected);
+    /// ```
+    pub fn compute(data: &[u8], key: &[u8]) -> Result<[u8; 20], AgentError> {
+        use hmac::{Hmac, Mac, NewMac};
+        let mut hmac =
+            Hmac::<sha1::Sha1>::new_from_slice(key).map_err(|_| AgentError::Malformed)?;
+        hmac.update(data);
+        let ret = hmac.finalize().into_bytes();
+        ret.try_into().map_err(|_| AgentError::Malformed)
+    }
+
+    /// Compute the Message Integrity value of a chunk of data using a key
+    ///
+    /// # Examples
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let key = [40; 10];
+    /// let data = [10; 30];
+    /// let expected = [209, 217, 210, 15, 124, 78, 87, 181, 211, 233, 165, 180, 44, 142, 81, 233, 138, 186, 184, 97];
+    /// assert_eq!(MessageIntegrity::verify(&data, &key, &expected).unwrap(), ());
+    /// ```
+    pub fn verify(data: &[u8], key: &[u8], expected: &[u8; 20]) -> Result<(), AgentError> {
+        use hmac::{Hmac, Mac, NewMac};
+        let mut hmac =
+            Hmac::<sha1::Sha1>::new_from_slice(key).map_err(|_| AgentError::Malformed)?;
+        hmac.update(data);
+        hmac.verify(expected)
+            .map_err(|_| AgentError::IntegrityCheckFailed)
     }
 }
 
@@ -1429,6 +1471,20 @@ impl Fingerprint {
     /// ```
     pub fn fingerprint(&self) -> &[u8; 4] {
         &self.fingerprint
+    }
+
+    /// Compute the fingerprint of a specified block of data as required by STUN
+    ///
+    /// # Examples
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let value = [99;4];
+    /// assert_eq!(Fingerprint::compute(&value), [216, 45, 250, 14]);
+    /// ```
+    pub fn compute(data: &[u8]) -> [u8; 4] {
+        use crc::{Crc, CRC_32_ISO_HDLC};
+        const CRC_ALGO: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
+        CRC_ALGO.checksum(data).to_be_bytes()
     }
 }
 
