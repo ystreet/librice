@@ -75,6 +75,7 @@ pub enum AgentMessage {
 pub struct Agent {
     id: usize,
     inner: Arc<Mutex<AgentInner>>,
+    checklistset: Arc<ConnCheckListSet>,
     broadcast: Arc<ChannelBroadcast<AgentMessage>>,
     tasks: Arc<TaskList>,
 }
@@ -82,10 +83,8 @@ pub struct Agent {
 #[derive(Debug)]
 pub(crate) struct AgentInner {
     id: usize,
+    started: bool,
     streams: Vec<Arc<Stream>>,
-    checklistset: Option<Arc<ConnCheckListSet>>,
-    controlling: bool,
-    tie_breaker: u64,
     pub(crate) stun_servers: Vec<(TransportType, SocketAddr)>,
 }
 
@@ -93,13 +92,10 @@ pub(crate) type AgentFuture = Pin<Box<dyn Future<Output = Result<(), AgentError>
 
 impl AgentInner {
     fn new(id: usize) -> Self {
-        let mut rnd = rand::thread_rng();
         Self {
             id,
+            started: false,
             streams: vec![],
-            checklistset: None,
-            controlling: false,
-            tie_breaker: rnd.gen::<u64>(),
             stun_servers: vec![],
         }
     }
@@ -110,11 +106,25 @@ static AGENT_COUNT: AtomicUsize = AtomicUsize::new(0);
 impl Default for Agent {
     fn default() -> Self {
         let id = AGENT_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let broadcast = Arc::new(ChannelBroadcast::default());
+        let tasks = Arc::new(TaskList::new());
+        let mut rnd = rand::thread_rng();
+        let tie_breaker = rnd.gen::<u64>();
+        let controlling = true;
         Agent {
             id,
             inner: Arc::new(Mutex::new(AgentInner::new(id))),
-            broadcast: Arc::new(ChannelBroadcast::default()),
-            tasks: Arc::new(TaskList::new()),
+            checklistset: Arc::new(
+                ConnCheckListSet::builder(
+                    broadcast.clone(),
+                    tasks.clone(),
+                    tie_breaker,
+                    controlling,
+                )
+                .build(),
+            ),
+            broadcast,
+            tasks,
         }
     }
 }
@@ -132,15 +142,13 @@ impl Agent {
     /// let s = agent.add_stream();
     /// ```
     pub fn add_stream(&self) -> Arc<Stream> {
+        let checklist = self.checklistset.new_list();
         let s = Arc::new(Stream::new(
             Arc::downgrade(&self.inner),
             self.broadcast.clone(),
+            checklist,
         ));
-        {
-            let mut inner = self.inner.lock().unwrap();
-            inner.streams.push(s.clone());
-            // TODO: add stream to connchecklist
-        }
+        self.checklistset.add_stream(s.clone());
         s
     }
 
@@ -169,22 +177,13 @@ impl Agent {
     pub fn start(&self) -> Result<(), AgentError> {
         let set = {
             let mut inner = self.inner.lock().unwrap();
-            if inner.checklistset.is_some() {
+            if inner.started {
                 // already started?
                 // TODO: ICE restart
                 return Ok(());
             }
-            let set = Arc::new(
-                ConnCheckListSet::builder(
-                    inner.streams.clone(),
-                    self.broadcast.clone(),
-                    self.tasks.clone(),
-                    inner.controlling,
-                )
-                .build(),
-            );
-            inner.checklistset = Some(set.clone());
-            set
+            inner.started = true;
+            self.checklistset.clone()
         };
         self.tasks
             .add_task_block(async move { set.agent_conncheck_process().await }.boxed())
@@ -215,22 +214,23 @@ impl Agent {
         )
     )]
     pub fn set_controlling(&self, controlling: bool) {
-        let mut inner = self.inner.lock().unwrap();
-        info!(
-            "agent set controlling from {} to {}",
-            inner.controlling, controlling
-        );
-        inner.controlling = controlling
+        self.checklistset.set_controlling(controlling);
     }
 
     pub fn controlling(&self) -> bool {
-        self.inner.lock().unwrap().controlling
+        self.checklistset.controlling()
     }
 
     pub fn add_stun_server(&self, ttype: TransportType, addr: SocketAddr) {
         let mut inner = self.inner.lock().unwrap();
         info!("Adding stun server {}", addr);
         inner.stun_servers.push((ttype, addr));
+        // TODO: propagate towards the gatherer as required
+    }
+
+    #[cfg(test)]
+    pub(crate) fn check_list_set(&self) -> Arc<ConnCheckListSet> {
+        self.checklistset.clone()
     }
 }
 

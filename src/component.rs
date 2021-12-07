@@ -97,14 +97,22 @@ impl Component {
     }
 
     /// Send data to the peer using the established communication channel
+    #[tracing::instrument(
+        name = "component_send",
+        level = "debug",
+        skip(self, data)
+        fields(
+            component.id = self.id,
+        )
+    )]
     pub async fn send(&self, data: &[u8]) -> Result<(), AgentError> {
         let (channel, to) = {
             let inner = self.inner.lock().unwrap();
             let channel = inner.channel.clone().ok_or(AgentError::ResourceNotFound)?;
             let to = channel.remote_addr()?;
+            trace!("sending {} bytes to {}", data.len(), to);
             (channel, to)
         };
-        debug!("channel {:?}", channel);
         channel.send(StunOrData::Data(data.to_vec(), to)).await?;
         Ok(())
     }

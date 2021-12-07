@@ -68,6 +68,7 @@ impl Stream {
     pub(crate) fn new(
         agent: Weak<Mutex<AgentInner>>,
         broadcast: Arc<ChannelBroadcast<AgentMessage>>,
+        checklist: ConnCheckList,
     ) -> Self {
         let id = STREAM_COUNT.fetch_add(1, Ordering::SeqCst);
         Self {
@@ -75,7 +76,7 @@ impl Stream {
             agent,
             broadcast,
             state: Arc::new(Mutex::new(StreamState::new(id))),
-            checklist: Arc::new(ConnCheckList::new()),
+            checklist: Arc::new(checklist),
         }
     }
 

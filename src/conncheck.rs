@@ -188,7 +188,7 @@ impl ConnCheck {
             if let Some(err) = response.get_attribute::<ErrorCode>(ERROR_CODE) {
                 if err.code() == ROLE_CONFLICT {
                     info!("Role conflict received {}", response);
-                    return Ok(ConnCheckResponse::RoleConflict(conncheck));
+                    return Ok(ConnCheckResponse::RoleConflict(conncheck, !controlling));
                 }
             }
             // FIXME: some failures are recoverable
@@ -243,6 +243,7 @@ struct ConnCheckLocalCandidate {
 #[derive(Debug)]
 struct ConnCheckListInner {
     checklist_id: usize,
+    set_inner: Weak<Mutex<CheckListSetInner>>,
     state: CheckListState,
     component_ids: Vec<usize>,
     components: Vec<Weak<Component>>,
@@ -252,13 +253,13 @@ struct ConnCheckListInner {
     triggered: VecDeque<Arc<ConnCheck>>,
     pairs: VecDeque<Arc<ConnCheck>>,
     valid: Vec<CandidatePair>,
-    controlling: bool,
 }
 
 impl ConnCheckListInner {
-    fn new(checklist_id: usize) -> Self {
+    fn new(checklist_id: usize, set_inner: Weak<Mutex<CheckListSetInner>>) -> Self {
         Self {
             checklist_id,
+            set_inner,
             state: CheckListState::Running,
             component_ids: vec![],
             components: vec![],
@@ -267,24 +268,7 @@ impl ConnCheckListInner {
             triggered: VecDeque::new(),
             pairs: VecDeque::new(),
             valid: vec![],
-            controlling: false,
         }
-    }
-
-    fn controlling(&self) -> bool {
-        self.controlling
-    }
-
-    #[tracing::instrument(
-        level = "debug",
-        skip(self),
-        fields(
-            self.checklist_id,
-            self.controlling
-        )
-    )]
-    fn set_controlling(&mut self, controlling: bool) {
-        self.controlling = controlling
     }
 
     #[tracing::instrument(
@@ -481,6 +465,7 @@ impl ConnCheckListInner {
                     // for each component of the data stream), that pair becomes the
                     // selected pair for that agent and is used for sending and receiving
                     // data for that component of the data stream.
+                    info!("setting selected pairs");
                     self.valid
                         .iter()
                         .fold(vec![], |mut component_ids_selected, valid_pair| {
@@ -585,7 +570,6 @@ impl ConnCheckListInner {
                             check.agent.clone(),
                             true,
                         ));
-                        check.set_state(CandidatePairState::Succeeded);
                         self.add_check(check);
                         if let Some(component) = self.nominated_pair(pair.component_id, &pair) {
                             return Ok(Some(component));
@@ -687,14 +671,6 @@ impl PartialEq<bool> for Nominate {
 }
 
 impl ConnCheckList {
-    pub(crate) fn new() -> Self {
-        let checklist_id = CONN_CHECK_LIST_COUNT.fetch_add(1, Ordering::SeqCst);
-        Self {
-            checklist_id,
-            inner: Arc::new(Mutex::new(ConnCheckListInner::new(checklist_id))),
-        }
-    }
-
     fn state(&self) -> CheckListState {
         self.inner.lock().unwrap().state
     }
@@ -710,21 +686,6 @@ impl ConnCheckList {
         let mut inner = self.inner.lock().unwrap();
         trace!("old state {:?}", inner.state);
         inner.state = state;
-    }
-
-    fn controlling(&self) -> bool {
-        self.inner.lock().unwrap().controlling()
-    }
-
-    #[tracing::instrument(
-        level = "debug",
-        skip(self),
-        fields(
-            checklist_id = self.checklist_id
-        )
-    )]
-    fn set_controlling(&self, controlling: bool) {
-        self.inner.lock().unwrap().set_controlling(controlling)
     }
 
     async fn handle_binding_request(
@@ -782,6 +743,9 @@ impl ConnCheckList {
 
         msg.validate_integrity(data, &remote_credentials)?;
 
+        let ice_controlling = msg.get_attribute::<IceControlling>(ICE_CONTROLLING);
+        let ice_controlled = msg.get_attribute::<IceControlled>(ICE_CONTROLLED);
+
         let response = {
             let checklist = weak_inner.upgrade().ok_or(AgentError::ConnectionClosed)?;
             let mut checklist = checklist.lock().unwrap();
@@ -790,6 +754,66 @@ impl ConnCheckList {
                 // ignore binding requests if we are completed
                 trace!("ignoring binding request as we have completed");
                 return Ok(None);
+            }
+
+            {
+                // Deal with role conflicts
+                // RFC 8445 7.3.1.1.  Detecting and Repairing Role Conflicts
+                let set = checklist
+                    .set_inner
+                    .upgrade()
+                    .ok_or(AgentError::ConnectionClosed)?;
+                let mut set = set.lock().unwrap();
+                if let Some(ice_controlling) = ice_controlling {
+                    //  o  If the agent is in the controlling role, and the ICE-CONTROLLING
+                    //     attribute is present in the request:
+                    if set.controlling {
+                        if set.tie_breaker >= ice_controlling.tie_breaker() {
+                            // *  If the agent's tiebreaker value is larger than or equal to the
+                            //    contents of the ICE-CONTROLLING attribute, the agent generates
+                            //    a Binding error response and includes an ERROR-CODE attribute
+                            //    with a value of 487 (Role Conflict) but retains its role.
+                            let mut response = Message::new_error(msg);
+                            response
+                                .add_attribute(
+                                    ErrorCode::new(ROLE_CONFLICT, "Role Conflict").unwrap(),
+                                )
+                                .unwrap();
+                            return Ok(Some(response));
+                        } else {
+                            // *  If the agent's tiebreaker value is less than the contents of
+                            //    the ICE-CONTROLLING attribute, the agent switches to the
+                            //    controlled role.
+                            set.controlling = false;
+                            // TODO: update priorities and other things
+                        }
+                    }
+                }
+                if let Some(ice_controlled) = ice_controlled {
+                    // o  If the agent is in the controlled role, and the ICE-CONTROLLED
+                    //    attribute is present in the request:
+                    if !set.controlling {
+                        if set.tie_breaker >= ice_controlled.tie_breaker() {
+                            // *  If the agent's tiebreaker value is larger than or equal to the
+                            //    contents of the ICE-CONTROLLED attribute, the agent switches to
+                            //    the controlling role.
+                            set.controlling = true;
+                            // TODO: update priorities and other things
+                        } else {
+                            // *  If the agent's tiebreaker value is less than the contents of
+                            //    the ICE-CONTROLLED attribute, the agent generates a Binding
+                            //    error response and includes an ERROR-CODE attribute with a
+                            //    value of 487 (Role Conflict) but retains its role.
+                            let mut response = Message::new_error(msg);
+                            response
+                                .add_attribute(
+                                    ErrorCode::new(ROLE_CONFLICT, "Role Conflict").unwrap(),
+                                )
+                                .unwrap();
+                            return Ok(Some(response));
+                        }
+                    }
+                }
             }
 
             checklist.handle_binding_request(
@@ -1255,31 +1279,31 @@ impl ConnCheckList {
 #[derive(Debug)]
 enum ConnCheckResponse {
     Success(Arc<ConnCheck>, SocketAddr),
-    RoleConflict(Arc<ConnCheck>),
+    RoleConflict(Arc<ConnCheck>, bool),
     Failure(Arc<ConnCheck>),
 }
 
 pub(crate) struct ConnCheckListSetBuilder {
-    streams: Vec<Arc<crate::stream::Stream>>,
     broadcast: Arc<ChannelBroadcast<AgentMessage>>,
     tasks: Arc<TaskList>,
-    controlling: bool,
     clock: Option<Arc<dyn Clock>>,
+    tie_breaker: u64,
+    controlling: bool,
 }
 
 impl ConnCheckListSetBuilder {
     fn new(
-        streams: Vec<Arc<crate::stream::Stream>>,
         broadcast: Arc<ChannelBroadcast<AgentMessage>>,
         tasks: Arc<TaskList>,
+        tie_breaker: u64,
         controlling: bool,
     ) -> Self {
         Self {
-            streams,
             broadcast,
             tasks,
-            controlling,
             clock: None,
+            tie_breaker,
+            controlling,
         }
     }
 
@@ -1290,12 +1314,6 @@ impl ConnCheckListSetBuilder {
     }
 
     pub(crate) fn build(self) -> ConnCheckListSet {
-        let checklists = self
-            .streams
-            .iter()
-            .map(|s| s.checklist.clone())
-            .inspect(|checklist| checklist.set_controlling(self.controlling))
-            .collect();
         let clock = self
             .clock
             .unwrap_or_else(|| get_clock(ClockType::default()));
@@ -1303,8 +1321,12 @@ impl ConnCheckListSetBuilder {
         ConnCheckListSet {
             clock,
             broadcast: self.broadcast,
-            checklists,
             tasks: self.tasks,
+            inner: Arc::new(Mutex::new(CheckListSetInner {
+                checklists: vec![],
+                tie_breaker: self.tie_breaker,
+                controlling: self.controlling,
+            })),
         }
     }
 }
@@ -1313,20 +1335,54 @@ impl ConnCheckListSetBuilder {
 pub(crate) struct ConnCheckListSet {
     clock: Arc<dyn Clock>,
     broadcast: Arc<ChannelBroadcast<AgentMessage>>,
-    checklists: Vec<Arc<ConnCheckList>>,
     tasks: Arc<TaskList>,
+    inner: Arc<Mutex<CheckListSetInner>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct CheckListSetInner {
+    checklists: Vec<Arc<ConnCheckList>>,
+    tie_breaker: u64,
+    controlling: bool,
 }
 
 impl ConnCheckListSet {
     // TODO: add/remove a stream after start
     // TODO: cancel when agent is stopped
     pub(crate) fn builder(
-        streams: Vec<Arc<crate::stream::Stream>>,
         broadcast: Arc<ChannelBroadcast<AgentMessage>>,
         tasks: Arc<TaskList>,
+        tie_breaker: u64,
         controlling: bool,
     ) -> ConnCheckListSetBuilder {
-        ConnCheckListSetBuilder::new(streams, broadcast, tasks, controlling)
+        ConnCheckListSetBuilder::new(broadcast, tasks, tie_breaker, controlling)
+    }
+
+    pub(crate) fn new_list(&self) -> ConnCheckList {
+        let checklist_id = CONN_CHECK_LIST_COUNT.fetch_add(1, Ordering::SeqCst);
+        ConnCheckList {
+            checklist_id,
+            inner: Arc::new(Mutex::new(ConnCheckListInner::new(
+                checklist_id,
+                Arc::downgrade(&self.inner),
+            ))),
+        }
+    }
+
+    pub(crate) fn add_stream(&self, stream: Arc<crate::stream::Stream>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.checklists.push(stream.checklist.clone());
+    }
+
+    pub(crate) fn set_controlling(&self, controlling: bool) {
+        let mut inner = self.inner.lock().unwrap();
+        // XXX: do we need to update any other state here?
+        inner.controlling = controlling;
+    }
+
+    pub(crate) fn controlling(&self) -> bool {
+        let inner = self.inner.lock().unwrap();
+        inner.controlling
     }
 
     async fn connectivity_check_cancellable(
@@ -1364,7 +1420,7 @@ impl ConnCheckListSet {
         name = "perform_conncheck"
         level = "debug",
         err,
-        skip(conncheck, checklist, checklists),
+        skip(conncheck, checklist, set_inner),
         fields(
             checklist_id = checklist.checklist_id,
             conncheck_id = conncheck.conncheck_id
@@ -1373,11 +1429,17 @@ impl ConnCheckListSet {
     async fn perform_conncheck(
         conncheck: Arc<ConnCheck>,
         checklist: Arc<ConnCheckList>,
-        checklists: Vec<Arc<ConnCheckList>>,
-        controlling: bool,
-        tie_breaker: u64,
+        set_inner: Weak<Mutex<CheckListSetInner>>,
     ) -> Result<(), AgentError> {
         trace!("performing connectivity {:?}", &conncheck);
+        let (controlling, tie_breaker) = {
+            if let Some(set_inner) = set_inner.upgrade() {
+                let set_inner = set_inner.lock().unwrap();
+                (set_inner.controlling, set_inner.tie_breaker)
+            } else {
+                return Err(AgentError::Aborted);
+            }
+        };
         match ConnCheckListSet::connectivity_check_cancellable(
             conncheck.clone(),
             controlling,
@@ -1403,7 +1465,24 @@ impl ConnCheckListSet {
                     checklist.set_state(CheckListState::Failed);
                 }
             }
-            Ok(ConnCheckResponse::RoleConflict(_conncheck)) => error!("Unhandled Role Conflict"),
+            Ok(ConnCheckResponse::RoleConflict(conncheck, new_role)) => {
+                if let Some(set_inner) = set_inner.upgrade() {
+                    let mut set_inner = set_inner.lock().unwrap();
+                    info!(
+                        "Role Conflict changing state from {} -> {}",
+                        set_inner.controlling, new_role
+                    );
+                    if set_inner.controlling != new_role {
+                        set_inner.controlling = new_role;
+                        checklist.remove_valid(&conncheck.pair);
+                        conncheck.set_state(CandidatePairState::Waiting);
+                        let mut list_inner = checklist.inner.lock().unwrap();
+                        list_inner.add_triggered(conncheck);
+                    }
+                } else {
+                    return Err(AgentError::Aborted);
+                }
+            }
             Ok(ConnCheckResponse::Success(conncheck, addr)) => {
                 debug!("succeeded in finding connection {:?}", conncheck);
                 conncheck.set_state(CandidatePairState::Succeeded);
@@ -1429,6 +1508,14 @@ impl ConnCheckListSet {
                     // is added to the valid list associated with the checklist of that
                     // pair.  The pair that generated the check is not added to a vali
                     // list; or
+                    let checklists = {
+                        if let Some(set_inner) = set_inner.upgrade() {
+                            let set_inner = set_inner.lock().unwrap();
+                            set_inner.checklists.clone()
+                        } else {
+                            return Err(AgentError::Aborted);
+                        }
+                    };
                     for checklist in checklists.iter() {
                         if let Some(check) =
                             checklist.get_matching_check(&ok_pair, Nominate::DontCare)
@@ -1511,8 +1598,9 @@ impl ConnCheckListSet {
             //     checklist set) in the Waiting or In-Progress state, the agent
             //     puts the candidate pair state to Waiting and continues with the
             //     next step.
+            let inner = self.inner.lock().unwrap();
             let mut foundations = std::collections::HashSet::new();
-            for checklist in self.checklists.iter() {
+            for checklist in inner.checklists.iter() {
                 for f in checklist.foundations() {
                     foundations.insert(f);
                 }
@@ -1521,7 +1609,7 @@ impl ConnCheckListSet {
             let _: Vec<_> = foundations
                 .into_iter()
                 .map(|f| {
-                    if self
+                    if inner
                         .checklists
                         .iter()
                         .all(|checklist| checklist.foundation_not_waiting_in_progress(&f))
@@ -1547,13 +1635,16 @@ impl ConnCheckListSet {
     #[tracing::instrument(name = "ConnCheckList Loop", level = "debug", err, skip(self))]
     pub(crate) async fn agent_conncheck_process(&self) -> Result<(), AgentError> {
         // perform initial set up
-        for checklist in self.checklists.iter() {
-            checklist.generate_checks();
-        }
+        {
+            let inner = self.inner.lock().unwrap();
+            for checklist in inner.checklists.iter() {
+                checklist.generate_checks();
+            }
 
-        let mut thawn_foundations = vec![];
-        for checklist in self.checklists.iter() {
-            checklist.initial_thaw(&mut thawn_foundations);
+            let mut thawn_foundations = vec![];
+            for checklist in inner.checklists.iter() {
+                checklist.initial_thaw(&mut thawn_foundations);
+            }
         }
 
         let mut running = RunningCheckListSet::from_set(self);
@@ -1584,21 +1675,12 @@ impl ConnCheckListSet {
 struct OutstandingConnCheck {
     conncheck: Arc<ConnCheck>,
     checklist: Arc<ConnCheckList>,
-    checklists: Vec<Arc<ConnCheckList>>,
-    controlling: bool,
-    tie_breaker: u64,
+    set_inner: Weak<Mutex<CheckListSetInner>>,
 }
 
 impl OutstandingConnCheck {
     async fn perform(self) -> Result<(), AgentError> {
-        ConnCheckListSet::perform_conncheck(
-            self.conncheck,
-            self.checklist,
-            self.checklists,
-            self.controlling,
-            self.tie_breaker,
-        )
-        .await
+        ConnCheckListSet::perform_conncheck(self.conncheck, self.checklist, self.set_inner).await
     }
 }
 
@@ -1627,14 +1709,18 @@ impl<'set> RunningCheckListSet<'set> {
         let mut any_running = false;
         loop {
             let start_idx = self.checklist_i;
-            let checklist = &self.set.checklists[self.checklist_i];
-            self.checklist_i += 1;
-            if self.checklist_i >= self.set.checklists.len() {
-                self.checklist_i = 0;
-            }
-            if checklist.state() == CheckListState::Running {
-                any_running = true;
-            }
+            let checklist = {
+                let set_inner = self.set.inner.lock().unwrap();
+                let checklist = &set_inner.checklists[self.checklist_i];
+                self.checklist_i += 1;
+                if self.checklist_i >= set_inner.checklists.len() {
+                    self.checklist_i = 0;
+                }
+                if checklist.state() == CheckListState::Running {
+                    any_running = true;
+                }
+                checklist.clone()
+            };
             let conncheck = match self.set.get_next_check(checklist.clone()) {
                 Some(c) => c,
                 None => {
@@ -1652,14 +1738,11 @@ impl<'set> RunningCheckListSet<'set> {
                 }
             };
 
-            // FIXME: get these values from the agent
-            let tie_breaker = 0;
+            let weak_set_inner = Arc::downgrade(&self.set.inner);
             return CheckListSetProcess::HaveCheck(OutstandingConnCheck {
                 conncheck,
-                checklist: checklist.clone(),
-                checklists: self.set.checklists.to_vec(),
-                controlling: checklist.controlling(),
-                tie_breaker,
+                checklist,
+                set_inner: weak_set_inner,
             });
         }
     }
@@ -1771,7 +1854,8 @@ mod tests {
             let local = Peer::default().await;
             let remote = Peer::default().await;
 
-            let list = ConnCheckList::new();
+            let set = agent.check_list_set();
+            let list = set.new_list();
             list.add_local_candidate(&component, local.candidate.clone(), local.agent.clone())
                 .await;
             list.add_remote_candidate(component.id, remote.candidate.clone());
@@ -1949,7 +2033,8 @@ mod tests {
             let local3 = Peer::default().await;
             let remote3 = Peer::default().await;
 
-            let list = ConnCheckList::new();
+            let set = agent.check_list_set();
+            let list = set.new_list();
             list.add_local_candidate(&component1, local1.candidate.clone(), local1.agent)
                 .await;
             list.add_remote_candidate(component1.id, remote1.candidate.clone());
@@ -1998,8 +2083,9 @@ mod tests {
             let stream = agent.add_stream();
             let component1 = stream.add_component().unwrap();
             let component2 = stream.add_component().unwrap();
-            let list1 = ConnCheckList::new();
-            let list2 = ConnCheckList::new();
+            let set = agent.check_list_set();
+            let list1 = set.new_list();
+            let list2 = set.new_list();
 
             let local1 = Peer::builder().foundation("0").build().await;
             let remote1 = Peer::builder().foundation("0").build().await;
@@ -2138,10 +2224,10 @@ mod tests {
 
             let broadcast = Arc::new(ChannelBroadcast::default());
             let tasks = Arc::new(TaskList::new());
-            let checklist_set =
-                ConnCheckListSet::builder(vec![stream.clone()], broadcast, tasks, true)
-                    .clock(clock.clone())
-                    .build();
+            let checklist_set = ConnCheckListSet::builder(broadcast, tasks, 0, true)
+                .clock(clock.clone())
+                .build();
+            checklist_set.add_stream(stream.clone());
             let checklist = stream.checklist.clone();
 
             checklist

@@ -38,6 +38,7 @@ fn agent_static_connection() {
         lagent.set_controlling(true);
         let ragent = Arc::new(Agent::default());
         ragent.add_stun_server(TransportType::Udp, stun_addr);
+        ragent.set_controlling(false);
 
         let lcreds = Credentials::new("luser".into(), "lpass".into());
         let rcreds = Credentials::new("ruser".into(), "rpass".into());
