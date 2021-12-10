@@ -710,7 +710,7 @@ pub(crate) mod tests {
             };
             let broadcast = {
                 let inner = self.inner.lock().unwrap();
-                error!("send channels {:?}", inner.channels);
+                trace!("send channels {:?}", inner.channels);
                 inner
                     .channels
                     .get(&to)

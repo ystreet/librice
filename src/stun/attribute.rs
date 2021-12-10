@@ -490,7 +490,66 @@ impl Attribute for ErrorCode {
         })
     }
 }
+
+pub struct ErrorCodeBuilder<'reason> {
+    code: u16,
+    reason: Option<&'reason str>,
+}
+
+impl<'reason> ErrorCodeBuilder<'reason> {
+    fn new(code: u16) -> Self {
+        Self { code, reason: None }
+    }
+
+    /// Set the custom reason for this [`ErrorCode`]
+    pub fn reason(mut self, reason: &'reason str) -> Self {
+        self.reason = Some(reason);
+        self
+    }
+
+    /// Create the [`ErrorCode`] with the configured paramaters
+    ///
+    /// # Errors
+    ///
+    /// - When the code value is out of range [300, 699]
+    pub fn build(self) -> Result<ErrorCode, AgentError> {
+        if !(300..700).contains(&self.code) {
+            return Err(AgentError::Malformed);
+        }
+        let reason = self
+            .reason
+            .unwrap_or_else(|| ErrorCode::default_reason_for_code(self.code))
+            .to_owned();
+        Ok(ErrorCode {
+            code: self.code,
+            reason,
+        })
+    }
+}
+
 impl ErrorCode {
+    pub const TRY_ALTERNATE: u16 = 301;
+    pub const BAD_REQUEST: u16 = 400;
+    pub const UNAUTHORIZED: u16 = 401;
+    pub const UNKNOWN_ATRIBUTE: u16 = 420;
+    pub const STALE_NONCE: u16 = 438;
+    pub const SERVER_ERROR: u16 = 500;
+    pub const ROLE_CONFLICT: u16 = 487;
+
+    /// Create a builder for creating a new [`ErrorCode`] [`Attribute`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::stun::attribute::*;
+    /// let error = ErrorCode::builder (400).reason("bad error").build().unwrap();
+    /// assert_eq!(error.code(), 400);
+    /// assert_eq!(error.reason(), "bad error");
+    /// ```
+    pub fn builder<'reason>(code: u16) -> ErrorCodeBuilder<'reason> {
+        ErrorCodeBuilder::new(code)
+    }
+
     /// Create a new [`ErrorCode`] [`Attribute`]
     ///
     /// # Errors
@@ -554,20 +613,18 @@ impl ErrorCode {
     ///  - 487 -> Role Conflict
     pub fn default_reason_for_code(code: u16) -> &'static str {
         match code {
-            301 => "Try Alternate",
-            400 => "Bad Request",
-            401 => "Unauthorized",
-            420 => "Unknown Attribute",
-            438 => "Stale Nonce",
-            500 => "Server Error",
+            Self::TRY_ALTERNATE => "Try Alternate",
+            Self::BAD_REQUEST => "Bad Request",
+            Self::UNAUTHORIZED => "Unauthorized",
+            Self::UNKNOWN_ATRIBUTE => "Unknown Attribute",
+            Self::STALE_NONCE => "Stale Nonce",
+            Self::SERVER_ERROR => "Server Error",
             // RFC 8445
-            ROLE_CONFLICT => "Role Conflict",
+            Self::ROLE_CONFLICT => "Role Conflict",
             _ => "Unknown",
         }
     }
 }
-
-pub const ROLE_CONFLICT: u16 = 487;
 
 impl std::fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
