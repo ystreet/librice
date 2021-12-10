@@ -75,8 +75,10 @@ impl ConnCheckState {
             debug!("aborting recv task");
             let _ = self.abort_handle.take();
         }
-        debug!("updating state");
-        self.state = state;
+        if self.state != state {
+            debug!("updating state");
+            self.state = state;
+        }
     }
 }
 
@@ -186,7 +188,7 @@ impl ConnCheck {
         if response.has_class(MessageClass::Error) {
             warn!("error response {}", response);
             if let Some(err) = response.get_attribute::<ErrorCode>(ERROR_CODE) {
-                if err.code() == ROLE_CONFLICT {
+                if err.code() == ErrorCode::ROLE_CONFLICT {
                     info!("Role conflict received {}", response);
                     return Ok(ConnCheckResponse::RoleConflict(conncheck, !controlling));
                 }
@@ -350,31 +352,27 @@ impl ConnCheckListInner {
         self.remote_candidates.push((component_id, remote));
     }
 
+    fn check_is_equal(check: &Arc<ConnCheck>, pair: &CandidatePair, nominate: Nominate) -> bool {
+        return check.pair.component_id == pair.component_id
+            && check.pair.local == pair.local
+            && check.pair.remote == pair.remote
+            && nominate.eq(&check.nominate);
+    }
+
     fn get_matching_check(
         &self,
         pair: &CandidatePair,
         nominate: Nominate,
     ) -> Option<Arc<ConnCheck>> {
-        self.pairs
+        self.triggered
             .iter()
-            .find(|&check| {
-                check.pair.component_id == pair.component_id
-                    && check.pair.local == pair.local
-                    && check.pair.remote == pair.remote
-                    && nominate.eq(&check.nominate)
+            .find(|&check| Self::check_is_equal(check, pair, nominate))
+            .or_else(|| {
+                self.pairs
+                    .iter()
+                    .find(|&check| Self::check_is_equal(check, pair, nominate))
             })
             .cloned()
-            .or_else(|| {
-                self.triggered
-                    .iter()
-                    .find(|&check| {
-                        check.pair.component_id == pair.component_id
-                            && check.pair.local == pair.local
-                            && check.pair.remote == pair.remote
-                            && nominate.eq(&check.nominate)
-                    })
-                    .cloned()
-            })
     }
 
     fn take_matching_check(&mut self, pair: &CandidatePair) -> Option<Arc<ConnCheck>> {
@@ -647,7 +645,7 @@ fn binding_success_response(
     Ok(response)
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 enum Nominate {
     True,
     False,
@@ -774,11 +772,9 @@ impl ConnCheckList {
                             //    a Binding error response and includes an ERROR-CODE attribute
                             //    with a value of 487 (Role Conflict) but retains its role.
                             let mut response = Message::new_error(msg);
-                            response
-                                .add_attribute(
-                                    ErrorCode::new(ROLE_CONFLICT, "Role Conflict").unwrap(),
-                                )
-                                .unwrap();
+                            response.add_attribute(
+                                ErrorCode::builder(ErrorCode::ROLE_CONFLICT).build()?,
+                            )?;
                             return Ok(Some(response));
                         } else {
                             // *  If the agent's tiebreaker value is less than the contents of
@@ -805,11 +801,9 @@ impl ConnCheckList {
                             //    error response and includes an ERROR-CODE attribute with a
                             //    value of 487 (Role Conflict) but retains its role.
                             let mut response = Message::new_error(msg);
-                            response
-                                .add_attribute(
-                                    ErrorCode::new(ROLE_CONFLICT, "Role Conflict").unwrap(),
-                                )
-                                .unwrap();
+                            response.add_attribute(
+                                ErrorCode::builder(ErrorCode::ROLE_CONFLICT).build()?,
+                            )?;
                             return Ok(Some(response));
                         }
                     }
@@ -1057,10 +1051,10 @@ impl ConnCheckList {
     }
 
     #[cfg(test)]
-    fn is_trigerred(&self, needle: Arc<ConnCheck>) -> bool {
-        self.inner
-            .lock()
-            .unwrap()
+    fn is_triggered(&self, needle: &Arc<ConnCheck>) -> bool {
+        let inner = self.inner.lock().unwrap();
+        trace!("triggered {:?}", inner.triggered);
+        inner
             .triggered
             .iter()
             .any(|check| needle.pair == check.pair)
@@ -1469,12 +1463,18 @@ impl ConnCheckListSet {
                 if let Some(set_inner) = set_inner.upgrade() {
                     let mut set_inner = set_inner.lock().unwrap();
                     info!(
-                        "Role Conflict changing state from {} -> {}",
+                        "Role Conflict changing controlling from {} -> {}",
                         set_inner.controlling, new_role
                     );
                     if set_inner.controlling != new_role {
                         set_inner.controlling = new_role;
                         checklist.remove_valid(&conncheck.pair);
+                        conncheck.cancel();
+                        let conncheck = Arc::new(ConnCheck::new(
+                            conncheck.pair.clone(),
+                            conncheck.agent.clone(),
+                            false,
+                        ));
                         conncheck.set_state(CandidatePairState::Waiting);
                         let mut list_inner = checklist.inner.lock().unwrap();
                         list_inner.add_triggered(conncheck);
@@ -1878,6 +1878,7 @@ mod tests {
         msg: &Message,
         data: &[u8],
         from: SocketAddr,
+        conflict: bool,
     ) -> Result<Message, AgentError> {
         let local_credentials = agent.local_credentials().unwrap();
         let remote_credentials = agent.remote_credentials().unwrap();
@@ -1902,8 +1903,22 @@ mod tests {
 
         msg.validate_integrity(data, &remote_credentials)?;
 
-        let mut response = Message::new_success(msg);
-        response.add_attribute(XorMappedAddress::new(from, msg.transaction_id()))?;
+        let ice_controlling = msg.get_attribute::<IceControlling>(ICE_CONTROLLING);
+        let ice_controlled = msg.get_attribute::<IceControlled>(ICE_CONTROLLED);
+
+        let mut response = if ice_controlling.is_none() && ice_controlled.is_none() {
+            let mut response = Message::new_error(msg);
+            response.add_attribute(ErrorCode::builder(ErrorCode::BAD_REQUEST).build()?)?;
+            response
+        } else if conflict {
+            let mut response = Message::new_error(msg);
+            response.add_attribute(ErrorCode::builder(ErrorCode::ROLE_CONFLICT).build()?)?;
+            response
+        } else {
+            let mut response = Message::new_success(msg);
+            response.add_attribute(XorMappedAddress::new(from, msg.transaction_id()))?;
+            response
+        };
         response.add_message_integrity(&local_credentials)?;
         response.add_fingerprint()?;
         Ok(response)
@@ -1949,7 +1964,7 @@ mod tests {
                             if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
                                 agent
                                     .send_to(
-                                        handle_binding_request(&agent, &msg, &data, from)
+                                        handle_binding_request(&agent, &msg, &data, from, false)
                                             .await
                                             .unwrap(),
                                         from,
@@ -1974,7 +1989,7 @@ mod tests {
                             if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
                                 agent
                                     .send_to(
-                                        handle_binding_request(&agent, &msg, &data, from)
+                                        handle_binding_request(&agent, &msg, &data, from, false)
                                             .await
                                             .unwrap(),
                                         from,
@@ -2183,145 +2198,262 @@ mod tests {
             .await
     }
 
+    struct FineControlPeer {
+        component: Arc<Component>,
+        peer: Peer,
+        checklist_set: ConnCheckListSet,
+        checklist: Arc<ConnCheckList>,
+    }
+
+    struct FineControl {
+        local: FineControlPeer,
+        remote: Peer,
+    }
+
+    struct FineControlBuilder {
+        clock: Arc<dyn Clock>,
+    }
+
+    impl Default for FineControlBuilder {
+        fn default() -> Self {
+            Self {
+                clock: Arc::new(crate::clock::tests::TestClock::default()),
+            }
+        }
+    }
+
+    impl FineControlBuilder {
+        async fn build(self) -> FineControl {
+            let local_credentials = Credentials::new("luser".into(), "lpass".into());
+            let remote_credentials = Credentials::new("luser".into(), "lpass".into());
+            let local_agent = Arc::new(Agent::default());
+            let local_stream = local_agent.add_stream();
+            let local_component = local_stream.add_component().unwrap();
+            let router = ChannelRouter::default();
+
+            let broadcast = Arc::new(ChannelBroadcast::default());
+            let tasks = Arc::new(TaskList::new());
+
+            let local_peer =
+                construct_test_peer_with_foundation(router.clone(), "0", self.clock.clone()).await;
+            local_peer
+                .agent
+                .set_local_credentials(MessageIntegrityCredentials::ShortTerm(
+                    local_credentials.clone().into(),
+                ));
+            local_peer
+                .agent
+                .set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
+                    remote_credentials.clone().into(),
+                ));
+
+            let remote_peer =
+                construct_test_peer_with_foundation(router.clone(), "0", self.clock.clone()).await;
+            remote_peer
+                .agent
+                .set_local_credentials(MessageIntegrityCredentials::ShortTerm(
+                    remote_credentials.clone().into(),
+                ));
+            remote_peer
+                .agent
+                .set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
+                    local_credentials.clone().into(),
+                ));
+
+            let checklist_set =
+                ConnCheckListSet::builder(broadcast.clone(), tasks.clone(), 0, true)
+                    .clock(self.clock.clone())
+                    .build();
+            checklist_set.add_stream(local_stream.clone());
+            let checklist = local_stream.checklist.clone();
+
+            checklist
+                .add_local_candidate(
+                    &local_component,
+                    local_peer.candidate.clone(),
+                    local_peer.agent.clone(),
+                )
+                .await;
+            checklist.add_remote_candidate(local_component.id, remote_peer.candidate.clone());
+
+            FineControl {
+                local: FineControlPeer {
+                    component: local_component,
+                    peer: local_peer,
+                    checklist_set,
+                    checklist,
+                },
+                remote: remote_peer,
+            }
+        }
+    }
+
+    impl FineControl {
+        fn builder() -> FineControlBuilder {
+            FineControlBuilder::default()
+        }
+    }
+
+    #[tracing::instrument(name = "test_send_check_and_get_response", skip(state, set_run))]
+    async fn send_next_check_and_response(
+        state: &FineControl,
+        set_run: &mut RunningCheckListSet<'_>,
+        role_conflict: bool,
+    ) {
+        let remote_s_recv = state.remote.channel.receive_stream();
+        futures::pin_mut!(remote_s_recv);
+        let local_s_recv = state.local.peer.agent.receive_stream();
+        futures::pin_mut!(local_s_recv);
+
+        // perform one tick which will start a connectivity check with the peer
+        let set_ret = set_run.process_next().await;
+        assert!(matches!(set_ret, CheckListSetProcess::HaveCheck(_)));
+        debug!("tick");
+        let check_task = async_std::task::spawn(async move {
+            if let CheckListSetProcess::HaveCheck(check) = set_ret {
+                check.perform().await.unwrap();
+            } else {
+                unreachable!()
+            }
+        });
+
+        // receive and respond to the connectivity check
+        let (msg, data, from) = remote_s_recv.next().await.unwrap().stun().unwrap();
+        debug!("received {:?}", data);
+        assert_eq!(from, state.local.peer.channel.local_addr().unwrap());
+        assert_eq!(msg.method(), BINDING);
+        assert_eq!(msg.class(), MessageClass::Request);
+        // send a role confilict response
+        let resp = handle_binding_request(&state.remote.agent, &msg, &data, from, role_conflict)
+            .await
+            .unwrap();
+        info!("handle request {:?}", resp);
+        state.remote.agent.send_to(resp, from).await.unwrap();
+
+        // wait for the response to reach the checklist and update the state
+        check_task.await;
+        debug!("check done");
+        let response = local_s_recv.next().await.unwrap();
+        debug!("msg received {:?}", response);
+    }
+
     #[test]
     fn very_fine_control1() {
         init();
         async_std::task::block_on(async move {
-            let clock = Arc::new(crate::clock::tests::TestClock::default());
-            let lcreds = Credentials::new("luser".into(), "lpass".into());
-            let rcreds = Credentials::new("ruser".into(), "rpass".into());
-            let router = ChannelRouter::default();
-            let agent = Arc::new(Agent::default());
-            let stream = agent.add_stream();
-            stream.set_local_credentials(lcreds.clone());
-            stream.set_remote_credentials(rcreds.clone());
-            let component1 = stream.add_component().unwrap();
-            let local1 =
-                construct_test_peer_with_foundation(router.clone(), "0", clock.clone()).await;
-            local1
-                .agent
-                .set_local_credentials(MessageIntegrityCredentials::ShortTerm(
-                    lcreds.clone().into(),
-                ));
-            local1
-                .agent
-                .set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
-                    rcreds.clone().into(),
-                ));
-            let remote1 =
-                construct_test_peer_with_foundation(router.clone(), "0", clock.clone()).await;
-            remote1
-                .agent
-                .set_local_credentials(MessageIntegrityCredentials::ShortTerm(rcreds.into()));
-            remote1
-                .agent
-                .set_remote_credentials(MessageIntegrityCredentials::ShortTerm(lcreds.into()));
+            let state = FineControl::builder().build().await;
 
-            let remote_s_recv = remote1.channel.receive_stream();
-            futures::pin_mut!(remote_s_recv);
-            let local_s_recv = local1.agent.receive_stream();
-            futures::pin_mut!(local_s_recv);
-
-            let broadcast = Arc::new(ChannelBroadcast::default());
-            let tasks = Arc::new(TaskList::new());
-            let checklist_set = ConnCheckListSet::builder(broadcast, tasks, 0, true)
-                .clock(clock.clone())
-                .build();
-            checklist_set.add_stream(stream.clone());
-            let checklist = stream.checklist.clone();
-
-            checklist
-                .add_local_candidate(&component1, local1.candidate.clone(), local1.agent.clone())
-                .await;
-            checklist.add_remote_candidate(component1.id, remote1.candidate.clone());
-            checklist.generate_checks();
+            state.local.checklist.generate_checks();
 
             let pair = CandidatePair::new(
-                component1.id,
-                local1.candidate.clone(),
-                remote1.candidate.clone(),
+                state.local.component.id,
+                state.local.peer.candidate.clone(),
+                state.remote.candidate.clone(),
             );
-            let check = checklist
+            let check = state
+                .local
+                .checklist
                 .get_matching_check(&pair, Nominate::False)
                 .unwrap();
             assert_eq!(check.state(), CandidatePairState::Frozen);
 
             let mut thawn = vec![];
             // thaw the first checklist with only a single pair will unfreeze that pair
-            checklist.initial_thaw(&mut thawn);
+            state.local.checklist.initial_thaw(&mut thawn);
             assert_eq!(check.state(), CandidatePairState::Waiting);
 
-            let mut set_run = RunningCheckListSet::from_set(&checklist_set);
+            let mut set_run = RunningCheckListSet::from_set(&state.local.checklist_set);
 
             // perform one tick which will start a connectivity check with the peer
-            let set_ret = set_run.process_next().await;
-            assert!(matches!(set_ret, CheckListSetProcess::HaveCheck(_)));
-            debug!("tick 1");
-            let check_task = async_std::task::spawn(async move {
-                if let CheckListSetProcess::HaveCheck(check) = set_ret {
-                    check.perform().await.unwrap();
-                } else {
-                    unreachable!()
-                }
-            });
-
-            // receive and respond to the connectivity check
-            let data = remote_s_recv.next().await.unwrap().stun().unwrap();
-            debug!("received 1 {:?}", data);
-            assert_eq!(data.2, local1.channel.local_addr().unwrap());
-            assert_eq!(data.0.method(), BINDING);
-            assert_eq!(data.0.class(), MessageClass::Request);
-            let resp = handle_binding_request(&remote1.agent, &data.0, &data.1, data.2)
-                .await
-                .unwrap();
-            info!("handle request {:?}", resp);
-            remote1.agent.send_to(resp, data.2).await.unwrap();
-
-            // wait for the response to reach the checklist and update the state
-            check_task.await;
-            debug!("check 1 done");
+            send_next_check_and_response(&state, &mut set_run, false).await;
             assert_eq!(check.state(), CandidatePairState::Succeeded);
-            let _msg_success = local_s_recv.next().await.unwrap();
-            debug!("msg 1 received {:?}", _msg_success);
 
             // should have resulted in a nomination and therefore a triggered check (always a new
             // check in our implementation)
-            let nominate_check = checklist.get_matching_check(&pair, Nominate::True).unwrap();
-            assert!(checklist.is_trigerred(nominate_check));
+            let nominate_check = state
+                .local
+                .checklist
+                .get_matching_check(&pair, Nominate::True)
+                .unwrap();
+            assert!(state.local.checklist.is_triggered(&nominate_check));
 
             // perform one tick which will perform the nomination check
-            let set_ret = set_run.process_next().await;
-            debug!("tick 2");
-            assert!(matches!(set_ret, CheckListSetProcess::HaveCheck(_)));
-            let check_task = async_std::task::spawn(async move {
-                if let CheckListSetProcess::HaveCheck(check) = set_ret {
-                    check.perform().await.unwrap();
-                } else {
-                    unreachable!()
-                }
-            });
+            send_next_check_and_response(&state, &mut set_run, false).await;
 
-            // receive and respond to the connectivity check
-            let data = remote_s_recv.next().await.unwrap().stun().unwrap();
-            assert_eq!(data.2, local1.channel.local_addr().unwrap());
-            assert_eq!(data.0.method(), BINDING);
-            assert_eq!(data.0.class(), MessageClass::Request);
-            let resp = handle_binding_request(&remote1.agent, &data.0, &data.1, data.2)
-                .await
-                .unwrap();
-            remote1
-                .channel
-                .send(StunOrData::Stun(resp, vec![], data.2))
-                .await
-                .unwrap();
-
-            // wait for the response to reach the checklist and update the state
-            check_task.await;
-            assert_eq!(check.state(), CandidatePairState::Succeeded);
-            let _msg_success = local_s_recv.next().await.unwrap();
+            assert_eq!(nominate_check.state(), CandidatePairState::Succeeded);
 
             // check list is done
-            assert_eq!(checklist.state(), CheckListState::Completed);
+            assert_eq!(state.local.checklist.state(), CheckListState::Completed);
+
+            // perform one final tick attempt which should end the processing
+            assert!(matches!(
+                set_run.process_next().await,
+                CheckListSetProcess::Completed
+            ));
+        });
+    }
+
+    #[test]
+    fn role_conflict_response() {
+        init();
+        async_std::task::block_on(async move {
+            let state = FineControl::builder().build().await;
+
+            // start of in the controlled mode, otherwise, the test needs to do the nomination
+            // check
+            state.local.checklist_set.set_controlling(false);
+            state.local.checklist.generate_checks();
+
+            let pair = CandidatePair::new(
+                state.local.component.id,
+                state.local.peer.candidate.clone(),
+                state.remote.candidate.clone(),
+            );
+            let check = state
+                .local
+                .checklist
+                .get_matching_check(&pair, Nominate::False)
+                .unwrap();
+            assert_eq!(check.state(), CandidatePairState::Frozen);
+
+            let mut thawn = vec![];
+            // thaw the first checklist with only a single pair will unfreeze that pair
+            state.local.checklist.initial_thaw(&mut thawn);
+            assert_eq!(check.state(), CandidatePairState::Waiting);
+
+            let mut set_run = RunningCheckListSet::from_set(&state.local.checklist_set);
+
+            // perform one tick which will start a connectivity check with the peer
+            send_next_check_and_response(&state, &mut set_run, true).await;
+            assert_eq!(check.state(), CandidatePairState::Failed);
+
+            // should have resulted in the check being retriggered (always a new
+            // check in our implementation)
+            let triggered_check = state
+                .local
+                .checklist
+                .get_matching_check(&pair, Nominate::False)
+                .unwrap();
+            assert!(state.local.checklist.is_triggered(&triggered_check));
+
+            // perform the next tick which will have a different ice controlling/ed attribute
+            send_next_check_and_response(&state, &mut set_run, false).await;
+            assert_eq!(triggered_check.state(), CandidatePairState::Succeeded);
+
+            // should have resulted in a nomination and therefore a triggered check (always a new
+            // check in our implementation)
+            let nominate_check = state
+                .local
+                .checklist
+                .get_matching_check(&pair, Nominate::True)
+                .unwrap();
+            assert!(state.local.checklist.is_triggered(&nominate_check));
+
+            // perform one tick which will perform the nomination check
+            send_next_check_and_response(&state, &mut set_run, false).await;
+
+            // check list is done
+            assert_eq!(state.local.checklist.state(), CheckListState::Completed);
 
             // perform one final tick attempt which should end the processing
             assert!(matches!(

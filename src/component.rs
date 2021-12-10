@@ -159,7 +159,6 @@ impl Component {
                 let mut recv_stream = agent.receive_stream();
                 info!("started");
                 while let Some(stun_or_data) = recv_stream.next().await {
-                    info!("got {:?}", stun_or_data);
                     if let Some((data, _from)) = stun_or_data.data() {
                         if let Err(e) = sender.send(data).await {
                             warn!("error receiving {:?}", e);
