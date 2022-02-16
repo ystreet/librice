@@ -23,9 +23,7 @@ extern crate tracing;
 
 mod common;
 
-#[tracing::instrument(
-    name = "agent_static_connection"
-)]
+#[tracing::instrument(name = "agent_static_connection")]
 async fn agent_static_connection_test(local_controlling: bool, remote_controlling: bool) {
     let stun_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let stun_addr = stun_socket.local_addr().unwrap();
