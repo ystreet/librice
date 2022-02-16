@@ -29,3 +29,9 @@ name = "stun_msg_from_bytes"
 path = "fuzz_targets/stun_msg_from_bytes.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "parse_candidate"
+path = "fuzz_targets/parse_candidate.rs"
+test = false
+doc = false
