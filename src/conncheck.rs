@@ -140,8 +140,7 @@ impl ConnCheck {
     async fn connectivity_check(
         conncheck: Arc<ConnCheck>,
         controlling: bool,
-        tie_breaker: u64,
-        nominate: bool,
+        tie_breaker: u64
     ) -> Result<ConnCheckResponse, AgentError> {
         // generate binding request
         let msg = {
@@ -154,7 +153,7 @@ impl ConnCheck {
             } else {
                 msg.add_attribute(IceControlled::new(tie_breaker))?;
             }
-            if nominate {
+            if conncheck.nominate {
                 msg.add_attribute(UseCandidate::new())?;
             }
             msg.add_message_integrity(&conncheck.agent.local_credentials().unwrap())?;
@@ -351,10 +350,10 @@ impl ConnCheckListInner {
     }
 
     fn check_is_equal(check: &Arc<ConnCheck>, pair: &CandidatePair, nominate: Nominate) -> bool {
-        return check.pair.component_id == pair.component_id
+        check.pair.component_id == pair.component_id
             && check.pair.local == pair.local
             && check.pair.remote == pair.remote
-            && nominate.eq(&check.nominate);
+            && nominate.eq(&check.nominate)
     }
 
     fn get_matching_check(
@@ -501,6 +500,14 @@ impl ConnCheckListInner {
             warn!("unknown nomination");
         }
         None
+    }
+
+    fn dump_check_state(&self) {
+        let mut s = format!("checklist {}", self.checklist_id);
+        for pair in self.pairs.iter() {
+            s += &format!("\nID:{} S:{:?} T:{:?} L:{} R:{} F:{}", pair.conncheck_id, pair.state(), pair.pair.local.transport_type, pair.pair.local.address, pair.pair.remote.address, pair.pair.foundation());
+        }
+        debug!("{}", s);
     }
 
     #[tracing::instrument(
@@ -999,7 +1006,7 @@ impl ConnCheckList {
             .filter(|check| {
                 !thawn_foundations
                     .iter()
-                    .any(|foundation| &check.pair.get_foundation() == foundation)
+                    .any(|foundation| &check.pair.foundation() == foundation)
             })
             .collect();
         // sort by component_id
@@ -1016,11 +1023,11 @@ impl ConnCheckList {
         maybe_thaw.retain(|check| {
             if seen_foundations
                 .iter()
-                .any(|foundation| &check.pair.get_foundation() == foundation)
+                .any(|foundation| &check.pair.foundation() == foundation)
             {
                 false
             } else {
-                seen_foundations.push(check.pair.get_foundation());
+                seen_foundations.push(check.pair.foundation());
                 true
             }
         });
@@ -1098,7 +1105,7 @@ impl ConnCheckList {
                 if check.state() == CandidatePairState::Frozen {
                     from_foundations
                         .iter()
-                        .find(|&f| f == &check.pair.get_foundation())
+                        .find(|&f| f == &check.pair.foundation())
                         .and(Some(check))
                 } else {
                     None
@@ -1119,7 +1126,7 @@ impl ConnCheckList {
             .iter()
             .cloned()
             .inspect(|check| {
-                foundations.insert(check.pair.get_foundation());
+                foundations.insert(check.pair.foundation());
             })
             .collect();
         foundations
@@ -1132,7 +1139,7 @@ impl ConnCheckList {
             .pairs
             .iter()
             .fold(true, |accum, elem| {
-                if accum && elem.pair.get_foundation() == foundation {
+                if accum && elem.pair.foundation() == foundation {
                     let state = elem.state();
                     accum
                         && state != CandidatePairState::InProgress
@@ -1373,8 +1380,7 @@ impl ConnCheckListSet {
     async fn connectivity_check_cancellable(
         conncheck: Arc<ConnCheck>,
         controlling: bool,
-        tie_breaker: u64,
-        nominate: bool,
+        tie_breaker: u64
     ) -> Result<ConnCheckResponse, AgentError> {
         let abort_registration = {
             let mut inner = conncheck.state.lock().unwrap();
@@ -1389,7 +1395,7 @@ impl ConnCheckListSet {
         };
 
         let abortable = Abortable::new(
-            ConnCheck::connectivity_check(conncheck, controlling, tie_breaker, nominate),
+            ConnCheck::connectivity_check(conncheck, controlling, tie_breaker),
             abort_registration,
         );
         async_std::task::spawn(async move {
@@ -1429,7 +1435,6 @@ impl ConnCheckListSet {
             conncheck.clone(),
             controlling,
             tie_breaker,
-            conncheck.nominate(),
         )
         .await
         {
@@ -1561,7 +1566,12 @@ impl ConnCheckListSet {
     }
 
     // RFC8445: 6.1.4.2. Performing Connectivity Checks
-    fn get_next_check(&self, checklist: Arc<ConnCheckList>) -> Option<Arc<ConnCheck>> {
+    fn get_next_check(&self, checklist: &ConnCheckList) -> Option<Arc<ConnCheck>> {
+        {
+            let checklist_inner = checklist.inner.lock().unwrap();
+            checklist_inner.dump_check_state();
+        }
+
         // 1.  If the triggered-check queue associated with the checklist
         //     contains one or more candidate pairs, the agent removes the top
         //     pair from the queue, performs a connectivity check on that pair,
@@ -1712,7 +1722,7 @@ impl<'set> RunningCheckListSet<'set> {
                 }
                 checklist.clone()
             };
-            let conncheck = match self.set.get_next_check(checklist.clone()) {
+            let conncheck = match self.set.get_next_check(&checklist) {
                 Some(c) => c,
                 None => {
                     if start_idx == self.checklist_i {
@@ -1993,9 +2003,8 @@ mod tests {
             let conncheck = Arc::new(ConnCheck::new(pair, local.agent, false));
 
             // this is what we're testing.  All of the above is setup for performing this check
-            let nominate = conncheck.nominate();
             let res =
-                ConnCheckListSet::connectivity_check_cancellable(conncheck, true, 0, nominate)
+                ConnCheckListSet::connectivity_check_cancellable(conncheck, true, 0)
                     .await
                     .unwrap();
             match res {
@@ -2133,15 +2142,15 @@ mod tests {
             // thaw the first checklist with only a single pair will unfreeze that pair
             list1.initial_thaw(&mut thawn);
             assert_eq!(thawn.len(), 1);
-            assert_eq!(&thawn[0], &pair1.get_foundation());
+            assert_eq!(&thawn[0], &pair1.foundation());
             // thaw the second checklist with 2*2 pairs will unfreeze only the foundations not
             // unfrozen by the first checklist, which means unfreezing 3 pairs
             list2.initial_thaw(&mut thawn);
             assert_eq!(thawn.len(), 4);
-            assert!(thawn.iter().any(|f| f == &pair2.get_foundation()));
-            assert!(thawn.iter().any(|f| f == &pair3.get_foundation()));
-            assert!(thawn.iter().any(|f| f == &pair4.get_foundation()));
-            assert!(thawn.iter().any(|f| f == &pair5.get_foundation()));
+            assert!(thawn.iter().any(|f| f == &pair2.foundation()));
+            assert!(thawn.iter().any(|f| f == &pair3.foundation()));
+            assert!(thawn.iter().any(|f| f == &pair4.foundation()));
+            assert!(thawn.iter().any(|f| f == &pair5.foundation()));
             let check1 = list1
                 .get_matching_check(&pair1, Nominate::DontCare)
                 .unwrap();
