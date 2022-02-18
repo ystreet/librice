@@ -220,7 +220,7 @@ impl CandidatePair {
         }
     }
 
-    pub(crate) fn get_foundation(&self) -> String {
+    pub(crate) fn foundation(&self) -> String {
         self.local.foundation.to_string() + ":" + &self.remote.foundation
     }
 
