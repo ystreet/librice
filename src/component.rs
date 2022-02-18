@@ -19,7 +19,7 @@ use crate::agent::{AgentError, AgentMessage};
 use crate::candidate::{Candidate, CandidatePair, TransportType};
 
 use crate::socket::{
-    SocketAddresses, SocketMessageSend, StunChannel, StunOrData, UdpConnectionChannel,
+    SocketAddresses, SocketMessageSend, StunChannel, DataFraming, UdpConnectionChannel,
 };
 use crate::stun::agent::StunAgent;
 use crate::stun::message::MessageIntegrityCredentials;
@@ -113,7 +113,7 @@ impl Component {
             trace!("sending {} bytes to {}", data.len(), to);
             (channel, to)
         };
-        channel.send(StunOrData::Data(data.to_vec(), to)).await?;
+        channel.send(DataFraming::from(data, to)).await?;
         Ok(())
     }
 
@@ -361,8 +361,8 @@ mod tests {
             let recv_stream = remote_channel.receive_stream();
             futures::pin_mut!(recv_stream);
             send.send(&data).await.unwrap();
-            let res: (Vec<u8>, SocketAddr) = recv_stream.next().await.unwrap();
-            assert_eq!(data, res.0);
+            let res: DataAddress = recv_stream.next().await.unwrap();
+            assert_eq!(data, res.data);
         });
     }
 
@@ -401,7 +401,7 @@ mod tests {
             let mut recv_stream = send.receive_stream();
             let buf = vec![0, 1];
             channel1
-                .send(StunOrData::Data(buf.clone(), addr2))
+                .send(DataFraming::from(&buf, addr2))
                 .await
                 .unwrap();
             info!("send1");
@@ -409,7 +409,7 @@ mod tests {
             info!("recv");
             let buf = vec![2, 3];
             channel2
-                .send(StunOrData::Data(buf.clone(), addr1))
+                .send(DataFraming::from(&buf, addr1))
                 .await
                 .unwrap();
             info!("send2");

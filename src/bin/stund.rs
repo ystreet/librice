@@ -52,7 +52,7 @@ fn handle_binding_request(msg: &Message, from: SocketAddr) -> Result<Message, Ag
 fn handle_stun_or_data(stun_or_data: StunOrData) -> Option<(Message, SocketAddr)> {
     match stun_or_data {
         StunOrData::Data(data, from) => info!("received from {} data: {:?}", from, data),
-        StunOrData::Stun(msg, _data, from) => {
+        StunOrData::Stun(msg, from) => {
             info!("received from {}: {}", from, msg);
             if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
                 match handle_binding_request(&msg, from) {
