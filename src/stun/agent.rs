@@ -24,6 +24,7 @@ use tracing_futures::Instrument;
 use crate::agent::AgentError;
 
 use crate::socket::*;
+use crate::stun::attribute::*;
 use crate::stun::message::*;
 
 use crate::clock::{get_clock, Clock, ClockType};
@@ -141,10 +142,7 @@ impl StunAgent {
     pub async fn send_to(&self, msg: Message, to: SocketAddr) -> Result<(), std::io::Error> {
         StunAgent::maybe_store_message(&self.inner.state, msg.clone());
         debug!("channel {:?}", self.inner.channel);
-        self.inner
-            .channel
-            .send(StunOrData::Stun(msg, vec![], to))
-            .await
+        self.inner.channel.send(DataRefAddress::from(&msg.to_bytes(), to)).await
     }
 
     pub async fn send(&self, msg: Message) -> Result<(), std::io::Error> {
@@ -167,38 +165,45 @@ impl StunAgent {
                 futures::pin_mut!(recv_stream);
 
                 debug!("started");
-                while let Some(stun_or_data) = recv_stream.next().await {
-                    debug!("got {:?}", stun_or_data);
+                while let Some(data_address) = recv_stream.next().await {
+                    trace!(
+                        "got {} bytes from {:?}",
+                        data_address.data.len(),
+                        data_address.address
+                    );
                     let inner = match Weak::upgrade(&inner_weak) {
                         Some(inner) => inner,
                         None => {
                             break;
                         }
                     };
-                    match stun_or_data {
-                        StunOrData::Stun(msg, data, from) => {
-                            debug!("received from {:?} {}", from, msg);
+                    match Message::from_bytes(&data_address.data) {
+                        Ok(stun_msg) => {
+                            debug!("received from {:?} {}", data_address.address, stun_msg);
                             let handle = {
                                 let mut state = inner.state.lock().unwrap();
-                                state.handle_stun(msg.clone())
+                                state.handle_stun(stun_msg, &data_address.data)
                             };
                             match handle {
-                                HandleStunReply::Broadcast(msg) => {
+                                HandleStunReply::Broadcast(stun_msg) => {
                                     inner
                                         .broadcaster
-                                        .broadcast(StunOrData::Stun(msg, data, from))
+                                        .broadcast(StunOrData::Stun(stun_msg, data_address.address))
                                         .await;
                                 }
                                 HandleStunReply::Failure(err) => {
-                                    warn!("Failed to handle {}. {:?}", msg, err);
+                                    warn!("Failed to handle message. {:?}", err);
                                 }
                                 _ => {}
                             }
                         }
-                        StunOrData::Data(data, from) => {
+                        Err(_) => {
                             inner
                                 .broadcaster
-                                .broadcast(StunOrData::Data(data, from))
+                                .broadcast(StunOrData::Data(
+                                    data_address.data,
+                                    data_address.address,
+                                ))
                                 .await
                         }
                     }
@@ -259,7 +264,7 @@ impl StunAgent {
             trace!("sending {}", msg);
             self.inner
                 .channel
-                .send(StunOrData::Stun(msg.clone(), vec![], to))
+                .send(DataRefAddress::from(&msg.to_bytes(), to))
                 .await?;
         }
 
@@ -283,7 +288,7 @@ impl StunAgent {
         &self,
         msg: &Message,
         addr: SocketAddr,
-    ) -> Result<(Message, Vec<u8>, SocketAddr), AgentError> {
+    ) -> Result<(Message, SocketAddr), AgentError> {
         if !msg.has_class(MessageClass::Request) {
             return Err(AgentError::WrongImplementation);
         }
@@ -294,7 +299,7 @@ impl StunAgent {
             futures::future::abortable(self.send_request(msg.clone(), recv_abort_handle, addr));
 
         let mut receive_s = self.receive_stream_filter(move |stun_or_data| match stun_or_data {
-            StunOrData::Stun(msg, _, from) => tid == msg.transaction_id() && from == &addr,
+            StunOrData::Stun(msg, from) => tid == msg.transaction_id() && from == &addr,
             _ => false,
         });
         let recv_abortable = futures::future::Abortable::new(
@@ -310,9 +315,36 @@ impl StunAgent {
 
         // race the sending and receiving futures returning the first that succeeds
         match futures::future::try_select(send_abortable, recv_abortable).await {
-            Ok(Either::Left((x, _))) => x.map(|_| (Message::new_error(msg), vec![], addr)),
+            Ok(Either::Left((x, _))) => x.map(|_| (Message::new_error(msg), addr)),
             Ok(Either::Right((y, _))) => y.ok_or(AgentError::TimedOut),
             Err(_) => unreachable!(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum StunOrData {
+    Stun(Message, SocketAddr),
+    Data(Vec<u8>, SocketAddr),
+}
+
+impl StunOrData {
+    pub fn stun(self) -> Option<(Message, SocketAddr)> {
+        match self {
+            StunOrData::Stun(msg, addr) => Some((msg, addr)),
+            _ => None,
+        }
+    }
+    pub fn data(self) -> Option<(Vec<u8>, SocketAddr)> {
+        match self {
+            StunOrData::Data(data, addr) => Some((data, addr)),
+            _ => None,
+        }
+    }
+    pub fn addr(&self) -> SocketAddr {
+        match self {
+            StunOrData::Stun(_msg, addr) => *addr,
+            StunOrData::Data(_data, addr) => *addr,
         }
     }
 }
@@ -340,18 +372,38 @@ impl StunAgentState {
         }
     }
 
-    fn handle_stun(&mut self, msg: Message) -> HandleStunReply {
-        // TODO: validate message with credentials
+    fn handle_stun(&mut self, msg: Message, orig_data: &[u8]) -> HandleStunReply {
         if msg.is_response() {
-            if let Some(_orig_request) = self.outstanding_requests.remove(&msg.transaction_id()) {
-                return HandleStunReply::Broadcast(msg);
+            if let Some(orig_request) = self.outstanding_requests.remove(&msg.transaction_id()) {
+                // only validate response if the original request had credentials
+                if orig_request
+                    .get_attribute::<MessageIntegrity>(MESSAGE_INTEGRITY)
+                    .is_some()
+                {
+                    if let Some(remote_creds) = &self.remote_credentials {
+                        match msg.validate_integrity(orig_data, remote_creds) {
+                            Ok(_) => HandleStunReply::Broadcast(msg),
+                            Err(e) => {
+                                debug!("message failed integrity check: {:?}", e);
+                                HandleStunReply::Ignore
+                            }
+                        }
+                    } else {
+                        debug!("no remote credentials, ignoring");
+                        HandleStunReply::Ignore
+                    }
+                } else {
+                    // original message didn't have integrity, reply doesn't need to either
+                    HandleStunReply::Broadcast(msg)
+                }
             } else {
-                debug!("{}, unmatched stun response, dropping {}", self.id, msg);
+                debug!("unmatched stun response, dropping {}", msg);
                 // unmatched response -> drop
-                return HandleStunReply::Ignore;
+                HandleStunReply::Ignore
             }
+        } else {
+            HandleStunReply::Broadcast(msg)
         }
-        HandleStunReply::Broadcast(msg)
     }
 }
 
@@ -367,7 +419,7 @@ pub(crate) mod tests {
         crate::tests::test_init_log();
     }
 
-    fn recv_data(channel: StunChannel) -> impl Future<Output = StunOrData> {
+    fn recv_data(channel: StunChannel) -> impl Future<Output = DataAddress> {
         let result = Arc::new(Mutex::new(None));
         // retrieve the recv channel before starting the task otherwise, there is a race starting
         // the task against the a sender in the current thread.
@@ -404,12 +456,12 @@ pub(crate) mod tests {
         let recv = recv_data(recv_socket);
         let data = vec![4; 4];
         send_socket
-            .send(StunOrData::Data(data.clone(), to))
+            .send(DataFraming::from(&data, to))
             .await
             .unwrap();
-        let result = recv.await.data().unwrap();
-        assert_eq!(result.0, data);
-        assert_eq!(result.1, from);
+        let result = recv.await;
+        assert_eq!(result.data, data);
+        assert_eq!(result.address, from);
     }
 
     #[test]
@@ -447,15 +499,15 @@ pub(crate) mod tests {
         let recv2 = recv_data(recv_socket);
         let data = vec![4; 4];
         send_socket
-            .send(StunOrData::Data(data.clone(), to))
+            .send(DataRefAddress::from(&data, to))
             .await
             .unwrap();
-        let result = recv1.await.data().unwrap();
-        assert_eq!(result.0, data);
-        assert_eq!(result.1, from);
-        let result = recv2.await.data().unwrap();
-        assert_eq!(result.0, data);
-        assert_eq!(result.1, from);
+        let result = recv1.await;
+        assert_eq!(result.data, data);
+        assert_eq!(result.address, from);
+        let result = recv2.await;
+        assert_eq!(result.data, data);
+        assert_eq!(result.address, from);
     }
 
     #[test]
@@ -504,12 +556,11 @@ pub(crate) mod tests {
         task::block_on(async move {
             // set up sockets
             let udp1 = crate::socket::tests::setup_udp_channel().await;
-            let from = udp1.local_addr().unwrap();
             let udp2 = crate::socket::tests::setup_udp_channel().await;
             let to = udp2.local_addr().unwrap();
             let clock = Arc::new(crate::clock::tests::TestClock::default());
 
-            let agent = StunAgent::builder(StunChannel::Udp(UdpConnectionChannel::new(udp1, from)))
+            let agent = StunAgent::builder(StunChannel::Udp(UdpConnectionChannel::new(udp1, to)))
                 .clock(clock.clone())
                 .build();
 
@@ -542,7 +593,6 @@ pub(crate) mod tests {
             let tcp2 = tcp2.await.unwrap().unwrap();
             let tcp1 = tcp1.await.unwrap();
 
-            // TODO: need the correct rfc framing to send data
             let socket_channel1 = StunChannel::Tcp(TcpChannel::new(tcp1));
             let socket_channel2 = StunChannel::Tcp(TcpChannel::new(tcp2));
 
@@ -593,16 +643,16 @@ pub(crate) mod tests {
 
             let stun_or_data = receive_stream.next().await.unwrap();
             info!("received1");
-            assert!(matches!(stun_or_data, StunOrData::Stun(_, _, _)));
-            let (stun_msg, _data, from) = stun_or_data.stun().unwrap();
+            assert!(matches!(stun_or_data, StunOrData::Stun(_, _)));
+            let (stun_msg, from) = stun_or_data.stun().unwrap();
             assert_eq!(from, addr2);
             let attr: Software = stun_msg.get_attribute(SOFTWARE).unwrap();
             assert_eq!(attr.software(), software_str);
 
             let stun_or_data = receive_stream.next().await.unwrap();
             info!("received2");
-            assert!(matches!(stun_or_data, StunOrData::Stun(_, _, _)));
-            let (stun_msg, _data, from) = stun_or_data.stun().unwrap();
+            assert!(matches!(stun_or_data, StunOrData::Stun(_, _)));
+            let (stun_msg, from) = stun_or_data.stun().unwrap();
             assert_eq!(from, addr2);
             let attr: Software = stun_msg.get_attribute(SOFTWARE).unwrap();
             assert_eq!(attr.software(), software_str2);

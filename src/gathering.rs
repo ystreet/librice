@@ -93,7 +93,7 @@ async fn gather_stun_xor_address(
     agent
         .stun_request_transaction(&msg, stun_server)
         .await
-        .and_then(move |(response, _msg_data, from)| {
+        .and_then(move |(response, from)| {
             if let Some(attr) = response.get_attribute::<XorMappedAddress>(XOR_MAPPED_ADDRESS) {
                 debug!(
                     "got external address {:?}",

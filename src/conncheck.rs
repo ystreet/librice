@@ -168,16 +168,14 @@ impl ConnCheck {
         // if timeout -> resend?
         // if longer timeout -> fail
         // TODO: optional: if icmp error -> fail
-        let (response, orig_data, from) =
-            match conncheck.agent.stun_request_transaction(&msg, to).await {
-                Err(e) => {
-                    warn!("connectivity check produced error: {:?}", e);
-                    return Ok(ConnCheckResponse::Failure(conncheck));
-                }
-                Ok(v) => v,
-            };
+        let (response, from) = match conncheck.agent.stun_request_transaction(&msg, to).await {
+            Err(e) => {
+                warn!("connectivity check produced error: {:?}", e);
+                return Ok(ConnCheckResponse::Failure(conncheck));
+            }
+            Ok(v) => v,
+        };
         trace!("have response: {}", response);
-        response.validate_integrity(&orig_data, &conncheck.agent.remote_credentials().unwrap())?;
 
         if !response.is_response() {
             // response is not a response!
@@ -692,16 +690,12 @@ impl ConnCheckList {
         local: &Candidate,
         agent: StunAgent,
         msg: &Message,
-        data: &[u8],
         from: SocketAddr,
     ) -> Result<Option<Message>, AgentError> {
         trace!("have request {}", msg);
 
         let local_credentials = agent
             .local_credentials()
-            .ok_or(AgentError::ResourceNotFound)?;
-        let remote_credentials = agent
-            .remote_credentials()
             .ok_or(AgentError::ResourceNotFound)?;
 
         if let Some(error_msg) = Message::check_attribute_types(
@@ -738,8 +732,6 @@ impl ConnCheckList {
                 return Ok(Some(Message::bad_request(msg)?));
             }
         };
-
-        msg.validate_integrity(data, &remote_credentials)?;
 
         let ice_controlling = msg.get_attribute::<IceControlling>(ICE_CONTROLLING);
         let ice_controlled = msg.get_attribute::<IceControlled>(ICE_CONTROLLED);
@@ -865,7 +857,7 @@ impl ConnCheckList {
                     return;
                 }
                 while let Some(stun_or_data) = recv_stun.next().await {
-                    if let Some((msg, data, from)) = stun_or_data.stun() {
+                    if let Some((msg, from)) = stun_or_data.stun() {
                         // RFC8445 Section 7.3. STUN Server Procedures
                         if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
                             match ConnCheckList::handle_binding_request(
@@ -874,7 +866,6 @@ impl ConnCheckList {
                                 &local,
                                 agent.clone(),
                                 &msg,
-                                &data,
                                 from,
                             )
                             .await
@@ -1876,12 +1867,10 @@ mod tests {
     async fn handle_binding_request(
         agent: &StunAgent,
         msg: &Message,
-        data: &[u8],
         from: SocketAddr,
         conflict: bool,
     ) -> Result<Message, AgentError> {
         let local_credentials = agent.local_credentials().unwrap();
-        let remote_credentials = agent.remote_credentials().unwrap();
 
         if let Some(error_msg) = Message::check_attribute_types(
             msg,
@@ -1900,8 +1889,6 @@ mod tests {
             // failure -> send error response
             return Ok(error_msg);
         }
-
-        msg.validate_integrity(data, &remote_credentials)?;
 
         let ice_controlling = msg.get_attribute::<IceControlling>(ICE_CONTROLLING);
         let ice_controlled = msg.get_attribute::<IceControlled>(ICE_CONTROLLED);
@@ -1959,12 +1946,12 @@ mod tests {
                         StunOrData::Data(data, from) => {
                             debug!("received from {} data: {:?}", from, data)
                         }
-                        StunOrData::Stun(msg, data, from) => {
+                        StunOrData::Stun(msg, from) => {
                             debug!("received from {}: {:?}", from, msg);
                             if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
                                 agent
                                     .send_to(
-                                        handle_binding_request(&agent, &msg, &data, from, false)
+                                        handle_binding_request(&agent, &msg, from, false)
                                             .await
                                             .unwrap(),
                                         from,
@@ -1984,12 +1971,12 @@ mod tests {
                         StunOrData::Data(data, from) => {
                             debug!("received from {} data: {:?}", from, data)
                         }
-                        StunOrData::Stun(msg, data, from) => {
+                        StunOrData::Stun(msg, from) => {
                             debug!("received from {}: {}", from, msg);
                             if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
                                 agent
                                     .send_to(
-                                        handle_binding_request(&agent, &msg, &data, from, false)
+                                        handle_binding_request(&agent, &msg, from, false)
                                             .await
                                             .unwrap(),
                                         from,
@@ -2318,13 +2305,18 @@ mod tests {
         });
 
         // receive and respond to the connectivity check
-        let (msg, data, from) = remote_s_recv.next().await.unwrap().stun().unwrap();
+        let DataAddress {
+            data,
+            address: from,
+        } = remote_s_recv.next().await.unwrap();
         debug!("received {:?}", data);
         assert_eq!(from, state.local.peer.channel.local_addr().unwrap());
+        let msg = Message::from_bytes(&data).unwrap();
         assert_eq!(msg.method(), BINDING);
         assert_eq!(msg.class(), MessageClass::Request);
+
         // send a role confilict response
-        let resp = handle_binding_request(&state.remote.agent, &msg, &data, from, role_conflict)
+        let resp = handle_binding_request(&state.remote.agent, &msg, from, role_conflict)
             .await
             .unwrap();
         info!("handle request {:?}", resp);

@@ -67,7 +67,7 @@ pub async fn handle_stun(stun_agent: StunAgent) -> std::io::Result<()> {
     while let Some(stun_or_data) = receive_stream.next().await {
         match stun_or_data {
             StunOrData::Data(data, from) => info!("received from {} data: {:?}", from, data),
-            StunOrData::Stun(msg, _data, from) => {
+            StunOrData::Stun(msg, from) => {
                 info!("received from {}: {}", from, msg);
                 if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
                     match handle_binding_request(&msg, from) {
