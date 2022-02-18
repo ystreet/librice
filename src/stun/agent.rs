@@ -377,7 +377,7 @@ impl StunAgentState {
             if let Some(orig_request) = self.outstanding_requests.remove(&msg.transaction_id()) {
                 // only validate response if the original request had credentials
                 if orig_request
-                    .get_attribute::<MessageIntegrity>(MESSAGE_INTEGRITY)
+                    .attribute::<MessageIntegrity>(MESSAGE_INTEGRITY)
                     .is_some()
                 {
                     if let Some(remote_creds) = &self.remote_credentials {
@@ -646,7 +646,7 @@ pub(crate) mod tests {
             assert!(matches!(stun_or_data, StunOrData::Stun(_, _)));
             let (stun_msg, from) = stun_or_data.stun().unwrap();
             assert_eq!(from, addr2);
-            let attr: Software = stun_msg.get_attribute(SOFTWARE).unwrap();
+            let attr: Software = stun_msg.attribute(SOFTWARE).unwrap();
             assert_eq!(attr.software(), software_str);
 
             let stun_or_data = receive_stream.next().await.unwrap();
@@ -654,7 +654,7 @@ pub(crate) mod tests {
             assert!(matches!(stun_or_data, StunOrData::Stun(_, _)));
             let (stun_msg, from) = stun_or_data.stun().unwrap();
             assert_eq!(from, addr2);
-            let attr: Software = stun_msg.get_attribute(SOFTWARE).unwrap();
+            let attr: Software = stun_msg.attribute(SOFTWARE).unwrap();
             assert_eq!(attr.software(), software_str2);
         });
     }

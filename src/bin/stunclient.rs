@@ -46,7 +46,7 @@ fn parse_response(response: Message) -> Result<(), std::io::Error> {
     if response.has_class(MessageClass::Success) {
         // presence checked by check_attribute_types() above
         let mapped_address = response
-            .get_attribute::<XorMappedAddress>(XOR_MAPPED_ADDRESS)
+            .attribute::<XorMappedAddress>(XOR_MAPPED_ADDRESS)
             .unwrap();
         let visible_addr = mapped_address.addr(response.transaction_id());
         println!("found visible address {:?}", visible_addr);
