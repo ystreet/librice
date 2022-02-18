@@ -181,7 +181,7 @@ impl Stream {
     /// let stream = agent.add_stream();
     /// let component = stream.add_component().unwrap();
     /// assert_eq!(component.id, component::RTP);
-    /// assert!(stream.get_component(component::RTP).is_some());
+    /// assert!(stream.component(component::RTP).is_some());
     /// ```
     ///
     /// Retrieving a `Component` that doesn't exist will return `None`
@@ -193,9 +193,9 @@ impl Stream {
     /// # use std::sync::Arc;
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
-    /// assert!(stream.get_component(component::RTP).is_none());
+    /// assert!(stream.component(component::RTP).is_none());
     /// ```
-    pub fn get_component(&self, index: usize) -> Option<Arc<Component>> {
+    pub fn component(&self, index: usize) -> Option<Arc<Component>> {
         let state = self.state.lock().unwrap();
         if index < 1 {
             return None;
@@ -245,9 +245,9 @@ impl Stream {
     /// let stream = agent.add_stream();
     /// let credentials = Credentials {ufrag: "1".to_owned(), passwd: "2".to_owned()};
     /// stream.set_local_credentials(credentials.clone());
-    /// assert_eq!(stream.get_local_credentials(), Some(credentials));
+    /// assert_eq!(stream.local_credentials(), Some(credentials));
     /// ```
-    pub fn get_local_credentials(&self) -> Option<Credentials> {
+    pub fn local_credentials(&self) -> Option<Credentials> {
         let state = self.state.lock().unwrap();
         state.local_credentials.clone()
     }
@@ -288,9 +288,9 @@ impl Stream {
     /// let stream = agent.add_stream();
     /// let credentials = Credentials {ufrag: "1".to_owned(), passwd: "2".to_owned()};
     /// stream.set_remote_credentials(credentials.clone());
-    /// assert_eq!(stream.get_remote_credentials(), Some(credentials));
+    /// assert_eq!(stream.remote_credentials(), Some(credentials));
     /// ```
-    pub fn get_remote_credentials(&self) -> Option<Credentials> {
+    pub fn remote_credentials(&self) -> Option<Credentials> {
         let state = self.state.lock().unwrap();
         state.remote_credentials.clone()
     }
@@ -455,11 +455,11 @@ impl Stream {
     /// let component = stream.add_component().unwrap();
     /// task::block_on(async move {
     ///     stream.gather_candidates().await.unwrap();
-    ///     let local_candidates = stream.get_local_candidates();
+    ///     let local_candidates = stream.local_candidates();
     /// });
     /// ```
-    pub fn get_local_candidates(&self) -> Vec<Candidate> {
-        self.checklist.get_local_candidates()
+    pub fn local_candidates(&self) -> Vec<Candidate> {
+        self.checklist.local_candidates()
     }
 
     /// Retrieve previously set remote candidates for connection checks from this stream
@@ -483,12 +483,12 @@ impl Stream {
     ///     None
     /// );
     /// stream.add_remote_candidate(component.id, candidate.clone()).unwrap();
-    /// let remote_cands = stream.get_remote_candidates();
+    /// let remote_cands = stream.remote_candidates();
     /// assert_eq!(remote_cands.len(), 1);
     /// assert_eq!(remote_cands[0], candidate);
     /// ```
-    pub fn get_remote_candidates(&self) -> Vec<Candidate> {
-        self.checklist.get_remote_candidates()
+    pub fn remote_candidates(&self) -> Vec<Candidate> {
+        self.checklist.remote_candidates()
     }
 }
 
@@ -535,7 +535,7 @@ mod tests {
         let _c = s.add_component().unwrap();
         async_std::task::block_on(async move {
             s.gather_candidates().await.unwrap();
-            let local_cands = s.get_local_candidates();
+            let local_cands = s.local_candidates();
             info!("gathered local candidates {:?}", local_cands);
             assert!(!local_cands.is_empty());
             assert!(matches!(
@@ -554,14 +554,14 @@ mod tests {
         async_std::task::block_on(async move {
             let agent = Arc::new(Agent::default());
             let stream = agent.add_stream();
-            assert!(stream.get_component(0).is_none());
+            assert!(stream.component(0).is_none());
             let comp = stream.add_component().unwrap();
-            assert_eq!(comp.id, stream.get_component(comp.id).unwrap().id);
+            assert_eq!(comp.id, stream.component(comp.id).unwrap().id);
 
             stream.set_local_credentials(lcreds.clone());
-            assert_eq!(stream.get_local_credentials().unwrap(), lcreds);
+            assert_eq!(stream.local_credentials().unwrap(), lcreds);
             stream.set_remote_credentials(rcreds.clone());
-            assert_eq!(stream.get_remote_credentials().unwrap(), rcreds);
+            assert_eq!(stream.remote_credentials().unwrap(), rcreds);
         });
     }
 
@@ -585,11 +585,11 @@ mod tests {
             let _rc = rs.add_component().unwrap();
 
             ls.gather_candidates().await.unwrap();
-            let local_cands = ls.get_local_candidates();
+            let local_cands = ls.local_candidates();
             info!("gathered local candidates {:?}", local_cands);
             assert!(!local_cands.is_empty());
             rs.gather_candidates().await.unwrap();
-            let remote_cands = rs.get_local_candidates();
+            let remote_cands = rs.local_candidates();
 
             for cand in local_cands.into_iter() {
                 rs.add_remote_candidate(1, cand).unwrap();

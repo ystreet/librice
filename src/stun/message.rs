@@ -312,10 +312,10 @@ impl std::fmt::Display for Message {
 }
 
 fn padded_attr_size(attr: &RawAttribute) -> usize {
-    if attr.get_length() % 4 == 0 {
-        4 + attr.get_length() as usize
+    if attr.length() % 4 == 0 {
+        4 + attr.length() as usize
     } else {
-        8 + attr.get_length() as usize - attr.get_length() as usize % 4
+        8 + attr.length() as usize - attr.length() as usize % 4
     }
 }
 
@@ -558,7 +558,7 @@ impl Message {
     /// let msg_data = vec![0, 1, 0, 8, 33, 18, 164, 66, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 232, 0, 1, 0, 1, 3, 0, 0, 0];
     /// let mut message = Message::from_bytes(&msg_data).unwrap();
     /// let attr = RawAttribute::new(1.into(), &[3]);
-    /// let msg_attr = message.get_attribute::<RawAttribute>(1.into()).unwrap();
+    /// let msg_attr = message.attribute::<RawAttribute>(1.into()).unwrap();
     /// assert_eq!(msg_attr, attr);
     /// assert_eq!(message.get_type(), MessageType::from_class_method(MessageClass::Request, BINDING));
     /// assert_eq!(message.transaction_id(), 1000.into());
@@ -649,7 +649,7 @@ impl Message {
         credentials: &MessageIntegrityCredentials,
     ) -> Result<(), AgentError> {
         let raw = self
-            .get_attribute::<RawAttribute>(MESSAGE_INTEGRITY)
+            .attribute::<RawAttribute>(MESSAGE_INTEGRITY)
             .ok_or(AgentError::ResourceNotFound)?;
         let integrity = MessageIntegrity::try_from(&raw)?;
         let msg_hmac = integrity.hmac();
@@ -839,9 +839,9 @@ impl Message {
     /// let mut message = Message::new_request(BINDING);
     /// let attr = RawAttribute::new(1.into(), &[3]);
     /// assert!(message.add_attribute(attr.clone()).is_ok());
-    /// assert_eq!(message.get_attribute::<RawAttribute>(1.into()).unwrap(), attr);
+    /// assert_eq!(message.attribute::<RawAttribute>(1.into()).unwrap(), attr);
     /// ```
-    pub fn get_attribute<A: Attribute>(&self, atype: AttributeType) -> Option<A> {
+    pub fn attribute<A: Attribute>(&self, atype: AttributeType) -> Option<A> {
         self.attributes
             .iter()
             .find(|attr| attr.get_type() == atype)
@@ -875,7 +875,7 @@ impl Message {
     ///     &[SOFTWARE]
     /// ).unwrap();
     /// assert!(error_msg.has_attribute(ERROR_CODE));
-    /// let error_code = error_msg.get_attribute::<ErrorCode>(ERROR_CODE).unwrap();
+    /// let error_code = error_msg.attribute::<ErrorCode>(ERROR_CODE).unwrap();
     /// assert_eq!(error_code.code(), 400);
     ///
     /// message.add_attribute(Username::new("user").unwrap());
@@ -884,7 +884,7 @@ impl Message {
     /// let error_msg = Message::check_attribute_types(&message, &[], &[]).unwrap();
     /// assert!(error_msg.is_response());
     /// assert!(error_msg.has_attribute(ERROR_CODE));
-    /// let error_code : ErrorCode = error_msg.get_attribute::<ErrorCode>(ERROR_CODE).unwrap();
+    /// let error_code : ErrorCode = error_msg.attribute::<ErrorCode>(ERROR_CODE).unwrap();
     /// assert_eq!(error_code.code(), 420);
     /// assert!(error_msg.has_attribute(UNKNOWN_ATTRIBUTES));
     /// ```
@@ -931,9 +931,9 @@ impl Message {
     /// let error_msg = Message::unknown_attributes(&msg, &[USERNAME]).unwrap();
     /// assert!(error_msg.is_response());
     /// assert!(error_msg.has_attribute(ERROR_CODE));
-    /// let error_code = error_msg.get_attribute::<ErrorCode>(ERROR_CODE).unwrap();
+    /// let error_code = error_msg.attribute::<ErrorCode>(ERROR_CODE).unwrap();
     /// assert_eq!(error_code.code(), 420);
-    /// let unknown = error_msg.get_attribute::<UnknownAttributes>(UNKNOWN_ATTRIBUTES).unwrap();
+    /// let unknown = error_msg.attribute::<UnknownAttributes>(UNKNOWN_ATTRIBUTES).unwrap();
     /// assert!(unknown.has_attribute(USERNAME));
     /// ```
     pub fn unknown_attributes(
@@ -960,7 +960,7 @@ impl Message {
     /// let msg = Message::new_request(BINDING);
     /// let error_msg = Message::bad_request(&msg).unwrap();
     /// assert!(error_msg.has_attribute(ERROR_CODE));
-    /// let error_code =  error_msg.get_attribute::<ErrorCode>(ERROR_CODE).unwrap();
+    /// let error_code =  error_msg.attribute::<ErrorCode>(ERROR_CODE).unwrap();
     /// assert_eq!(error_code.code(), 400);
     /// ```
     pub fn bad_request(src: &Message) -> Result<Message, AgentError> {
@@ -1034,7 +1034,7 @@ mod tests {
                     let data = msg.to_bytes();
 
                     let msg = Message::from_bytes(&data).unwrap();
-                    let msg_attr = msg.get_attribute::<RawAttribute>(1.into()).unwrap();
+                    let msg_attr = msg.attribute::<RawAttribute>(1.into()).unwrap();
                     assert_eq!(msg_attr, attr);
                     assert_eq!(msg.get_type(), mtype);
                     assert_eq!(msg.transaction_id(), tid.into());
@@ -1050,10 +1050,10 @@ mod tests {
         assert_eq!(msg.transaction_id(), src.transaction_id());
         assert_eq!(msg.class(), MessageClass::Error);
         assert_eq!(msg.method(), src.method());
-        let err = msg.get_attribute::<ErrorCode>(ERROR_CODE).unwrap();
+        let err = msg.attribute::<ErrorCode>(ERROR_CODE).unwrap();
         assert_eq!(err.code(), 420);
         let unknown_attrs = msg
-            .get_attribute::<UnknownAttributes>(UNKNOWN_ATTRIBUTES)
+            .attribute::<UnknownAttributes>(UNKNOWN_ATTRIBUTES)
             .unwrap();
         assert!(unknown_attrs.has_attribute(SOFTWARE));
     }
@@ -1065,7 +1065,7 @@ mod tests {
         assert_eq!(msg.transaction_id(), src.transaction_id());
         assert_eq!(msg.class(), MessageClass::Error);
         assert_eq!(msg.method(), src.method());
-        let err = msg.get_attribute::<ErrorCode>(ERROR_CODE).unwrap();
+        let err = msg.attribute::<ErrorCode>(ERROR_CODE).unwrap();
         assert_eq!(err.code(), 400);
     }
 
@@ -1077,13 +1077,13 @@ mod tests {
         msg.add_attribute(Software::new(software_str).unwrap())
             .unwrap();
         msg.add_fingerprint().unwrap();
-        let orig_fingerprint = msg.get_attribute::<Fingerprint>(FINGERPRINT).unwrap();
+        let orig_fingerprint = msg.attribute::<Fingerprint>(FINGERPRINT).unwrap();
         let bytes: Vec<_> = msg.into();
         // validates the fingerprint of the data when available
         let new_msg = Message::from_bytes(&bytes).unwrap();
-        let software = new_msg.get_attribute::<Software>(SOFTWARE).unwrap();
+        let software = new_msg.attribute::<Software>(SOFTWARE).unwrap();
         assert_eq!(software.software(), software_str);
-        let new_fingerprint = new_msg.get_attribute::<Fingerprint>(FINGERPRINT).unwrap();
+        let new_fingerprint = new_msg.attribute::<Fingerprint>(FINGERPRINT).unwrap();
         assert_eq!(
             orig_fingerprint.fingerprint(),
             new_fingerprint.fingerprint()
@@ -1104,14 +1104,14 @@ mod tests {
         let bytes: Vec<_> = msg.clone().into();
         msg.validate_integrity(&bytes, &credentials).unwrap();
         let orig_integrity = msg
-            .get_attribute::<MessageIntegrity>(MESSAGE_INTEGRITY)
+            .attribute::<MessageIntegrity>(MESSAGE_INTEGRITY)
             .unwrap();
         // validates the fingerprint of the data when available
         let new_msg = Message::from_bytes(&bytes).unwrap();
-        let software = new_msg.get_attribute::<Software>(SOFTWARE).unwrap();
+        let software = new_msg.attribute::<Software>(SOFTWARE).unwrap();
         assert_eq!(software.software(), software_str);
         let new_integrity = new_msg
-            .get_attribute::<MessageIntegrity>(MESSAGE_INTEGRITY)
+            .attribute::<MessageIntegrity>(MESSAGE_INTEGRITY)
             .unwrap();
         assert_eq!(orig_integrity.hmac(), new_integrity.hmac());
         new_msg.validate_integrity(&bytes, &credentials).unwrap();
@@ -1134,7 +1134,7 @@ mod tests {
         let res = res.unwrap();
         assert!(res.has_class(MessageClass::Error));
         assert!(res.has_method(src.method()));
-        let err = res.get_attribute::<ErrorCode>(ERROR_CODE).unwrap();
+        let err = res.attribute::<ErrorCode>(ERROR_CODE).unwrap();
         assert_eq!(err.code(), 400);
 
         // priority unsupported
@@ -1143,10 +1143,10 @@ mod tests {
         let res = res.unwrap();
         assert!(res.has_class(MessageClass::Error));
         assert!(res.has_method(src.method()));
-        let err = res.get_attribute::<ErrorCode>(ERROR_CODE).unwrap();
+        let err = res.attribute::<ErrorCode>(ERROR_CODE).unwrap();
         assert_eq!(err.code(), 420);
         let unknown = res
-            .get_attribute::<UnknownAttributes>(UNKNOWN_ATTRIBUTES)
+            .attribute::<UnknownAttributes>(UNKNOWN_ATTRIBUTES)
             .unwrap();
         assert!(unknown.has_attribute(PRIORITY));
     }
@@ -1192,21 +1192,21 @@ mod tests {
 
         // SOFTWARE
         assert!(msg.has_attribute(SOFTWARE));
-        let raw = msg.get_attribute::<RawAttribute>(SOFTWARE).unwrap();
+        let raw = msg.attribute::<RawAttribute>(SOFTWARE).unwrap();
         assert!(matches!(Software::try_from(&raw), Ok(_)));
         let software = Software::try_from(&raw).unwrap();
         assert_eq!(software.software(), "STUN test client");
 
         // PRIORITY
         assert!(msg.has_attribute(PRIORITY));
-        let raw = msg.get_attribute::<RawAttribute>(PRIORITY).unwrap();
+        let raw = msg.attribute::<RawAttribute>(PRIORITY).unwrap();
         assert!(matches!(Priority::try_from(&raw), Ok(_)));
         let priority = Priority::try_from(&raw).unwrap();
         assert_eq!(priority.priority(), 0x6e0001ff);
 
         // USERNAME
         assert!(msg.has_attribute(USERNAME));
-        let raw = msg.get_attribute::<RawAttribute>(USERNAME).unwrap();
+        let raw = msg.attribute::<RawAttribute>(USERNAME).unwrap();
         assert!(matches!(Username::try_from(&raw), Ok(_)));
         let username = Username::try_from(&raw).unwrap();
         assert_eq!(username.username(), "evtj:h6vY");
@@ -1266,7 +1266,7 @@ mod tests {
 
         // SOFTWARE
         assert!(msg.has_attribute(SOFTWARE));
-        let raw = msg.get_attribute::<RawAttribute>(SOFTWARE).unwrap();
+        let raw = msg.attribute::<RawAttribute>(SOFTWARE).unwrap();
         assert!(matches!(Software::try_from(&raw), Ok(_)));
         let software = Software::try_from(&raw).unwrap();
         assert_eq!(software.software(), "test vector");
@@ -1274,7 +1274,7 @@ mod tests {
         // XOR_MAPPED_ADDRESS
         assert!(msg.has_attribute(XOR_MAPPED_ADDRESS));
         let raw = msg
-            .get_attribute::<RawAttribute>(XOR_MAPPED_ADDRESS)
+            .attribute::<RawAttribute>(XOR_MAPPED_ADDRESS)
             .unwrap();
         assert!(matches!(XorMappedAddress::try_from(&raw), Ok(_)));
         let xor_mapped_addres = XorMappedAddress::try_from(&raw).unwrap();
@@ -1338,7 +1338,7 @@ mod tests {
 
         // SOFTWARE
         assert!(msg.has_attribute(SOFTWARE));
-        let raw = msg.get_attribute::<RawAttribute>(SOFTWARE).unwrap();
+        let raw = msg.attribute::<RawAttribute>(SOFTWARE).unwrap();
         assert!(matches!(Software::try_from(&raw), Ok(_)));
         let software = Software::try_from(&raw).unwrap();
         assert_eq!(software.software(), "test vector");
@@ -1346,7 +1346,7 @@ mod tests {
         // XOR_MAPPED_ADDRESS
         assert!(msg.has_attribute(XOR_MAPPED_ADDRESS));
         let raw = msg
-            .get_attribute::<RawAttribute>(XOR_MAPPED_ADDRESS)
+            .attribute::<RawAttribute>(XOR_MAPPED_ADDRESS)
             .unwrap();
         assert!(matches!(XorMappedAddress::try_from(&raw), Ok(_)));
         let xor_mapped_addres = XorMappedAddress::try_from(&raw).unwrap();
@@ -1424,7 +1424,7 @@ mod tests {
         };
         // USERNAME
         assert!(msg.has_attribute(USERNAME));
-        let raw = msg.get_attribute::<RawAttribute>(USERNAME).unwrap();
+        let raw = msg.attribute::<RawAttribute>(USERNAME).unwrap();
         assert!(matches!(Username::try_from(&raw), Ok(_)));
         let username = Username::try_from(&raw).unwrap();
         assert_eq!(username.username(), &long_term.username);
@@ -1432,7 +1432,7 @@ mod tests {
         // NONCE
         /* XXX: not currently implemented
         assert!(msg.has_attribute(NONCE));
-        let raw = msg.get_attribute::<RawAttribute>(NONCE).unwrap();
+        let raw = msg.attribute::<RawAttribute>(NONCE).unwrap();
         assert!(matches!(Nonce::try_from(&raw), Ok(_)));
         let nonce = Nonce::try_from(&raw).unwrap();
         assert_eq!(nonce., &long_term.username);

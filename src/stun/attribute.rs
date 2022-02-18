@@ -189,7 +189,7 @@ pub trait Attribute: std::fmt::Debug {
 
     /// Retrieve the length of an `Attribute`.  This is not the padded length as stored in a
     /// `Message`
-    fn get_length(&self) -> u16;
+    fn length(&self) -> u16;
 
     /// Convert an `Attribute` to a `RawAttribute`
     fn to_raw(&self) -> RawAttribute;
@@ -261,7 +261,7 @@ impl std::fmt::Display for RawAttribute {
 }
 
 impl Attribute for RawAttribute {
-    fn get_length(&self) -> u16 {
+    fn length(&self) -> u16 {
         self.header.length
     }
 
@@ -298,7 +298,7 @@ impl RawAttribute {
     /// let data = &[0, 1, 0, 2, 5, 6, 0, 0];
     /// let attr = RawAttribute::from_bytes(data).unwrap();
     /// assert_eq!(attr.get_type(), AttributeType::new(1));
-    /// assert_eq!(attr.get_length(), 2);
+    /// assert_eq!(attr.length(), 2);
     /// ```
     pub fn from_bytes(data: &[u8]) -> Result<Self, AgentError> {
         let header = AttributeHeader::parse(data)?;
@@ -359,7 +359,7 @@ impl Attribute for Username {
         USERNAME
     }
 
-    fn get_length(&self) -> u16 {
+    fn length(&self) -> u16 {
         self.user.len() as u16
     }
 
@@ -452,12 +452,12 @@ impl Attribute for ErrorCode {
         ERROR_CODE
     }
 
-    fn get_length(&self) -> u16 {
+    fn length(&self) -> u16 {
         self.reason.len() as u16 + 4
     }
 
     fn to_raw(&self) -> RawAttribute {
-        let mut data = Vec::with_capacity(self.get_length() as usize);
+        let mut data = Vec::with_capacity(self.length() as usize);
         data.push(0u8);
         data.push(0u8);
         data.push((self.code / 100) as u8);
@@ -656,12 +656,12 @@ impl Attribute for UnknownAttributes {
         UNKNOWN_ATTRIBUTES
     }
 
-    fn get_length(&self) -> u16 {
+    fn length(&self) -> u16 {
         (self.attributes.len() as u16) * 2
     }
 
     fn to_raw(&self) -> RawAttribute {
-        let mut data = Vec::with_capacity(self.get_length() as usize);
+        let mut data = Vec::with_capacity(self.length() as usize);
         for attr in &self.attributes {
             let mut encoded = vec![0; 2];
             BigEndian::write_u16(&mut encoded, (*attr).into());
@@ -761,7 +761,7 @@ impl Attribute for Software {
         SOFTWARE
     }
 
-    fn get_length(&self) -> u16 {
+    fn length(&self) -> u16 {
         self.software.len() as u16
     }
 
@@ -862,7 +862,7 @@ impl Attribute for XorMappedAddress {
         XOR_MAPPED_ADDRESS
     }
 
-    fn get_length(&self) -> u16 {
+    fn length(&self) -> u16 {
         match self.addr {
             SocketAddr::V4(_) => 8,
             SocketAddr::V6(_) => 20,
@@ -1019,7 +1019,7 @@ impl Attribute for Priority {
         PRIORITY
     }
 
-    fn get_length(&self) -> u16 {
+    fn length(&self) -> u16 {
         4
     }
 
@@ -1102,7 +1102,7 @@ impl Attribute for UseCandidate {
         USE_CANDIDATE
     }
 
-    fn get_length(&self) -> u16 {
+    fn length(&self) -> u16 {
         0
     }
 
@@ -1173,7 +1173,7 @@ impl Attribute for IceControlled {
         ICE_CONTROLLED
     }
 
-    fn get_length(&self) -> u16 {
+    fn length(&self) -> u16 {
         8
     }
 
@@ -1258,7 +1258,7 @@ impl Attribute for IceControlling {
         ICE_CONTROLLING
     }
 
-    fn get_length(&self) -> u16 {
+    fn length(&self) -> u16 {
         8
     }
 
@@ -1343,7 +1343,7 @@ impl Attribute for MessageIntegrity {
         MESSAGE_INTEGRITY
     }
 
-    fn get_length(&self) -> u16 {
+    fn length(&self) -> u16 {
         20
     }
 
@@ -1473,7 +1473,7 @@ impl Attribute for Fingerprint {
         FINGERPRINT
     }
 
-    fn get_length(&self) -> u16 {
+    fn length(&self) -> u16 {
         4
     }
 
@@ -1613,12 +1613,12 @@ mod tests {
         let raw = orig.to_raw();
         assert_eq!(raw.get_type(), 1.into());
         assert_eq!(orig.get_type(), raw.get_type());
-        assert_eq!(orig.get_length(), raw.get_length());
+        assert_eq!(orig.length(), raw.length());
         assert_eq!(orig.to_bytes(), raw.to_bytes());
         let raw = RawAttribute::from_raw(&orig).unwrap();
         assert_eq!(raw.get_type(), 1.into());
         assert_eq!(orig.get_type(), raw.get_type());
-        assert_eq!(orig.get_length(), raw.get_length());
+        assert_eq!(orig.length(), raw.length());
         assert_eq!(orig.to_bytes(), raw.to_bytes());
         let mut data: Vec<_> = raw.into();
         let len = data.len();
@@ -1637,7 +1637,7 @@ mod tests {
         let user = Username::new(&s).unwrap();
         assert_eq!(user.get_type(), USERNAME);
         assert_eq!(user.username(), s);
-        assert_eq!(user.get_length() as usize, s.len());
+        assert_eq!(user.length() as usize, s.len());
         let raw: RawAttribute = user.into();
         assert_eq!(raw.get_type(), USERNAME);
         let user2 = Username::try_from(&raw).unwrap();
@@ -1813,7 +1813,7 @@ mod tests {
         init();
         let use_candidate = UseCandidate::new();
         assert_eq!(use_candidate.get_type(), USE_CANDIDATE);
-        assert_eq!(use_candidate.get_length(), 0);
+        assert_eq!(use_candidate.length(), 0);
         let raw: RawAttribute = use_candidate.into();
         assert_eq!(raw.get_type(), USE_CANDIDATE);
         let mapped2 = UseCandidate::try_from(&raw).unwrap();

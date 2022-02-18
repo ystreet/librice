@@ -184,7 +184,7 @@ impl ConnCheck {
         // if response error -> fail TODO: might be a recoverable error!
         if response.has_class(MessageClass::Error) {
             warn!("error response {}", response);
-            if let Some(err) = response.get_attribute::<ErrorCode>(ERROR_CODE) {
+            if let Some(err) = response.attribute::<ErrorCode>(ERROR_CODE) {
                 if err.code() == ErrorCode::ROLE_CONFLICT {
                     info!("Role conflict received {}", response);
                     return Ok(ConnCheckResponse::RoleConflict(conncheck, !controlling));
@@ -204,7 +204,7 @@ impl ConnCheck {
             return Ok(ConnCheckResponse::Failure(conncheck));
         }
 
-        if let Some(xor) = response.get_attribute::<XorMappedAddress>(XOR_MAPPED_ADDRESS) {
+        if let Some(xor) = response.attribute::<XorMappedAddress>(XOR_MAPPED_ADDRESS) {
             let xor_addr = xor.addr(response.transaction_id());
             // TODO: if response mapped address not in remote candidate list -> new peer-reflexive candidate
             // TODO glare
@@ -356,7 +356,7 @@ impl ConnCheckListInner {
             && nominate.eq(&check.nominate)
     }
 
-    fn get_matching_check(
+    fn matching_check(
         &self,
         pair: &CandidatePair,
         nominate: Nominate,
@@ -723,7 +723,7 @@ impl ConnCheckList {
             return Ok(Some(error_msg));
         }
         let peer_nominating =
-            if let Some(use_candidate_raw) = msg.get_attribute::<RawAttribute>(USE_CANDIDATE) {
+            if let Some(use_candidate_raw) = msg.attribute::<RawAttribute>(USE_CANDIDATE) {
                 if UseCandidate::from_raw(&use_candidate_raw).is_ok() {
                     true
                 } else {
@@ -733,15 +733,15 @@ impl ConnCheckList {
                 false
             };
 
-        let priority = match msg.get_attribute::<Priority>(PRIORITY) {
+        let priority = match msg.attribute::<Priority>(PRIORITY) {
             Some(p) => p.priority(),
             None => {
                 return Ok(Some(Message::bad_request(msg)?));
             }
         };
 
-        let ice_controlling = msg.get_attribute::<IceControlling>(ICE_CONTROLLING);
-        let ice_controlled = msg.get_attribute::<IceControlled>(ICE_CONTROLLED);
+        let ice_controlling = msg.attribute::<IceControlling>(ICE_CONTROLLING);
+        let ice_controlled = msg.attribute::<IceControlled>(ICE_CONTROLLED);
 
         let response = {
             let checklist = weak_inner.upgrade().ok_or(AgentError::ConnectionClosed)?;
@@ -1187,7 +1187,7 @@ impl ConnCheckList {
         }
     }
 
-    fn get_matching_check(
+    fn matching_check(
         &self,
         pair: &CandidatePair,
         nominate: Nominate,
@@ -1195,10 +1195,10 @@ impl ConnCheckList {
         self.inner
             .lock()
             .unwrap()
-            .get_matching_check(pair, nominate)
+            .matching_check(pair, nominate)
     }
 
-    pub(crate) fn get_local_candidates(&self) -> Vec<Candidate> {
+    pub(crate) fn local_candidates(&self) -> Vec<Candidate> {
         self.inner
             .lock()
             .unwrap()
@@ -1208,7 +1208,7 @@ impl ConnCheckList {
             .collect()
     }
 
-    pub(crate) fn get_remote_candidates(&self) -> Vec<Candidate> {
+    pub(crate) fn remote_candidates(&self) -> Vec<Candidate> {
         self.inner
             .lock()
             .unwrap()
@@ -1489,7 +1489,7 @@ impl ConnCheckListSet {
                 // If the valid pair equals the pair that generated the check, the
                 // pair is added to the valid list associated with the checklist to
                 // which the pair belongs; or
-                if let Some(_check) = checklist.get_matching_check(&ok_pair, Nominate::DontCare) {
+                if let Some(_check) = checklist.matching_check(&ok_pair, Nominate::DontCare) {
                     checklist.add_valid(ok_pair.clone());
                     if conncheck.nominate() {
                         checklist
@@ -1514,7 +1514,7 @@ impl ConnCheckListSet {
                     };
                     for checklist in checklists.iter() {
                         if let Some(check) =
-                            checklist.get_matching_check(&ok_pair, Nominate::DontCare)
+                            checklist.matching_check(&ok_pair, Nominate::DontCare)
                         {
                             checklist.add_valid(check.pair.clone());
                             if conncheck.nominate() {
@@ -1566,7 +1566,7 @@ impl ConnCheckListSet {
     }
 
     // RFC8445: 6.1.4.2. Performing Connectivity Checks
-    fn get_next_check(&self, checklist: &ConnCheckList) -> Option<Arc<ConnCheck>> {
+    fn next_check(&self, checklist: &ConnCheckList) -> Option<Arc<ConnCheck>> {
         {
             let checklist_inner = checklist.inner.lock().unwrap();
             checklist_inner.dump_check_state();
@@ -1722,7 +1722,7 @@ impl<'set> RunningCheckListSet<'set> {
                 }
                 checklist.clone()
             };
-            let conncheck = match self.set.get_next_check(&checklist) {
+            let conncheck = match self.set.next_check(&checklist) {
                 Some(c) => c,
                 None => {
                     if start_idx == self.checklist_i {
@@ -1862,10 +1862,10 @@ mod tests {
             list.add_remote_candidate(component.id, remote.candidate.clone());
 
             // The candidate list is only what we put in
-            let locals = list.get_local_candidates();
+            let locals = list.local_candidates();
             assert_eq!(locals.len(), 1);
             assert_eq!(locals[0], local.candidate);
-            let remotes = list.get_remote_candidates();
+            let remotes = list.remote_candidates();
             assert_eq!(remotes.len(), 1);
             assert_eq!(remotes[0], remote.candidate);
         })
@@ -1900,8 +1900,8 @@ mod tests {
             return Ok(error_msg);
         }
 
-        let ice_controlling = msg.get_attribute::<IceControlling>(ICE_CONTROLLING);
-        let ice_controlled = msg.get_attribute::<IceControlled>(ICE_CONTROLLED);
+        let ice_controlling = msg.attribute::<IceControlling>(ICE_CONTROLLING);
+        let ice_controlled = msg.attribute::<IceControlled>(ICE_CONTROLLED);
 
         let mut response = if ice_controlling.is_none() && ice_controlled.is_none() {
             let mut response = Message::new_error(msg);
@@ -2018,13 +2018,13 @@ mod tests {
 
     fn assert_list_does_not_contain_checks(list: &ConnCheckList, pairs: Vec<&CandidatePair>) {
         for pair in pairs.iter() {
-            assert!(list.get_matching_check(pair, Nominate::DontCare).is_none());
+            assert!(list.matching_check(pair, Nominate::DontCare).is_none());
         }
     }
 
     fn assert_list_contains_checks(list: &ConnCheckList, pairs: Vec<&CandidatePair>) {
         for pair in pairs.iter() {
-            let check = list.get_matching_check(pair, Nominate::DontCare).unwrap();
+            let check = list.matching_check(pair, Nominate::DontCare).unwrap();
             assert_eq!(&&check.pair, pair);
         }
     }
@@ -2152,27 +2152,27 @@ mod tests {
             assert!(thawn.iter().any(|f| f == &pair4.foundation()));
             assert!(thawn.iter().any(|f| f == &pair5.foundation()));
             let check1 = list1
-                .get_matching_check(&pair1, Nominate::DontCare)
+                .matching_check(&pair1, Nominate::DontCare)
                 .unwrap();
             assert_eq!(check1.pair, pair1);
             assert_eq!(check1.state(), CandidatePairState::Waiting);
             let check2 = list2
-                .get_matching_check(&pair2, Nominate::DontCare)
+                .matching_check(&pair2, Nominate::DontCare)
                 .unwrap();
             assert_eq!(check2.pair, pair2);
             assert_eq!(check2.state(), CandidatePairState::Frozen);
             let check3 = list2
-                .get_matching_check(&pair3, Nominate::DontCare)
+                .matching_check(&pair3, Nominate::DontCare)
                 .unwrap();
             assert_eq!(check3.pair, pair3);
             assert_eq!(check3.state(), CandidatePairState::Waiting);
             let check4 = list2
-                .get_matching_check(&pair4, Nominate::DontCare)
+                .matching_check(&pair4, Nominate::DontCare)
                 .unwrap();
             assert_eq!(check4.pair, pair4);
             assert_eq!(check4.state(), CandidatePairState::Waiting);
             let check5 = list2
-                .get_matching_check(&pair5, Nominate::DontCare)
+                .matching_check(&pair5, Nominate::DontCare)
                 .unwrap();
             assert_eq!(check5.pair, pair5);
             assert_eq!(check5.state(), CandidatePairState::Waiting);
@@ -2354,7 +2354,7 @@ mod tests {
             let check = state
                 .local
                 .checklist
-                .get_matching_check(&pair, Nominate::False)
+                .matching_check(&pair, Nominate::False)
                 .unwrap();
             assert_eq!(check.state(), CandidatePairState::Frozen);
 
@@ -2374,7 +2374,7 @@ mod tests {
             let nominate_check = state
                 .local
                 .checklist
-                .get_matching_check(&pair, Nominate::True)
+                .matching_check(&pair, Nominate::True)
                 .unwrap();
             assert!(state.local.checklist.is_triggered(&nominate_check));
 
@@ -2413,7 +2413,7 @@ mod tests {
             let check = state
                 .local
                 .checklist
-                .get_matching_check(&pair, Nominate::False)
+                .matching_check(&pair, Nominate::False)
                 .unwrap();
             assert_eq!(check.state(), CandidatePairState::Frozen);
 
@@ -2433,7 +2433,7 @@ mod tests {
             let triggered_check = state
                 .local
                 .checklist
-                .get_matching_check(&pair, Nominate::False)
+                .matching_check(&pair, Nominate::False)
                 .unwrap();
             assert!(state.local.checklist.is_triggered(&triggered_check));
 
@@ -2446,7 +2446,7 @@ mod tests {
             let nominate_check = state
                 .local
                 .checklist
-                .get_matching_check(&pair, Nominate::True)
+                .matching_check(&pair, Nominate::True)
                 .unwrap();
             assert!(state.local.checklist.is_triggered(&nominate_check));
 
