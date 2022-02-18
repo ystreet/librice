@@ -327,7 +327,7 @@ impl ConnCheckListInner {
                 let existing = self.triggered.remove(idx).unwrap();
                 debug!("removing existing triggered {:?}", existing);
             } else {
-                debug!("not adding duplicate triggered");
+                debug!("not adding duplicate triggered check");
                 return;
             }
         }
@@ -622,7 +622,6 @@ impl ConnCheckListInner {
                         ));
                     }
                     check.set_state(CandidatePairState::Waiting);
-                    // FIXME: add iff not already triggered
                     self.add_triggered(check);
                 }
             }
