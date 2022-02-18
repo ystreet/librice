@@ -1273,9 +1273,7 @@ mod tests {
 
         // XOR_MAPPED_ADDRESS
         assert!(msg.has_attribute(XOR_MAPPED_ADDRESS));
-        let raw = msg
-            .attribute::<RawAttribute>(XOR_MAPPED_ADDRESS)
-            .unwrap();
+        let raw = msg.attribute::<RawAttribute>(XOR_MAPPED_ADDRESS).unwrap();
         assert!(matches!(XorMappedAddress::try_from(&raw), Ok(_)));
         let xor_mapped_addres = XorMappedAddress::try_from(&raw).unwrap();
         assert_eq!(
@@ -1345,9 +1343,7 @@ mod tests {
 
         // XOR_MAPPED_ADDRESS
         assert!(msg.has_attribute(XOR_MAPPED_ADDRESS));
-        let raw = msg
-            .attribute::<RawAttribute>(XOR_MAPPED_ADDRESS)
-            .unwrap();
+        let raw = msg.attribute::<RawAttribute>(XOR_MAPPED_ADDRESS).unwrap();
         assert!(matches!(XorMappedAddress::try_from(&raw), Ok(_)));
         let xor_mapped_addres = XorMappedAddress::try_from(&raw).unwrap();
         assert_eq!(

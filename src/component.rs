@@ -19,7 +19,7 @@ use crate::agent::{AgentError, AgentMessage};
 use crate::candidate::{Candidate, CandidatePair, TransportType};
 
 use crate::socket::{
-    SocketAddresses, SocketMessageSend, StunChannel, DataFraming, UdpConnectionChannel,
+    DataFraming, SocketAddresses, SocketMessageSend, StunChannel, UdpConnectionChannel,
 };
 use crate::stun::agent::StunAgent;
 use crate::stun::message::MessageIntegrityCredentials;
@@ -400,18 +400,12 @@ mod tests {
 
             let mut recv_stream = send.receive_stream();
             let buf = vec![0, 1];
-            channel1
-                .send(DataFraming::from(&buf, addr2))
-                .await
-                .unwrap();
+            channel1.send(DataFraming::from(&buf, addr2)).await.unwrap();
             info!("send1");
             assert_eq!(&recv_stream.next().await.unwrap(), &buf);
             info!("recv");
             let buf = vec![2, 3];
-            channel2
-                .send(DataFraming::from(&buf, addr1))
-                .await
-                .unwrap();
+            channel2.send(DataFraming::from(&buf, addr1)).await.unwrap();
             info!("send2");
             assert_eq!(&recv_stream.next().await.unwrap(), &buf);
             info!("recv2");

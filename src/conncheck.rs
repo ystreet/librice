@@ -20,6 +20,7 @@ use tracing_futures::Instrument;
 use crate::candidate::{Candidate, CandidatePair, CandidateType, TransportType};
 
 use crate::agent::{AgentError, AgentMessage};
+use crate::stream::Credentials;
 
 use crate::clock::{get_clock, Clock, ClockType};
 use crate::component::{Component, ComponentState, SelectedPair};
@@ -139,8 +140,9 @@ impl ConnCheck {
     )]
     async fn connectivity_check(
         conncheck: Arc<ConnCheck>,
+        username: String,
         controlling: bool,
-        tie_breaker: u64
+        tie_breaker: u64,
     ) -> Result<ConnCheckResponse, AgentError> {
         // generate binding request
         let msg = {
@@ -156,6 +158,7 @@ impl ConnCheck {
             if conncheck.nominate {
                 msg.add_attribute(UseCandidate::new())?;
             }
+            msg.add_attribute(Username::new(&username)?)?;
             msg.add_message_integrity(&conncheck.agent.local_credentials().unwrap())?;
             msg.add_fingerprint()?;
             msg
@@ -246,6 +249,8 @@ struct ConnCheckListInner {
     state: CheckListState,
     component_ids: Vec<usize>,
     components: Vec<Weak<Component>>,
+    local_credentials: Credentials,
+    remote_credentials: Credentials,
     local_candidates: Vec<ConnCheckLocalCandidate>,
     remote_candidates: Vec<(usize, Candidate)>,
     // TODO: move to BinaryHeap or similar
@@ -262,12 +267,33 @@ impl ConnCheckListInner {
             state: CheckListState::Running,
             component_ids: vec![],
             components: vec![],
+            local_credentials: Self::generate_random_credentials(),
+            remote_credentials: Self::generate_random_credentials(),
             local_candidates: vec![],
             remote_candidates: vec![],
             triggered: VecDeque::new(),
             pairs: VecDeque::new(),
             valid: vec![],
         }
+    }
+
+    fn generate_random_ice_string(alphabet: &[u8], length: usize) -> String {
+        use rand::{seq::SliceRandom, thread_rng};
+        let mut rng = thread_rng();
+        String::from_utf8(
+            (0..length)
+                .map(|_| *alphabet.choose(&mut rng).unwrap())
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    fn generate_random_credentials() -> Credentials {
+        let alphabet =
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/".as_bytes();
+        let user = Self::generate_random_ice_string(alphabet, 4);
+        let pass = Self::generate_random_ice_string(alphabet, 22);
+        Credentials::new(user, pass)
     }
 
     #[tracing::instrument(
@@ -356,11 +382,7 @@ impl ConnCheckListInner {
             && nominate.eq(&check.nominate)
     }
 
-    fn matching_check(
-        &self,
-        pair: &CandidatePair,
-        nominate: Nominate,
-    ) -> Option<Arc<ConnCheck>> {
+    fn matching_check(&self, pair: &CandidatePair, nominate: Nominate) -> Option<Arc<ConnCheck>> {
         self.triggered
             .iter()
             .find(|&check| Self::check_is_equal(check, pair, nominate))
@@ -505,7 +527,15 @@ impl ConnCheckListInner {
     fn dump_check_state(&self) {
         let mut s = format!("checklist {}", self.checklist_id);
         for pair in self.pairs.iter() {
-            s += &format!("\nID:{} S:{:?} T:{:?} L:{} R:{} F:{}", pair.conncheck_id, pair.state(), pair.pair.local.transport_type, pair.pair.local.address, pair.pair.remote.address, pair.pair.foundation());
+            s += &format!(
+                "\nID:{} S:{:?} T:{:?} L:{} R:{} F:{}",
+                pair.conncheck_id,
+                pair.state(),
+                pair.pair.local.transport_type,
+                pair.pair.local.address,
+                pair.pair.remote.address,
+                pair.pair.foundation()
+            );
         }
         debug!("{}", s);
     }
@@ -690,6 +720,16 @@ impl ConnCheckList {
         inner.state = state;
     }
 
+    pub(crate) fn set_local_credentials(&self, credentials: Credentials) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.local_credentials = credentials;
+    }
+
+    pub(crate) fn set_remote_credentials(&self, credentials: Credentials) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.remote_credentials = credentials;
+    }
+
     async fn handle_binding_request(
         weak_inner: Weak<Mutex<ConnCheckListInner>>,
         component_id: usize,
@@ -715,8 +755,7 @@ impl ConnCheckList {
                 PRIORITY,
                 USE_CANDIDATE,
             ],
-            // TODO Validate USERNAME
-            &[/*USERNAME, */ FINGERPRINT, MESSAGE_INTEGRITY, PRIORITY],
+            &[USERNAME, FINGERPRINT, MESSAGE_INTEGRITY, PRIORITY],
         ) {
             // failure -> send error response
             return Ok(Some(error_msg));
@@ -750,6 +789,19 @@ impl ConnCheckList {
                 // ignore binding requests if we are completed
                 trace!("ignoring binding request as we have completed");
                 return Ok(None);
+            }
+
+            // validate username
+            if let Some(username) = msg.attribute::<Username>(USERNAME) {
+                if !validate_username(username, &checklist.local_credentials) {
+                    warn!("binding request failed username validation");
+                    let mut response = Message::new_error(msg);
+                    response.add_attribute(ErrorCode::builder(ErrorCode::UNAUTHORIZED).build()?)?;
+                    return Ok(Some(response));
+                }
+            } else {
+                // existence is checked above so can only fail when the username is invalid
+                return Ok(Some(Message::bad_request(msg)?));
             }
 
             {
@@ -1186,15 +1238,8 @@ impl ConnCheckList {
         }
     }
 
-    fn matching_check(
-        &self,
-        pair: &CandidatePair,
-        nominate: Nominate,
-    ) -> Option<Arc<ConnCheck>> {
-        self.inner
-            .lock()
-            .unwrap()
-            .matching_check(pair, nominate)
+    fn matching_check(&self, pair: &CandidatePair, nominate: Nominate) -> Option<Arc<ConnCheck>> {
+        self.inner.lock().unwrap().matching_check(pair, nominate)
     }
 
     pub(crate) fn local_candidates(&self) -> Vec<Candidate> {
@@ -1378,8 +1423,9 @@ impl ConnCheckListSet {
 
     async fn connectivity_check_cancellable(
         conncheck: Arc<ConnCheck>,
+        username: String,
         controlling: bool,
-        tie_breaker: u64
+        tie_breaker: u64,
     ) -> Result<ConnCheckResponse, AgentError> {
         let abort_registration = {
             let mut inner = conncheck.state.lock().unwrap();
@@ -1394,7 +1440,7 @@ impl ConnCheckListSet {
         };
 
         let abortable = Abortable::new(
-            ConnCheck::connectivity_check(conncheck, controlling, tie_breaker),
+            ConnCheck::connectivity_check(conncheck, username, controlling, tie_breaker),
             abort_registration,
         );
         async_std::task::spawn(async move {
@@ -1430,8 +1476,13 @@ impl ConnCheckListSet {
                 return Err(AgentError::Aborted);
             }
         };
+        let username = {
+            let inner = checklist.inner.lock().unwrap();
+            inner.remote_credentials.ufrag.clone() + ":" + &inner.local_credentials.ufrag
+        };
         match ConnCheckListSet::connectivity_check_cancellable(
             conncheck.clone(),
+            username,
             controlling,
             tie_breaker,
         )
@@ -1512,8 +1563,7 @@ impl ConnCheckListSet {
                         }
                     };
                     for checklist in checklists.iter() {
-                        if let Some(check) =
-                            checklist.matching_check(&ok_pair, Nominate::DontCare)
+                        if let Some(check) = checklist.matching_check(&ok_pair, Nominate::DontCare)
                         {
                             checklist.add_valid(check.pair.clone());
                             if conncheck.nominate() {
@@ -1561,6 +1611,7 @@ impl ConnCheckListSet {
                 }
             } // TODO: continue binding keepalives/implement RFC7675
         }
+
         Ok(())
     }
 
@@ -1748,6 +1799,25 @@ impl<'set> RunningCheckListSet<'set> {
     }
 }
 
+fn validate_username(username: Username, local_credentials: &Credentials) -> bool {
+    let username = username.username().as_bytes();
+    let local_user = local_credentials.ufrag.as_bytes();
+    trace!("username {:?}", username);
+    trace!("local username {:?}", local_user);
+    if local_user.len()
+        == local_user
+            .iter()
+            .zip(username)
+            .take_while(|(l, r)| l == r)
+            .count()
+    {
+        true
+    } else {
+        debug!("binding request failed username validation");
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1770,6 +1840,7 @@ mod tests {
         channel: StunChannel,
         candidate: Candidate,
         agent: StunAgent,
+        credentials: Credentials,
     }
 
     impl Peer {
@@ -1784,8 +1855,9 @@ mod tests {
 
     struct PeerBuilder<'this> {
         channel: Option<StunChannel>,
-        foundation: Option<&'this str>,
+        foundation: &'this str,
         clock: Option<Arc<dyn Clock>>,
+        credentials: Credentials,
     }
 
     impl<'this> PeerBuilder<'this> {
@@ -1795,12 +1867,17 @@ mod tests {
         }
 
         fn foundation(mut self, foundation: &'this str) -> Self {
-            self.foundation = Some(foundation);
+            self.foundation = foundation;
             self
         }
 
         fn clock(mut self, clock: Arc<dyn Clock>) -> Self {
             self.clock = Some(clock);
+            self
+        }
+
+        fn credentials(mut self, credentials: Credentials) -> Self {
+            self.credentials = credentials;
             self
         }
 
@@ -1816,7 +1893,7 @@ mod tests {
             let candidate = Candidate::new(
                 CandidateType::Host,
                 TransportType::Udp,
-                self.foundation.unwrap_or("0"),
+                self.foundation,
                 0,
                 addr,
                 addr,
@@ -1829,6 +1906,7 @@ mod tests {
                 channel,
                 candidate,
                 agent,
+                credentials: self.credentials,
             }
         }
     }
@@ -1837,8 +1915,9 @@ mod tests {
         fn default() -> Self {
             Self {
                 channel: None,
-                foundation: None,
+                foundation: "",
                 clock: None,
+                credentials: Credentials::new(String::from("user"), String::from("pass")),
             }
         }
     }
@@ -1875,11 +1954,12 @@ mod tests {
     // things
     async fn handle_binding_request(
         agent: &StunAgent,
+        local_credentials: &Credentials,
         msg: &Message,
         from: SocketAddr,
-        conflict: bool,
+        error_response: Option<u16>,
     ) -> Result<Message, AgentError> {
-        let local_credentials = agent.local_credentials().unwrap();
+        let local_stun_credentials = agent.local_credentials().unwrap();
 
         if let Some(error_msg) = Message::check_attribute_types(
             msg,
@@ -1892,8 +1972,7 @@ mod tests {
                 PRIORITY,
                 USE_CANDIDATE,
             ],
-            // TODO Validate USERNAME
-            &[/*USERNAME, */ FINGERPRINT, MESSAGE_INTEGRITY, PRIORITY],
+            &[USERNAME, FINGERPRINT, MESSAGE_INTEGRITY, PRIORITY],
         ) {
             // failure -> send error response
             return Ok(error_msg);
@@ -1901,21 +1980,31 @@ mod tests {
 
         let ice_controlling = msg.attribute::<IceControlling>(ICE_CONTROLLING);
         let ice_controlled = msg.attribute::<IceControlled>(ICE_CONTROLLED);
+        let username = msg.attribute::<Username>(USERNAME);
+        let valid_username = username
+            .map(|username| validate_username(username, local_credentials))
+            .unwrap_or(false);
 
         let mut response = if ice_controlling.is_none() && ice_controlled.is_none() {
+            error!("missing ice controlled/controlling attribute");
             let mut response = Message::new_error(msg);
             response.add_attribute(ErrorCode::builder(ErrorCode::BAD_REQUEST).build()?)?;
             response
-        } else if conflict {
+        } else if !valid_username {
             let mut response = Message::new_error(msg);
-            response.add_attribute(ErrorCode::builder(ErrorCode::ROLE_CONFLICT).build()?)?;
+            response.add_attribute(ErrorCode::builder(ErrorCode::UNAUTHORIZED).build()?)?;
+            response
+        } else if let Some(error_code) = error_response {
+            info!("responding with error {}", error_code);
+            let mut response = Message::new_error(msg);
+            response.add_attribute(ErrorCode::builder(error_code).build()?)?;
             response
         } else {
             let mut response = Message::new_success(msg);
             response.add_attribute(XorMappedAddress::new(from, msg.transaction_id()))?;
             response
         };
-        response.add_message_integrity(&local_credentials)?;
+        response.add_message_integrity(&local_stun_credentials)?;
         response.add_fingerprint()?;
         Ok(response)
     }
@@ -1924,24 +2013,32 @@ mod tests {
     fn conncheck_udp_host() {
         init();
         async_std::task::block_on(async move {
-            let local_credentials = MessageIntegrityCredentials::ShortTerm(ShortTermCredentials {
-                password: "local".to_owned(),
-            });
-            let remote_credentials = MessageIntegrityCredentials::ShortTerm(ShortTermCredentials {
-                password: "remote".to_owned(),
-            });
+            let local_credentials = Credentials::new(String::from("luser"), String::from("lpass"));
+            let remote_credentials = Credentials::new(String::from("ruser"), String::from("rpass"));
             // start the remote peer
             let remote = Peer::default().await;
             remote
                 .agent
-                .set_local_credentials(remote_credentials.clone());
+                .set_local_credentials(MessageIntegrityCredentials::ShortTerm(
+                    remote_credentials.clone().into(),
+                ));
             remote
                 .agent
-                .set_remote_credentials(local_credentials.clone());
+                .set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
+                    local_credentials.clone().into(),
+                ));
             // set up the local peer
             let local = Peer::default().await;
-            local.agent.set_local_credentials(local_credentials);
-            local.agent.set_remote_credentials(remote_credentials);
+            local
+                .agent
+                .set_local_credentials(MessageIntegrityCredentials::ShortTerm(
+                    local_credentials.clone().into(),
+                ));
+            local
+                .agent
+                .set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
+                    remote_credentials.clone().into(),
+                ));
 
             // retrieve the streams before starting async tasks to avoid data being sent but never
             // received
@@ -1949,24 +2046,33 @@ mod tests {
             let mut remote_data_stream = remote.agent.receive_stream();
 
             let agent = remote.agent.clone();
-            task::spawn(async move {
-                while let Some(stun_or_data) = remote_data_stream.next().await {
-                    match stun_or_data {
-                        StunOrData::Data(data, from) => {
-                            debug!("received from {} data: {:?}", from, data)
-                        }
-                        StunOrData::Stun(msg, from) => {
-                            debug!("received from {}: {:?}", from, msg);
-                            if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
-                                agent
-                                    .send_to(
-                                        handle_binding_request(&agent, &msg, from, false)
+            task::spawn({
+                let remote_credentials = remote_credentials.clone();
+                async move {
+                    while let Some(stun_or_data) = remote_data_stream.next().await {
+                        match stun_or_data {
+                            StunOrData::Data(data, from) => {
+                                debug!("received from {} data: {:?}", from, data)
+                            }
+                            StunOrData::Stun(msg, from) => {
+                                debug!("received from {}: {:?}", from, msg);
+                                if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
+                                    agent
+                                        .send_to(
+                                            handle_binding_request(
+                                                &agent,
+                                                &remote_credentials,
+                                                &msg,
+                                                from,
+                                                None,
+                                            )
                                             .await
                                             .unwrap(),
-                                        from,
-                                    )
-                                    .await
-                                    .unwrap();
+                                            from,
+                                        )
+                                        .await
+                                        .unwrap();
+                                }
                             }
                         }
                     }
@@ -1974,24 +2080,33 @@ mod tests {
             });
 
             let agent = local.agent.clone();
-            task::spawn(async move {
-                while let Some(stun_or_data) = local_data_stream.next().await {
-                    match stun_or_data {
-                        StunOrData::Data(data, from) => {
-                            debug!("received from {} data: {:?}", from, data)
-                        }
-                        StunOrData::Stun(msg, from) => {
-                            debug!("received from {}: {}", from, msg);
-                            if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
-                                agent
-                                    .send_to(
-                                        handle_binding_request(&agent, &msg, from, false)
+            task::spawn({
+                let local_credentials = local_credentials.clone();
+                async move {
+                    while let Some(stun_or_data) = local_data_stream.next().await {
+                        match stun_or_data {
+                            StunOrData::Data(data, from) => {
+                                debug!("received from {} data: {:?}", from, data)
+                            }
+                            StunOrData::Stun(msg, from) => {
+                                debug!("received from {}: {}", from, msg);
+                                if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
+                                    agent
+                                        .send_to(
+                                            handle_binding_request(
+                                                &agent,
+                                                &local_credentials,
+                                                &msg,
+                                                from,
+                                                None,
+                                            )
                                             .await
                                             .unwrap(),
-                                        from,
-                                    )
-                                    .await
-                                    .unwrap();
+                                            from,
+                                        )
+                                        .await
+                                        .unwrap();
+                                }
                             }
                         }
                     }
@@ -2002,8 +2117,9 @@ mod tests {
             let conncheck = Arc::new(ConnCheck::new(pair, local.agent, false));
 
             // this is what we're testing.  All of the above is setup for performing this check
+            let username = remote_credentials.ufrag.clone() + ":" + &local_credentials.ufrag;
             let res =
-                ConnCheckListSet::connectivity_check_cancellable(conncheck, true, 0)
+                ConnCheckListSet::connectivity_check_cancellable(conncheck, username, true, 0)
                     .await
                     .unwrap();
             match res {
@@ -2150,47 +2266,22 @@ mod tests {
             assert!(thawn.iter().any(|f| f == &pair3.foundation()));
             assert!(thawn.iter().any(|f| f == &pair4.foundation()));
             assert!(thawn.iter().any(|f| f == &pair5.foundation()));
-            let check1 = list1
-                .matching_check(&pair1, Nominate::DontCare)
-                .unwrap();
+            let check1 = list1.matching_check(&pair1, Nominate::DontCare).unwrap();
             assert_eq!(check1.pair, pair1);
             assert_eq!(check1.state(), CandidatePairState::Waiting);
-            let check2 = list2
-                .matching_check(&pair2, Nominate::DontCare)
-                .unwrap();
+            let check2 = list2.matching_check(&pair2, Nominate::DontCare).unwrap();
             assert_eq!(check2.pair, pair2);
             assert_eq!(check2.state(), CandidatePairState::Frozen);
-            let check3 = list2
-                .matching_check(&pair3, Nominate::DontCare)
-                .unwrap();
+            let check3 = list2.matching_check(&pair3, Nominate::DontCare).unwrap();
             assert_eq!(check3.pair, pair3);
             assert_eq!(check3.state(), CandidatePairState::Waiting);
-            let check4 = list2
-                .matching_check(&pair4, Nominate::DontCare)
-                .unwrap();
+            let check4 = list2.matching_check(&pair4, Nominate::DontCare).unwrap();
             assert_eq!(check4.pair, pair4);
             assert_eq!(check4.state(), CandidatePairState::Waiting);
-            let check5 = list2
-                .matching_check(&pair5, Nominate::DontCare)
-                .unwrap();
+            let check5 = list2.matching_check(&pair5, Nominate::DontCare).unwrap();
             assert_eq!(check5.pair, pair5);
             assert_eq!(check5.state(), CandidatePairState::Waiting);
         });
-    }
-
-    async fn construct_test_peer_with_foundation(
-        async_router: ChannelRouter,
-        foundation: &str,
-        clock: Arc<dyn Clock>,
-    ) -> Peer {
-        let addr = async_router.generate_addr();
-        let channel = StunChannel::AsyncChannel(AsyncChannel::new(async_router, addr, None));
-        Peer::builder()
-            .channel(channel)
-            .foundation(foundation)
-            .clock(clock)
-            .build()
-            .await
     }
 
     struct FineControlPeer {
@@ -2229,8 +2320,17 @@ mod tests {
             let broadcast = Arc::new(ChannelBroadcast::default());
             let tasks = Arc::new(TaskList::new());
 
-            let local_peer =
-                construct_test_peer_with_foundation(router.clone(), "0", self.clock.clone()).await;
+            let local_peer = Peer::builder()
+                .channel(StunChannel::AsyncChannel(AsyncChannel::new(
+                    router.clone(),
+                    router.generate_addr(),
+                    None,
+                )))
+                .foundation("0")
+                .clock(self.clock.clone())
+                .credentials(local_credentials.clone())
+                .build()
+                .await;
             local_peer
                 .agent
                 .set_local_credentials(MessageIntegrityCredentials::ShortTerm(
@@ -2242,8 +2342,17 @@ mod tests {
                     remote_credentials.clone().into(),
                 ));
 
-            let remote_peer =
-                construct_test_peer_with_foundation(router.clone(), "0", self.clock.clone()).await;
+            let remote_peer = Peer::builder()
+                .channel(StunChannel::AsyncChannel(AsyncChannel::new(
+                    router.clone(),
+                    router.generate_addr(),
+                    None,
+                )))
+                .foundation("0")
+                .clock(self.clock.clone())
+                .credentials(remote_credentials.clone())
+                .build()
+                .await;
             remote_peer
                 .agent
                 .set_local_credentials(MessageIntegrityCredentials::ShortTerm(
@@ -2270,6 +2379,8 @@ mod tests {
                 )
                 .await;
             checklist.add_remote_candidate(local_component.id, remote_peer.candidate.clone());
+            checklist.set_local_credentials(local_credentials.clone());
+            checklist.set_remote_credentials(remote_credentials);
 
             FineControl {
                 local: FineControlPeer {
@@ -2293,7 +2404,7 @@ mod tests {
     async fn send_next_check_and_response(
         state: &FineControl,
         set_run: &mut RunningCheckListSet<'_>,
-        role_conflict: bool,
+        error_response: Option<u16>,
     ) {
         let remote_s_recv = state.remote.channel.receive_stream();
         futures::pin_mut!(remote_s_recv);
@@ -2324,9 +2435,15 @@ mod tests {
         assert_eq!(msg.class(), MessageClass::Request);
 
         // send a role confilict response
-        let resp = handle_binding_request(&state.remote.agent, &msg, from, role_conflict)
-            .await
-            .unwrap();
+        let resp = handle_binding_request(
+            &state.remote.agent,
+            &state.remote.credentials,
+            &msg,
+            from,
+            error_response,
+        )
+        .await
+        .unwrap();
         info!("handle request {:?}", resp);
         state.remote.agent.send_to(resp, from).await.unwrap();
 
@@ -2334,7 +2451,7 @@ mod tests {
         check_task.await;
         debug!("check done");
         let response = local_s_recv.next().await.unwrap();
-        debug!("msg received {:?}", response);
+        trace!("msg received {:?}", response);
     }
 
     #[test]
@@ -2365,7 +2482,7 @@ mod tests {
             let mut set_run = RunningCheckListSet::from_set(&state.local.checklist_set);
 
             // perform one tick which will start a connectivity check with the peer
-            send_next_check_and_response(&state, &mut set_run, false).await;
+            send_next_check_and_response(&state, &mut set_run, None).await;
             assert_eq!(check.state(), CandidatePairState::Succeeded);
 
             // should have resulted in a nomination and therefore a triggered check (always a new
@@ -2378,7 +2495,7 @@ mod tests {
             assert!(state.local.checklist.is_triggered(&nominate_check));
 
             // perform one tick which will perform the nomination check
-            send_next_check_and_response(&state, &mut set_run, false).await;
+            send_next_check_and_response(&state, &mut set_run, None).await;
 
             assert_eq!(nominate_check.state(), CandidatePairState::Succeeded);
 
@@ -2424,7 +2541,8 @@ mod tests {
             let mut set_run = RunningCheckListSet::from_set(&state.local.checklist_set);
 
             // perform one tick which will start a connectivity check with the peer
-            send_next_check_and_response(&state, &mut set_run, true).await;
+            send_next_check_and_response(&state, &mut set_run, Some(ErrorCode::ROLE_CONFLICT))
+                .await;
             assert_eq!(check.state(), CandidatePairState::Failed);
 
             // should have resulted in the check being retriggered (always a new
@@ -2437,7 +2555,7 @@ mod tests {
             assert!(state.local.checklist.is_triggered(&triggered_check));
 
             // perform the next tick which will have a different ice controlling/ed attribute
-            send_next_check_and_response(&state, &mut set_run, false).await;
+            send_next_check_and_response(&state, &mut set_run, None).await;
             assert_eq!(triggered_check.state(), CandidatePairState::Succeeded);
 
             // should have resulted in a nomination and therefore a triggered check (always a new
@@ -2450,7 +2568,7 @@ mod tests {
             assert!(state.local.checklist.is_triggered(&nominate_check));
 
             // perform one tick which will perform the nomination check
-            send_next_check_and_response(&state, &mut set_run, false).await;
+            send_next_check_and_response(&state, &mut set_run, None).await;
 
             // check list is done
             assert_eq!(state.local.checklist.state(), CheckListState::Completed);
@@ -2459,6 +2577,55 @@ mod tests {
             assert!(matches!(
                 set_run.process_next().await,
                 CheckListSetProcess::Completed
+            ));
+        });
+    }
+
+    #[test]
+    fn bad_username_conncheck() {
+        init();
+        async_std::task::block_on(async move {
+            let state = FineControl::builder().build().await;
+
+            // set the wrong credentials and observe the failure
+            let wrong_credentials =
+                Credentials::new(String::from("wronguser"), String::from("wrongpass"));
+            state
+                .local
+                .checklist
+                .set_local_credentials(wrong_credentials);
+            state.local.checklist.generate_checks();
+
+            let pair = CandidatePair::new(
+                state.local.component.id,
+                state.local.peer.candidate.clone(),
+                state.remote.candidate.clone(),
+            );
+            let check = state
+                .local
+                .checklist
+                .matching_check(&pair, Nominate::False)
+                .unwrap();
+            assert_eq!(check.state(), CandidatePairState::Frozen);
+
+            let mut thawn = vec![];
+            // thaw the first checklist with only a single pair will unfreeze that pair
+            state.local.checklist.initial_thaw(&mut thawn);
+            assert_eq!(check.state(), CandidatePairState::Waiting);
+
+            let mut set_run = RunningCheckListSet::from_set(&state.local.checklist_set);
+
+            // perform one tick which will start a connectivity check with the peer
+            send_next_check_and_response(&state, &mut set_run, Some(ErrorCode::UNAUTHORIZED)).await;
+            assert_eq!(check.state(), CandidatePairState::Failed);
+
+            // TODO: properly failing the checklist on all checks failing
+            // check should be failed
+            // assert_eq!(state.local.checklist.state(), CheckListState::Failed);
+
+            assert!(matches!(
+                set_run.process_next().await,
+                CheckListSetProcess::NothingToDo //CheckListSetProcess::Completed
             ));
         });
     }

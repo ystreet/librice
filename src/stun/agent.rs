@@ -142,7 +142,10 @@ impl StunAgent {
     pub async fn send_to(&self, msg: Message, to: SocketAddr) -> Result<(), std::io::Error> {
         StunAgent::maybe_store_message(&self.inner.state, msg.clone());
         debug!("channel {:?}", self.inner.channel);
-        self.inner.channel.send(DataRefAddress::from(&msg.to_bytes(), to)).await
+        self.inner
+            .channel
+            .send(DataRefAddress::from(&msg.to_bytes(), to))
+            .await
     }
 
     pub async fn send(&self, msg: Message) -> Result<(), std::io::Error> {

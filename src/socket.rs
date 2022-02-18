@@ -112,10 +112,10 @@ impl UdpSocketChannel {
         debug!("loop starting");
         // send data to the receive channels
         while let Some(res) = stream.next().await {
-            trace!("have {:?}", res);
+            //trace!("have {:?}", res);
             broadcaster.broadcast(res).await;
         }
-        trace!("loop exited");
+        debug!("loop exited");
     }
 
     pub async fn send_to(&self, data: &[u8], to: SocketAddr) -> std::io::Result<()> {
@@ -320,10 +320,18 @@ impl ReceiveStream<DataAddress> for UdpConnectionChannel {
                 .receive_stream()
                 .filter_map(move |data_address| async move {
                     if data_address.address == to {
-                        trace!("passing through message {:?}", data_address);
+                        trace!(
+                            "passing through message of {} bytes from {:?}",
+                            data_address.data.len(),
+                            data_address.address
+                        );
                         Some(data_address)
                     } else {
-                        trace!("filtered message out {:?} {:?}", data_address.address, to);
+                        trace!(
+                            "filtered message out as {:?} != {:?}",
+                            data_address.address,
+                            to
+                        );
                         None
                     }
                 }),
@@ -335,7 +343,10 @@ impl ReceiveStream<DataAddress> for UdpConnectionChannel {
 impl<'msg> SocketMessageSend<'msg, DataRefAddress<'msg>> for UdpConnectionChannel {
     async fn send<'udp>(&self, msg: DataRefAddress<'udp>) -> Result<(), std::io::Error> {
         if msg.address != self.to {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Address to send to is different from connected address"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Address to send to is different from connected address",
+            ));
         }
         debug!("socket connection send {:?}", msg);
         self.channel.send(msg).await
@@ -422,7 +433,7 @@ impl TcpChannel {
                     "TCP connection closed",
                 ));
             }
-            trace!("buf {:?}", buf);
+            //trace!("buf {:?}", buf);
             let data_length = if buf.len() >= 2 {
                 (BigEndian::read_u16(&buf.buf[..2]) as usize) + 2
             } else {
@@ -448,7 +459,7 @@ impl TcpChannel {
 
             let min_length = data_length.min(mlength);
             if min_length > buf.len() {
-                trace!(
+                debug!(
                     "not enough data, buf length {} less than smallest advertised size {}, reading again",
                     buf.len(),
                     min_length
@@ -459,7 +470,7 @@ impl TcpChannel {
             if may_be_stun {
                 match Message::from_bytes(&buf.buf[..mlength]) {
                     Ok(msg) => {
-                        trace!("have message bytes {}", msg);
+                        trace!("detected a stun message {}", msg);
                         let bytes = buf.take(mlength);
                         *running.lock().unwrap() = Some(buf);
                         return Ok(DataAddress::new(bytes.to_vec(), from));
@@ -494,7 +505,10 @@ impl SocketAddresses for TcpChannel {
 impl<'msg> SocketMessageSend<'msg, DataRefAddress<'msg>> for TcpChannel {
     async fn send<'udp>(&self, msg: DataRefAddress<'udp>) -> Result<(), std::io::Error> {
         if msg.address != self.remote_addr()? {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Address to send to is different from connected address"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Address to send to is different from connected address",
+            ));
         }
         let mut stream = self.stream.clone();
         stream.write_all(msg.data).await
@@ -521,7 +535,10 @@ impl<'data> DataFraming<'data> {
 impl<'msg> SocketMessageSend<'msg, DataFraming<'msg>> for TcpChannel {
     async fn send<'udp>(&self, msg: DataFraming<'udp>) -> Result<(), std::io::Error> {
         if msg.address != self.remote_addr()? {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Address to send to is different from connected address"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Address to send to is different from connected address",
+            ));
         }
 
         if msg.data.len() > u16::MAX as usize {
@@ -677,7 +694,7 @@ pub(crate) mod tests {
         async fn send(&self, msg: DataAddress, from: SocketAddr) -> Result<(), AgentError> {
             let broadcast = {
                 let inner = self.inner.lock().unwrap();
-                trace!("send channels {:?}", inner.channels);
+                //trace!("send channels {:?}", inner.channels);
                 inner
                     .channels
                     .get(&msg.address)
