@@ -230,7 +230,8 @@ impl Stream {
     pub fn set_local_credentials(&self, credentials: Credentials) {
         info!("setting");
         let mut state = self.state.lock().unwrap();
-        state.local_credentials = Some(credentials);
+        state.local_credentials = Some(credentials.clone());
+        self.checklist.set_local_credentials(credentials);
     }
 
     /// Retreive the previouly set local ICE credentials for this `Stream`.
@@ -274,7 +275,8 @@ impl Stream {
     pub fn set_remote_credentials(&self, credentials: Credentials) {
         info!("setting");
         let mut state = self.state.lock().unwrap();
-        state.remote_credentials = Some(credentials);
+        state.remote_credentials = Some(credentials.clone());
+        self.checklist.set_remote_credentials(credentials);
     }
 
     /// Retreive the previouly set remote ICE credentials for this `Stream`.
@@ -382,10 +384,12 @@ impl Stream {
             (
                 state.components.clone(),
                 state
-                    .local_stun_credentials()
+                    .local_credentials
+                    .clone()
                     .ok_or(AgentError::ResourceNotFound)?,
                 state
-                    .remote_stun_credentials()
+                    .remote_credentials
+                    .clone()
                     .ok_or(AgentError::ResourceNotFound)?,
             )
         };
@@ -396,8 +400,8 @@ impl Stream {
             let cstream = Box::pin(
                 component
                     .gather_stream(
-                        local_credentials.clone(),
-                        remote_credentials.clone(),
+                        MessageIntegrityCredentials::ShortTerm(local_credentials.clone().into()),
+                        MessageIntegrityCredentials::ShortTerm(remote_credentials.clone().into()),
                         stun_servers.clone(),
                     )
                     .await?
@@ -493,7 +497,7 @@ impl Stream {
 }
 
 impl StreamState {
-    pub fn new(id: usize) -> Self {
+    fn new(id: usize) -> Self {
         Self {
             id,
             gathering: false,
@@ -501,18 +505,6 @@ impl StreamState {
             local_credentials: None,
             remote_credentials: None,
         }
-    }
-
-    pub fn local_stun_credentials(&self) -> Option<MessageIntegrityCredentials> {
-        self.local_credentials
-            .clone()
-            .map(|credentials| MessageIntegrityCredentials::ShortTerm(credentials.into()))
-    }
-
-    pub fn remote_stun_credentials(&self) -> Option<MessageIntegrityCredentials> {
-        self.remote_credentials
-            .clone()
-            .map(|credentials| MessageIntegrityCredentials::ShortTerm(credentials.into()))
     }
 }
 
