@@ -141,7 +141,7 @@ impl StunAgent {
 
     pub async fn send_to(&self, msg: Message, to: SocketAddr) -> Result<(), std::io::Error> {
         StunAgent::maybe_store_message(&self.inner.state, msg.clone());
-        debug!("channel {:?}", self.inner.channel);
+        trace!("channel {:?}", self.inner.channel);
         self.inner
             .channel
             .send(DataRefAddress::from(&msg.to_bytes(), to))

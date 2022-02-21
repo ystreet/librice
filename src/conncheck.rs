@@ -357,7 +357,7 @@ impl ConnCheckListInner {
                 return;
             }
         }
-        debug!("adding triggered");
+        debug!("adding triggered check {:?}", check);
         self.triggered.push_front(check)
     }
 
@@ -528,9 +528,10 @@ impl ConnCheckListInner {
         let mut s = format!("checklist {}", self.checklist_id);
         for pair in self.pairs.iter() {
             s += &format!(
-                "\nID:{} S:{:?} T:{:?} L:{} R:{} F:{}",
+                "\nID:{} S:{:?} N:{} T:{:?} L:{} R:{} F:{}",
                 pair.conncheck_id,
                 pair.state(),
+                pair.nominate(),
                 pair.pair.local.transport_type,
                 pair.pair.local.address,
                 pair.pair.remote.address,
@@ -1617,11 +1618,6 @@ impl ConnCheckListSet {
 
     // RFC8445: 6.1.4.2. Performing Connectivity Checks
     fn next_check(&self, checklist: &ConnCheckList) -> Option<Arc<ConnCheck>> {
-        {
-            let checklist_inner = checklist.inner.lock().unwrap();
-            checklist_inner.dump_check_state();
-        }
-
         // 1.  If the triggered-check queue associated with the checklist
         //     contains one or more candidate pairs, the agent removes the top
         //     pair from the queue, performs a connectivity check on that pair,
@@ -1788,6 +1784,11 @@ impl<'set> RunningCheckListSet<'set> {
                     }
                 }
             };
+
+            {
+                let checklist_inner = checklist.inner.lock().unwrap();
+                checklist_inner.dump_check_state();
+            }
 
             let weak_set_inner = Arc::downgrade(&self.set.inner);
             return CheckListSetProcess::HaveCheck(OutstandingConnCheck {

@@ -119,7 +119,7 @@ impl UdpSocketChannel {
     }
 
     pub async fn send_to(&self, data: &[u8], to: SocketAddr) -> std::io::Result<()> {
-        debug!("socket channel send_to {:?}, {:?}", data, to);
+        trace!("socket channel send_to {:?} bytes to {:?}", data.len(), to);
         self.socket.send_to(data, to).await?;
         Ok(())
     }
@@ -158,7 +158,11 @@ pub(crate) struct MutUdpMessage<'a> {
 #[async_trait]
 impl<'msg> SocketMessageSend<'msg, DataRefAddress<'msg>> for UdpSocketChannel {
     async fn send<'udp>(&self, msg: DataRefAddress<'udp>) -> Result<(), std::io::Error> {
-        debug!("socket channel send {:?}", msg);
+        trace!(
+            "socket channel send {:?} bytes to {:?}",
+            msg.data.len(),
+            msg.address
+        );
         self.send_to(msg.data, msg.address).await
     }
 }
@@ -166,7 +170,11 @@ impl<'msg> SocketMessageSend<'msg, DataRefAddress<'msg>> for UdpSocketChannel {
 #[async_trait]
 impl<'msg> SocketMessageSend<'msg, DataFraming<'msg>> for UdpSocketChannel {
     async fn send<'udp>(&self, msg: DataFraming<'udp>) -> Result<(), std::io::Error> {
-        debug!("socket channel send {:?}", msg);
+        trace!(
+            "socket channel send {:?} bytes to {:?}",
+            msg.data.len(),
+            msg.address
+        );
         self.send_to(msg.data, msg.address).await
     }
 }
@@ -348,7 +356,11 @@ impl<'msg> SocketMessageSend<'msg, DataRefAddress<'msg>> for UdpConnectionChanne
                 "Address to send to is different from connected address",
             ));
         }
-        debug!("socket connection send {:?}", msg);
+        debug!(
+            "socket connection send {} bytes to {:?}",
+            msg.data.len(),
+            msg.address
+        );
         self.channel.send(msg).await
     }
 }
