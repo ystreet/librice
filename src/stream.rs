@@ -308,15 +308,15 @@ impl Stream {
     /// let stream = agent.add_stream();
     /// let component = stream.add_component().unwrap();
     /// let addr = "127.0.0.1:9999".parse().unwrap();
-    /// let candidate = Candidate::new(
+    /// let candidate = Candidate::builder(
+    ///     0,
     ///     CandidateType::Host,
     ///     TransportType::Udp,
     ///     "0",
     ///     0,
-    ///     addr,
-    ///     addr,
-    ///     None
-    /// );
+    ///     addr
+    /// )
+    /// .build();
     /// stream.add_remote_candidate(component.id, candidate).unwrap();
     /// ```
     #[tracing::instrument(
@@ -477,15 +477,15 @@ impl Stream {
     /// let stream = agent.add_stream();
     /// let component = stream.add_component().unwrap();
     /// let addr = "127.0.0.1:9999".parse().unwrap();
-    /// let candidate = Candidate::new(
+    /// let candidate = Candidate::builder(
+    ///     0,
     ///     CandidateType::Host,
     ///     TransportType::Udp,
     ///     "0",
     ///     0,
-    ///     addr,
-    ///     addr,
-    ///     None
-    /// );
+    ///     addr
+    /// )
+    /// .build();
     /// stream.add_remote_candidate(component.id, candidate.clone()).unwrap();
     /// let remote_cands = stream.remote_candidates();
     /// assert_eq!(remote_cands.len(), 1);
