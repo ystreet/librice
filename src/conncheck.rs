@@ -574,15 +574,15 @@ impl ConnCheckListInner {
                 //      foundations of all other remote candidates.  If any subsequent
                 //      candidate exchanges contain this peer-reflexive candidate, it will
                 //      signal the actual foundation for the candidate.
-                let cand = Candidate::new(
+                let cand = Candidate::builder(
+                    component_id,
                     CandidateType::PeerReflexive,
                     local.transport_type,
                     /* FIXME */ "rflx",
                     priority,
                     from,
-                    from,
-                    None,
-                );
+                )
+                .build();
                 debug!("new reflexive remote {:?}", cand);
                 self.add_remote_candidate(component_id, cand.clone());
                 cand
@@ -1890,15 +1890,15 @@ mod tests {
                 }
             };
             let addr = channel.local_addr().unwrap();
-            let candidate = Candidate::new(
+            let candidate = Candidate::builder(
+                0,
                 CandidateType::Host,
                 TransportType::Udp,
                 self.foundation,
                 0,
                 addr,
-                addr,
-                None,
-            );
+            )
+            .build();
             let clock = self.clock.unwrap_or_else(|| get_clock(ClockType::System));
             let agent = StunAgent::builder(channel.clone()).clock(clock).build();
 

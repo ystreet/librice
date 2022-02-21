@@ -333,24 +333,24 @@ mod tests {
                 remote_channel.local_addr().unwrap(),
             )));
 
-            let local_cand = Candidate::new(
+            let local_cand = Candidate::builder(
+                0,
                 CandidateType::Host,
                 TransportType::Udp,
                 "0",
                 0,
                 local_agent.inner.channel.local_addr().unwrap(),
-                local_agent.inner.channel.local_addr().unwrap(),
-                None,
-            );
-            let remote_cand = Candidate::new(
+            )
+            .build();
+            let remote_cand = Candidate::builder(
+                0,
                 CandidateType::Host,
                 TransportType::Udp,
                 "0",
                 0,
                 remote_channel.local_addr().unwrap(),
-                remote_channel.local_addr().unwrap(),
-                None,
-            );
+            )
+            .build();
             let candidate_pair = CandidatePair::new(send.id, local_cand, remote_cand);
             let selected_pair = SelectedPair::new(candidate_pair, local_agent);
 

@@ -183,15 +183,19 @@ pub fn gather_component(
                         calculate_priority(ga.ctype, ga.local_preference as u32, component_id);
                     trace!("candidate {:?}, {:?}", ga, priority);
                     let mut produced = produced.lock().unwrap();
-                    let cand = Candidate::new(
+                    let mut builder = Candidate::builder(
+                        component_id,
                         ga.ctype,
                         TransportType::Udp,
                         &produced.len().to_string(),
                         priority,
                         ga.address,
-                        ga.base,
-                        ga.related,
-                    );
+                    )
+                    .base_address(ga.base);
+                    if let Some(related) = ga.related {
+                        builder = builder.related_address(related);
+                    }
+                    let cand = builder.build();
                     for c in produced.iter() {
                         // ignore candidates that produce the same local/remote pair of
                         // addresses

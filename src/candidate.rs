@@ -14,6 +14,7 @@ use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
+    pub component_id: usize,
     pub candidate_type: CandidateType,
     pub transport_type: TransportType,
     pub foundation: String,
@@ -58,24 +59,62 @@ impl FromStr for CandidateType {
     }
 }
 
+pub struct CandidateBuilder {
+    component_id: usize,
+    ctype: CandidateType,
+    ttype: TransportType,
+    foundation: String,
+    priority: u32,
+    address: SocketAddr,
+    base_address: Option<SocketAddr>,
+    related_address: Option<SocketAddr>,
+}
+
+impl CandidateBuilder {
+    pub fn build(self) -> Candidate {
+        let base_address = self.base_address.unwrap_or(self.address);
+
+        Candidate {
+            component_id: self.component_id,
+            candidate_type: self.ctype,
+            transport_type: self.ttype,
+            foundation: self.foundation.to_owned(),
+            priority: self.priority,
+            address: self.address,
+            base_address,
+            related_address: self.related_address,
+        }
+    }
+
+    pub fn base_address(mut self, base_address: SocketAddr) -> Self {
+        self.base_address = Some(base_address);
+        self
+    }
+
+    pub fn related_address(mut self, related_address: SocketAddr) -> Self {
+        self.related_address = Some(related_address);
+        self
+    }
+}
+
 impl Candidate {
-    pub fn new(
+    pub fn builder(
+        component_id: usize,
         ctype: CandidateType,
         ttype: TransportType,
         foundation: &str,
         priority: u32,
         address: SocketAddr,
-        base_address: SocketAddr,
-        related_address: Option<SocketAddr>,
-    ) -> Self {
-        Self {
-            candidate_type: ctype,
-            transport_type: ttype,
+    ) -> CandidateBuilder {
+        CandidateBuilder {
+            component_id,
+            ctype,
+            ttype,
             foundation: foundation.to_owned(),
             priority,
             address,
-            base_address,
-            related_address,
+            base_address: None,
+            related_address: None,
         }
     }
 }
@@ -142,7 +181,7 @@ pub mod parse {
         let (s, foundation) = take_while_m_n::<_, _, nom::error::Error<_>>(1, 32, is_ice_char)(s)
             .map_err(|_| ParseCandidateError::BadFoundation)?;
         let s = skip_spaces(s)?;
-        let (s, _component_id): (_, usize) = map_res(
+        let (s, component_id): (_, usize) = map_res(
             take_while_m_n::<_, _, nom::error::Error<_>>(1, 3, is_digit),
             str::parse,
         )(s)
@@ -179,15 +218,16 @@ pub mod parse {
         .map_err(|_| ParseCandidateError::BadCandidateType)?;
         // TODO: extensions, raddr, etc things
 
-        Ok(Candidate::new(
+        Ok(Candidate::builder(
+            component_id,
             candidate_type,
             transport_type,
             foundation,
             priority,
             address,
-            address,
-            None,
-        ))
+        )
+        .base_address(address)
+        .build())
     }
 
     impl FromStr for Candidate {
@@ -277,15 +317,8 @@ mod tests {
     fn pair_nominate() {
         init();
         let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
-        let cand = Candidate::new(
-            CandidateType::Host,
-            TransportType::Udp,
-            "0",
-            0,
-            addr,
-            addr,
-            None,
-        );
+        let cand =
+            Candidate::builder(0, CandidateType::Host, TransportType::Udp, "0", 0, addr).build();
         let mut pair = CandidatePair::new(1, cand.clone(), cand);
         assert!(!pair.nominated());
         pair.nominate();
@@ -307,15 +340,8 @@ mod tests {
             let addr = "127.0.0.1:2345".parse().unwrap();
             assert_eq!(
                 cand,
-                Candidate::new(
-                    CandidateType::Host,
-                    TransportType::Udp,
-                    "0",
-                    1234,
-                    addr,
-                    addr,
-                    None
-                )
+                Candidate::builder(0, CandidateType::Host, TransportType::Udp, "0", 1234, addr)
+                    .build()
             );
         }
         #[test]
