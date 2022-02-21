@@ -59,6 +59,17 @@ impl FromStr for CandidateType {
     }
 }
 
+impl std::fmt::Display for CandidateType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self {
+            CandidateType::Host => write!(f, "host"),
+            CandidateType::PeerReflexive => write!(f, "prflx"),
+            CandidateType::ServerReflexive => write!(f, "srflx"),
+            CandidateType::Relayed => write!(f, "relay"),
+        }
+    }
+}
+
 pub struct CandidateBuilder {
     component_id: usize,
     ctype: CandidateType,
@@ -116,6 +127,23 @@ impl Candidate {
             base_address: None,
             related_address: None,
         }
+    }
+
+    pub fn to_sdp_string(&self) -> String {
+        String::from("candidate ")
+            + &self.foundation
+            + " "
+            + &self.component_id.to_string()
+            + " "
+            + &self.transport_type.to_string()
+            + " "
+            + &self.priority.to_string()
+            + " "
+            + &self.address.ip().to_string()
+            + " "
+            + &self.address.port().to_string()
+            + " "
+            + &self.candidate_type.to_string()
     }
 }
 
@@ -415,6 +443,17 @@ mod tests {
                 Candidate::from_str("candidate 0 0 UDP 1234 127.0.0.1 2345 candidate-type"),
                 Err(ParseCandidateError::BadCandidateType)
             ));
+        }
+        #[test]
+        fn host_candidate_sdp_string() {
+            init();
+            let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+            let cand_sdp_str = "candidate foundation 0 UDP 1234 127.0.0.1 9000 host";
+            let cand =
+                Candidate::builder(0, CandidateType::Host, TransportType::Udp, "foundation", 1234, addr).build();
+            assert_eq!(cand.to_sdp_string(), cand_sdp_str);
+            let parsed_cand = Candidate::from_str(cand_sdp_str).unwrap();
+            assert_eq!(cand, parsed_cand);
         }
     }
 }
