@@ -351,7 +351,7 @@ mod tests {
                 remote_channel.local_addr().unwrap(),
             )
             .build();
-            let candidate_pair = CandidatePair::new(send.id, local_cand, remote_cand);
+            let candidate_pair = CandidatePair::new(local_cand, remote_cand);
             let selected_pair = SelectedPair::new(candidate_pair, local_agent);
 
             send.set_selected_pair(selected_pair.clone());
@@ -425,8 +425,8 @@ mod tests {
                 password: "recv".into(),
             });
             let a = Agent::default();
-            let s = a.add_stream();
-            let send = s.add_component().unwrap();
+            let s1 = a.add_stream();
+            let send = s1.add_component().unwrap();
             // assumes the first candidate works
             let send_stream = send
                 .gather_stream(send_credentials.clone(), recv_credentials.clone(), vec![])
@@ -435,8 +435,8 @@ mod tests {
             futures::pin_mut!(send_stream);
             let (send_cand, send_agent) = send_stream.next().await.unwrap();
 
-            // XXX: not technically valid usage but works for now
-            let recv = s.add_component().unwrap();
+            let s2 = a.add_stream();
+            let recv = s2.add_component().unwrap();
             let recv_stream = recv
                 .gather_stream(recv_credentials, send_credentials, vec![])
                 .await
@@ -445,8 +445,7 @@ mod tests {
             // assumes the first candidate works
             let (recv_cand, recv_agent) = recv_stream.next().await.unwrap();
 
-            let send_candidate_pair =
-                CandidatePair::new(send.id, send_cand.clone(), recv_cand.clone());
+            let send_candidate_pair = CandidatePair::new(send_cand.clone(), recv_cand.clone());
             let send_selected_pair = SelectedPair::new(send_candidate_pair, send_agent.clone());
             send.add_recv_agent(send_agent).await;
             send.set_selected_pair(send_selected_pair.clone());
@@ -455,7 +454,7 @@ mod tests {
                 send.selected_pair().unwrap()
             );
 
-            let recv_candidate_pair = CandidatePair::new(recv.id, recv_cand, send_cand);
+            let recv_candidate_pair = CandidatePair::new(recv_cand, send_cand);
             let recv_selected_pair = SelectedPair::new(recv_candidate_pair, recv_agent.clone());
             recv.add_recv_agent(recv_agent).await;
             recv.set_selected_pair(recv_selected_pair.clone());
