@@ -103,10 +103,9 @@ impl Stream {
             .iter()
             .enumerate()
             .find(|c| c.1.is_none())
-            .or_else(|| Some((state.components.len(), &None)))
-            .unwrap()
+            .unwrap_or_else(|| (state.components.len(), &None))
             .0;
-        info!("stream {} adding component {}", self.id, index);
+        info!("stream {} adding component {}", self.id, index + 1);
         if state.components.get(index).is_some() {
             return Err(AgentError::AlreadyExists);
         }
@@ -335,7 +334,7 @@ impl Stream {
             self.id, component_id, cand
         );
         // TODO: error if component doesn't exist
-        self.checklist.add_remote_candidate(component_id, cand);
+        self.checklist.add_remote_candidate(cand);
         Ok(())
     }
 

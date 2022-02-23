@@ -235,7 +235,6 @@ pub struct ConnCheckList {
 
 #[derive(Debug)]
 struct ConnCheckLocalCandidate {
-    component_id: usize,
     candidate: Candidate,
     stun_agent: StunAgent,
     stun_recv_abort: AbortHandle,
@@ -252,7 +251,7 @@ struct ConnCheckListInner {
     local_credentials: Credentials,
     remote_credentials: Credentials,
     local_candidates: Vec<ConnCheckLocalCandidate>,
-    remote_candidates: Vec<(usize, Candidate)>,
+    remote_candidates: Vec<Candidate>,
     // TODO: move to BinaryHeap or similar
     triggered: VecDeque<Arc<ConnCheck>>,
     pairs: VecDeque<Arc<ConnCheck>>,
@@ -325,11 +324,11 @@ impl ConnCheckListInner {
         self.remote_candidates
             .iter()
             .find(|&remote| {
-                remote.0 == component_id
-                    && remote.1.transport_type == ttype
-                    && remote.1.address == addr
+                remote.component_id == component_id
+                    && remote.transport_type == ttype
+                    && remote.address == addr
             })
-            .map(|(_, cand)| cand.clone())
+            .cloned()
     }
 
     #[tracing::instrument(
@@ -371,13 +370,12 @@ impl ConnCheckListInner {
             remote.address = ?remote.address
         )
     )]
-    fn add_remote_candidate(&mut self, component_id: usize, remote: Candidate) {
-        self.remote_candidates.push((component_id, remote));
+    fn add_remote_candidate(&mut self, remote: Candidate) {
+        self.remote_candidates.push(remote);
     }
 
     fn check_is_equal(check: &Arc<ConnCheck>, pair: &CandidatePair, nominate: Nominate) -> bool {
-        check.pair.component_id == pair.component_id
-            && check.pair.local == pair.local
+        check.pair.local == pair.local
             && check.pair.remote == pair.remote
             && nominate.eq(&check.nominate)
     }
@@ -395,11 +393,10 @@ impl ConnCheckListInner {
     }
 
     fn take_matching_check(&mut self, pair: &CandidatePair) -> Option<Arc<ConnCheck>> {
-        let pos = self.pairs.iter().position(|check| {
-            check.pair.component_id == pair.component_id
-                && check.pair.local == pair.local
-                && check.pair.remote == pair.remote
-        });
+        let pos = self
+            .pairs
+            .iter()
+            .position(|check| check.pair.local == pair.local && check.pair.remote == pair.remote);
         if let Some(position) = pos {
             self.pairs.remove(position)
         } else {
@@ -416,7 +413,7 @@ impl ConnCheckListInner {
         skip(self, pair),
         fields(
             checklist_id = self.checklist_id,
-            component_id = component_id,
+            pair.component_id = pair.local.component_id,
             pair.transport_type = ?pair.local.transport_type,
             pair.local.ctype = ?pair.local.candidate_type,
             pair.local.foundation = ?pair.local.foundation,
@@ -426,11 +423,7 @@ impl ConnCheckListInner {
             pair.remote.address = ?pair.remote.address,
         )
     )]
-    fn nominated_pair(
-        &mut self,
-        component_id: usize,
-        pair: &CandidatePair,
-    ) -> Option<Arc<Component>> {
+    fn nominated_pair(&mut self, pair: &CandidatePair) -> Option<Arc<Component>> {
         if let Some(idx) = self.valid.iter().position(|valid_pair| valid_pair == pair) {
             info!("nominated");
             self.valid[idx].nominate();
@@ -438,7 +431,7 @@ impl ConnCheckListInner {
                 .components
                 .iter()
                 .filter_map(|component| component.upgrade())
-                .find(|component| component.id == component_id);
+                .find(|component| component.id == pair.local.component_id);
             if self.state == CheckListState::Running {
                 // o Once a candidate pair for a component of a data stream has been
                 //   nominated, and the state of the checklist associated with the data
@@ -451,7 +444,7 @@ impl ConnCheckListInner {
                 //   response to be a failure, but will wait the duration of the
                 //   transaction timeout for a response.
                 self.triggered.retain(|check| {
-                    if check.pair.component_id == component_id {
+                    if check.pair.local.component_id == pair.local.component_id {
                         check.cancel();
                         false
                     } else {
@@ -459,7 +452,7 @@ impl ConnCheckListInner {
                     }
                 });
                 self.pairs.retain(|check| {
-                    if check.pair.component_id == component_id {
+                    if check.pair.local.component_id == pair.local.component_id {
                         check.cancel();
                         false
                     } else {
@@ -473,7 +466,7 @@ impl ConnCheckListInner {
                 //   to Completed.
                 let all_nominated = self.component_ids.iter().all(|&component_id| {
                     self.valid.iter().any(|valid_pair| {
-                        valid_pair.component_id == component_id && valid_pair.nominated()
+                        valid_pair.local.component_id == component_id && valid_pair.nominated()
                     })
                 });
                 if all_nominated {
@@ -489,7 +482,7 @@ impl ConnCheckListInner {
                             // Only nominate one valid candidatePair
                             if !component_ids_selected
                                 .iter()
-                                .any(|&comp_id| comp_id == valid_pair.component_id)
+                                .any(|&comp_id| comp_id == valid_pair.local.component_id)
                             {
                                 if let Some(component) = &component {
                                     let local_agent = self
@@ -506,7 +499,7 @@ impl ConnCheckListInner {
                                         panic!("Cannot find existing local stun agent!");
                                     }
                                 }
-                                component_ids_selected.push(valid_pair.component_id);
+                                component_ids_selected.push(valid_pair.local.component_id);
                             }
                             component_ids_selected
                         });
@@ -585,11 +578,11 @@ impl ConnCheckListInner {
                 )
                 .build();
                 debug!("new reflexive remote {:?}", cand);
-                self.add_remote_candidate(component_id, cand.clone());
+                self.add_remote_candidate(cand.clone());
                 cand
             });
         // RFC 8445 Section 7.3.1.4. Triggered Checks
-        let pair = CandidatePair::new(component_id, local.clone(), remote);
+        let pair = CandidatePair::new(local.clone(), remote);
         if let Some(mut check) = self.take_matching_check(&pair) {
             // When the pair is already on the checklist:
             trace!("found existing check {:?}", check);
@@ -605,7 +598,7 @@ impl ConnCheckListInner {
                             true,
                         ));
                         self.add_check(check);
-                        if let Some(component) = self.nominated_pair(pair.component_id, &pair) {
+                        if let Some(component) = self.nominated_pair(&pair) {
                             return Ok(Some(component));
                         }
                     }
@@ -899,6 +892,13 @@ impl ConnCheckList {
         local: Candidate,
         agent: StunAgent,
     ) {
+        if component.id != local.component_id {
+            panic!(
+                "attempt to add local candidate with component id {} to component with id {}",
+                local.component_id, component.id
+            );
+        }
+
         let component_id = component.id;
         info!("adding");
         let weak_inner = Arc::downgrade(&self.inner);
@@ -965,7 +965,6 @@ impl ConnCheckList {
         {
             let mut inner = self.inner.lock().unwrap();
             inner.local_candidates.push(ConnCheckLocalCandidate {
-                component_id,
                 candidate: local,
                 stun_agent: agent,
                 // FIXME: abort when closing or not needing stun for candidate
@@ -989,13 +988,17 @@ impl ConnCheckList {
         }
     }
 
-    pub(crate) fn add_remote_candidate(&self, component_id: usize, remote: Candidate) {
+    pub(crate) fn add_remote_candidate(&self, remote: Candidate) {
         {
             let mut inner = self.inner.lock().unwrap();
-            inner.add_remote_candidate(component_id, remote);
-            if inner.component_ids.iter().any(|&v| v == component_id) {
-                inner.component_ids.push(component_id);
+            if inner
+                .component_ids
+                .iter()
+                .any(|&v| v == remote.component_id)
+            {
+                inner.component_ids.push(remote.component_id);
             }
+            inner.add_remote_candidate(remote);
         }
     }
 
@@ -1009,22 +1012,27 @@ impl ConnCheckList {
     fn generate_checks(&self) {
         let mut inner = self.inner.lock().unwrap();
         let mut checks = vec![];
+        let mut pairs: Vec<_> = inner.pairs.iter().map(|check| check.pair.clone()).collect();
         for local in inner.local_candidates.iter() {
-            for (remote_comp_id, remote) in inner.remote_candidates.iter() {
+            for remote in inner.remote_candidates.iter() {
                 if local.candidate.transport_type == remote.transport_type
-                    && local.component_id == *remote_comp_id
+                    && local.candidate.component_id == remote.component_id
+                    && local.candidate.address.is_ipv4() == remote.address.is_ipv4()
+                    && local.candidate.address.is_ipv6() == remote.address.is_ipv6()
                 {
-                    let pair = CandidatePair::new(
-                        local.component_id,
-                        local.candidate.clone(),
-                        remote.clone(),
-                    );
-                    debug!("generated pair {:?}", pair);
-                    checks.push(Arc::new(ConnCheck::new(
-                        pair,
-                        local.stun_agent.clone(),
-                        false,
-                    )));
+                    let pair = CandidatePair::new(local.candidate.clone(), remote.clone());
+
+                    if pair.redundant_with(pairs.iter()) {
+                        trace!("not adding redundant pair");
+                    } else {
+                        debug!("generated pair {:?}", pair);
+                        pairs.push(pair.clone());
+                        checks.push(Arc::new(ConnCheck::new(
+                            pair,
+                            local.stun_agent.clone(),
+                            false,
+                        )));
+                    }
                 }
             }
         }
@@ -1064,8 +1072,9 @@ impl ConnCheckList {
         // sort by component_id
         maybe_thaw.sort_unstable_by(|a, b| {
             a.pair
+                .local
                 .component_id
-                .partial_cmp(&b.pair.component_id)
+                .partial_cmp(&b.pair.local.component_id)
                 .unwrap()
         });
 
@@ -1228,12 +1237,8 @@ impl ConnCheckList {
         }
     }
 
-    async fn nominated_pair(&self, component_id: usize, pair: &CandidatePair) {
-        let component = self
-            .inner
-            .lock()
-            .unwrap()
-            .nominated_pair(component_id, pair);
+    async fn nominated_pair(&self, pair: &CandidatePair) {
+        let component = self.inner.lock().unwrap().nominated_pair(pair);
         if let Some(component) = component {
             component.set_state(ComponentState::Connected).await;
         }
@@ -1254,13 +1259,7 @@ impl ConnCheckList {
     }
 
     pub(crate) fn remote_candidates(&self) -> Vec<Candidate> {
-        self.inner
-            .lock()
-            .unwrap()
-            .remote_candidates
-            .iter()
-            .map(|(_, cand)| cand.clone())
-            .collect()
+        self.inner.lock().unwrap().remote_candidates.to_vec()
     }
 
     fn try_nominate(&self) {
@@ -1275,7 +1274,7 @@ impl ConnCheckList {
                     .valid
                     .iter()
                     .cloned()
-                    .filter(|pair| pair.component_id == component_id)
+                    .filter(|pair| pair.local.component_id == component_id)
                     .collect();
                 valid.sort_by(|pair1, pair2| {
                     pair1
@@ -1299,10 +1298,7 @@ impl ConnCheckList {
                     if let Some(agent) = inner
                         .local_candidates
                         .iter()
-                        .find(|&local_cand| {
-                            local_cand.component_id == pair.component_id
-                                && local_cand.candidate == pair.local
-                        })
+                        .find(|&local_cand| local_cand.candidate == pair.local)
                         .map(|local| local.stun_agent.clone())
                     {
                         inner.add_triggered(Arc::new(ConnCheck::new(pair, agent, true)));
@@ -1543,9 +1539,7 @@ impl ConnCheckListSet {
                 if let Some(_check) = checklist.matching_check(&ok_pair, Nominate::DontCare) {
                     checklist.add_valid(ok_pair.clone());
                     if conncheck.nominate() {
-                        checklist
-                            .nominated_pair(conncheck.pair.component_id, &conncheck.pair)
-                            .await;
+                        checklist.nominated_pair(&conncheck.pair).await;
                         return Ok(());
                     }
                     pair_dealt_with = true;
@@ -1568,9 +1562,7 @@ impl ConnCheckListSet {
                         {
                             checklist.add_valid(check.pair.clone());
                             if conncheck.nominate() {
-                                checklist
-                                    .nominated_pair(conncheck.pair.component_id, &conncheck.pair)
-                                    .await;
+                                checklist.nominated_pair(&conncheck.pair).await;
                                 return Ok(());
                             }
                             pair_dealt_with = true;
@@ -1600,9 +1592,7 @@ impl ConnCheckListSet {
                     checklist.add_valid(conncheck.pair.clone());
 
                     if conncheck.nominate() {
-                        checklist
-                            .nominated_pair(conncheck.pair.component_id, &conncheck.pair)
-                            .await;
+                        checklist.nominated_pair(&conncheck.pair).await;
                         return Ok(());
                     }
                 }
@@ -1859,6 +1849,7 @@ mod tests {
         foundation: &'this str,
         clock: Option<Arc<dyn Clock>>,
         credentials: Credentials,
+        component_id: usize,
     }
 
     impl<'this> PeerBuilder<'this> {
@@ -1882,6 +1873,11 @@ mod tests {
             self
         }
 
+        fn component_id(mut self, component_id: usize) -> Self {
+            self.component_id = component_id;
+            self
+        }
+
         async fn build(self) -> Peer {
             let channel = match self.channel {
                 Some(c) => c,
@@ -1892,7 +1888,7 @@ mod tests {
             };
             let addr = channel.local_addr().unwrap();
             let candidate = Candidate::builder(
-                0,
+                self.component_id,
                 CandidateType::Host,
                 TransportType::Udp,
                 self.foundation,
@@ -1919,6 +1915,7 @@ mod tests {
                 foundation: "",
                 clock: None,
                 credentials: Credentials::new(String::from("user"), String::from("pass")),
+                component_id: 1,
             }
         }
     }
@@ -1938,7 +1935,7 @@ mod tests {
             let list = set.new_list();
             list.add_local_candidate(&component, local.candidate.clone(), local.agent.clone())
                 .await;
-            list.add_remote_candidate(component.id, remote.candidate.clone());
+            list.add_remote_candidate(remote.candidate.clone());
 
             // The candidate list is only what we put in
             let locals = list.local_candidates();
@@ -2114,7 +2111,7 @@ mod tests {
                 }
             });
 
-            let pair = CandidatePair::new(1, local.candidate, remote.candidate);
+            let pair = CandidatePair::new(local.candidate, remote.candidate);
             let conncheck = Arc::new(ConnCheck::new(pair, local.agent, false));
 
             // this is what we're testing.  All of the above is setup for performing this check
@@ -2130,12 +2127,6 @@ mod tests {
                 _ => unreachable!(),
             }
         })
-    }
-
-    fn assert_list_does_not_contain_checks(list: &ConnCheckList, pairs: Vec<&CandidatePair>) {
-        for pair in pairs.iter() {
-            assert!(list.matching_check(pair, Nominate::DontCare).is_none());
-        }
     }
 
     fn assert_list_contains_checks(list: &ConnCheckList, pairs: Vec<&CandidatePair>) {
@@ -2155,8 +2146,8 @@ mod tests {
             let component2 = stream.add_component().unwrap();
             let local1 = Peer::default().await;
             let remote1 = Peer::default().await;
-            let local2 = Peer::default().await;
-            let remote2 = Peer::default().await;
+            let local2 = Peer::builder().component_id(2).build().await;
+            let remote2 = Peer::builder().component_id(2).build().await;
             let local3 = Peer::default().await;
             let remote3 = Peer::default().await;
 
@@ -2164,41 +2155,21 @@ mod tests {
             let list = set.new_list();
             list.add_local_candidate(&component1, local1.candidate.clone(), local1.agent)
                 .await;
-            list.add_remote_candidate(component1.id, remote1.candidate.clone());
+            list.add_remote_candidate(remote1.candidate.clone());
             list.add_local_candidate(&component2, local2.candidate.clone(), local2.agent)
                 .await;
-            list.add_remote_candidate(component2.id, remote2.candidate.clone());
+            list.add_remote_candidate(remote2.candidate.clone());
             list.add_local_candidate(&component1, local3.candidate.clone(), local3.agent)
                 .await;
-            list.add_remote_candidate(component1.id, remote3.candidate.clone());
+            list.add_remote_candidate(remote3.candidate.clone());
 
             list.generate_checks();
-            let pair1 = CandidatePair::new(
-                component1.id,
-                local1.candidate.clone(),
-                remote1.candidate.clone(),
-            );
-            let pair2 = CandidatePair::new(
-                component2.id,
-                local2.candidate.clone(),
-                remote2.candidate.clone(),
-            );
-            let pair3 = CandidatePair::new(
-                component1.id,
-                local3.candidate.clone(),
-                remote3.candidate.clone(),
-            );
-            let pair4 =
-                CandidatePair::new(component1.id, local1.candidate.clone(), remote3.candidate);
-            let pair5 = CandidatePair::new(component1.id, local3.candidate, remote1.candidate);
+            let pair1 = CandidatePair::new(local1.candidate.clone(), remote1.candidate.clone());
+            let pair2 = CandidatePair::new(local2.candidate.clone(), remote2.candidate.clone());
+            let pair3 = CandidatePair::new(local3.candidate.clone(), remote3.candidate.clone());
+            let pair4 = CandidatePair::new(local1.candidate.clone(), remote3.candidate);
+            let pair5 = CandidatePair::new(local3.candidate, remote1.candidate);
             assert_list_contains_checks(&list, vec![&pair1, &pair2, &pair3, &pair4, &pair5]);
-            assert_list_does_not_contain_checks(
-                &list,
-                vec![
-                    &CandidatePair::new(1, local2.candidate.clone(), remote2.candidate),
-                    &CandidatePair::new(1, local1.candidate, local2.candidate),
-                ],
-            );
         });
     }
 
@@ -2216,41 +2187,49 @@ mod tests {
 
             let local1 = Peer::builder().foundation("0").build().await;
             let remote1 = Peer::builder().foundation("0").build().await;
-            let local2 = Peer::builder().foundation("0").build().await;
-            let remote2 = Peer::builder().foundation("0").build().await;
-            let local3 = Peer::builder().foundation("1").build().await;
-            let remote3 = Peer::builder().foundation("1").build().await;
+            let local2 = Peer::builder()
+                .foundation("0")
+                .component_id(2)
+                .build()
+                .await;
+            let remote2 = Peer::builder()
+                .foundation("0")
+                .component_id(2)
+                .build()
+                .await;
+            let local3 = Peer::builder()
+                .foundation("1")
+                .component_id(2)
+                .build()
+                .await;
+            let remote3 = Peer::builder()
+                .foundation("1")
+                .component_id(2)
+                .build()
+                .await;
 
             list1
                 .add_local_candidate(&component1, local1.candidate.clone(), local1.agent)
                 .await;
-            list1.add_remote_candidate(component1.id, remote1.candidate.clone());
+            list1.add_remote_candidate(remote1.candidate.clone());
             list2
                 .add_local_candidate(&component2, local2.candidate.clone(), local2.agent)
                 .await;
-            list2.add_remote_candidate(component2.id, remote2.candidate.clone());
+            list2.add_remote_candidate(remote2.candidate.clone());
             list2
                 .add_local_candidate(&component2, local3.candidate.clone(), local3.agent)
                 .await;
-            list2.add_remote_candidate(component2.id, remote3.candidate.clone());
+            list2.add_remote_candidate(remote3.candidate.clone());
 
             list1.generate_checks();
             list2.generate_checks();
 
             // generated pairs
-            let pair1 = CandidatePair::new(component1.id, local1.candidate, remote1.candidate);
-            let pair2 = CandidatePair::new(
-                component2.id,
-                local2.candidate.clone(),
-                remote2.candidate.clone(),
-            );
-            let pair3 = CandidatePair::new(
-                component2.id,
-                local3.candidate.clone(),
-                remote3.candidate.clone(),
-            );
-            let pair4 = CandidatePair::new(component2.id, local2.candidate, remote3.candidate);
-            let pair5 = CandidatePair::new(component2.id, local3.candidate, remote2.candidate);
+            let pair1 = CandidatePair::new(local1.candidate, remote1.candidate);
+            let pair2 = CandidatePair::new(local2.candidate.clone(), remote2.candidate.clone());
+            let pair3 = CandidatePair::new(local3.candidate.clone(), remote3.candidate.clone());
+            let pair4 = CandidatePair::new(local2.candidate, remote3.candidate);
+            let pair5 = CandidatePair::new(local3.candidate, remote2.candidate);
             assert_list_contains_checks(&list1, vec![&pair1]);
             assert_list_contains_checks(&list2, vec![&pair2, &pair3, &pair4, &pair5]);
 
@@ -2379,7 +2358,7 @@ mod tests {
                     local_peer.agent.clone(),
                 )
                 .await;
-            checklist.add_remote_candidate(local_component.id, remote_peer.candidate.clone());
+            checklist.add_remote_candidate(remote_peer.candidate.clone());
             checklist.set_local_credentials(local_credentials.clone());
             checklist.set_remote_credentials(remote_credentials);
 
@@ -2464,7 +2443,6 @@ mod tests {
             state.local.checklist.generate_checks();
 
             let pair = CandidatePair::new(
-                state.local.component.id,
                 state.local.peer.candidate.clone(),
                 state.remote.candidate.clone(),
             );
@@ -2523,7 +2501,6 @@ mod tests {
             state.local.checklist.generate_checks();
 
             let pair = CandidatePair::new(
-                state.local.component.id,
                 state.local.peer.candidate.clone(),
                 state.remote.candidate.clone(),
             );
@@ -2598,7 +2575,6 @@ mod tests {
             state.local.checklist.generate_checks();
 
             let pair = CandidatePair::new(
-                state.local.component.id,
                 state.local.peer.candidate.clone(),
                 state.remote.candidate.clone(),
             );

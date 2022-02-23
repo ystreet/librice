@@ -145,6 +145,14 @@ impl Candidate {
             + " "
             + &self.candidate_type.to_string()
     }
+
+    // address used for checking if a candidate is redundant or not
+    fn match_address(&self) -> SocketAddr {
+        match self.candidate_type {
+            CandidateType::ServerReflexive => self.base_address,
+            _ => self.address,
+        }
+    }
 }
 
 pub mod parse {
@@ -269,7 +277,6 @@ pub mod parse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidatePair {
-    pub component_id: usize,
     // FIXME: currently unused
     //    default: bool,
     //    valid: bool,
@@ -279,11 +286,17 @@ pub struct CandidatePair {
 }
 
 impl CandidatePair {
-    pub fn new(component_id: usize, local: Candidate, remote: Candidate) -> Self {
+    pub fn new(local: Candidate, remote: Candidate) -> Self {
+        if local.component_id != remote.component_id {
+            panic!("attempt made to create a local candidate that has a different component id {} than remote component id {}", local.component_id, remote.component_id);
+        }
+        if local.transport_type != remote.transport_type {
+            panic!("attempt made to create a local candidate that has a different transport {} than the remote transport type {}", local.transport_type, remote.transport_type);
+        }
+
         Self {
             local,
             remote,
-            component_id,
             nominated: false,
         }
     }
@@ -319,7 +332,6 @@ impl CandidatePair {
         Self {
             local,
             remote: self.remote.clone(),
-            component_id: self.component_id,
             nominated: false,
         }
     }
@@ -330,6 +342,16 @@ impl CandidatePair {
 
     pub(crate) fn nominate(&mut self) {
         self.nominated = true;
+    }
+
+    pub(crate) fn redundant_with<'pair>(
+        &self,
+        others: impl IntoIterator<Item = &'pair CandidatePair>,
+    ) -> bool {
+        others.into_iter().any(|pair| {
+            self.local.match_address() == pair.local.match_address()
+                && self.remote.match_address() == pair.remote.match_address()
+        })
     }
 }
 
@@ -347,12 +369,40 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
         let cand =
             Candidate::builder(0, CandidateType::Host, TransportType::Udp, "0", 0, addr).build();
-        let mut pair = CandidatePair::new(1, cand.clone(), cand);
+        let mut pair = CandidatePair::new(cand.clone(), cand);
         assert!(!pair.nominated());
         pair.nominate();
         assert!(pair.nominated());
         pair.nominate();
         assert!(pair.nominated());
+    }
+    #[test]
+    fn candidate_pair_redundant_with_itself() {
+        init();
+        let local_addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let remote_addr: SocketAddr = "127.0.0.1:9100".parse().unwrap();
+        let pair = CandidatePair::new(
+            Candidate::builder(
+                0,
+                CandidateType::Host,
+                TransportType::Udp,
+                "foundation",
+                1234,
+                local_addr,
+            )
+            .build(),
+            Candidate::builder(
+                0,
+                CandidateType::Host,
+                TransportType::Udp,
+                "foundation",
+                1234,
+                remote_addr,
+            )
+            .build(),
+        );
+        let pair2 = pair.clone();
+        assert!(pair.redundant_with([pair2].iter()));
     }
 
     mod parse {
@@ -449,8 +499,15 @@ mod tests {
             init();
             let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
             let cand_sdp_str = "candidate foundation 0 UDP 1234 127.0.0.1 9000 host";
-            let cand =
-                Candidate::builder(0, CandidateType::Host, TransportType::Udp, "foundation", 1234, addr).build();
+            let cand = Candidate::builder(
+                0,
+                CandidateType::Host,
+                TransportType::Udp,
+                "foundation",
+                1234,
+                addr,
+            )
+            .build();
             assert_eq!(cand.to_sdp_string(), cand_sdp_str);
             let parsed_cand = Candidate::from_str(cand_sdp_str).unwrap();
             assert_eq!(cand, parsed_cand);
