@@ -51,13 +51,20 @@ impl<T> DebugWrapper<T> {
 
 #[derive(Debug, Clone)]
 struct MaybeSender<T: std::fmt::Debug> {
+    id: usize,
     sender: async_channel::Sender<T>,
     filter: DebugWrapper<Arc<dyn Fn(&T) -> bool + Send + Sync + 'static>>,
 }
 
+#[derive(Debug, Clone)]
+struct Senders<T: std::fmt::Debug> {
+    next_id: usize,
+    senders: Vec<MaybeSender<T>>,
+}
+
 #[derive(Debug)]
 pub(crate) struct ChannelBroadcast<T: std::fmt::Debug> {
-    senders: DebugWrapper<Mutex<Vec<MaybeSender<T>>>>,
+    senders: DebugWrapper<Mutex<Senders<T>>>,
 }
 
 impl<T> Default for ChannelBroadcast<T>
@@ -66,7 +73,10 @@ where
 {
     fn default() -> Self {
         Self {
-            senders: DebugWrapper::wrap(Mutex::new(vec![]), "..."),
+            senders: DebugWrapper::wrap(Mutex::new(Senders {
+                next_id: 0,
+                senders: vec![]
+            }), "..."),
         }
     }
 }
@@ -82,7 +92,10 @@ where
     ) -> async_channel::Receiver<T> {
         let (send, recv) = async_channel::bounded(16);
         let mut inner = self.senders.lock().unwrap();
-        inner.push(MaybeSender {
+        let sender_id = inner.next_id;
+        inner.next_id += 1;
+        inner.senders.push(MaybeSender {
+            id: sender_id,
             sender: send,
             filter: DebugWrapper::wrap(Arc::new(filter), "ChannelFilter"),
         });
@@ -96,18 +109,18 @@ where
     pub(crate) async fn broadcast(&self, data: T) {
         let channels = {
             let inner = self.senders.lock().unwrap();
-            inner.clone()
+            inner.senders.clone()
         };
 
         trace!("sending to {} receivers", channels.len());
         let mut removed = vec![];
-        for (i, channel) in channels.iter().enumerate() {
+        for channel in channels.iter() {
             if (channel.filter)(&data) {
                 trace!("passed filter");
                 // XXX: maybe a parallel send?
                 if let Err(e) = channel.sender.send(data.clone()).await {
                     trace!("sender has errored with {:?}", e);
-                    removed.push(i);
+                    removed.push(channel.id);
                 }
             }
         }
@@ -115,12 +128,7 @@ where
         if !removed.is_empty() {
             trace!("removing {} listeners", removed.len());
             let mut inner = self.senders.lock().unwrap();
-            // XXX: may need a cookie value instead of relying on the sizes
-            if inner.len() == channels.len() {
-                for i in removed.iter() {
-                    inner.remove(*i);
-                }
-            }
+            inner.senders.retain(|c| removed.iter().all(|&id| c.id != id));
         }
     }
 }
@@ -154,6 +162,77 @@ mod tests {
             cb.broadcast(41).await;
             cb.broadcast(42).await;
             assert_eq!(42, recv.recv().await.unwrap());
+        })
+    }
+
+    #[test]
+    fn channel_create_destroy_stress() {
+        init();
+        task::block_on(async move {
+            let cb = Arc::new(ChannelBroadcast::default());
+            let n = 1000;
+            let produce = task::spawn({
+                let cb = cb.clone();
+                async move {
+                    for i in 0..n {
+                        cb.broadcast(i).await;
+                    }
+                }
+            });
+            for _ in 0..n {
+                task::spawn({
+                    let cb = cb.clone();
+                    async move {
+                        let recv = cb.channel();
+                        recv.recv().await.unwrap();
+                    }
+                });
+            }
+            produce.await;
+        })
+    }
+
+    #[test]
+    fn channel_dual_recv() {
+        init();
+        task::block_on(async move {
+            let cb = ChannelBroadcast::default();
+            let recv1 = cb.channel();
+            let recv2 = cb.channel();
+            cb.broadcast(41).await;
+            assert_eq!(41, recv1.recv().await.unwrap());
+            assert_eq!(41, recv2.recv().await.unwrap());
+        })
+    }
+
+    #[test]
+    fn channel_destroy() {
+        init();
+        task::block_on(async move {
+            let cb = ChannelBroadcast::default();
+            let recv1 = cb.channel();
+            let recv2 = cb.channel();
+            cb.broadcast(41).await;
+            assert_eq!(41, recv1.recv().await.unwrap());
+            assert_eq!(41, recv2.recv().await.unwrap());
+            drop(recv1);
+            assert_eq!(cb.senders.lock().unwrap().senders.len(), 2);
+            cb.broadcast(42).await;
+            assert_eq!(cb.senders.lock().unwrap().senders.len(), 1);
+            assert_eq!(42, recv2.recv().await.unwrap());
+        })
+    }
+
+    #[test]
+    fn broadcast_destroy() {
+        init();
+        task::block_on(async move {
+            let cb = ChannelBroadcast::default();
+            let recv = cb.channel();
+            cb.broadcast(41).await;
+            assert_eq!(41, recv.recv().await.unwrap());
+            drop(cb);
+            assert!(matches!(recv.recv().await, Err(async_channel::RecvError)));
         })
     }
 
