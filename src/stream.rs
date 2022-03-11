@@ -57,7 +57,6 @@ pub struct Stream {
 
 #[derive(Debug)]
 pub(crate) struct StreamState {
-    id: usize,
     gathering: bool,
     components: Vec<Option<Arc<Component>>>,
     local_credentials: Option<Credentials>,
@@ -75,7 +74,7 @@ impl Stream {
             id,
             agent,
             broadcast,
-            state: Arc::new(Mutex::new(StreamState::new(id))),
+            state: Arc::new(Mutex::new(StreamState::new())),
             checklist: Arc::new(checklist),
         }
     }
@@ -496,9 +495,8 @@ impl Stream {
 }
 
 impl StreamState {
-    fn new(id: usize) -> Self {
+    fn new() -> Self {
         Self {
-            id,
             gathering: false,
             components: vec![],
             local_credentials: None,

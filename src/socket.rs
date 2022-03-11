@@ -186,7 +186,7 @@ impl<'msg> SocketMessageRecv<MutUdpMessage<'msg>, usize> for UdpSocketChannel {
     }
 
     async fn recv<'udp>(&self, msg: &'udp mut MutUdpMessage) -> Result<usize, std::io::Error> {
-        let (length, from) = self.socket.recv_from(&mut msg.data).await?;
+        let (length, from) = self.socket.recv_from(msg.data).await?;
         msg.addr = from;
         Ok(length)
     }
@@ -434,7 +434,7 @@ impl TcpChannel {
             )
         })?;
 
-        while let Some(size) = stream.read(buf.ref_mut()).await.ok() {
+        while let Ok(size) = stream.read(buf.ref_mut()).await {
             trace!("recved {} bytes", size);
             buf.read_size(size);
             if size == 0 {

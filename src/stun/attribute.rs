@@ -1634,7 +1634,7 @@ mod tests {
     fn username() {
         init();
         let s = "woohoo!";
-        let user = Username::new(&s).unwrap();
+        let user = Username::new(s).unwrap();
         assert_eq!(user.get_type(), USERNAME);
         assert_eq!(user.username(), s);
         assert_eq!(user.length() as usize, s.len());
@@ -1658,7 +1658,7 @@ mod tests {
         let codes = vec![300, 401, 699];
         for code in codes.iter().copied() {
             let reason = ErrorCode::default_reason_for_code(code);
-            let err = ErrorCode::new(code, &reason).unwrap();
+            let err = ErrorCode::new(code, reason).unwrap();
             assert_eq!(err.get_type(), ERROR_CODE);
             assert_eq!(err.code(), code);
             assert_eq!(err.reason(), reason);
@@ -1671,7 +1671,7 @@ mod tests {
         }
         let code = codes[0];
         let reason = ErrorCode::default_reason_for_code(code);
-        let err = ErrorCode::new(code, &reason).unwrap();
+        let err = ErrorCode::new(code, reason).unwrap();
         let raw: RawAttribute = err.into();
         // no data
         let mut data: Vec<_> = raw.clone().into();
@@ -1698,16 +1698,16 @@ mod tests {
         // duplicates ignored
         unknown.add_attribute(ALTERNATE_SERVER);
         assert_eq!(unknown.get_type(), UNKNOWN_ATTRIBUTES);
-        assert_eq!(unknown.has_attribute(REALM), true);
-        assert_eq!(unknown.has_attribute(ALTERNATE_SERVER), true);
-        assert_eq!(unknown.has_attribute(NONCE), false);
+        assert!(unknown.has_attribute(REALM));
+        assert!(unknown.has_attribute(ALTERNATE_SERVER));
+        assert!(!unknown.has_attribute(NONCE));
         let raw: RawAttribute = unknown.into();
         assert_eq!(raw.get_type(), UNKNOWN_ATTRIBUTES);
         let unknown2 = UnknownAttributes::try_from(&raw).unwrap();
         assert_eq!(unknown2.get_type(), UNKNOWN_ATTRIBUTES);
-        assert_eq!(unknown2.has_attribute(REALM), true);
-        assert_eq!(unknown2.has_attribute(ALTERNATE_SERVER), true);
-        assert_eq!(unknown2.has_attribute(NONCE), false);
+        assert!(unknown2.has_attribute(REALM));
+        assert!(unknown2.has_attribute(ALTERNATE_SERVER));
+        assert!(!unknown2.has_attribute(NONCE));
         // truncate by one byte
         let mut data: Vec<_> = raw.clone().into();
         let len = data.len();

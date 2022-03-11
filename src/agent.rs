@@ -82,20 +82,16 @@ pub struct Agent {
 
 #[derive(Debug)]
 pub(crate) struct AgentInner {
-    id: usize,
     started: bool,
-    streams: Vec<Arc<Stream>>,
     pub(crate) stun_servers: Vec<(TransportType, SocketAddr)>,
 }
 
 pub(crate) type AgentFuture = Pin<Box<dyn Future<Output = Result<(), AgentError>> + Send>>;
 
 impl AgentInner {
-    fn new(id: usize) -> Self {
+    fn new() -> Self {
         Self {
-            id,
             started: false,
-            streams: vec![],
             stun_servers: vec![],
         }
     }
@@ -113,10 +109,9 @@ impl Default for Agent {
         let controlling = true;
         Agent {
             id,
-            inner: Arc::new(Mutex::new(AgentInner::new(id))),
+            inner: Arc::new(Mutex::new(AgentInner::new())),
             checklistset: Arc::new(
                 ConnCheckListSet::builder(
-                    broadcast.clone(),
                     tasks.clone(),
                     tie_breaker,
                     controlling,
@@ -247,8 +242,8 @@ mod tests {
         init();
         let agent = Agent::default();
         agent.set_controlling(true);
-        assert_eq!(agent.controlling(), true);
+        assert!(agent.controlling());
         agent.set_controlling(false);
-        assert_eq!(agent.controlling(), false);
+        assert!(!agent.controlling());
     }
 }
