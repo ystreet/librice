@@ -186,7 +186,7 @@ pub fn gather_component(
                     let mut builder = Candidate::builder(
                         component_id,
                         ga.ctype,
-                        TransportType::Udp,
+                        ga.transport,
                         &produced.len().to_string(),
                         priority,
                         ga.address,

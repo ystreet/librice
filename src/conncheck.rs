@@ -19,7 +19,7 @@ use tracing_futures::Instrument;
 
 use crate::candidate::{Candidate, CandidatePair, CandidateType, TransportType};
 
-use crate::agent::{AgentError, AgentMessage};
+use crate::agent::AgentError;
 use crate::stream::Credentials;
 
 use crate::clock::{get_clock, Clock, ClockType};
@@ -28,7 +28,7 @@ use crate::stun::agent::StunAgent;
 use crate::stun::attribute::*;
 use crate::stun::message::*;
 use crate::tasks::TaskList;
-use crate::utils::{ChannelBroadcast, DropLogger};
+use crate::utils::DropLogger;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CandidatePairState {
@@ -910,7 +910,7 @@ impl ConnCheckList {
             let local = local.clone();
             let span = debug_span!("conncheck_component_recv_loop");
             async move {
-                let drop_log = DropLogger::new("dropping stun receive stream");
+                let _drop_log = DropLogger::new("dropping stun receive stream");
                 let mut recv_stun = agent.receive_stream();
                 if stun_send.send(()).is_err() {
                     return;
@@ -945,7 +945,6 @@ impl ConnCheckList {
                         }
                     }
                 }
-                drop(drop_log);
             }
             .instrument(span)
         });
@@ -1317,7 +1316,6 @@ enum ConnCheckResponse {
 }
 
 pub(crate) struct ConnCheckListSetBuilder {
-    broadcast: Arc<ChannelBroadcast<AgentMessage>>,
     tasks: Arc<TaskList>,
     clock: Option<Arc<dyn Clock>>,
     tie_breaker: u64,
@@ -1326,13 +1324,11 @@ pub(crate) struct ConnCheckListSetBuilder {
 
 impl ConnCheckListSetBuilder {
     fn new(
-        broadcast: Arc<ChannelBroadcast<AgentMessage>>,
         tasks: Arc<TaskList>,
         tie_breaker: u64,
         controlling: bool,
     ) -> Self {
         Self {
-            broadcast,
             tasks,
             clock: None,
             tie_breaker,
@@ -1353,7 +1349,6 @@ impl ConnCheckListSetBuilder {
 
         ConnCheckListSet {
             clock,
-            broadcast: self.broadcast,
             tasks: self.tasks,
             inner: Arc::new(Mutex::new(CheckListSetInner {
                 checklists: vec![],
@@ -1367,7 +1362,6 @@ impl ConnCheckListSetBuilder {
 #[derive(Debug)]
 pub(crate) struct ConnCheckListSet {
     clock: Arc<dyn Clock>,
-    broadcast: Arc<ChannelBroadcast<AgentMessage>>,
     tasks: Arc<TaskList>,
     inner: Arc<Mutex<CheckListSetInner>>,
 }
@@ -1383,12 +1377,11 @@ impl ConnCheckListSet {
     // TODO: add/remove a stream after start
     // TODO: cancel when agent is stopped
     pub(crate) fn builder(
-        broadcast: Arc<ChannelBroadcast<AgentMessage>>,
         tasks: Arc<TaskList>,
         tie_breaker: u64,
         controlling: bool,
     ) -> ConnCheckListSetBuilder {
-        ConnCheckListSetBuilder::new(broadcast, tasks, tie_breaker, controlling)
+        ConnCheckListSetBuilder::new(tasks, tie_breaker, controlling)
     }
 
     pub(crate) fn new_list(&self) -> ConnCheckList {
@@ -2297,7 +2290,6 @@ mod tests {
             let local_component = local_stream.add_component().unwrap();
             let router = ChannelRouter::default();
 
-            let broadcast = Arc::new(ChannelBroadcast::default());
             let tasks = Arc::new(TaskList::new());
 
             let local_peer = Peer::builder()
@@ -2345,7 +2337,7 @@ mod tests {
                 ));
 
             let checklist_set =
-                ConnCheckListSet::builder(broadcast.clone(), tasks.clone(), 0, true)
+                ConnCheckListSet::builder(tasks.clone(), 0, true)
                     .clock(self.clock.clone())
                     .build();
             checklist_set.add_stream(local_stream.clone());
@@ -2439,6 +2431,7 @@ mod tests {
         init();
         async_std::task::block_on(async move {
             let state = FineControl::builder().build().await;
+            assert_eq!(state.local.component.id, 1);
 
             state.local.checklist.generate_checks();
 

@@ -119,6 +119,13 @@ impl StunAgent {
         }
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip(self),
+        fields(
+            stun.id = ?self.id
+        )
+    )]
     pub fn set_local_credentials(&self, credentials: MessageIntegrityCredentials) {
         let mut state = self.inner.state.lock().unwrap();
         state.local_credentials = Some(credentials)
@@ -129,6 +136,13 @@ impl StunAgent {
         state.local_credentials.clone()
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip(self),
+        fields(
+            stun.id = ?self.id
+        )
+    )]
     pub fn set_remote_credentials(&self, credentials: MessageIntegrityCredentials) {
         let mut state = self.inner.state.lock().unwrap();
         state.remote_credentials = Some(credentials)

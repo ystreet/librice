@@ -31,14 +31,8 @@ pub(crate) trait ClockEntry:
     async fn wait(&self);
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct SystemClock {}
-
-impl Default for SystemClock {
-    fn default() -> Self {
-        SystemClock {}
-    }
-}
 
 #[async_trait]
 impl Clock for SystemClock {
@@ -162,7 +156,6 @@ pub(crate) mod tests {
 
     #[derive(Debug)]
     struct TestClockInner {
-        start: Instant,
         now: Instant,
         broadcast: Arc<ChannelBroadcast<Instant>>,
     }
@@ -171,7 +164,6 @@ pub(crate) mod tests {
         fn default() -> Self {
             let now = Instant::now();
             TestClockInner {
-                start: now,
                 now,
                 broadcast: Arc::new(ChannelBroadcast::default()),
             }

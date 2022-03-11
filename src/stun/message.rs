@@ -1347,7 +1347,7 @@ mod tests {
         assert!(matches!(XorMappedAddress::try_from(&raw), Ok(_)));
         let xor_mapped_addres = XorMappedAddress::try_from(&raw).unwrap();
         assert_eq!(
-            xor_mapped_addres.addr(msg.transaction_id().into()),
+            xor_mapped_addres.addr(msg.transaction_id()),
             "[2001:db8:1234:5678:11:2233:4455:6677]:32853"
                 .parse()
                 .unwrap()
