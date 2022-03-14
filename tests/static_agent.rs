@@ -53,19 +53,6 @@ async fn agent_static_connection_test(local_controlling: bool, remote_controllin
     rstream.set_remote_credentials(lcreds);
     let rcomp = rstream.add_component().unwrap();
 
-    async_std::task::spawn({
-        let agent = lagent.clone();
-        async move {
-            agent.run_loop().await.unwrap();
-        }
-    });
-    async_std::task::spawn({
-        let agent = ragent.clone();
-        async move {
-            agent.run_loop().await.unwrap();
-        }
-    });
-
     // poor-man's async semaphore
     let (lgatherdone_send, lgatherdone_recv) = async_channel::bounded::<i32>(1);
     let lgather = async_std::task::spawn({
@@ -117,6 +104,7 @@ async fn agent_static_connection_test(local_controlling: bool, remote_controllin
     drop(rgatherdone_recv);
     trace!("gathered");
 
+    /* no trickle support yet so we have to start after gathering */
     lagent.start().unwrap();
     ragent.start().unwrap();
 

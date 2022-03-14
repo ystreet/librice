@@ -73,10 +73,13 @@ where
 {
     fn default() -> Self {
         Self {
-            senders: DebugWrapper::wrap(Mutex::new(Senders {
-                next_id: 0,
-                senders: vec![]
-            }), "..."),
+            senders: DebugWrapper::wrap(
+                Mutex::new(Senders {
+                    next_id: 0,
+                    senders: vec![],
+                }),
+                "...",
+            ),
         }
     }
 }
@@ -116,7 +119,6 @@ where
         let mut removed = vec![];
         for channel in channels.iter() {
             if (channel.filter)(&data) {
-                trace!("passed filter");
                 // XXX: maybe a parallel send?
                 if let Err(e) = channel.sender.send(data.clone()).await {
                     trace!("sender has errored with {:?}", e);
@@ -128,7 +130,9 @@ where
         if !removed.is_empty() {
             trace!("removing {} listeners", removed.len());
             let mut inner = self.senders.lock().unwrap();
-            inner.senders.retain(|c| removed.iter().all(|&id| c.id != id));
+            inner
+                .senders
+                .retain(|c| removed.iter().all(|&id| c.id != id));
         }
     }
 }

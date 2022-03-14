@@ -21,7 +21,6 @@ pub mod gathering;
 pub mod socket;
 pub mod stream;
 pub mod stun;
-mod tasks;
 mod utils;
 
 #[cfg(test)]

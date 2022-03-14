@@ -27,7 +27,6 @@ use crate::component::{Component, ComponentState, SelectedPair};
 use crate::stun::agent::StunAgent;
 use crate::stun::attribute::*;
 use crate::stun::message::*;
-use crate::tasks::TaskList;
 use crate::utils::DropLogger;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -913,7 +912,7 @@ impl ConnCheckList {
                 let _drop_log = DropLogger::new("dropping stun receive stream");
                 let mut recv_stun = agent.receive_stream();
                 if stun_send.send(()).is_err() {
-                    return;
+                    panic!("stun receiver not connected anymore async task run");
                 }
                 while let Some(stun_or_data) = recv_stun.next().await {
                     if let Some((msg, from)) = stun_or_data.stun() {
@@ -1316,20 +1315,14 @@ enum ConnCheckResponse {
 }
 
 pub(crate) struct ConnCheckListSetBuilder {
-    tasks: Arc<TaskList>,
     clock: Option<Arc<dyn Clock>>,
     tie_breaker: u64,
     controlling: bool,
 }
 
 impl ConnCheckListSetBuilder {
-    fn new(
-        tasks: Arc<TaskList>,
-        tie_breaker: u64,
-        controlling: bool,
-    ) -> Self {
+    fn new(tie_breaker: u64, controlling: bool) -> Self {
         Self {
-            tasks,
             clock: None,
             tie_breaker,
             controlling,
@@ -1349,7 +1342,6 @@ impl ConnCheckListSetBuilder {
 
         ConnCheckListSet {
             clock,
-            tasks: self.tasks,
             inner: Arc::new(Mutex::new(CheckListSetInner {
                 checklists: vec![],
                 tie_breaker: self.tie_breaker,
@@ -1362,7 +1354,6 @@ impl ConnCheckListSetBuilder {
 #[derive(Debug)]
 pub(crate) struct ConnCheckListSet {
     clock: Arc<dyn Clock>,
-    tasks: Arc<TaskList>,
     inner: Arc<Mutex<CheckListSetInner>>,
 }
 
@@ -1376,12 +1367,8 @@ pub(crate) struct CheckListSetInner {
 impl ConnCheckListSet {
     // TODO: add/remove a stream after start
     // TODO: cancel when agent is stopped
-    pub(crate) fn builder(
-        tasks: Arc<TaskList>,
-        tie_breaker: u64,
-        controlling: bool,
-    ) -> ConnCheckListSetBuilder {
-        ConnCheckListSetBuilder::new(tasks, tie_breaker, controlling)
+    pub(crate) fn builder(tie_breaker: u64, controlling: bool) -> ConnCheckListSetBuilder {
+        ConnCheckListSetBuilder::new(tie_breaker, controlling)
     }
 
     pub(crate) fn new_list(&self) -> ConnCheckList {
@@ -1601,6 +1588,11 @@ impl ConnCheckListSet {
 
     // RFC8445: 6.1.4.2. Performing Connectivity Checks
     fn next_check(&self, checklist: &ConnCheckList) -> Option<Arc<ConnCheck>> {
+        {
+            let checklist_inner = checklist.inner.lock().unwrap();
+            checklist_inner.dump_check_state();
+        }
+
         // 1.  If the triggered-check queue associated with the checklist
         //     contains one or more candidate pairs, the agent removes the top
         //     pair from the queue, performs a connectivity check on that pair,
@@ -1683,11 +1675,7 @@ impl ConnCheckListSet {
             match running.process_next().await {
                 CheckListSetProcess::Completed => break,
                 CheckListSetProcess::HaveCheck(check) => {
-                    if self.tasks.add_task(check.perform().boxed()).await.is_err() {
-                        // task receiver has stopped, can't push tasks.
-                        warn!("checklistset stopping processing as task receiver has stopped");
-                        break;
-                    }
+                    async_std::task::spawn(check.perform());
                 }
                 CheckListSetProcess::NothingToDo => (),
             }
@@ -1767,11 +1755,6 @@ impl<'set> RunningCheckListSet<'set> {
                     }
                 }
             };
-
-            {
-                let checklist_inner = checklist.inner.lock().unwrap();
-                checklist_inner.dump_check_state();
-            }
 
             let weak_set_inner = Arc::downgrade(&self.set.inner);
             return CheckListSetProcess::HaveCheck(OutstandingConnCheck {
@@ -2031,7 +2014,7 @@ mod tests {
                     remote_credentials.clone().into(),
                 ));
 
-            // retrieve the streams before starting async tasks to avoid data being sent but never
+            // retrieve the streams before starting async to avoid data being sent but never
             // received
             let mut local_data_stream = local.agent.receive_stream();
             let mut remote_data_stream = remote.agent.receive_stream();
@@ -2290,8 +2273,6 @@ mod tests {
             let local_component = local_stream.add_component().unwrap();
             let router = ChannelRouter::default();
 
-            let tasks = Arc::new(TaskList::new());
-
             let local_peer = Peer::builder()
                 .channel(StunChannel::AsyncChannel(AsyncChannel::new(
                     router.clone(),
@@ -2336,10 +2317,9 @@ mod tests {
                     local_credentials.clone().into(),
                 ));
 
-            let checklist_set =
-                ConnCheckListSet::builder(tasks.clone(), 0, true)
-                    .clock(self.clock.clone())
-                    .build();
+            let checklist_set = ConnCheckListSet::builder(0, true)
+                .clock(self.clock.clone())
+                .build();
             checklist_set.add_stream(local_stream.clone());
             let checklist = local_stream.checklist.clone();
 
