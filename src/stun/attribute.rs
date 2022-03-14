@@ -1411,7 +1411,7 @@ impl MessageIntegrity {
     /// assert_eq!(integrity, expected);
     /// ```
     pub fn compute(data: &[u8], key: &[u8]) -> Result<[u8; 20], AgentError> {
-        use hmac::{Hmac, Mac, NewMac};
+        use hmac::{Hmac, Mac};
         let mut hmac =
             Hmac::<sha1::Sha1>::new_from_slice(key).map_err(|_| AgentError::Malformed)?;
         hmac.update(data);
@@ -1430,11 +1430,11 @@ impl MessageIntegrity {
     /// assert_eq!(MessageIntegrity::verify(&data, &key, &expected).unwrap(), ());
     /// ```
     pub fn verify(data: &[u8], key: &[u8], expected: &[u8; 20]) -> Result<(), AgentError> {
-        use hmac::{Hmac, Mac, NewMac};
+        use hmac::{Hmac, Mac};
         let mut hmac =
             Hmac::<sha1::Sha1>::new_from_slice(key).map_err(|_| AgentError::Malformed)?;
         hmac.update(data);
-        hmac.verify(expected)
+        hmac.verify_slice(expected)
             .map_err(|_| AgentError::IntegrityCheckFailed)
     }
 }

@@ -21,8 +21,8 @@ rand = "0.8"
 futures = "0.3"
 futures-timer = "3"
 crc = "2"
-sha-1 = "0.9"
-hmac = "0.11"
+sha-1 = "0.10"
+hmac = "0.12"
 derivative = "2"
 tracing = { version = "0.1", features = ["log"] }
 tracing-futures = { version = "0.2", default-features = false, features = ["std", "std-future"] }
