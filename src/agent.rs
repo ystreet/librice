@@ -9,12 +9,13 @@
 use std::error::Error;
 use std::fmt::Display;
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 
-use futures::prelude::*;
+use async_std::task;
+
 use rand::prelude::*;
+use tracing_futures::Instrument;
 
 use crate::candidate::parse::ParseCandidateError;
 use crate::candidate::Candidate;
@@ -22,7 +23,6 @@ use crate::candidate::TransportType;
 use crate::component::{Component, ComponentState};
 use crate::conncheck::ConnCheckListSet;
 use crate::stream::Stream;
-use crate::tasks::TaskList;
 use crate::utils::ChannelBroadcast;
 
 #[derive(Debug)]
@@ -77,22 +77,19 @@ pub struct Agent {
     inner: Arc<Mutex<AgentInner>>,
     checklistset: Arc<ConnCheckListSet>,
     broadcast: Arc<ChannelBroadcast<AgentMessage>>,
-    tasks: Arc<TaskList>,
 }
 
 #[derive(Debug)]
 pub(crate) struct AgentInner {
-    started: bool,
     pub(crate) stun_servers: Vec<(TransportType, SocketAddr)>,
+    task: Option<task::JoinHandle<Result<(), AgentError>>>,
 }
-
-pub(crate) type AgentFuture = Pin<Box<dyn Future<Output = Result<(), AgentError>> + Send>>;
 
 impl AgentInner {
     fn new() -> Self {
         Self {
-            started: false,
             stun_servers: vec![],
+            task: None,
         }
     }
 }
@@ -103,23 +100,14 @@ impl Default for Agent {
     fn default() -> Self {
         let id = AGENT_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let broadcast = Arc::new(ChannelBroadcast::default());
-        let tasks = Arc::new(TaskList::new());
         let mut rnd = rand::thread_rng();
         let tie_breaker = rnd.gen::<u64>();
         let controlling = true;
         Agent {
             id,
             inner: Arc::new(Mutex::new(AgentInner::new())),
-            checklistset: Arc::new(
-                ConnCheckListSet::builder(
-                    tasks.clone(),
-                    tie_breaker,
-                    controlling,
-                )
-                .build(),
-            ),
+            checklistset: Arc::new(ConnCheckListSet::builder(tie_breaker, controlling).build()),
             broadcast,
-            tasks,
         }
     }
 }
@@ -147,19 +135,6 @@ impl Agent {
         s
     }
 
-    /// Run the agent loop
-    #[tracing::instrument(
-        name = "ice_loop",
-        err,
-        skip(self),
-        fields(
-            ice_id = self.id
-        )
-    )]
-    pub async fn run_loop(&self) -> Result<(), AgentError> {
-        self.tasks.iterate_tasks().await
-    }
-
     // XXX: TEMPORARY needs to become dynamic for trickle-ice
     #[tracing::instrument(
         name = "ice_start",
@@ -170,18 +145,18 @@ impl Agent {
         )
     )]
     pub fn start(&self) -> Result<(), AgentError> {
-        let set = {
-            let mut inner = self.inner.lock().unwrap();
-            if inner.started {
-                // already started?
-                // TODO: ICE restart
-                return Ok(());
-            }
-            inner.started = true;
-            self.checklistset.clone()
-        };
-        self.tasks
-            .add_task_block(async move { set.agent_conncheck_process().await }.boxed())
+        let mut inner = self.inner.lock().unwrap();
+        if inner.task.is_some() {
+            // already started?
+            // TODO: ICE restart
+            return Ok(());
+        }
+        inner.task = Some(async_std::task::spawn({
+            let set = self.checklistset.clone();
+            let span = debug_span!("ice_loop");
+            async move { set.agent_conncheck_process().await }.instrument(span)
+        }));
+        Ok(())
     }
 
     pub fn message_channel(&self) -> impl futures::Stream<Item = AgentMessage> {
@@ -198,7 +173,10 @@ impl Agent {
     )]
     pub async fn close(&self) -> Result<(), AgentError> {
         info!("closing agent");
-        self.tasks.stop().await
+        let mut inner = self.inner.lock().unwrap();
+        let task = inner.task.take();
+        task.map(|t| t.cancel());
+        Ok(())
     }
 
     #[tracing::instrument(

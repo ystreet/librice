@@ -294,12 +294,7 @@ mod tests {
             let c = s.add_component().unwrap();
             let mut msg_channel = a.message_channel();
 
-            let loop_task = async_std::task::spawn({
-                let a = a.clone();
-                async move {
-                    a.run_loop().await.unwrap();
-                }
-            });
+            a.start().unwrap();
             assert_eq!(c.state(), ComponentState::New);
             c.set_state(ComponentState::Connecting).await;
             if let Some(AgentMessage::ComponentStateChange(_, state)) = msg_channel.next().await {
@@ -313,7 +308,6 @@ mod tests {
             }
 
             a.close().await.unwrap();
-            loop_task.await;
         });
     }
 
