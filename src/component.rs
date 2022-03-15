@@ -139,7 +139,7 @@ impl Component {
             .collect();
 
         info!("retreived sockets");
-        crate::gathering::gather_component(self.id, agents, stun_servers)
+        Ok(crate::gathering::gather_component(self.id, agents, stun_servers))
     }
 
     #[tracing::instrument(

@@ -15,7 +15,7 @@ use futures::StreamExt;
 
 use get_if_addrs::get_if_addrs;
 
-use crate::agent::AgentError;
+use crate::stun::agent::StunError;
 use crate::candidate::{Candidate, CandidateType, TransportType};
 use crate::socket::{StunChannel, UdpSocketChannel};
 use crate::stun::agent::StunAgent;
@@ -41,7 +41,7 @@ fn candidate_is_redundant_with(a: &Candidate, b: &Candidate) -> bool {
 }
 
 pub fn iface_udp_sockets(
-) -> Result<impl Stream<Item = Result<UdpSocketChannel, std::io::Error>>, AgentError> {
+) -> Result<impl Stream<Item = Result<UdpSocketChannel, std::io::Error>>, StunError> {
     let mut ifaces = get_if_addrs()?;
     // We only care about non-loopback interfaces for now
     // TODO: remove 'Deprecated IPv4-compatible IPv6 addresses [RFC4291]'
@@ -87,7 +87,7 @@ async fn gather_stun_xor_address(
     agent: StunAgent,
     transport: TransportType,
     stun_server: SocketAddr,
-) -> Result<GatherCandidateAddress, AgentError> {
+) -> Result<GatherCandidateAddress, StunError> {
     let msg = generate_bind_request()?;
 
     agent
@@ -99,7 +99,6 @@ async fn gather_stun_xor_address(
                     "got external address {:?}",
                     attr.addr(response.transaction_id())
                 );
-                // we don't need any more retransmissions
                 return Ok(GatherCandidateAddress {
                     ctype: CandidateType::ServerReflexive,
                     local_preference,
@@ -109,14 +108,14 @@ async fn gather_stun_xor_address(
                     related: Some(stun_server),
                 });
             }
-            Err(AgentError::Malformed)
+            Err(StunError::Failed)
         })
 }
 
 fn udp_socket_host_gather_candidate(
     socket: Arc<UdpSocket>,
     local_preference: u8,
-) -> Result<GatherCandidateAddress, AgentError> {
+) -> Result<GatherCandidateAddress, StunError> {
     let local_addr = socket.local_addr().unwrap();
     Ok(GatherCandidateAddress {
         ctype: CandidateType::Host,
@@ -132,7 +131,7 @@ pub fn gather_component(
     component_id: usize,
     local_agents: Vec<StunAgent>,
     stun_servers: Vec<(TransportType, SocketAddr)>,
-) -> Result<impl Stream<Item = (Candidate, StunAgent)>, AgentError> {
+) -> impl Stream<Item = (Candidate, StunAgent)> {
     let futures = futures::stream::FuturesUnordered::new();
 
     for f in local_agents
@@ -174,7 +173,7 @@ pub fn gather_component(
     // TODO: add peer-reflexive and relayed (TURN) candidates
 
     let produced = Arc::new(Mutex::new(Vec::new()));
-    Ok(futures.filter_map(move |ga| {
+    futures.filter_map(move |ga| {
         let produced = produced.clone();
         async move {
             match ga {
@@ -214,5 +213,5 @@ pub fn gather_component(
                 }
             }
         }
-    }))
+    })
 }

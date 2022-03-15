@@ -40,8 +40,7 @@ fn main() -> io::Result<()> {
             .await;
 
         info!("retreived sockets");
-        let gather_stream = librice::gathering::gather_component(1, agents, stun_servers)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e))?;
+        let gather_stream = librice::gathering::gather_component(1, agents, stun_servers);
         futures::pin_mut!(gather_stream);
         while let Some(candidate) = gather_stream.next().await {
             println! {"{:?}", candidate};

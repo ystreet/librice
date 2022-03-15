@@ -19,7 +19,7 @@ use std::convert::TryFrom;
 
 use byteorder::{BigEndian, ByteOrder};
 
-use crate::agent::AgentError;
+use crate::stun::agent::StunError;
 use crate::stun::attribute::*;
 
 /// The value of magic cookie (in network byte order) as specified in RFC5389, and RFC8489.
@@ -228,12 +228,11 @@ impl MessageType {
     }
 
     /// Convert a set of network bytes into a [`MessageType`] or return an error
-    pub fn from_bytes(data: &[u8]) -> Result<Self, AgentError> {
+    pub fn from_bytes(data: &[u8]) -> Result<Self, StunError> {
         let data = BigEndian::read_u16(data);
         if data & 0xc000 != 0x0 {
             /* not a stun packet */
-            warn!("malformed {:?}", data);
-            return Err(AgentError::Malformed);
+            return Err(StunError::ParseError(StunParseError::WrongImplementation));
         }
         Ok(Self { 0: data })
     }
@@ -244,7 +243,7 @@ impl From<MessageType> for Vec<u8> {
     }
 }
 impl TryFrom<&[u8]> for MessageType {
-    type Error = AgentError;
+    type Error = StunError;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         MessageType::from_bytes(value)
@@ -563,12 +562,12 @@ impl Message {
     /// assert_eq!(message.get_type(), MessageType::from_class_method(MessageClass::Request, BINDING));
     /// assert_eq!(message.transaction_id(), 1000.into());
     /// ```
-    pub fn from_bytes(data: &[u8]) -> Result<Self, AgentError> {
+    pub fn from_bytes(data: &[u8]) -> Result<Self, StunError> {
         let orig_data = data;
 
         if data.len() < 20 {
             // always at least 20 bytes long
-            return Err(AgentError::NotEnoughData);
+            return Err(StunError::ParseError(StunParseError::NotEnoughData));
         }
         let mtype = MessageType::from_bytes(data)?;
         let mlength = BigEndian::read_u16(&data[2..]) as usize;
@@ -579,7 +578,7 @@ impl Message {
                 mlength + 20,
                 data.len()
             );
-            return Err(AgentError::Malformed);
+            return Err(StunError::ParseError(StunParseError::InvalidData));
         }
         let tid = BigEndian::read_u128(&data[4..]);
         let cookie = (tid >> 96) as u32;
@@ -588,7 +587,7 @@ impl Message {
                 "malformed cookie constant {:?} != stored data {:?}",
                 MAGIC_COOKIE, cookie
             );
-            return Err(AgentError::Malformed);
+            return Err(StunError::ParseError(StunParseError::InvalidData));
         }
         let mut ret = Self::new(mtype, tid.into());
 
@@ -604,7 +603,7 @@ impl Message {
                     "unexpected attribute {} after MESSAGE_INTEGRITY",
                     attr.get_type()
                 );
-                return Err(AgentError::Malformed);
+                return Err(StunError::ParseError(StunParseError::InvalidData));
             }
 
             if attr.get_type() == MESSAGE_INTEGRITY {
@@ -613,7 +612,7 @@ impl Message {
             }
             let padded_len = padded_attr_size(&attr);
             if padded_len > data.len() {
-                return Err(AgentError::NotEnoughData);
+                return Err(StunError::ParseError(StunParseError::NotEnoughData));
             }
             if attr.get_type() == FINGERPRINT {
                 let f = Fingerprint::from_raw(&attr)?;
@@ -629,7 +628,7 @@ impl Message {
                         "fingerprint mismatch {:?} != {:?}",
                         calculated_fingerprint, msg_fingerprint
                     );
-                    return Err(AgentError::Malformed);
+                    return Err(StunError::ParseError(StunParseError::InvalidData));
                 }
             }
             ret.attributes.push(attr);
@@ -647,10 +646,10 @@ impl Message {
         &self,
         orig_data: &[u8],
         credentials: &MessageIntegrityCredentials,
-    ) -> Result<(), AgentError> {
+    ) -> Result<(), StunError> {
         let raw = self
             .attribute::<RawAttribute>(MESSAGE_INTEGRITY)
-            .ok_or(AgentError::ResourceNotFound)?;
+            .ok_or(StunError::ResourceNotFound)?;
         let integrity = MessageIntegrity::try_from(&raw)?;
         let msg_hmac = integrity.hmac();
 
@@ -659,7 +658,7 @@ impl Message {
         let data = orig_data;
         if data.len() < 20 {
             // always at least 20 bytes long
-            return Err(AgentError::NotEnoughData);
+            return Err(StunError::ParseError(StunParseError::NotEnoughData));
         }
         let mut data = &data[20..];
         let mut data_offset = 20;
@@ -669,7 +668,7 @@ impl Message {
                 let msg = MessageIntegrity::try_from(&attr)?;
                 if msg.hmac() != msg_hmac {
                     // data hmac is different from message hmac -> wrong data for this message.
-                    return Err(AgentError::Malformed);
+                    return Err(StunError::ParseError(StunParseError::InvalidData));
                 }
 
                 // HMAC is computed using all the data up to (exclusive of) the MESSAGE_INTEGRITY
@@ -688,13 +687,13 @@ impl Message {
             }
             let padded_len = padded_attr_size(&attr);
             if padded_len > data.len() {
-                return Err(AgentError::Malformed);
+                return Err(StunError::ParseError(StunParseError::InvalidData));
             }
             data = &data[padded_len..];
             data_offset += padded_len;
         }
         // no hmac in data but there was in the message? -> incompatible data for this message
-        Err(AgentError::Malformed)
+        Err(StunError::ParseError(StunParseError::InvalidData))
     }
 
     /// Adds MESSAGE_INTEGRITY attribute to a [`Message`] using the provided credentials
@@ -722,12 +721,12 @@ impl Message {
     pub fn add_message_integrity(
         &mut self,
         credentials: &MessageIntegrityCredentials,
-    ) -> Result<(), AgentError> {
+    ) -> Result<(), StunError> {
         if self.has_attribute(MESSAGE_INTEGRITY) {
-            return Err(AgentError::AlreadyExists);
+            return Err(StunError::AlreadyExists);
         }
         if self.has_attribute(FINGERPRINT) {
-            return Err(AgentError::AlreadyExists);
+            return Err(StunError::AlreadyExists);
         }
 
         // message-integrity is computed using all the data up to (exclusive of) the
@@ -766,9 +765,9 @@ impl Message {
     /// // duplicate FINGERPRINT is an error
     /// assert!(message.add_fingerprint().is_err());
     /// ```
-    pub fn add_fingerprint(&mut self) -> Result<(), AgentError> {
+    pub fn add_fingerprint(&mut self) -> Result<(), StunError> {
         if self.has_attribute(FINGERPRINT) {
-            return Err(AgentError::AlreadyExists);
+            return Err(StunError::AlreadyExists);
         }
         // fingerprint is computed using all the data up to (exclusive of) the FINGERPRINT
         // but with a length field including the FINGERPRINT attribute...
@@ -806,22 +805,22 @@ impl Message {
     /// assert!(message.add_attribute(attr.clone()).is_ok());
     /// assert!(message.add_attribute(attr).is_err());
     /// ```
-    pub fn add_attribute<A: Attribute>(&mut self, attr: A) -> Result<(), AgentError> {
+    pub fn add_attribute<A: Attribute>(&mut self, attr: A) -> Result<(), StunError> {
         if attr.get_type() == MESSAGE_INTEGRITY {
-            return Err(AgentError::WrongImplementation);
+            return Err(StunError::WrongImplementation);
         }
         if attr.get_type() == FINGERPRINT {
-            return Err(AgentError::WrongImplementation);
+            return Err(StunError::WrongImplementation);
         }
         if self.has_attribute(attr.get_type()) {
-            return Err(AgentError::AlreadyExists);
+            return Err(StunError::AlreadyExists);
         }
         // can't validly add generic attributes after message integrity or fingerprint
         if self.has_attribute(MESSAGE_INTEGRITY) {
-            return Err(AgentError::AlreadyExists);
+            return Err(StunError::AlreadyExists);
         }
         if self.has_attribute(FINGERPRINT) {
-            return Err(AgentError::AlreadyExists);
+            return Err(StunError::AlreadyExists);
         }
         self.attributes.push(attr.to_raw());
         Ok(())
@@ -939,7 +938,7 @@ impl Message {
     pub fn unknown_attributes(
         src: &Message,
         attributes: &[AttributeType],
-    ) -> Result<Message, AgentError> {
+    ) -> Result<Message, StunError> {
         let mut out = Message::new_error(src);
         out.add_attribute(Software::new("stund - librice v0.1")?)?;
         out.add_attribute(ErrorCode::new(420, "Unknown Attributes")?)?;
@@ -963,7 +962,7 @@ impl Message {
     /// let error_code =  error_msg.attribute::<ErrorCode>(ERROR_CODE).unwrap();
     /// assert_eq!(error_code.code(), 400);
     /// ```
-    pub fn bad_request(src: &Message) -> Result<Message, AgentError> {
+    pub fn bad_request(src: &Message) -> Result<Message, StunError> {
         let mut out = Message::new_error(src);
         out.add_attribute(Software::new("stund - librice v0.1")?)?;
         out.add_attribute(ErrorCode::new(400, "Bad Request")?)?;
@@ -980,7 +979,7 @@ impl From<Message> for Vec<u8> {
     }
 }
 impl TryFrom<&[u8]> for Message {
-    type Error = AgentError;
+    type Error = StunError;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         Message::from_bytes(value)

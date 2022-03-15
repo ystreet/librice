@@ -21,8 +21,6 @@ use futures::future::Either;
 use futures::prelude::*;
 use tracing_futures::Instrument;
 
-use crate::agent::AgentError;
-
 use crate::socket::*;
 use crate::stun::attribute::*;
 use crate::stun::message::*;
@@ -269,7 +267,7 @@ impl StunAgent {
         msg: Message,
         recv_abort_handle: AbortHandle,
         to: SocketAddr,
-    ) -> Result<(), AgentError> {
+    ) -> Result<(), StunError> {
         // FIXME: configurable timeout values: RFC 4389 Secion 7.2.1
         let timeouts: [u64; 7] = [0, 500, 1500, 3500, 7500, 15500, 31500];
         for timeout in timeouts.iter() {
@@ -287,7 +285,7 @@ impl StunAgent {
 
         // on failure, abort the receiver waiting
         recv_abort_handle.abort();
-        Err(AgentError::TimedOut)
+        Err(StunError::TimedOut)
     }
 
     #[tracing::instrument(
@@ -305,9 +303,9 @@ impl StunAgent {
         &self,
         msg: &Message,
         addr: SocketAddr,
-    ) -> Result<(Message, SocketAddr), AgentError> {
+    ) -> Result<(Message, SocketAddr), StunError> {
         if !msg.has_class(MessageClass::Request) {
-            return Err(AgentError::WrongImplementation);
+            return Err(StunError::WrongImplementation);
         }
         Self::maybe_store_message(&self.inner.state, msg.clone());
         let tid = msg.transaction_id();
@@ -333,7 +331,7 @@ impl StunAgent {
         // race the sending and receiving futures returning the first that succeeds
         match futures::future::try_select(send_abortable, recv_abortable).await {
             Ok(Either::Left((x, _))) => x.map(|_| (Message::new_error(msg), addr)),
-            Ok(Either::Right((y, _))) => y.ok_or(AgentError::TimedOut),
+            Ok(Either::Right((y, _))) => y.ok_or(StunError::TimedOut),
             Err(_) => unreachable!(),
         }
     }
@@ -369,12 +367,47 @@ impl StunOrData {
 #[derive(Debug)]
 enum HandleStunReply {
     Broadcast(Message),
-    Failure(AgentError),
+    Failure(StunError),
     Ignore,
 }
-impl From<AgentError> for HandleStunReply {
-    fn from(e: AgentError) -> Self {
+impl From<StunError> for HandleStunReply {
+    fn from(e: StunError) -> Self {
         HandleStunReply::Failure(e)
+    }
+}
+
+#[derive(Debug)]
+pub enum StunError {
+    Failed,
+    WrongImplementation,
+    AlreadyExists,
+    ResourceNotFound,
+    TimedOut,
+    IntegrityCheckFailed,
+    ParseError(StunParseError),
+    IoError(std::io::Error),
+}
+
+impl std::error::Error for StunError {}
+
+impl std::fmt::Display for StunError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl From<std::io::Error> for StunError {
+    fn from(e: std::io::Error) -> Self {
+        Self::IoError(e)
+    }
+}
+
+impl From<StunParseError> for StunError {
+    fn from(e: StunParseError) -> Self {
+        match e {
+            StunParseError::WrongImplementation => StunError::WrongImplementation,
+            _ => StunError::ParseError(e),
+        }
     }
 }
 
@@ -593,7 +626,7 @@ pub(crate) mod tests {
             for _ in 0..6 {
                 clock.advance().await;
             }
-            assert!(matches!(f.await, Err(AgentError::TimedOut)));
+            assert!(matches!(f.await, Err(StunError::TimedOut)));
         });
     }
 
