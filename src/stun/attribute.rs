@@ -20,8 +20,8 @@ use std::convert::TryInto;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use crate::agent::AgentError;
 use crate::stun::message::{TransactionId, MAGIC_COOKIE};
+use crate::stun::agent::StunError;
 
 use byteorder::{BigEndian, ByteOrder};
 
@@ -51,6 +51,24 @@ pub const USE_CANDIDATE: AttributeType = AttributeType(0x0025);
 
 pub const ICE_CONTROLLED: AttributeType = AttributeType(0x0029);
 pub const ICE_CONTROLLING: AttributeType = AttributeType(0x002A);
+
+#[derive(Debug)]
+pub enum StunParseError {
+    Failed,
+    WrongImplementation,
+    NotEnoughData,
+    TooBig,
+    InvalidData,
+    OutOfRange,
+}
+
+impl std::error::Error for StunParseError {}
+
+impl std::fmt::Display for StunParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
 
 /// The type of an [`Attribute`] in a STUN [`Message`](crate::stun::message::Message)
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -150,9 +168,9 @@ pub struct AttributeHeader {
 }
 
 impl AttributeHeader {
-    fn parse(data: &[u8]) -> Result<Self, AgentError> {
+    fn parse(data: &[u8]) -> Result<Self, StunParseError> {
         if data.len() < 4 {
-            return Err(AgentError::NotEnoughData);
+            return Err(StunParseError::NotEnoughData);
         }
         let ret = Self {
             atype: BigEndian::read_u16(&data[0..2]).into(),
@@ -175,7 +193,7 @@ impl From<AttributeHeader> for Vec<u8> {
     }
 }
 impl TryFrom<&[u8]> for AttributeHeader {
-    type Error = AgentError;
+    type Error = StunParseError;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         AttributeHeader::parse(value)
@@ -195,7 +213,7 @@ pub trait Attribute: std::fmt::Debug {
     fn to_raw(&self) -> RawAttribute;
 
     /// Convert an `Attribute` from a `RawAttribute`
-    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError>
+    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError>
     where
         Self: Sized;
 }
@@ -273,7 +291,7 @@ impl Attribute for RawAttribute {
         self.clone()
     }
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
+    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
         Ok(raw.clone())
     }
 }
@@ -300,11 +318,11 @@ impl RawAttribute {
     /// assert_eq!(attr.get_type(), AttributeType::new(1));
     /// assert_eq!(attr.length(), 2);
     /// ```
-    pub fn from_bytes(data: &[u8]) -> Result<Self, AgentError> {
+    pub fn from_bytes(data: &[u8]) -> Result<Self, StunParseError> {
         let header = AttributeHeader::parse(data)?;
         // the advertised length is larger than actual data -> error
         if header.length > (data.len() - 4) as u16 {
-            return Err(AgentError::InvalidSize);
+            return Err(StunParseError::NotEnoughData);
         }
         let mut data = data[4..].to_vec();
         data.truncate(header.length as usize);
@@ -342,7 +360,7 @@ impl From<RawAttribute> for Vec<u8> {
 }
 
 impl TryFrom<&[u8]> for RawAttribute {
-    type Error = AgentError;
+    type Error = StunParseError;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
         RawAttribute::from_bytes(value)
@@ -367,16 +385,16 @@ impl Attribute for Username {
         RawAttribute::new(self.get_type(), self.user.as_bytes())
     }
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
+    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
         if raw.header.atype != USERNAME {
-            return Err(AgentError::WrongImplementation);
+            return Err(StunParseError::WrongImplementation);
         }
         if raw.value.len() > 513 {
-            return Err(AgentError::TooBig);
+            return Err(StunParseError::TooBig);
         }
         Ok(Self {
             user: std::str::from_utf8(&raw.value)
-                .map_err(|_| AgentError::Malformed)?
+                .map_err(|_| StunParseError::InvalidData)?
                 .to_owned(),
         })
     }
@@ -398,9 +416,9 @@ impl Username {
     /// let username = Username::new ("user").unwrap();
     /// assert_eq!(username.username(), "user");
     /// ```
-    pub fn new(user: &str) -> Result<Self, AgentError> {
+    pub fn new(user: &str) -> Result<Self, StunParseError> {
         if user.len() > 513 {
-            return Err(AgentError::InvalidSize);
+            return Err(StunParseError::TooBig);
         }
         // TODO: SASLPrep RFC4013 requirements
         Ok(Self {
@@ -428,7 +446,7 @@ impl std::fmt::Display for Username {
     }
 }
 impl TryFrom<&RawAttribute> for Username {
-    type Error = AgentError;
+    type Error = StunParseError;
 
     fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
         Username::from_raw(value)
@@ -466,26 +484,26 @@ impl Attribute for ErrorCode {
         RawAttribute::new(self.get_type(), &data)
     }
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
+    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
         if raw.header.atype != ERROR_CODE {
-            return Err(AgentError::WrongImplementation);
+            return Err(StunParseError::WrongImplementation);
         }
         if raw.value.len() < 4 {
-            return Err(AgentError::NotEnoughData);
+            return Err(StunParseError::NotEnoughData);
         }
         if raw.value.len() > 763 + 4 {
-            return Err(AgentError::TooBig);
+            return Err(StunParseError::TooBig);
         }
         let code_h = (raw.value[2] & 0x7) as u16;
         let code_tens = raw.value[3] as u16;
         if !(3..7).contains(&code_h) || code_tens > 99 {
-            return Err(AgentError::Malformed);
+            return Err(StunParseError::OutOfRange);
         }
         let code = code_h * 100 + code_tens;
         Ok(Self {
             code,
             reason: std::str::from_utf8(&raw.value[4..])
-                .map_err(|_| AgentError::Malformed)?
+                .map_err(|_| StunParseError::InvalidData)?
                 .to_owned(),
         })
     }
@@ -512,9 +530,9 @@ impl<'reason> ErrorCodeBuilder<'reason> {
     /// # Errors
     ///
     /// - When the code value is out of range [300, 699]
-    pub fn build(self) -> Result<ErrorCode, AgentError> {
+    pub fn build(self) -> Result<ErrorCode, StunParseError> {
         if !(300..700).contains(&self.code) {
-            return Err(AgentError::Malformed);
+            return Err(StunParseError::OutOfRange);
         }
         let reason = self
             .reason
@@ -564,9 +582,9 @@ impl ErrorCode {
     /// assert_eq!(error.code(), 400);
     /// assert_eq!(error.reason(), "bad error");
     /// ```
-    pub fn new(code: u16, reason: &str) -> Result<Self, AgentError> {
+    pub fn new(code: u16, reason: &str) -> Result<Self, StunParseError> {
         if !(300..700).contains(&code) {
-            return Err(AgentError::Malformed);
+            return Err(StunParseError::OutOfRange);
         }
         Ok(Self {
             code,
@@ -633,7 +651,7 @@ impl std::fmt::Display for ErrorCode {
 }
 
 impl TryFrom<&RawAttribute> for ErrorCode {
-    type Error = AgentError;
+    type Error = StunParseError;
 
     fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
         ErrorCode::from_raw(value)
@@ -670,13 +688,13 @@ impl Attribute for UnknownAttributes {
         RawAttribute::new(self.get_type(), &data)
     }
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
+    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
         if raw.header.atype != UNKNOWN_ATTRIBUTES {
-            return Err(AgentError::WrongImplementation);
+            return Err(StunParseError::WrongImplementation);
         }
         if raw.value.len() % 2 != 0 {
             /* all attributes are 16-bits */
-            return Err(AgentError::Malformed);
+            return Err(StunParseError::InvalidData);
         }
         let mut attrs = vec![];
         for attr in raw.value.chunks_exact(2) {
@@ -738,7 +756,7 @@ impl std::fmt::Display for UnknownAttributes {
 }
 
 impl TryFrom<&RawAttribute> for UnknownAttributes {
-    type Error = AgentError;
+    type Error = StunParseError;
 
     fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
         UnknownAttributes::from_raw(value)
@@ -769,16 +787,16 @@ impl Attribute for Software {
         RawAttribute::new(self.get_type(), self.software.as_bytes())
     }
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
+    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
         if raw.header.atype != SOFTWARE {
-            return Err(AgentError::WrongImplementation);
+            return Err(StunParseError::WrongImplementation);
         }
         if raw.value.len() > 763 {
-            return Err(AgentError::TooBig);
+            return Err(StunParseError::TooBig);
         }
         Ok(Self {
             software: std::str::from_utf8(&raw.value)
-                .map_err(|_| AgentError::Malformed)?
+                .map_err(|_| StunParseError::InvalidData)?
                 .to_owned(),
         })
     }
@@ -798,9 +816,9 @@ impl Software {
     /// let software = Software::new("librice 0.1").unwrap();
     /// assert_eq!(software.software(), "librice 0.1");
     /// ```
-    pub fn new(software: &str) -> Result<Self, AgentError> {
+    pub fn new(software: &str) -> Result<Self, StunParseError> {
         if software.len() > 768 {
-            return Err(AgentError::InvalidSize);
+            return Err(StunParseError::TooBig);
         }
         Ok(Self {
             software: software.to_owned(),
@@ -828,7 +846,7 @@ impl std::fmt::Display for Software {
 }
 
 impl TryFrom<&RawAttribute> for Software {
-    type Error = AgentError;
+    type Error = StunParseError;
 
     fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
         Software::from_raw(value)
@@ -890,38 +908,38 @@ impl Attribute for XorMappedAddress {
         }
     }
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
+    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
         if raw.header.atype != XOR_MAPPED_ADDRESS {
-            return Err(AgentError::WrongImplementation);
+            return Err(StunParseError::WrongImplementation);
         }
         if raw.value.len() < 4 {
-            return Err(AgentError::NotEnoughData);
+            return Err(StunParseError::NotEnoughData);
         }
         let port = BigEndian::read_u16(&raw.value[2..4]);
         let addr = match raw.value[1] {
             0x1 => {
                 // ipv4
                 if raw.value.len() < 8 {
-                    return Err(AgentError::NotEnoughData);
+                    return Err(StunParseError::NotEnoughData);
                 }
                 if raw.value.len() > 8 {
-                    return Err(AgentError::TooBig);
+                    return Err(StunParseError::TooBig);
                 }
                 IpAddr::V4(Ipv4Addr::from(BigEndian::read_u32(&raw.value[4..8])))
             }
             0x2 => {
                 // ipv6
                 if raw.value.len() < 20 {
-                    return Err(AgentError::NotEnoughData);
+                    return Err(StunParseError::NotEnoughData);
                 }
                 if raw.value.len() > 20 {
-                    return Err(AgentError::TooBig);
+                    return Err(StunParseError::TooBig);
                 }
                 let mut octets = [0; 16];
                 octets.clone_from_slice(&raw.value[4..]);
                 IpAddr::V6(Ipv6Addr::from(octets))
             }
-            _ => return Err(AgentError::Malformed),
+            _ => return Err(StunParseError::InvalidData),
         };
         Ok(Self {
             addr: SocketAddr::new(addr, port),
@@ -995,7 +1013,7 @@ impl std::fmt::Display for XorMappedAddress {
 }
 
 impl TryFrom<&RawAttribute> for XorMappedAddress {
-    type Error = AgentError;
+    type Error = StunParseError;
 
     fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
         XorMappedAddress::from_raw(value)
@@ -1029,15 +1047,15 @@ impl Attribute for Priority {
         RawAttribute::new(self.get_type(), &buf)
     }
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
+    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
         if raw.header.atype != PRIORITY {
-            return Err(AgentError::WrongImplementation);
+            return Err(StunParseError::WrongImplementation);
         }
         if raw.value.len() < 4 {
-            return Err(AgentError::NotEnoughData);
+            return Err(StunParseError::NotEnoughData);
         }
         if raw.value.len() > 4 {
-            return Err(AgentError::TooBig);
+            return Err(StunParseError::TooBig);
         }
         Ok(Self {
             priority: BigEndian::read_u32(&raw.value[..4]),
@@ -1074,7 +1092,7 @@ impl Priority {
 }
 
 impl TryFrom<&RawAttribute> for Priority {
-    type Error = AgentError;
+    type Error = StunParseError;
 
     fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
         Priority::from_raw(value)
@@ -1111,12 +1129,12 @@ impl Attribute for UseCandidate {
         RawAttribute::new(self.get_type(), &buf)
     }
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
+    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
         if raw.header.atype != USE_CANDIDATE {
-            return Err(AgentError::WrongImplementation);
+            return Err(StunParseError::WrongImplementation);
         }
         if !raw.value.is_empty() {
-            return Err(AgentError::TooBig);
+            return Err(StunParseError::TooBig);
         }
         Ok(Self {})
     }
@@ -1143,7 +1161,7 @@ impl UseCandidate {
 }
 
 impl TryFrom<&RawAttribute> for UseCandidate {
-    type Error = AgentError;
+    type Error = StunParseError;
 
     fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
         UseCandidate::from_raw(value)
@@ -1183,15 +1201,15 @@ impl Attribute for IceControlled {
         RawAttribute::new(self.get_type(), &buf)
     }
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
+    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
         if raw.header.atype != ICE_CONTROLLED {
-            return Err(AgentError::WrongImplementation);
+            return Err(StunParseError::WrongImplementation);
         }
         if raw.value.len() < 8 {
-            return Err(AgentError::NotEnoughData);
+            return Err(StunParseError::NotEnoughData);
         }
         if raw.value.len() > 8 {
-            return Err(AgentError::TooBig);
+            return Err(StunParseError::TooBig);
         }
         Ok(Self {
             tie_breaker: BigEndian::read_u64(&raw.value),
@@ -1228,7 +1246,7 @@ impl IceControlled {
 }
 
 impl TryFrom<&RawAttribute> for IceControlled {
-    type Error = AgentError;
+    type Error = StunParseError;
 
     fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
         IceControlled::from_raw(value)
@@ -1268,15 +1286,15 @@ impl Attribute for IceControlling {
         RawAttribute::new(self.get_type(), &buf)
     }
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
+    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
         if raw.header.atype != ICE_CONTROLLING {
-            return Err(AgentError::WrongImplementation);
+            return Err(StunParseError::WrongImplementation);
         }
         if raw.value.len() < 8 {
-            return Err(AgentError::NotEnoughData);
+            return Err(StunParseError::NotEnoughData);
         }
         if raw.value.len() > 8 {
-            return Err(AgentError::TooBig);
+            return Err(StunParseError::TooBig);
         }
         Ok(Self {
             tie_breaker: BigEndian::read_u64(&raw.value),
@@ -1313,7 +1331,7 @@ impl IceControlling {
 }
 
 impl TryFrom<&RawAttribute> for IceControlling {
-    type Error = AgentError;
+    type Error = StunParseError;
 
     fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
         IceControlling::from_raw(value)
@@ -1351,15 +1369,15 @@ impl Attribute for MessageIntegrity {
         RawAttribute::new(self.get_type(), &self.hmac)
     }
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
+    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
         if raw.header.atype != MESSAGE_INTEGRITY {
-            return Err(AgentError::WrongImplementation);
+            return Err(StunParseError::WrongImplementation);
         }
         if raw.value.len() < 20 {
-            return Err(AgentError::NotEnoughData);
+            return Err(StunParseError::NotEnoughData);
         }
         if raw.value.len() > 20 {
-            return Err(AgentError::TooBig);
+            return Err(StunParseError::TooBig);
         }
         // sized checked earlier
         let boxed: Box<[u8; 20]> = raw.value.clone().into_boxed_slice().try_into().unwrap();
@@ -1410,13 +1428,13 @@ impl MessageIntegrity {
     /// let integrity = MessageIntegrity::compute(&data, &key).unwrap();
     /// assert_eq!(integrity, expected);
     /// ```
-    pub fn compute(data: &[u8], key: &[u8]) -> Result<[u8; 20], AgentError> {
+    pub fn compute(data: &[u8], key: &[u8]) -> Result<[u8; 20], StunError> {
         use hmac::{Hmac, Mac};
         let mut hmac =
-            Hmac::<sha1::Sha1>::new_from_slice(key).map_err(|_| AgentError::Malformed)?;
+            Hmac::<sha1::Sha1>::new_from_slice(key).map_err(|_| StunError::ParseError(StunParseError::InvalidData))?;
         hmac.update(data);
         let ret = hmac.finalize().into_bytes();
-        ret.try_into().map_err(|_| AgentError::Malformed)
+        ret.try_into().map_err(|_| StunError::ParseError(StunParseError::InvalidData))
     }
 
     /// Compute the Message Integrity value of a chunk of data using a key
@@ -1429,18 +1447,18 @@ impl MessageIntegrity {
     /// let expected = [209, 217, 210, 15, 124, 78, 87, 181, 211, 233, 165, 180, 44, 142, 81, 233, 138, 186, 184, 97];
     /// assert_eq!(MessageIntegrity::verify(&data, &key, &expected).unwrap(), ());
     /// ```
-    pub fn verify(data: &[u8], key: &[u8], expected: &[u8; 20]) -> Result<(), AgentError> {
+    pub fn verify(data: &[u8], key: &[u8], expected: &[u8; 20]) -> Result<(), StunError> {
         use hmac::{Hmac, Mac};
         let mut hmac =
-            Hmac::<sha1::Sha1>::new_from_slice(key).map_err(|_| AgentError::Malformed)?;
+            Hmac::<sha1::Sha1>::new_from_slice(key).map_err(|_| StunError::ParseError(StunParseError::InvalidData))?;
         hmac.update(data);
         hmac.verify_slice(expected)
-            .map_err(|_| AgentError::IntegrityCheckFailed)
+            .map_err(|_| StunError::IntegrityCheckFailed)
     }
 }
 
 impl TryFrom<&RawAttribute> for MessageIntegrity {
-    type Error = AgentError;
+    type Error = StunParseError;
 
     fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
         MessageIntegrity::from_raw(value)
@@ -1482,15 +1500,15 @@ impl Attribute for Fingerprint {
         RawAttribute::new(self.get_type(), &buf)
     }
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, AgentError> {
+    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
         if raw.header.atype != FINGERPRINT {
-            return Err(AgentError::WrongImplementation);
+            return Err(StunParseError::WrongImplementation);
         }
         if raw.value.len() < 4 {
-            return Err(AgentError::NotEnoughData);
+            return Err(StunParseError::NotEnoughData);
         }
         if raw.value.len() > 4 {
-            return Err(AgentError::TooBig);
+            return Err(StunParseError::TooBig);
         }
         // sized checked earlier
         let boxed: Box<[u8; 4]> = raw.value.clone().into_boxed_slice().try_into().unwrap();
@@ -1546,7 +1564,7 @@ impl Fingerprint {
 }
 
 impl TryFrom<&RawAttribute> for Fingerprint {
-    type Error = AgentError;
+    type Error = StunParseError;
 
     fn try_from(value: &RawAttribute) -> Result<Self, Self::Error> {
         Fingerprint::from_raw(value)
@@ -1626,7 +1644,7 @@ mod tests {
         BigEndian::write_u16(&mut data[2..4], len as u16 - 4 + 1);
         assert!(matches!(
             RawAttribute::try_from(data.as_ref()),
-            Err(AgentError::InvalidSize)
+            Err(StunParseError::NotEnoughData)
         ));
     }
 
@@ -1648,7 +1666,7 @@ mod tests {
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
             Username::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
-            Err(AgentError::WrongImplementation)
+            Err(StunParseError::WrongImplementation)
         ));
     }
 
@@ -1679,14 +1697,14 @@ mod tests {
         BigEndian::write_u16(&mut data[2..4], len as u16);
         assert!(matches!(
             ErrorCode::try_from(&RawAttribute::try_from(data[..len + 4].as_ref()).unwrap()),
-            Err(AgentError::NotEnoughData)
+            Err(StunParseError::NotEnoughData)
         ));
         // provide incorrectly typed data
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
             ErrorCode::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
-            Err(AgentError::WrongImplementation)
+            Err(StunParseError::WrongImplementation)
         ));
     }
 
@@ -1714,14 +1732,14 @@ mod tests {
         BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
         assert!(matches!(
             UnknownAttributes::try_from(&RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()),
-            Err(AgentError::Malformed)
+            Err(StunParseError::InvalidData)
         ));
         // provide incorrectly typed data
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
             UnknownAttributes::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
-            Err(AgentError::WrongImplementation)
+            Err(StunParseError::WrongImplementation)
         ));
     }
 
@@ -1741,7 +1759,7 @@ mod tests {
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
             Software::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
-            Err(AgentError::WrongImplementation)
+            Err(StunParseError::WrongImplementation)
         ));
     }
 
@@ -1767,14 +1785,14 @@ mod tests {
                 XorMappedAddress::try_from(
                     &RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()
                 ),
-                Err(AgentError::NotEnoughData)
+                Err(StunParseError::NotEnoughData)
             ));
             // provide incorrectly typed data
             let mut data: Vec<_> = raw.into();
             BigEndian::write_u16(&mut data[0..2], 0);
             assert!(matches!(
                 XorMappedAddress::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
-                Err(AgentError::WrongImplementation)
+                Err(StunParseError::WrongImplementation)
             ));
         }
     }
@@ -1797,14 +1815,14 @@ mod tests {
         BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
         assert!(matches!(
             Priority::try_from(&RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()),
-            Err(AgentError::NotEnoughData)
+            Err(StunParseError::NotEnoughData)
         ));
         // provide incorrectly typed data
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
             Priority::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
-            Err(AgentError::WrongImplementation)
+            Err(StunParseError::WrongImplementation)
         ));
     }
 
@@ -1823,7 +1841,7 @@ mod tests {
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
             UseCandidate::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
-            Err(AgentError::WrongImplementation)
+            Err(StunParseError::WrongImplementation)
         ));
     }
 
@@ -1845,14 +1863,14 @@ mod tests {
         BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
         assert!(matches!(
             IceControlling::try_from(&RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()),
-            Err(AgentError::NotEnoughData)
+            Err(StunParseError::NotEnoughData)
         ));
         // provide incorrectly typed data
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
             IceControlling::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
-            Err(AgentError::WrongImplementation)
+            Err(StunParseError::WrongImplementation)
         ));
     }
 
@@ -1874,14 +1892,14 @@ mod tests {
         BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
         assert!(matches!(
             IceControlled::try_from(&RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()),
-            Err(AgentError::NotEnoughData)
+            Err(StunParseError::NotEnoughData)
         ));
         // provide incorrectly typed data
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
             IceControlled::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
-            Err(AgentError::WrongImplementation)
+            Err(StunParseError::WrongImplementation)
         ));
     }
 
@@ -1903,14 +1921,14 @@ mod tests {
         BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
         assert!(matches!(
             Fingerprint::try_from(&RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()),
-            Err(AgentError::NotEnoughData)
+            Err(StunParseError::NotEnoughData)
         ));
         // provide incorrectly typed data
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
             Fingerprint::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
-            Err(AgentError::WrongImplementation)
+            Err(StunParseError::WrongImplementation)
         ));
     }
 
@@ -1932,14 +1950,14 @@ mod tests {
         BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
         assert!(matches!(
             MessageIntegrity::try_from(&RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()),
-            Err(AgentError::NotEnoughData)
+            Err(StunParseError::NotEnoughData)
         ));
         // provide incorrectly typed data
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
             MessageIntegrity::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
-            Err(AgentError::WrongImplementation)
+            Err(StunParseError::WrongImplementation)
         ));
     }
 }

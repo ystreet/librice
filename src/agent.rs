@@ -23,10 +23,13 @@ use crate::candidate::TransportType;
 use crate::component::{Component, ComponentState};
 use crate::conncheck::ConnCheckListSet;
 use crate::stream::Stream;
+use crate::stun::agent::StunError;
+use crate::stun::attribute::StunParseError;
 use crate::utils::ChannelBroadcast;
 
 #[derive(Debug)]
 pub enum AgentError {
+    Failed,
     AlreadyExists,
     AlreadyInProgress,
     ResourceNotFound,
@@ -40,6 +43,7 @@ pub enum AgentError {
     IntegrityCheckFailed,
     Aborted,
     TimedOut,
+    StunParse,
     CandidateParse(ParseCandidateError),
     IoError(std::io::Error),
 }
@@ -61,6 +65,28 @@ impl From<std::io::Error> for AgentError {
 impl From<ParseCandidateError> for AgentError {
     fn from(e: ParseCandidateError) -> Self {
         Self::CandidateParse(e)
+    }
+}
+
+impl From<StunError> for AgentError {
+    fn from(e: StunError) -> Self {
+        match e {
+            StunError::Failed => AgentError::Failed,
+            StunError::WrongImplementation => AgentError::WrongImplementation,
+            StunError::AlreadyExists => AgentError::AlreadyExists,
+            StunError::ResourceNotFound => AgentError::ResourceNotFound,
+            StunError::TimedOut => AgentError::TimedOut,
+            StunError::IntegrityCheckFailed => AgentError::IntegrityCheckFailed,
+            StunError::ParseError(_) => AgentError::StunParse,
+            StunError::IoError(e) => AgentError::IoError(e),
+        }
+    }
+}
+
+impl From<StunParseError> for AgentError {
+    fn from(e: StunParseError) -> Self {
+        let se: StunError = e.into();
+        se.into()
     }
 }
 
