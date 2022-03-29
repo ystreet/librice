@@ -21,9 +21,9 @@ use futures::future::Either;
 use futures::prelude::*;
 use tracing_futures::Instrument;
 
-use crate::socket::*;
 use crate::stun::attribute::*;
 use crate::stun::message::*;
+use crate::stun::socket::*;
 
 use crate::clock::{get_clock, Clock, ClockType};
 
@@ -460,8 +460,8 @@ impl StunAgentState {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::socket::{TcpChannel, UdpConnectionChannel};
     use crate::stun::attribute::{Software, SOFTWARE};
+    use crate::stun::socket::{TcpChannel, UdpConnectionChannel};
     use async_std::net::{TcpListener, TcpStream};
     use async_std::task;
 
@@ -519,9 +519,9 @@ pub(crate) mod tests {
         init();
         task::block_on(async move {
             // set up sockets
-            let udp1 = crate::socket::tests::setup_udp_channel().await;
+            let udp1 = crate::stun::socket::tests::setup_udp_channel().await;
             let from = udp1.local_addr().unwrap();
-            let udp2 = crate::socket::tests::setup_udp_channel().await;
+            let udp2 = crate::stun::socket::tests::setup_udp_channel().await;
             let to = udp2.local_addr().unwrap();
 
             let socket_channel1 = StunChannel::Udp(UdpConnectionChannel::new(udp1, to));
@@ -565,9 +565,9 @@ pub(crate) mod tests {
         init();
         task::block_on(async move {
             // set up sockets
-            let udp1 = crate::socket::tests::setup_udp_channel().await;
+            let udp1 = crate::stun::socket::tests::setup_udp_channel().await;
             let from = udp1.local_addr().unwrap();
-            let udp2 = crate::socket::tests::setup_udp_channel().await;
+            let udp2 = crate::stun::socket::tests::setup_udp_channel().await;
             let to = udp2.local_addr().unwrap();
 
             let socket_channel1 = StunChannel::Udp(UdpConnectionChannel::new(udp1, to));
@@ -583,9 +583,9 @@ pub(crate) mod tests {
         init();
         task::block_on(async move {
             // set up sockets
-            let udp1 = crate::socket::tests::setup_udp_channel().await;
+            let udp1 = crate::stun::socket::tests::setup_udp_channel().await;
             let from = udp1.local_addr().unwrap();
-            let udp2 = crate::socket::tests::setup_udp_channel().await;
+            let udp2 = crate::stun::socket::tests::setup_udp_channel().await;
             let to = udp2.local_addr().unwrap();
 
             let socket_channel1 = StunChannel::Udp(UdpConnectionChannel::new(udp1, to));
@@ -605,8 +605,8 @@ pub(crate) mod tests {
         init();
         task::block_on(async move {
             // set up sockets
-            let udp1 = crate::socket::tests::setup_udp_channel().await;
-            let udp2 = crate::socket::tests::setup_udp_channel().await;
+            let udp1 = crate::stun::socket::tests::setup_udp_channel().await;
+            let udp2 = crate::stun::socket::tests::setup_udp_channel().await;
             let to = udp2.local_addr().unwrap();
             let clock = Arc::new(crate::clock::tests::TestClock::default());
 

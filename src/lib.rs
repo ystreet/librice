@@ -18,7 +18,6 @@ mod clock;
 pub mod component;
 mod conncheck;
 pub mod gathering;
-pub mod socket;
 pub mod stream;
 pub mod stun;
 mod utils;

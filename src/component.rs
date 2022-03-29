@@ -18,11 +18,11 @@ use tracing_futures::Instrument;
 use crate::agent::{AgentError, AgentMessage};
 use crate::candidate::{Candidate, CandidatePair, TransportType};
 
-use crate::socket::{
-    DataFraming, SocketAddresses, SocketMessageSend, StunChannel, UdpConnectionChannel,
-};
 use crate::stun::agent::StunAgent;
 use crate::stun::message::MessageIntegrityCredentials;
+use crate::stun::socket::{
+    DataFraming, SocketAddresses, SocketMessageSend, StunChannel, UdpConnectionChannel,
+};
 
 use crate::utils::ChannelBroadcast;
 
@@ -139,7 +139,11 @@ impl Component {
             .collect();
 
         info!("retreived sockets");
-        Ok(crate::gathering::gather_component(self.id, agents, stun_servers))
+        Ok(crate::gathering::gather_component(
+            self.id,
+            agents,
+            stun_servers,
+        ))
     }
 
     #[tracing::instrument(
@@ -268,8 +272,8 @@ mod tests {
     use super::*;
     use crate::agent::Agent;
     use crate::candidate::*;
-    use crate::socket::*;
     use crate::stun::message::*;
+    use crate::stun::socket::*;
     use async_std::net::UdpSocket;
 
     fn init() {

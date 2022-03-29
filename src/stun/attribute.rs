@@ -20,8 +20,8 @@ use std::convert::TryInto;
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use crate::stun::message::{TransactionId, MAGIC_COOKIE};
 use crate::stun::agent::StunError;
+use crate::stun::message::{TransactionId, MAGIC_COOKIE};
 
 use byteorder::{BigEndian, ByteOrder};
 
@@ -1430,11 +1430,12 @@ impl MessageIntegrity {
     /// ```
     pub fn compute(data: &[u8], key: &[u8]) -> Result<[u8; 20], StunError> {
         use hmac::{Hmac, Mac};
-        let mut hmac =
-            Hmac::<sha1::Sha1>::new_from_slice(key).map_err(|_| StunError::ParseError(StunParseError::InvalidData))?;
+        let mut hmac = Hmac::<sha1::Sha1>::new_from_slice(key)
+            .map_err(|_| StunError::ParseError(StunParseError::InvalidData))?;
         hmac.update(data);
         let ret = hmac.finalize().into_bytes();
-        ret.try_into().map_err(|_| StunError::ParseError(StunParseError::InvalidData))
+        ret.try_into()
+            .map_err(|_| StunError::ParseError(StunParseError::InvalidData))
     }
 
     /// Compute the Message Integrity value of a chunk of data using a key
@@ -1449,8 +1450,8 @@ impl MessageIntegrity {
     /// ```
     pub fn verify(data: &[u8], key: &[u8], expected: &[u8; 20]) -> Result<(), StunError> {
         use hmac::{Hmac, Mac};
-        let mut hmac =
-            Hmac::<sha1::Sha1>::new_from_slice(key).map_err(|_| StunError::ParseError(StunParseError::InvalidData))?;
+        let mut hmac = Hmac::<sha1::Sha1>::new_from_slice(key)
+            .map_err(|_| StunError::ParseError(StunParseError::InvalidData))?;
         hmac.update(data);
         hmac.verify_slice(expected)
             .map_err(|_| StunError::IntegrityCheckFailed)

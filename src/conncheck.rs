@@ -1791,10 +1791,10 @@ mod tests {
     use crate::agent::Agent;
     use crate::candidate::*;
     use crate::clock::ClockType;
-    use crate::socket::tests::*;
-    use crate::socket::*;
     use crate::stream::*;
     use crate::stun::agent::*;
+    use crate::stun::socket::tests::*;
+    use crate::stun::socket::*;
     use async_std::net::UdpSocket;
     use async_std::task;
     use std::sync::Arc;

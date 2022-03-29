@@ -9,7 +9,7 @@
 #[macro_use]
 extern crate tracing;
 
-use librice::socket::StunChannel;
+use librice::stun::socket::StunChannel;
 use tracing_subscriber::EnvFilter;
 
 use async_std::task;
