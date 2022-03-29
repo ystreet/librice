@@ -17,7 +17,7 @@ use futures::prelude::*;
 use async_trait::async_trait;
 use byteorder::{BigEndian, ByteOrder};
 
-use crate::stun::message::Message;
+use crate::stun::message::{Message, MessageType};
 use crate::utils::{ChannelBroadcast, DebugWrapper};
 
 const MAX_STUN_MESSAGE_SIZE: usize = 1500 * 2;
@@ -445,7 +445,7 @@ impl TcpChannel {
                     "TCP connection closed",
                 ));
             }
-            //trace!("buf {:?}", buf);
+            //trace!("buf {:?}", buf.peek());
             let data_length = if buf.len() >= 2 {
                 (BigEndian::read_u16(&buf.buf[..2]) as usize) + 2
             } else {
@@ -458,11 +458,14 @@ impl TcpChannel {
                 if buf.len() >= 20 {
                     let tid = BigEndian::read_u128(&buf.buf[4..]);
                     let cookie = (tid >> 96) as u32;
+                    let data = buf.peek();
 
                     // first two bits are always 0 for stun and the cookie value must match
-                    if buf.buf[0] & 0x3f == 0 && cookie == crate::stun::message::MAGIC_COOKIE {
+                    if MessageType::from_bytes(data).is_ok()
+                        && cookie == crate::stun::message::MAGIC_COOKIE
+                    {
                         // XXX: use fingerprint if it exists
-                        ret = (BigEndian::read_u16(&buf.buf[2..4]) as usize) + 20;
+                        ret = (BigEndian::read_u16(&data[2..4]) as usize) + 20;
                         may_be_stun = true;
                     }
                 }
@@ -603,6 +606,10 @@ impl TcpBuffer {
         data
     }
 
+    fn peek(&self) -> &[u8] {
+        &*self.buf
+    }
+
     fn ref_mut(&mut self) -> &mut [u8] {
         &mut self.buf[self.offset..]
     }
@@ -634,7 +641,7 @@ impl ReceiveStream<DataAddress> for TcpChannel {
         let stream = self.stream.clone();
         let running = self.running_buffer.clone();
         // replace self.running_buffer when done? drop handler?
-        warn!("tcp receive stream");
+        trace!("tcp receive stream");
         Box::pin(stream::unfold(
             (stream, running),
             |(mut stream, running)| async move {

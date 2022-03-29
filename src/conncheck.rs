@@ -1795,7 +1795,7 @@ mod tests {
     use crate::stun::agent::*;
     use crate::stun::socket::tests::*;
     use crate::stun::socket::*;
-    use async_std::net::UdpSocket;
+    use async_std::net::{TcpListener, TcpStream, UdpSocket};
     use async_std::task;
     use std::sync::Arc;
 
@@ -1822,10 +1822,11 @@ mod tests {
 
     struct PeerBuilder<'this> {
         channel: Option<StunChannel>,
-        foundation: &'this str,
+        foundation: Option<&'this str>,
         clock: Option<Arc<dyn Clock>>,
         credentials: Credentials,
-        component_id: usize,
+        component_id: Option<usize>,
+        candidate: Option<Candidate>,
     }
 
     impl<'this> PeerBuilder<'this> {
@@ -1835,7 +1836,7 @@ mod tests {
         }
 
         fn foundation(mut self, foundation: &'this str) -> Self {
-            self.foundation = foundation;
+            self.foundation = Some(foundation);
             self
         }
 
@@ -1850,28 +1851,69 @@ mod tests {
         }
 
         fn component_id(mut self, component_id: usize) -> Self {
-            self.component_id = component_id;
+            self.component_id = Some(component_id);
+            self
+        }
+
+        fn candidate(mut self, candidate: Candidate) -> Self {
+            self.candidate = Some(candidate);
             self
         }
 
         async fn build(self) -> Peer {
+            let addr = self
+                .candidate
+                .as_ref()
+                .map(|c| c.base_address)
+                .unwrap_or_else(|| "127.0.0.1:0".parse().unwrap());
+            let ttype = self
+                .candidate
+                .as_ref()
+                .map(|c| c.transport_type)
+                .unwrap_or(TransportType::Udp);
             let channel = match self.channel {
                 Some(c) => c,
-                None => {
-                    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-                    StunChannel::UdpAny(UdpSocketChannel::new(socket))
-                }
+                None => match ttype {
+                    TransportType::Udp => {
+                        let socket = UdpSocket::bind(addr).await.unwrap();
+                        StunChannel::UdpAny(UdpSocketChannel::new(socket))
+                    }
+                    TransportType::Tcp => {
+                        if addr.port() != 0 {
+                            let stream = TcpStream::connect(addr).await.unwrap();
+                            StunChannel::Tcp(TcpChannel::new(stream))
+                        } else {
+                            panic!("can't create tcp channel peer")
+                        }
+                    }
+                    #[cfg(test)]
+                    TransportType::AsyncChannel => panic!("can't create async channel peer"),
+                },
             };
+            if let Some(candidate) = &self.candidate {
+                if let Some(component_id) = self.component_id {
+                    if component_id != candidate.component_id {
+                        panic!("mismatched component ids");
+                    }
+                }
+                if let Some(foundation) = self.foundation {
+                    if foundation != candidate.foundation {
+                        panic!("mismatched foundations");
+                    }
+                }
+            }
             let addr = channel.local_addr().unwrap();
-            let candidate = Candidate::builder(
-                self.component_id,
-                CandidateType::Host,
-                TransportType::Udp,
-                self.foundation,
-                0,
-                addr,
-            )
-            .build();
+            let candidate = self.candidate.unwrap_or_else(|| {
+                Candidate::builder(
+                    self.component_id.unwrap_or(1),
+                    CandidateType::Host,
+                    TransportType::Udp,
+                    self.foundation.unwrap_or("0"),
+                    0,
+                    addr,
+                )
+                .build()
+            });
             let clock = self.clock.unwrap_or_else(|| get_clock(ClockType::System));
             let agent = StunAgent::builder(channel.clone()).clock(clock).build();
 
@@ -1888,10 +1930,11 @@ mod tests {
         fn default() -> Self {
             Self {
                 channel: None,
-                foundation: "",
+                foundation: None,
                 clock: None,
                 credentials: Credentials::new(String::from("user"), String::from("pass")),
-                component_id: 1,
+                component_id: None,
+                candidate: None,
             }
         }
     }
@@ -1983,6 +2026,41 @@ mod tests {
         Ok(response)
     }
 
+    fn reply_to_conncheck_task(agent: StunAgent, credentials: Credentials) {
+        let mut remote_data_stream = agent.receive_stream();
+        task::spawn({
+            async move {
+                while let Some(stun_or_data) = remote_data_stream.next().await {
+                    match stun_or_data {
+                        StunOrData::Data(data, from) => {
+                            debug!("received from {} data: {:?}", from, data)
+                        }
+                        StunOrData::Stun(msg, from) => {
+                            debug!("received from {}: {:?}", from, msg);
+                            if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
+                                agent
+                                    .send_to(
+                                        handle_binding_request(
+                                            &agent,
+                                            &credentials,
+                                            &msg,
+                                            from,
+                                            None,
+                                        )
+                                        .await
+                                        .unwrap(),
+                                        from,
+                                    )
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     #[test]
     fn conncheck_udp_host() {
         init();
@@ -2014,78 +2092,8 @@ mod tests {
                     remote_credentials.clone().into(),
                 ));
 
-            // retrieve the streams before starting async to avoid data being sent but never
-            // received
-            let mut local_data_stream = local.agent.receive_stream();
-            let mut remote_data_stream = remote.agent.receive_stream();
-
-            let agent = remote.agent.clone();
-            task::spawn({
-                let remote_credentials = remote_credentials.clone();
-                async move {
-                    while let Some(stun_or_data) = remote_data_stream.next().await {
-                        match stun_or_data {
-                            StunOrData::Data(data, from) => {
-                                debug!("received from {} data: {:?}", from, data)
-                            }
-                            StunOrData::Stun(msg, from) => {
-                                debug!("received from {}: {:?}", from, msg);
-                                if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
-                                    agent
-                                        .send_to(
-                                            handle_binding_request(
-                                                &agent,
-                                                &remote_credentials,
-                                                &msg,
-                                                from,
-                                                None,
-                                            )
-                                            .await
-                                            .unwrap(),
-                                            from,
-                                        )
-                                        .await
-                                        .unwrap();
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-
-            let agent = local.agent.clone();
-            task::spawn({
-                let local_credentials = local_credentials.clone();
-                async move {
-                    while let Some(stun_or_data) = local_data_stream.next().await {
-                        match stun_or_data {
-                            StunOrData::Data(data, from) => {
-                                debug!("received from {} data: {:?}", from, data)
-                            }
-                            StunOrData::Stun(msg, from) => {
-                                debug!("received from {}: {}", from, msg);
-                                if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
-                                    agent
-                                        .send_to(
-                                            handle_binding_request(
-                                                &agent,
-                                                &local_credentials,
-                                                &msg,
-                                                from,
-                                                None,
-                                            )
-                                            .await
-                                            .unwrap(),
-                                            from,
-                                        )
-                                        .await
-                                        .unwrap();
-                                }
-                            }
-                        }
-                    }
-                }
-            });
+            reply_to_conncheck_task(remote.agent.clone(), remote_credentials.clone());
+            reply_to_conncheck_task(local.agent.clone(), local_credentials.clone());
 
             let pair = CandidatePair::new(local.candidate, remote.candidate);
             let conncheck = Arc::new(ConnCheck::new(pair, local.agent, false));
@@ -2577,6 +2585,113 @@ mod tests {
                 set_run.process_next().await,
                 CheckListSetProcess::NothingToDo //CheckListSetProcess::Completed
             ));
+        });
+    }
+
+    #[test]
+    fn conncheck_tcp_host() {
+        init();
+        async_std::task::block_on(async move {
+            let local_credentials = Credentials::new(String::from("luser"), String::from("lpass"));
+            let remote_credentials = Credentials::new(String::from("ruser"), String::from("rpass"));
+
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let remote_addr = listener.local_addr().unwrap();
+            let listen_task = task::spawn({
+                let local_credentials = local_credentials.clone();
+                let remote_credentials = remote_credentials.clone();
+                async move {
+                    let mut incoming = listener.incoming();
+                    while let Some(stream) = incoming.next().await {
+                        let stream = stream.unwrap();
+                        let remote_addr = stream.local_addr().unwrap();
+                        let remote_cand = Candidate::builder(
+                            0,
+                            CandidateType::Host,
+                            TransportType::Tcp,
+                            "0",
+                            0,
+                            remote_addr,
+                        )
+                        .build();
+                        let channel = StunChannel::Tcp(TcpChannel::new(stream));
+                        let remote_peer = Peer::builder()
+                            .channel(channel)
+                            .candidate(remote_cand)
+                            .build()
+                            .await;
+                        remote_peer.agent.set_local_credentials(
+                            MessageIntegrityCredentials::ShortTerm(
+                                remote_credentials.clone().into(),
+                            ),
+                        );
+                        remote_peer.agent.set_remote_credentials(
+                            MessageIntegrityCredentials::ShortTerm(
+                                local_credentials.clone().into(),
+                            ),
+                        );
+                        reply_to_conncheck_task(
+                            remote_peer.agent.clone(),
+                            remote_credentials.clone(),
+                        );
+                    }
+                }
+            });
+
+            // set up the local peer
+            let local_stream = TcpStream::connect(remote_addr).await.unwrap();
+            let local_addr = local_stream.local_addr().unwrap();
+            let local_channel = StunChannel::Tcp(TcpChannel::new(local_stream));
+            let local_cand = Candidate::builder(
+                0,
+                CandidateType::Host,
+                TransportType::Tcp,
+                "0",
+                0,
+                local_addr,
+            )
+            .build();
+            let local = Peer::builder()
+                .channel(local_channel)
+                .candidate(local_cand)
+                .build()
+                .await;
+            local
+                .agent
+                .set_local_credentials(MessageIntegrityCredentials::ShortTerm(
+                    local_credentials.clone().into(),
+                ));
+            local
+                .agent
+                .set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
+                    remote_credentials.clone().into(),
+                ));
+            let remote_cand = Candidate::builder(
+                0,
+                CandidateType::Host,
+                TransportType::Tcp,
+                "0",
+                0,
+                remote_addr,
+            )
+            .build();
+            let pair = CandidatePair::new(local.candidate, remote_cand);
+            let conncheck = Arc::new(ConnCheck::new(pair, local.agent, false));
+
+            // this is what we're testing.  All of the above is setup for performing this check
+            let username = remote_credentials.ufrag.clone() + ":" + &local_credentials.ufrag;
+            let res =
+                ConnCheckListSet::connectivity_check_cancellable(conncheck, username, true, 0)
+                    .await
+                    .unwrap();
+            match res {
+                ConnCheckResponse::Success(_check, addr) => {
+                    assert_eq!(addr, local.channel.local_addr().unwrap());
+                }
+                _ => unreachable!(),
+            }
+
+            listen_task.cancel().await;
         });
     }
 }
