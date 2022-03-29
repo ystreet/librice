@@ -989,7 +989,7 @@ impl ConnCheckList {
     pub(crate) fn add_remote_candidate(&self, remote: Candidate) {
         {
             let mut inner = self.inner.lock().unwrap();
-            if inner
+            if !inner
                 .component_ids
                 .iter()
                 .any(|&v| v == remote.component_id)
