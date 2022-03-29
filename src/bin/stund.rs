@@ -20,10 +20,10 @@ use futures::StreamExt;
 use tracing_subscriber::EnvFilter;
 
 use librice::agent::*;
-use librice::socket::*;
 use librice::stun::agent::*;
 use librice::stun::attribute::*;
 use librice::stun::message::*;
+use librice::stun::socket::*;
 
 fn warn_on_err<T, E>(res: Result<T, E>, default: T) -> T
 where

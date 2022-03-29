@@ -15,12 +15,12 @@ use futures::StreamExt;
 
 use get_if_addrs::get_if_addrs;
 
-use crate::stun::agent::StunError;
 use crate::candidate::{Candidate, CandidateType, TransportType};
-use crate::socket::{StunChannel, UdpSocketChannel};
 use crate::stun::agent::StunAgent;
+use crate::stun::agent::StunError;
 use crate::stun::attribute::*;
 use crate::stun::message::*;
+use crate::stun::socket::{StunChannel, UdpSocketChannel};
 
 fn priority_type_preference(ctype: CandidateType) -> u32 {
     match ctype {

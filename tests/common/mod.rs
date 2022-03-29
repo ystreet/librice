@@ -18,10 +18,10 @@ use async_std::net::{TcpListener, UdpSocket};
 use futures::StreamExt;
 
 use librice::agent::*;
-use librice::socket::*;
 use librice::stun::agent::*;
 use librice::stun::attribute::*;
 use librice::stun::message::*;
+use librice::stun::socket::*;
 
 pub fn debug_init() {
     static TRACING: Lazy<()> = Lazy::new(|| {
