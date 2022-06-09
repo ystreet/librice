@@ -318,7 +318,7 @@ impl Stream {
     /// stream.add_remote_candidate(component.id, candidate).unwrap();
     /// ```
     #[tracing::instrument(
-        skip(self),
+        skip(self, cand),
         fields(
             stream_id = self.id
         )
@@ -328,10 +328,7 @@ impl Stream {
         component_id: usize,
         cand: Candidate,
     ) -> Result<(), AgentError> {
-        info!(
-            "stream {} component {} adding remote candidate {:?}",
-            self.id, component_id, cand
-        );
+        info!("adding remote candidate {:?}", cand);
         // TODO: error if component doesn't exist
         self.checklist.add_remote_candidate(cand);
         Ok(())
@@ -421,7 +418,7 @@ impl Stream {
                         }
                     }
                 }
-                .instrument(span)
+                .instrument(span.or_current())
             });
             gather.push(Box::pin(stream));
         }

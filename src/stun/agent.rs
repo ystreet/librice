@@ -112,7 +112,7 @@ impl StunAgent {
     fn maybe_store_message(state: &Mutex<StunAgentState>, msg: Message) {
         if msg.has_class(MessageClass::Request) {
             let mut state = state.lock().unwrap();
-            trace!("{} storing request {}", state.id, msg);
+            trace!("storing request {}", msg.transaction_id());
             state.outstanding_requests.insert(msg.transaction_id(), msg);
         }
     }
@@ -151,6 +151,15 @@ impl StunAgent {
         state.remote_credentials.clone()
     }
 
+    #[tracing::instrument(
+        name = "send_to",
+        skip(self, msg, to),
+        fields(
+            stun.id = self.id,
+            msg.transaction = %msg.transaction_id(),
+            to
+        )
+    )]
     pub async fn send_to(&self, msg: Message, to: SocketAddr) -> Result<(), std::io::Error> {
         StunAgent::maybe_store_message(&self.inner.state, msg.clone());
         trace!("channel {:?}", self.inner.channel);
@@ -225,7 +234,7 @@ impl StunAgent {
                 }
                 debug!("task exit");
             }
-            .instrument(span)
+            .instrument(span.or_current())
         });
     }
 

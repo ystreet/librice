@@ -38,6 +38,12 @@ pub(crate) enum CandidatePairState {
     Frozen,
 }
 
+impl std::fmt::Display for CandidatePairState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
 static CONN_CHECK_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Derivative)]
@@ -66,17 +72,15 @@ impl ConnCheckState {
         skip(self, state),
         fields(
             ?self.conncheck_id,
-            old_state = ?self.state,
-            new_state = ?state
         )
     )]
     fn set_state(&mut self, state: CandidatePairState) {
-        if state == CandidatePairState::Succeeded || state == CandidatePairState::Failed {
-            debug!("aborting recv task");
-            let _ = self.abort_handle.take();
-        }
         if self.state != state {
-            debug!("updating state");
+            debug!(old_state = ?self.state, new_state = ?state, "updating state");
+            if state == CandidatePairState::Succeeded || state == CandidatePairState::Failed {
+                debug!("aborting recv task");
+                let _ = self.abort_handle.take();
+            }
             self.state = state;
         }
     }
@@ -123,20 +127,12 @@ impl ConnCheck {
         let mut inner = self.state.lock().unwrap();
         let abort_handle = inner.abort_handle.take();
         if let Some(handle) = abort_handle {
-            debug!("conncheck cancelling for {:?}", self);
+            debug!(conncheck.id = self.conncheck_id, "cancelling conncheck");
             handle.abort();
             inner.set_state(CandidatePairState::Failed);
         }
     }
 
-    #[tracing::instrument(
-        level = "debug",
-        err,
-        skip(conncheck),
-        fields(
-            conncheck.conncheck_id
-        )
-    )]
     async fn connectivity_check(
         conncheck: Arc<ConnCheck>,
         username: String,
@@ -295,16 +291,18 @@ impl ConnCheckListInner {
     }
 
     #[tracing::instrument(
+        name = "set_checklist_state",
         level = "debug",
         skip(self),
         fields(
             self.checklist_id,
-            self.state
         )
     )]
     fn set_state(&mut self, state: CheckListState) {
-        debug!("old state {:?}", self.state);
-        self.state = state
+        if self.state != state {
+            trace!(old_state = ?self.state, new_state = ?state, "changing state");
+            self.state = state;
+        }
     }
 
     #[tracing::instrument(
@@ -410,21 +408,19 @@ impl ConnCheckListInner {
     #[tracing::instrument(
         level = "debug",
         skip(self, pair),
-        fields(
-            checklist_id = self.checklist_id,
-            pair.component_id = pair.local.component_id,
-            pair.transport_type = ?pair.local.transport_type,
-            pair.local.ctype = ?pair.local.candidate_type,
-            pair.local.foundation = ?pair.local.foundation,
-            pair.local.address = ?pair.local.address,
-            pair.remote.ctype = ?pair.remote.candidate_type,
-            pair.remote.foundation = ?pair.remote.foundation,
-            pair.remote.address = ?pair.remote.address,
-        )
+        fields(component.id = pair.local.component_id)
     )]
     fn nominated_pair(&mut self, pair: &CandidatePair) -> Option<Arc<Component>> {
         if let Some(idx) = self.valid.iter().position(|valid_pair| valid_pair == pair) {
-            info!("nominated");
+            info!(
+                ttype = ?pair.local.transport_type,
+                local.address = ?pair.local.address,
+                remote.address = ?pair.remote.address,
+                local.ctype = ?pair.local.candidate_type,
+                remote.ctype = ?pair.remote.candidate_type,
+                foundation = %pair.foundation(),
+                "nominated"
+            );
             self.valid[idx].nominate();
             let component = self
                 .components
@@ -442,6 +438,7 @@ impl ConnCheckListInner {
                 //   connectivity-check transaction, will not treat the lack of
                 //   response to be a failure, but will wait the duration of the
                 //   transaction timeout for a response.
+                self.dump_check_state();
                 self.triggered.retain(|check| {
                     if check.pair.local.component_id == pair.local.component_id {
                         check.cancel();
@@ -474,7 +471,10 @@ impl ConnCheckListInner {
                     // for each component of the data stream), that pair becomes the
                     // selected pair for that agent and is used for sending and receiving
                     // data for that component of the data stream.
-                    info!("setting selected pairs");
+                    info!(
+                        "all {} component/s nominated, setting selected pair/s",
+                        self.component_ids.len()
+                    );
                     self.valid
                         .iter()
                         .fold(vec![], |mut component_ids_selected, valid_pair| {
@@ -520,14 +520,18 @@ impl ConnCheckListInner {
         let mut s = format!("checklist {}", self.checklist_id);
         for pair in self.pairs.iter() {
             s += &format!(
-                "\nID:{} S:{:?} N:{} T:{:?} L:{} R:{} F:{}",
+                "\nID:{:<3} foundation:{:8} state:{:10} nom:{:6} priority:{:10},{:10} trans:{:4} local:{:5} {:32} remote:{:5} {:32}",
                 pair.conncheck_id,
-                pair.state(),
+                pair.pair.foundation(),
+                format!("{:?}", pair.state()),
                 pair.nominate(),
-                pair.pair.local.transport_type,
-                pair.pair.local.address,
-                pair.pair.remote.address,
-                pair.pair.foundation()
+                pair.pair.local.priority,
+                pair.pair.remote.priority,
+                format!("{:?}", pair.pair.local.transport_type),
+                format!("{}", pair.pair.local.candidate_type),
+                format!("{}", pair.pair.local.address),
+                format!("{}", pair.pair.remote.candidate_type),
+                format!("{}", pair.pair.remote.address)
             );
         }
         debug!("{}", s);
@@ -596,8 +600,8 @@ impl ConnCheckListInner {
                             check.agent.clone(),
                             true,
                         ));
-                        self.add_check(check);
                         if let Some(component) = self.nominated_pair(&pair) {
+                            self.add_check(check);
                             return Ok(Some(component));
                         }
                     }
@@ -625,7 +629,7 @@ impl ConnCheckListInner {
                         ));
                     }
                     check.set_state(CandidatePairState::Waiting);
-                    self.add_triggered(check);
+                    self.add_triggered(check.clone());
                 }
                 // If the state of that pair is Waiting, Frozen, or Failed, the
                 // agent MUST enqueue the pair in the triggered checklist
@@ -645,9 +649,10 @@ impl ConnCheckListInner {
                         ));
                     }
                     check.set_state(CandidatePairState::Waiting);
-                    self.add_triggered(check);
+                    self.add_triggered(check.clone());
                 }
             }
+            self.add_check(check);
         } else {
             debug!("creating new check for pair {:?}", pair);
             let check = Arc::new(ConnCheck::new(pair, agent.clone(), peer_nominating));
@@ -700,17 +705,9 @@ impl ConnCheckList {
         self.inner.lock().unwrap().state
     }
 
-    #[tracing::instrument(
-        level = "debug",
-        skip(self)
-        fields(
-            checklist_id = self.checklist_id
-        )
-    )]
     fn set_state(&self, state: CheckListState) {
         let mut inner = self.inner.lock().unwrap();
-        trace!("old state {:?}", inner.state);
-        inner.state = state;
+        inner.set_state(state);
     }
 
     pub(crate) fn set_local_credentials(&self, credentials: Credentials) {
@@ -787,7 +784,7 @@ impl ConnCheckList {
             // validate username
             if let Some(username) = msg.attribute::<Username>(USERNAME) {
                 if !validate_username(username, &checklist.local_credentials) {
-                    warn!("binding request failed username validation");
+                    warn!("binding request failed username validation -> UNAUTHORIZED");
                     let mut response = Message::new_error(msg);
                     response.add_attribute(ErrorCode::builder(ErrorCode::UNAUTHORIZED).build()?)?;
                     return Ok(Some(response));
@@ -878,11 +875,10 @@ impl ConnCheckList {
         fields(
             checklist_id = self.checklist_id,
             component_id = component.id,
-            local.ttype = ?local.transport_type,
-            local.ctype = ?local.candidate_type,
-            local.foundation,
-            local.priority,
-            local.address = ?local.address
+            ttype = ?local.transport_type,
+            ctype = ?local.candidate_type,
+            foundation = %local.foundation,
+            address = ?local.address
         )
     )]
     pub(crate) async fn add_local_candidate(
@@ -898,8 +894,9 @@ impl ConnCheckList {
             );
         }
 
+        debug!("adding {:?}", local);
+        let checklist_id = self.checklist_id;
         let component_id = component.id;
-        info!("adding");
         let weak_inner = Arc::downgrade(&self.inner);
         let (stun_send, stun_recv) = oneshot::channel();
 
@@ -907,7 +904,16 @@ impl ConnCheckList {
         let (abortable, stun_abort_handle) = futures::future::abortable({
             let agent = agent.clone();
             let local = local.clone();
-            let span = debug_span!("conncheck_component_recv_loop");
+            let span = debug_span!(
+                parent: None,
+                "conncheck_cand_recv_loop",
+                checklist_id,
+                component_id,
+                ttype = ?local.transport_type,
+                ctype = ?local.candidate_type,
+                foundation = %local.foundation,
+                address = ?local.address
+            );
             async move {
                 let _drop_log = DropLogger::new("dropping stun receive stream");
                 let mut recv_stun = agent.receive_stream();
@@ -945,7 +951,7 @@ impl ConnCheckList {
                     }
                 }
             }
-            .instrument(span)
+            .instrument(span.or_current())
         });
 
         async_std::task::spawn(abortable);
@@ -1398,6 +1404,14 @@ impl ConnCheckListSet {
         inner.controlling
     }
 
+    #[tracing::instrument(
+        level = "trace",
+        ret,
+        skip(conncheck),
+        fields(
+            conncheck.conncheck_id
+        )
+    )]
     async fn connectivity_check_cancellable(
         conncheck: Arc<ConnCheck>,
         username: String,
@@ -1420,12 +1434,15 @@ impl ConnCheckListSet {
             ConnCheck::connectivity_check(conncheck, username, controlling, tie_breaker),
             abort_registration,
         );
-        async_std::task::spawn(async move {
-            match abortable.await {
-                Ok(v) => v,
-                Err(_) => Err(AgentError::Aborted),
+        async_std::task::spawn(
+            async move {
+                match abortable.await {
+                    Ok(v) => v,
+                    Err(_) => Err(AgentError::Aborted),
+                }
             }
-        })
+            .in_current_span(),
+        )
         .await
     }
 
@@ -1466,7 +1483,7 @@ impl ConnCheckListSet {
         .await
         {
             Err(e) => {
-                warn!("conncheck error: {:?} {:?}", e, conncheck);
+                warn!(error = ?e, "conncheck error: {:?}", conncheck);
                 conncheck.set_state(CandidatePairState::Failed);
                 checklist.remove_valid(&conncheck.pair);
                 match e {
@@ -1486,8 +1503,8 @@ impl ConnCheckListSet {
                 if let Some(set_inner) = set_inner.upgrade() {
                     let mut set_inner = set_inner.lock().unwrap();
                     info!(
-                        "Role Conflict changing controlling from {} -> {}",
-                        set_inner.controlling, new_role
+                        old_role = set_inner.controlling,
+                        new_role, "Role Conflict changing controlling from"
                     );
                     if set_inner.controlling != new_role {
                         set_inner.controlling = new_role;
@@ -1507,7 +1524,17 @@ impl ConnCheckListSet {
                 }
             }
             Ok(ConnCheckResponse::Success(conncheck, addr)) => {
-                debug!("succeeded in finding connection {:?}", conncheck);
+                info!(
+                    component.id = conncheck.pair.local.component_id,
+                    nominate = conncheck.nominate,
+                    ttype = ?conncheck.pair.local.transport_type,
+                    local.address = ?conncheck.pair.local.address,
+                    remote.address = ?conncheck.pair.remote.address,
+                    local.ctype = ?conncheck.pair.local.candidate_type,
+                    remote.ctype = ?conncheck.pair.remote.candidate_type,
+                    foundation = %conncheck.pair.foundation(),
+                    "succeeded in finding a connection"
+                );
                 conncheck.set_state(CandidatePairState::Succeeded);
 
                 let mut pair_dealt_with = false;
@@ -1769,8 +1796,6 @@ impl<'set> RunningCheckListSet<'set> {
 fn validate_username(username: Username, local_credentials: &Credentials) -> bool {
     let username = username.username().as_bytes();
     let local_user = local_credentials.ufrag.as_bytes();
-    trace!("username {:?}", username);
-    trace!("local username {:?}", local_user);
     if local_user.len()
         == local_user
             .iter()

@@ -527,6 +527,14 @@ impl Message {
     /// assert!(message.add_attribute(attr).is_ok());
     /// assert_eq!(message.to_bytes(), vec![0, 1, 0, 8, 33, 18, 164, 66, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 232, 0, 1, 0, 1, 3, 0, 0, 0]);
     /// ```
+    #[tracing::instrument(
+        name = "message_to_bytes",
+        level = "trace",
+        skip(self),
+        fields(
+            msg.transaction_id = %self.transaction_id()
+        )
+    )]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut attr_size = 0;
         for attr in &self.attributes {
@@ -541,7 +549,6 @@ impl Message {
         BigEndian::write_u16(&mut ret[2..4], attr_size as u16);
         for attr in &self.attributes {
             let bytes = attr.to_bytes();
-            trace!("attr {:?} produces {:?}", attr, bytes);
             ret.extend(bytes);
         }
         ret
@@ -562,11 +569,20 @@ impl Message {
     /// assert_eq!(message.get_type(), MessageType::from_class_method(MessageClass::Request, BINDING));
     /// assert_eq!(message.transaction_id(), 1000.into());
     /// ```
+    #[tracing::instrument(
+        name = "message_from_bytes",
+        level = "trace",
+        skip(data),
+        fields(
+            data.len = data.len()
+        )
+    )]
     pub fn from_bytes(data: &[u8]) -> Result<Self, StunError> {
         let orig_data = data;
 
         if data.len() < 20 {
             // always at least 20 bytes long
+            debug!("messsage data is too short {} < 20", data.len());
             return Err(StunError::ParseError(StunParseError::NotEnoughData));
         }
         let mtype = MessageType::from_bytes(data)?;
@@ -595,7 +611,10 @@ impl Message {
         let mut data = &data[20..];
         let mut seen_message_integrity = false;
         while !data.is_empty() {
-            let attr = RawAttribute::from_bytes(data)?;
+            let attr = RawAttribute::from_bytes(data).map_err(|e| {
+                warn!("failed to parse message attribute {:?}", e);
+                e
+            })?;
 
             if seen_message_integrity && attr.get_type() != FINGERPRINT {
                 // only attribute valid after MESSAGE_INTEGRITY is FINGERPRINT
@@ -612,6 +631,10 @@ impl Message {
             }
             let padded_len = padded_attr_size(&attr);
             if padded_len > data.len() {
+                warn!(
+                    "attribute {:?} extends past the end of the data",
+                    attr.get_type()
+                );
                 return Err(StunError::ParseError(StunParseError::NotEnoughData));
             }
             if attr.get_type() == FINGERPRINT {
@@ -642,6 +665,14 @@ impl Message {
     ///
     /// The Original data that was used to construct this [`Message`] must be provided in order
     /// to successfully validate the [`Message`]
+    #[tracing::instrument(
+        name = "message_validate_integrity",
+        level = "trace",
+        skip(self, orig_data, credentials),
+        fields(
+            msg.transaction = %self.transaction_id(),
+        )
+    )]
     pub fn validate_integrity(
         &self,
         orig_data: &[u8],
@@ -649,7 +680,10 @@ impl Message {
     ) -> Result<(), StunError> {
         let raw = self
             .attribute::<RawAttribute>(MESSAGE_INTEGRITY)
-            .ok_or(StunError::ResourceNotFound)?;
+            .ok_or_else(|| {
+                warn!("no INTEGRITY attribute in message");
+                StunError::ResourceNotFound
+            })?;
         let integrity = MessageIntegrity::try_from(&raw)?;
         let msg_hmac = integrity.hmac();
 
@@ -658,6 +692,7 @@ impl Message {
         let data = orig_data;
         if data.len() < 20 {
             // always at least 20 bytes long
+            debug!("not enough data in message");
             return Err(StunError::ParseError(StunParseError::NotEnoughData));
         }
         let mut data = &data[20..];
@@ -668,6 +703,7 @@ impl Message {
                 let msg = MessageIntegrity::try_from(&attr)?;
                 if msg.hmac() != msg_hmac {
                     // data hmac is different from message hmac -> wrong data for this message.
+                    warn!("hmac from data does not match message hmac");
                     return Err(StunError::ParseError(StunParseError::InvalidData));
                 }
 
@@ -676,23 +712,21 @@ impl Message {
                 let key = credentials.make_hmac_key();
                 let mut hmac_data = orig_data[..data_offset].to_vec();
                 BigEndian::write_u16(&mut hmac_data[2..4], data_offset as u16 + 24 - 20);
-                trace!(
-                    "validate msg key {:?} from credentials {:?} hmac {:?} data {:?}",
-                    key,
-                    credentials,
-                    msg_hmac,
-                    hmac_data
-                );
                 return MessageIntegrity::verify(&hmac_data, &key, msg_hmac);
             }
             let padded_len = padded_attr_size(&attr);
             if padded_len > data.len() {
+                warn!(
+                    "attribute {:?} extends past the end of the data",
+                    attr.get_type()
+                );
                 return Err(StunError::ParseError(StunParseError::InvalidData));
             }
             data = &data[padded_len..];
             data_offset += padded_len;
         }
         // no hmac in data but there was in the message? -> incompatible data for this message
+        warn!("no message integrity attribute in data");
         Err(StunError::ParseError(StunParseError::InvalidData))
     }
 
@@ -718,6 +752,15 @@ impl Message {
     /// // duplicate MESSAGE_INTEGRITY is an error
     /// assert!(message.add_message_integrity(&credentials).is_err());
     /// ```
+    #[tracing::instrument(
+        name = "message_add_integrity",
+        level = "trace",
+        err,
+        skip(self),
+        fields(
+            msg.transaction = %self.transaction_id(),
+        )
+    )]
     pub fn add_message_integrity(
         &mut self,
         credentials: &MessageIntegrityCredentials,
@@ -737,13 +780,6 @@ impl Message {
         BigEndian::write_u16(&mut bytes[2..4], existing_len + 24);
         let key = credentials.make_hmac_key();
         let integrity = MessageIntegrity::compute(&bytes, &key)?;
-        trace!(
-            "add integrity key {:?} credentials {:?} hmac {:?} from data {:?}",
-            key,
-            credentials,
-            integrity,
-            bytes
-        );
         self.attributes
             .push(MessageIntegrity::new(integrity).into());
         Ok(())
@@ -765,6 +801,14 @@ impl Message {
     /// // duplicate FINGERPRINT is an error
     /// assert!(message.add_fingerprint().is_err());
     /// ```
+    #[tracing::instrument(
+        name = "message_add_fingerprint",
+        level = "trace",
+        skip(self),
+        fields(
+            msg.transaction = %self.transaction_id(),
+        )
+    )]
     pub fn add_fingerprint(&mut self) -> Result<(), StunError> {
         if self.has_attribute(FINGERPRINT) {
             return Err(StunError::AlreadyExists);
@@ -805,7 +849,18 @@ impl Message {
     /// assert!(message.add_attribute(attr.clone()).is_ok());
     /// assert!(message.add_attribute(attr).is_err());
     /// ```
+    #[tracing::instrument(
+        name = "message_add_attribute",
+        level = "trace",
+        err,
+        skip(self, attr),
+        fields(
+            msg.transaction = %self.transaction_id(),
+            attribute_type = %attr.get_type(),
+        )
+    )]
     pub fn add_attribute<A: Attribute>(&mut self, attr: A) -> Result<(), StunError> {
+        trace!("adding attribute {:?}", attr);
         if attr.get_type() == MESSAGE_INTEGRITY {
             return Err(StunError::WrongImplementation);
         }
@@ -840,6 +895,16 @@ impl Message {
     /// assert!(message.add_attribute(attr.clone()).is_ok());
     /// assert_eq!(message.attribute::<RawAttribute>(1.into()).unwrap(), attr);
     /// ```
+    #[tracing::instrument(
+        name = "message_get_attribute",
+        level = "trace",
+        ret,
+        skip(self, atype),
+        fields(
+            msg.transaction = %self.transaction_id(),
+            attribute_type = %atype,
+        )
+    )]
     pub fn attribute<A: Attribute>(&self, atype: AttributeType) -> Option<A> {
         self.attributes
             .iter()
@@ -887,6 +952,13 @@ impl Message {
     /// assert_eq!(error_code.code(), 420);
     /// assert!(error_msg.has_attribute(UNKNOWN_ATTRIBUTES));
     /// ```
+    #[tracing::instrument(
+        level = "trace",
+        skip(msg),
+        fields(
+            msg.transaction = %msg.transaction_id(),
+        )
+    )]
     pub fn check_attribute_types(
         msg: &Message,
         supported: &[AttributeType],
@@ -900,8 +972,8 @@ impl Message {
             .filter(|&at| at.comprehension_required() && !supported.iter().any(|&a| a == at))
             .collect();
         if !unsupported.is_empty() {
-            debug!(
-                "Message contains unknown comprehension required attributes {:?}",
+            warn!(
+                "Message contains unknown comprehension required attributes {:?}, returning unknown attributes",
                 unsupported
             );
             return Message::unknown_attributes(msg, &unsupported).ok();
@@ -911,7 +983,7 @@ impl Message {
             // attribute types we need in the message -> failure -> Bad Request
             .any(|&at| !msg.iter_attributes().map(|a| a.get_type()).any(|a| a == at));
         if has_required_attribute_missing {
-            debug!("Message is missing required attributes");
+            warn!("Message is missing required attributes, returning bad request");
             return Message::bad_request(msg).ok();
         }
         None
