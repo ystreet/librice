@@ -161,7 +161,7 @@ impl Component {
             async move {
                 // need to keep some reference to the StunAgent until the task completes
                 let mut recv_stream = agent.receive_stream();
-                info!("started");
+                debug!("started");
                 while let Some(stun_or_data) = recv_stream.next().await {
                     if let Some((data, _from)) = stun_or_data.data() {
                         if let Err(e) = sender.send(data).await {
@@ -171,7 +171,7 @@ impl Component {
                 }
                 debug!("receive loop exited");
             }
-            .instrument(span),
+            .instrument(span.or_current()),
         );
 
         async_std::task::spawn(abortable);
@@ -217,16 +217,13 @@ impl ComponentInner {
     }
 
     #[tracing::instrument(
+        name = "set_component_state",
         level = "debug",
         skip(self, state)
-        fields(
-            old_state = ?self.state,
-            new_state = ?state
-        )
     )]
     fn set_state(&mut self, state: ComponentState) -> bool {
         if self.state != state {
-            debug!("setting");
+            debug!(old_state = ?self.state, new_state = ?state, "setting");
             self.state = state;
             true
         } else {

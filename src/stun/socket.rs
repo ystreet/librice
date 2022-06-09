@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use async_std::net::{TcpStream, UdpSocket};
 
 use futures::prelude::*;
+use tracing_futures::Instrument;
 
 use async_trait::async_trait;
 use byteorder::{BigEndian, ByteOrder};
@@ -127,10 +128,12 @@ impl UdpSocketChannel {
     pub(crate) fn ensure_receive_loop(&self) {
         let mut inner = self.inner.lock().unwrap();
         if inner.receive_loop.is_none() {
+            let span = debug_span!("udp_recv_loop");
             inner.receive_loop = Some(async_std::task::spawn({
                 let socket = (*self.socket).clone();
                 let broadcaster = self.sender_broadcast.clone();
                 async move { UdpSocketChannel::receive_loop(socket, broadcaster).await }
+                    .instrument(span.or_current())
             }));
         }
     }
@@ -415,8 +418,7 @@ impl TcpChannel {
     }
 
     #[tracing::instrument(
-        name = "tcp_recv",
-        err,
+        name = "tcp_single_recv",
         skip(stream, running),
         fields(
             remote.addr = ?stream.peer_addr()
@@ -428,6 +430,7 @@ impl TcpChannel {
     ) -> Result<DataAddress, std::io::Error> {
         let from = stream.peer_addr()?;
         let mut buf = running.lock().unwrap().take().ok_or_else(|| {
+            warn!("Unsupported: multiple calls to recv()");
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Unsupported: multiple calls to recv()",
@@ -641,16 +644,16 @@ impl ReceiveStream<DataAddress> for TcpChannel {
         let stream = self.stream.clone();
         let running = self.running_buffer.clone();
         // replace self.running_buffer when done? drop handler?
-        trace!("tcp receive stream");
-        Box::pin(stream::unfold(
-            (stream, running),
-            |(mut stream, running)| async move {
+        let span = debug_span!("tcp_recv");
+        Box::pin(
+            stream::unfold((stream, running), |(mut stream, running)| async move {
                 TcpChannel::inner_recv(&mut stream, running.clone())
                     .await
                     .ok()
                     .map(|v| (v, (stream, running)))
-            },
-        ))
+            })
+            .instrument(span.or_current()),
+        )
     }
 }
 

@@ -68,7 +68,7 @@ fn generate_bind_request() -> std::io::Result<Message> {
     out.add_fingerprint()
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid message"))?;
 
-    info!("generated to {}", out);
+    trace!("generated to {}", out);
     Ok(out)
 }
 
@@ -203,7 +203,7 @@ pub fn gather_component(
                             return None;
                         }
                     }
-                    info!("producing {:?}", cand);
+                    debug!("producing {:?}", cand);
                     produced.push(cand.clone());
                     Some((cand, channel))
                 }

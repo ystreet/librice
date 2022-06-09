@@ -1428,6 +1428,13 @@ impl MessageIntegrity {
     /// let integrity = MessageIntegrity::compute(&data, &key).unwrap();
     /// assert_eq!(integrity, expected);
     /// ```
+    #[tracing::instrument(
+        name = "MessageIntegrity::compute",
+        level = "trace",
+        err,
+        ret,
+        skip(data, key)
+    )]
     pub fn compute(data: &[u8], key: &[u8]) -> Result<[u8; 20], StunError> {
         use hmac::{Hmac, Mac};
         let mut hmac = Hmac::<sha1::Sha1>::new_from_slice(key)
@@ -1448,13 +1455,22 @@ impl MessageIntegrity {
     /// let expected = [209, 217, 210, 15, 124, 78, 87, 181, 211, 233, 165, 180, 44, 142, 81, 233, 138, 186, 184, 97];
     /// assert_eq!(MessageIntegrity::verify(&data, &key, &expected).unwrap(), ());
     /// ```
+    #[tracing::instrument(
+        name = "MessageIntegrity::verify",
+        level = "debug",
+        skip(data, key, expected)
+    )]
     pub fn verify(data: &[u8], key: &[u8], expected: &[u8; 20]) -> Result<(), StunError> {
         use hmac::{Hmac, Mac};
-        let mut hmac = Hmac::<sha1::Sha1>::new_from_slice(key)
-            .map_err(|_| StunError::ParseError(StunParseError::InvalidData))?;
+        let mut hmac = Hmac::<sha1::Sha1>::new_from_slice(key).map_err(|_| {
+            error!("failed to create hmac from key data");
+            StunError::ParseError(StunParseError::InvalidData)
+        })?;
         hmac.update(data);
-        hmac.verify_slice(expected)
-            .map_err(|_| StunError::IntegrityCheckFailed)
+        hmac.verify_slice(expected).map_err(|_| {
+            error!("integrity check failed");
+            StunError::IntegrityCheckFailed
+        })
     }
 }
 
