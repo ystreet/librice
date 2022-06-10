@@ -311,7 +311,6 @@ impl Stream {
     ///     CandidateType::Host,
     ///     TransportType::Udp,
     ///     "0",
-    ///     0,
     ///     addr
     /// )
     /// .build();
@@ -477,7 +476,6 @@ impl Stream {
     ///     CandidateType::Host,
     ///     TransportType::Udp,
     ///     "0",
-    ///     0,
     ///     addr
     /// )
     /// .build();

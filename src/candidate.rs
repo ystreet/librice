@@ -75,8 +75,8 @@ pub struct CandidateBuilder {
     ctype: CandidateType,
     ttype: TransportType,
     foundation: String,
-    priority: u32,
     address: SocketAddr,
+    priority: Option<u32>,
     base_address: Option<SocketAddr>,
     related_address: Option<SocketAddr>,
 }
@@ -90,11 +90,18 @@ impl CandidateBuilder {
             candidate_type: self.ctype,
             transport_type: self.ttype,
             foundation: self.foundation.to_owned(),
-            priority: self.priority,
+            priority: self.priority.unwrap_or_else(|| {
+                crate::gathering::calculate_priority(self.ctype, 0, self.component_id)
+            }),
             address: self.address,
             base_address,
             related_address: self.related_address,
         }
+    }
+
+    pub fn priority(mut self, priority: u32) -> Self {
+        self.priority = Some(priority);
+        self
     }
 
     pub fn base_address(mut self, base_address: SocketAddr) -> Self {
@@ -114,7 +121,6 @@ impl Candidate {
         ctype: CandidateType,
         ttype: TransportType,
         foundation: &str,
-        priority: u32,
         address: SocketAddr,
     ) -> CandidateBuilder {
         CandidateBuilder {
@@ -122,8 +128,8 @@ impl Candidate {
             ctype,
             ttype,
             foundation: foundation.to_owned(),
-            priority,
             address,
+            priority: None,
             base_address: None,
             related_address: None,
         }
@@ -259,9 +265,9 @@ pub mod parse {
             candidate_type,
             transport_type,
             foundation,
-            priority,
             address,
         )
+        .priority(priority)
         .base_address(address)
         .build())
     }
@@ -306,16 +312,11 @@ impl CandidatePair {
     }
 
     pub fn priority(&self, are_controlling: bool) -> u64 {
-        let controlling_priority = if are_controlling {
-            self.local.priority
+        let (controlling_priority, controlled_priority) = if are_controlling {
+            (self.local.priority as u64, self.remote.priority as u64)
         } else {
-            self.remote.priority
-        } as u64;
-        let controlled_priority = if are_controlling {
-            self.remote.priority
-        } else {
-            self.local.priority
-        } as u64;
+            (self.remote.priority as u64, self.local.priority as u64)
+        };
         let extra = if controlled_priority > controlling_priority {
             1u64
         } else {
@@ -368,7 +369,7 @@ mod tests {
         init();
         let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
         let cand =
-            Candidate::builder(0, CandidateType::Host, TransportType::Udp, "0", 0, addr).build();
+            Candidate::builder(0, CandidateType::Host, TransportType::Udp, "0", addr).build();
         let mut pair = CandidatePair::new(cand.clone(), cand);
         assert!(!pair.nominated());
         pair.nominate();
@@ -387,7 +388,6 @@ mod tests {
                 CandidateType::Host,
                 TransportType::Udp,
                 "foundation",
-                1234,
                 local_addr,
             )
             .build(),
@@ -396,7 +396,6 @@ mod tests {
                 CandidateType::Host,
                 TransportType::Udp,
                 "foundation",
-                1234,
                 remote_addr,
             )
             .build(),
@@ -418,7 +417,8 @@ mod tests {
             let addr = "127.0.0.1:2345".parse().unwrap();
             assert_eq!(
                 cand,
-                Candidate::builder(0, CandidateType::Host, TransportType::Udp, "0", 1234, addr)
+                Candidate::builder(0, CandidateType::Host, TransportType::Udp, "0", addr)
+                    .priority(1234)
                     .build()
             );
         }
@@ -504,9 +504,9 @@ mod tests {
                 CandidateType::Host,
                 TransportType::Udp,
                 "foundation",
-                1234,
                 addr,
             )
+            .priority(1234)
             .build();
             assert_eq!(cand.to_sdp_string(), cand_sdp_str);
             let parsed_cand = Candidate::from_str(cand_sdp_str).unwrap();
