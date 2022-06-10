@@ -251,10 +251,15 @@ struct ConnCheckListInner {
     triggered: VecDeque<Arc<ConnCheck>>,
     pairs: VecDeque<Arc<ConnCheck>>,
     valid: Vec<CandidatePair>,
+    controlling: bool,
 }
 
 impl ConnCheckListInner {
-    fn new(checklist_id: usize, set_inner: Weak<Mutex<CheckListSetInner>>) -> Self {
+    fn new(
+        checklist_id: usize,
+        set_inner: Weak<Mutex<CheckListSetInner>>,
+        controlling: bool,
+    ) -> Self {
         Self {
             checklist_id,
             set_inner,
@@ -268,6 +273,7 @@ impl ConnCheckListInner {
             triggered: VecDeque::new(),
             pairs: VecDeque::new(),
             valid: vec![],
+            controlling,
         }
     }
 
@@ -402,7 +408,28 @@ impl ConnCheckListInner {
     }
 
     fn add_check(&mut self, check: Arc<ConnCheck>) {
-        self.pairs.push_front(check)
+        let idx = self
+            .pairs
+            .binary_search_by(|existing| {
+                existing
+                    .pair
+                    .priority(self.controlling)
+                    .cmp(&check.pair.priority(self.controlling))
+                    .reverse()
+            })
+            .unwrap_or_else(|x| x);
+        self.pairs.insert(idx, check);
+    }
+
+    fn set_controlling(&mut self, controlling: bool) {
+        self.controlling = controlling;
+        // changing the controlling (and therefore priority) requires resorting
+        self.pairs.make_contiguous().sort_by(|a, b| {
+            a.pair
+                .priority(self.controlling)
+                .cmp(&b.pair.priority(self.controlling))
+                .reverse()
+        })
     }
 
     #[tracing::instrument(
@@ -576,9 +603,9 @@ impl ConnCheckListInner {
                     CandidateType::PeerReflexive,
                     local.transport_type,
                     /* FIXME */ "rflx",
-                    priority,
                     from,
                 )
+                .priority(priority)
                 .build();
                 debug!("new reflexive remote {:?}", cand);
                 self.add_remote_candidate(cand.clone());
@@ -657,7 +684,7 @@ impl ConnCheckListInner {
             debug!("creating new check for pair {:?}", pair);
             let check = Arc::new(ConnCheck::new(pair, agent.clone(), peer_nominating));
             check.set_state(CandidatePairState::Waiting);
-            self.pairs.push_back(check.clone());
+            self.add_check(check.clone());
             self.add_triggered(check);
         }
 
@@ -821,6 +848,7 @@ impl ConnCheckList {
                             //    the ICE-CONTROLLING attribute, the agent switches to the
                             //    controlled role.
                             set.controlling = false;
+                            checklist.controlling = false;
                             // TODO: update priorities and other things
                         }
                     }
@@ -834,7 +862,14 @@ impl ConnCheckList {
                             //    contents of the ICE-CONTROLLED attribute, the agent switches to
                             //    the controlling role.
                             set.controlling = true;
-                            // TODO: update priorities and other things
+                            checklist.set_controlling(false);
+                            for l in set.checklists.iter() {
+                                if l.checklist_id == checklist.checklist_id {
+                                    continue;
+                                }
+                                let mut l = l.inner.lock().unwrap();
+                                l.set_controlling(false);
+                            }
                         } else {
                             // *  If the agent's tiebreaker value is less than the contents of
                             //    the ICE-CONTROLLED attribute, the agent generates a Binding
@@ -1040,7 +1075,9 @@ impl ConnCheckList {
                 }
             }
         }
-        inner.pairs.extend(checks);
+        for check in checks {
+            inner.add_check(check)
+        }
     }
 
     #[tracing::instrument(
@@ -1074,13 +1111,8 @@ impl ConnCheckList {
             })
             .collect();
         // sort by component_id
-        maybe_thaw.sort_unstable_by(|a, b| {
-            a.pair
-                .local
-                .component_id
-                .partial_cmp(&b.pair.local.component_id)
-                .unwrap()
-        });
+        maybe_thaw
+            .sort_unstable_by(|a, b| a.pair.local.component_id.cmp(&b.pair.local.component_id));
 
         // only keep the first candidate for a given foundation which should correspond to the
         // lowest component_id
@@ -1384,6 +1416,7 @@ impl ConnCheckListSet {
             inner: Arc::new(Mutex::new(ConnCheckListInner::new(
                 checklist_id,
                 Arc::downgrade(&self.inner),
+                self.controlling(),
             ))),
         }
     }
@@ -1851,6 +1884,7 @@ mod tests {
         clock: Option<Arc<dyn Clock>>,
         credentials: Credentials,
         component_id: Option<usize>,
+        priority: Option<u32>,
         candidate: Option<Candidate>,
     }
 
@@ -1877,6 +1911,11 @@ mod tests {
 
         fn component_id(mut self, component_id: usize) -> Self {
             self.component_id = Some(component_id);
+            self
+        }
+
+        fn priority(mut self, priority: u32) -> Self {
+            self.priority = Some(priority);
             self
         }
 
@@ -1929,15 +1968,17 @@ mod tests {
             }
             let addr = channel.local_addr().unwrap();
             let candidate = self.candidate.unwrap_or_else(|| {
-                Candidate::builder(
+                let mut builder = Candidate::builder(
                     self.component_id.unwrap_or(1),
                     CandidateType::Host,
                     TransportType::Udp,
                     self.foundation.unwrap_or("0"),
-                    0,
                     addr,
-                )
-                .build()
+                );
+                if let Some(priority) = self.priority {
+                    builder = builder.priority(priority);
+                }
+                builder.build()
             });
             let clock = self.clock.unwrap_or_else(|| get_clock(ClockType::System));
             let agent = StunAgent::builder(channel.clone()).clock(clock).build();
@@ -1959,6 +2000,7 @@ mod tests {
                 clock: None,
                 credentials: Credentials::new(String::from("user"), String::from("pass")),
                 component_id: None,
+                priority: None,
                 candidate: None,
             }
         }
@@ -2139,9 +2181,13 @@ mod tests {
     }
 
     fn assert_list_contains_checks(list: &ConnCheckList, pairs: Vec<&CandidatePair>) {
-        for pair in pairs.iter() {
-            let check = list.matching_check(pair, Nominate::DontCare).unwrap();
-            assert_eq!(&&check.pair, pair);
+        let inner = list.inner.lock().unwrap();
+
+        trace!("checks {:?}", inner.pairs);
+        trace!("pairs  {:?}", pairs);
+
+        for (pair, check) in pairs.into_iter().zip(inner.pairs.iter()) {
+            assert_eq!(&check.pair, pair);
         }
     }
 
@@ -2153,12 +2199,12 @@ mod tests {
             let stream = agent.add_stream();
             let component1 = stream.add_component().unwrap();
             let component2 = stream.add_component().unwrap();
-            let local1 = Peer::default().await;
-            let remote1 = Peer::default().await;
-            let local2 = Peer::builder().component_id(2).build().await;
-            let remote2 = Peer::builder().component_id(2).build().await;
-            let local3 = Peer::default().await;
-            let remote3 = Peer::default().await;
+            let local1 = Peer::builder().priority(1).build().await;
+            let remote1 = Peer::builder().priority(2).build().await;
+            let local2 = Peer::builder().component_id(2).priority(4).build().await;
+            let remote2 = Peer::builder().component_id(2).priority(6).build().await;
+            let local3 = Peer::builder().priority(10).build().await;
+            let remote3 = Peer::builder().priority(15).build().await;
 
             let set = agent.check_list_set();
             let list = set.new_list();
@@ -2173,11 +2219,11 @@ mod tests {
             list.add_remote_candidate(remote3.candidate.clone());
 
             list.generate_checks();
-            let pair1 = CandidatePair::new(local1.candidate.clone(), remote1.candidate.clone());
-            let pair2 = CandidatePair::new(local2.candidate.clone(), remote2.candidate.clone());
-            let pair3 = CandidatePair::new(local3.candidate.clone(), remote3.candidate.clone());
+            let pair1 = CandidatePair::new(local3.candidate.clone(), remote3.candidate.clone());
+            let pair2 = CandidatePair::new(local2.candidate, remote2.candidate);
+            let pair3 = CandidatePair::new(local3.candidate, remote1.candidate.clone());
             let pair4 = CandidatePair::new(local1.candidate.clone(), remote3.candidate);
-            let pair5 = CandidatePair::new(local3.candidate, remote1.candidate);
+            let pair5 = CandidatePair::new(local1.candidate, remote1.candidate);
             assert_list_contains_checks(&list, vec![&pair1, &pair2, &pair3, &pair4, &pair5]);
         });
     }
@@ -2194,26 +2240,30 @@ mod tests {
             let list1 = set.new_list();
             let list2 = set.new_list();
 
-            let local1 = Peer::builder().foundation("0").build().await;
-            let remote1 = Peer::builder().foundation("0").build().await;
+            let local1 = Peer::builder().foundation("0").priority(1).build().await;
+            let remote1 = Peer::builder().foundation("0").priority(2).build().await;
             let local2 = Peer::builder()
                 .foundation("0")
                 .component_id(2)
+                .priority(3)
                 .build()
                 .await;
             let remote2 = Peer::builder()
                 .foundation("0")
                 .component_id(2)
+                .priority(4)
                 .build()
                 .await;
             let local3 = Peer::builder()
                 .foundation("1")
                 .component_id(2)
+                .priority(7)
                 .build()
                 .await;
             let remote3 = Peer::builder()
                 .foundation("1")
                 .component_id(2)
+                .priority(10)
                 .build()
                 .await;
 
@@ -2235,10 +2285,10 @@ mod tests {
 
             // generated pairs
             let pair1 = CandidatePair::new(local1.candidate, remote1.candidate);
-            let pair2 = CandidatePair::new(local2.candidate.clone(), remote2.candidate.clone());
-            let pair3 = CandidatePair::new(local3.candidate.clone(), remote3.candidate.clone());
-            let pair4 = CandidatePair::new(local2.candidate, remote3.candidate);
-            let pair5 = CandidatePair::new(local3.candidate, remote2.candidate);
+            let pair2 = CandidatePair::new(local3.candidate.clone(), remote3.candidate.clone());
+            let pair3 = CandidatePair::new(local3.candidate, remote2.candidate.clone());
+            let pair4 = CandidatePair::new(local2.candidate.clone(), remote3.candidate);
+            let pair5 = CandidatePair::new(local2.candidate, remote2.candidate);
             assert_list_contains_checks(&list1, vec![&pair1]);
             assert_list_contains_checks(&list2, vec![&pair2, &pair3, &pair4, &pair5]);
 
@@ -2260,7 +2310,7 @@ mod tests {
             assert_eq!(check1.state(), CandidatePairState::Waiting);
             let check2 = list2.matching_check(&pair2, Nominate::DontCare).unwrap();
             assert_eq!(check2.pair, pair2);
-            assert_eq!(check2.state(), CandidatePairState::Frozen);
+            assert_eq!(check2.state(), CandidatePairState::Waiting);
             let check3 = list2.matching_check(&pair3, Nominate::DontCare).unwrap();
             assert_eq!(check3.pair, pair3);
             assert_eq!(check3.state(), CandidatePairState::Waiting);
@@ -2269,7 +2319,7 @@ mod tests {
             assert_eq!(check4.state(), CandidatePairState::Waiting);
             let check5 = list2.matching_check(&pair5, Nominate::DontCare).unwrap();
             assert_eq!(check5.pair, pair5);
-            assert_eq!(check5.state(), CandidatePairState::Waiting);
+            assert_eq!(check5.state(), CandidatePairState::Frozen);
         });
     }
 
@@ -2635,7 +2685,6 @@ mod tests {
                             CandidateType::Host,
                             TransportType::Tcp,
                             "0",
-                            0,
                             remote_addr,
                         )
                         .build();
@@ -2667,15 +2716,9 @@ mod tests {
             let local_stream = TcpStream::connect(remote_addr).await.unwrap();
             let local_addr = local_stream.local_addr().unwrap();
             let local_channel = StunChannel::Tcp(TcpChannel::new(local_stream));
-            let local_cand = Candidate::builder(
-                0,
-                CandidateType::Host,
-                TransportType::Tcp,
-                "0",
-                0,
-                local_addr,
-            )
-            .build();
+            let local_cand =
+                Candidate::builder(0, CandidateType::Host, TransportType::Tcp, "0", local_addr)
+                    .build();
             let local = Peer::builder()
                 .channel(local_channel)
                 .candidate(local_cand)
@@ -2691,15 +2734,9 @@ mod tests {
                 .set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
                     remote_credentials.clone().into(),
                 ));
-            let remote_cand = Candidate::builder(
-                0,
-                CandidateType::Host,
-                TransportType::Tcp,
-                "0",
-                0,
-                remote_addr,
-            )
-            .build();
+            let remote_cand =
+                Candidate::builder(0, CandidateType::Host, TransportType::Tcp, "0", remote_addr)
+                    .build();
             let pair = CandidatePair::new(local.candidate, remote_cand);
             let conncheck = Arc::new(ConnCheck::new(pair, local.agent, false));
 

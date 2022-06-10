@@ -216,11 +216,7 @@ impl ComponentInner {
         }
     }
 
-    #[tracing::instrument(
-        name = "set_component_state",
-        level = "debug",
-        skip(self, state)
-    )]
+    #[tracing::instrument(name = "set_component_state", level = "debug", skip(self, state))]
     fn set_state(&mut self, state: ComponentState) -> bool {
         if self.state != state {
             debug!(old_state = ?self.state, new_state = ?state, "setting");
@@ -333,7 +329,6 @@ mod tests {
                 CandidateType::Host,
                 TransportType::Udp,
                 "0",
-                0,
                 local_agent.inner.channel.local_addr().unwrap(),
             )
             .build();
@@ -342,7 +337,6 @@ mod tests {
                 CandidateType::Host,
                 TransportType::Udp,
                 "0",
-                0,
                 remote_channel.local_addr().unwrap(),
             )
             .build();

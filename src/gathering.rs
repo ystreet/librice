@@ -31,7 +31,11 @@ fn priority_type_preference(ctype: CandidateType) -> u32 {
     }
 }
 
-fn calculate_priority(ctype: CandidateType, local_preference: u32, component_id: usize) -> u32 {
+pub(crate) fn calculate_priority(
+    ctype: CandidateType,
+    local_preference: u32,
+    component_id: usize,
+) -> u32 {
     ((1 << 24) * priority_type_preference(ctype)) + ((1 << 8) * local_preference) + 256
         - component_id as u32
 }
@@ -187,9 +191,9 @@ pub fn gather_component(
                         ga.ctype,
                         ga.transport,
                         &produced.len().to_string(),
-                        priority,
                         ga.address,
                     )
+                    .priority(priority)
                     .base_address(ga.base);
                     if let Some(related) = ga.related {
                         builder = builder.related_address(related);
