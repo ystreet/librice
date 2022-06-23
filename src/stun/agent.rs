@@ -165,7 +165,7 @@ impl StunAgent {
         trace!("channel {:?}", self.inner.channel);
         self.inner
             .channel
-            .send(DataRefAddress::from(&msg.to_bytes(), to))
+            .send(DataFraming::from(&msg.to_bytes(), to))
             .await
     }
 
@@ -288,7 +288,7 @@ impl StunAgent {
             trace!("sending {}", msg);
             self.inner
                 .channel
-                .send(DataRefAddress::from(&msg.to_bytes(), to))
+                .send(DataFraming::from(&msg.to_bytes(), to))
                 .await?;
         }
 
@@ -473,6 +473,7 @@ pub(crate) mod tests {
     use crate::stun::socket::{TcpChannel, UdpConnectionChannel};
     use async_std::net::{TcpListener, TcpStream};
     use async_std::task;
+    use byteorder::{BigEndian, ByteOrder};
 
     fn init() {
         crate::tests::test_init_log();
@@ -679,12 +680,21 @@ pub(crate) mod tests {
             msg.add_attribute(Software::new(software_str).unwrap())
                 .unwrap();
             msg.add_fingerprint().unwrap();
-            let mut bytes = msg.to_bytes();
+            let mut bytes = vec![0; 2];
+            let msg_bytes = msg.to_bytes();
+            let msg_bytes_len = msg_bytes.len() as u16;
+            bytes.extend(msg_bytes);
+            BigEndian::write_u16(&mut bytes, msg_bytes_len);
             let mut msg = Message::new_request(32);
             let software_str2 = "AB";
             msg.add_attribute(Software::new(software_str2).unwrap())
                 .unwrap();
-            bytes.extend(msg.to_bytes());
+            let curr_idx = bytes.len();
+            bytes.extend([0; 2]);
+            let msg_bytes = msg.to_bytes();
+            let msg_bytes_len = msg_bytes.len() as u16;
+            bytes.extend(msg_bytes);
+            BigEndian::write_u16(&mut bytes[curr_idx..], msg_bytes_len);
 
             let mut receive_stream = agent.receive_stream();
             // split the write into 3 parts to ensure the reader buffers up correctly in all cases
