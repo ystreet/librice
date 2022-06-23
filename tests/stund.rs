@@ -9,6 +9,7 @@
 use async_std::net::UdpSocket;
 use async_std::net::{TcpListener, TcpStream};
 
+use byteorder::{BigEndian, ByteOrder};
 use futures::future::{AbortHandle, Abortable, Aborted};
 use futures::{AsyncReadExt, AsyncWriteExt};
 
@@ -58,13 +59,35 @@ fn tcp_stund() {
 
         let mut socket = TcpStream::connect(stun_addr).await.unwrap();
         let msg = Message::new_request(BINDING);
-        socket.write(&msg.to_bytes()).await.unwrap();
+        let msg_bytes = msg.to_bytes();
+        let msg_bytes_len = msg_bytes.len() as u16;
+        let mut data = vec![0; 2];
+        data.extend(msg_bytes);
+        BigEndian::write_u16(&mut data, msg_bytes_len);
+        socket.write_all(&data).await.unwrap();
         debug!("sent to {:?}, {}", stun_addr, msg);
 
         let mut buf = [0; 1500];
-        socket.read(&mut buf).await.unwrap();
-        let _ = Message::from_bytes(&buf).unwrap();
-        debug!("received response {}", msg);
+        let mut read_position = 0;
+        loop {
+            let read_amount = socket.read(&mut buf[read_position..]).await.unwrap();
+            read_position += read_amount;
+            debug!(
+                "got {} bytes, buffer contains {} bytes",
+                read_amount, read_position
+            );
+            if read_position < 2 {
+                continue;
+            }
+            match Message::from_bytes(&buf[2..read_position]) {
+                Ok(msg) => {
+                    debug!("received response {}", msg);
+                    break;
+                }
+                Err(_) => continue,
+            }
+        }
+
         abort_handle.abort();
         assert!(matches!(stun_server.await, Err(Aborted)));
         debug!("stun socket closed");

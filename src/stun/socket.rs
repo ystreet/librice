@@ -18,7 +18,6 @@ use tracing_futures::Instrument;
 use async_trait::async_trait;
 use byteorder::{BigEndian, ByteOrder};
 
-use crate::stun::message::{Message, MessageType};
 use crate::utils::{ChannelBroadcast, DebugWrapper};
 
 const MAX_STUN_MESSAGE_SIZE: usize = 1500 * 2;
@@ -448,57 +447,24 @@ impl TcpChannel {
                     "TCP connection closed",
                 ));
             }
-            //trace!("buf {:?}", buf.peek());
-            let data_length = if buf.len() >= 2 {
-                (BigEndian::read_u16(&buf.buf[..2]) as usize) + 2
-            } else {
-                usize::MAX
-            };
-
-            let mut may_be_stun = false;
-            let mlength = {
-                let mut ret = usize::MAX;
-                if buf.len() >= 20 {
-                    let tid = BigEndian::read_u128(&buf.buf[4..]);
-                    let cookie = (tid >> 96) as u32;
-                    let data = buf.peek();
-
-                    // first two bits are always 0 for stun and the cookie value must match
-                    if MessageType::from_bytes(data).is_ok()
-                        && cookie == crate::stun::message::MAGIC_COOKIE
-                    {
-                        // XXX: use fingerprint if it exists
-                        ret = (BigEndian::read_u16(&data[2..4]) as usize) + 20;
-                        may_be_stun = true;
-                    }
-                }
-                ret
-            };
-
-            let min_length = data_length.min(mlength);
-            if min_length > buf.len() {
-                debug!(
-                    "not enough data, buf length {} less than smallest advertised size {}, reading again",
+            // need at least 2 bytes to read the length header
+            if buf.len() < 2 {
+                continue;
+            }
+            let data_length = (BigEndian::read_u16(&buf.buf[..2]) as usize) + 2;
+            if buf.len() < data_length {
+                trace!(
+                    "not enough data, buf length {} data specifies length {}",
                     buf.len(),
-                    min_length
+                    data_length
                 );
                 continue;
             }
 
-            if may_be_stun {
-                match Message::from_bytes(&buf.buf[..mlength]) {
-                    Ok(msg) => {
-                        trace!("detected a stun message {}", msg);
-                        let bytes = buf.take(mlength);
-                        *running.lock().unwrap() = Some(buf);
-                        return Ok(DataAddress::new(bytes.to_vec(), from));
-                    }
-                    Err(e) => debug!("failed to parse STUN message: {:?}", e),
-                }
-            } else if data_length <= buf.len() {
-                buf.take(2);
-                let bytes = buf.take(data_length - 2);
-                return Ok(DataAddress::new(bytes.to_vec(), from));
+            if data_length <= buf.len() {
+                let bytes = buf.take(data_length);
+                *running.lock().unwrap() = Some(buf);
+                return Ok(DataAddress::new(bytes[2..].to_vec(), from));
             }
         }
         debug!("no more data");
@@ -522,14 +488,7 @@ impl SocketAddresses for TcpChannel {
 #[async_trait]
 impl<'msg> SocketMessageSend<'msg, DataRefAddress<'msg>> for TcpChannel {
     async fn send<'udp>(&self, msg: DataRefAddress<'udp>) -> Result<(), std::io::Error> {
-        if msg.address != self.remote_addr()? {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Address to send to is different from connected address",
-            ));
-        }
-        let mut stream = self.stream.clone();
-        stream.write_all(msg.data).await
+        self.send(DataFraming::from(msg.data, msg.address)).await
     }
 }
 
@@ -607,10 +566,6 @@ impl TcpBuffer {
         self.offset -= offset;
         self.buf.extend(&vec![0; offset]);
         data
-    }
-
-    fn peek(&self) -> &[u8] {
-        &*self.buf
     }
 
     fn ref_mut(&mut self) -> &mut [u8] {
