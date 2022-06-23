@@ -102,7 +102,7 @@ impl Stream {
             .iter()
             .enumerate()
             .find(|c| c.1.is_none())
-            .unwrap_or_else(|| (state.components.len(), &None))
+            .unwrap_or((state.components.len(), &None))
             .0;
         info!("stream {} adding component {}", self.id, index + 1);
         if state.components.get(index).is_some() {
