@@ -137,9 +137,7 @@ impl MessageType {
         let method_bits = method & 0xf | (method & 0x70) << 1 | (method & 0xf80) << 2;
         // trace!("MessageType from class {:?} and method {:?} into {:?}", class, method,
         //     class_bits | method_bits);
-        Self {
-            0: class_bits | method_bits,
-        }
+        Self(class_bits | method_bits)
     }
 
     /// Retrieves the class of a [`MessageType`]
@@ -234,7 +232,7 @@ impl MessageType {
             /* not a stun packet */
             return Err(StunError::ParseError(StunParseError::WrongImplementation));
         }
-        Ok(Self { 0: data })
+        Ok(Self(data))
     }
 }
 impl From<MessageType> for Vec<u8> {

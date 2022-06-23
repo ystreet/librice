@@ -41,7 +41,7 @@ impl Error for ParseCandidateTypeError {}
 
 impl std::fmt::Display for ParseCandidateTypeError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        f.pad(&format!("{:?}", self))
     }
 }
 
@@ -61,12 +61,12 @@ impl FromStr for CandidateType {
 
 impl std::fmt::Display for CandidateType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self {
-            CandidateType::Host => write!(f, "host"),
-            CandidateType::PeerReflexive => write!(f, "prflx"),
-            CandidateType::ServerReflexive => write!(f, "srflx"),
-            CandidateType::Relayed => write!(f, "relay"),
-        }
+        f.pad(match &self {
+            CandidateType::Host => "host",
+            CandidateType::PeerReflexive => "prflx",
+            CandidateType::ServerReflexive => "srflx",
+            CandidateType::Relayed => "relay",
+        })
     }
 }
 

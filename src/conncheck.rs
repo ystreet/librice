@@ -40,7 +40,7 @@ pub(crate) enum CandidatePairState {
 
 impl std::fmt::Display for CandidatePairState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        f.pad(&format!("{:?}", self))
     }
 }
 
@@ -547,18 +547,18 @@ impl ConnCheckListInner {
         let mut s = format!("checklist {}", self.checklist_id);
         for pair in self.pairs.iter() {
             s += &format!(
-                "\nID:{:<3} foundation:{:8} state:{:10} nom:{:6} priority:{:10},{:10} trans:{:4} local:{:5} {:32} remote:{:5} {:32}",
-                pair.conncheck_id,
-                pair.pair.foundation(),
-                format!("{:?}", pair.state()),
-                pair.nominate(),
-                pair.pair.local.priority,
-                pair.pair.remote.priority,
-                format!("{:?}", pair.pair.local.transport_type),
-                format!("{}", pair.pair.local.candidate_type),
-                format!("{}", pair.pair.local.address),
-                format!("{}", pair.pair.remote.candidate_type),
-                format!("{}", pair.pair.remote.address)
+                "\nID:{id} foundation:{foundation} state:{state} nom:{nominate} priority:{local_pri},{remote_pri} trans:{transport} local:{local_cand_type} {local_addr} remote:{remote_cand_type} {remote_addr}",
+                id = format_args!("{:<3}", pair.conncheck_id),
+                foundation = format_args!("{:10}", pair.pair.foundation()),
+                state = format_args!("{:10}", pair.state()),
+                nominate = format_args!("{:5}", pair.nominate()),
+                local_pri = format_args!("{:10}", pair.pair.local.priority),
+                remote_pri = format_args!("{:10}", pair.pair.remote.priority),
+                transport = format_args!("{:4}", pair.pair.local.transport_type),
+                local_cand_type = format_args!("{:5}", pair.pair.local.candidate_type),
+                local_addr = format_args!("{:32}", pair.pair.local.address),
+                remote_cand_type = format_args!("{:5}", pair.pair.remote.candidate_type),
+                remote_addr = format_args!("{:32}", pair.pair.remote.address)
             );
         }
         debug!("{}", s);
@@ -1172,7 +1172,7 @@ impl ConnCheckList {
             // first look for any that are waiting
             // FIXME: should be highest priority pair: make the data structure give us that by
             // default
-            .filter(|check| {
+            .find(|check| {
                 if check.state() == CandidatePairState::Waiting {
                     check.set_state(CandidatePairState::InProgress);
                     true
@@ -1181,7 +1181,6 @@ impl ConnCheckList {
                 }
             })
             .cloned()
-            .next()
     }
 
     // note this will change the returned check state to waiting to avoid a race
@@ -1320,7 +1319,7 @@ impl ConnCheckList {
                 // FIXME: Nominate when there are two valid candidates
                 // what if there is only ever one valid?
                 if !valid.is_empty() {
-                    valid.iter().cloned().next()
+                    valid.get(0).cloned()
                 } else {
                     None
                 }
