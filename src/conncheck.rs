@@ -490,9 +490,9 @@ impl ConnCheckListInner {
                 //   stream is Running, the ICE agent sets the state of the checklist
                 //   to Completed.
                 let all_nominated = self.component_ids.iter().all(|&component_id| {
-                    self.nominated.iter().any(|valid_pair| {
-                        valid_pair.local.component_id == component_id
-                    })
+                    self.nominated
+                        .iter()
+                        .any(|valid_pair| valid_pair.local.component_id == component_id)
                 });
                 if all_nominated {
                     // ... Once an ICE agent sets the
@@ -1305,8 +1305,7 @@ impl ConnCheckList {
         let retrigerred: Vec<_> = inner
             .component_ids
             .iter()
-            .cloned()
-            .map(|component_id| {
+            .map(|&component_id| {
                 let mut valid: Vec<_> = inner
                     .valid
                     .iter()
@@ -1327,18 +1326,20 @@ impl ConnCheckList {
                 }
             })
             .collect();
+        // need to wait until all component have a valid pair before we send nominations
         if retrigerred.iter().all(|pair| pair.is_some()) {
             let _: Vec<_> = retrigerred
                 .iter()
                 .map(|pair| {
-                    let pair = pair.clone().unwrap(); // checked earlier
+                    let pair = pair.as_ref().unwrap(); // checked earlier
+                                                       // find the local stun agent for this pair
                     if let Some(agent) = inner
                         .local_candidates
                         .iter()
                         .find(|&local_cand| local_cand.candidate == pair.local)
                         .map(|local| local.stun_agent.clone())
                     {
-                        inner.add_triggered(Arc::new(ConnCheck::new(pair, agent, true)));
+                        inner.add_triggered(Arc::new(ConnCheck::new(pair.clone(), agent, true)));
                     }
                 })
                 .collect();
@@ -2688,6 +2689,7 @@ mod tests {
                             "0",
                             remote_addr,
                         )
+                        .tcp_type(TcpType::Active)
                         .build();
                         let channel = StunChannel::Tcp(TcpChannel::new(stream));
                         let remote_peer = Peer::builder()
@@ -2719,6 +2721,7 @@ mod tests {
             let local_channel = StunChannel::Tcp(TcpChannel::new(local_stream));
             let local_cand =
                 Candidate::builder(0, CandidateType::Host, TransportType::Tcp, "0", local_addr)
+                    .tcp_type(TcpType::Active)
                     .build();
             let local = Peer::builder()
                 .channel(local_channel)
@@ -2737,6 +2740,7 @@ mod tests {
                 ));
             let remote_cand =
                 Candidate::builder(0, CandidateType::Host, TransportType::Tcp, "0", remote_addr)
+                    .tcp_type(TcpType::Passive)
                     .build();
             let pair = CandidatePair::new(local.candidate, remote_cand);
             let conncheck = Arc::new(ConnCheck::new(pair, local.agent, false));
