@@ -283,10 +283,6 @@ pub mod parse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidatePair {
-    // FIXME: currently unused
-    //    default: bool,
-    //    valid: bool,
-    nominated: bool,
     pub local: Candidate,
     pub remote: Candidate,
 }
@@ -303,7 +299,6 @@ impl CandidatePair {
         Self {
             local,
             remote,
-            nominated: false,
         }
     }
 
@@ -333,16 +328,7 @@ impl CandidatePair {
         Self {
             local,
             remote: self.remote.clone(),
-            nominated: false,
         }
-    }
-
-    pub(crate) fn nominated(&self) -> bool {
-        self.nominated
-    }
-
-    pub(crate) fn nominate(&mut self) {
-        self.nominated = true;
     }
 
     pub(crate) fn redundant_with<'pair>(
@@ -364,19 +350,6 @@ mod tests {
         crate::tests::test_init_log();
     }
 
-    #[test]
-    fn pair_nominate() {
-        init();
-        let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
-        let cand =
-            Candidate::builder(0, CandidateType::Host, TransportType::Udp, "0", addr).build();
-        let mut pair = CandidatePair::new(cand.clone(), cand);
-        assert!(!pair.nominated());
-        pair.nominate();
-        assert!(pair.nominated());
-        pair.nominate();
-        assert!(pair.nominated());
-    }
     #[test]
     fn candidate_pair_redundant_with_itself() {
         init();
