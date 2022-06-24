@@ -251,6 +251,7 @@ struct ConnCheckListInner {
     triggered: VecDeque<Arc<ConnCheck>>,
     pairs: VecDeque<Arc<ConnCheck>>,
     valid: Vec<CandidatePair>,
+    nominated: Vec<CandidatePair>,
     controlling: bool,
 }
 
@@ -273,6 +274,7 @@ impl ConnCheckListInner {
             triggered: VecDeque::new(),
             pairs: VecDeque::new(),
             valid: vec![],
+            nominated: vec![],
             controlling,
         }
     }
@@ -448,7 +450,7 @@ impl ConnCheckListInner {
                 foundation = %pair.foundation(),
                 "nominated"
             );
-            self.valid[idx].nominate();
+            self.nominated.push(self.valid.remove(idx));
             let component = self
                 .components
                 .iter()
@@ -488,8 +490,8 @@ impl ConnCheckListInner {
                 //   stream is Running, the ICE agent sets the state of the checklist
                 //   to Completed.
                 let all_nominated = self.component_ids.iter().all(|&component_id| {
-                    self.valid.iter().any(|valid_pair| {
-                        valid_pair.local.component_id == component_id && valid_pair.nominated()
+                    self.nominated.iter().any(|valid_pair| {
+                        valid_pair.local.component_id == component_id
                     })
                 });
                 if all_nominated {
@@ -502,7 +504,7 @@ impl ConnCheckListInner {
                         "all {} component/s nominated, setting selected pair/s",
                         self.component_ids.len()
                     );
-                    self.valid
+                    self.nominated
                         .iter()
                         .fold(vec![], |mut component_ids_selected, valid_pair| {
                             // Only nominate one valid candidatePair
