@@ -53,10 +53,10 @@ impl FromStr for TransportType {
 impl std::fmt::Display for TransportType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self {
-            TransportType::Udp => write!(f, "UDP"),
-            TransportType::Tcp => write!(f, "TCP"),
+            TransportType::Udp => f.pad("UDP"),
+            TransportType::Tcp => f.pad("TCP"),
             #[cfg(test)]
-            TransportType::AsyncChannel => write!(f, "AsyncChannel"),
+            TransportType::AsyncChannel => f.pad("AsyncChannel"),
         }
     }
 }
