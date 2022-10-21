@@ -355,7 +355,7 @@ pub mod parse {
     }
 
     fn is_digit(c: char) -> bool {
-        c.is_digit(10)
+        c.is_ascii_digit()
     }
 
     fn is_ice_char(c: char) -> bool {
@@ -369,7 +369,7 @@ pub mod parse {
     }
 
     fn is_part_of_socket_addr(c: char) -> bool {
-        c.is_digit(16) || c == '.' || c == ':'
+        c.is_ascii_hexdigit() || c == '.' || c == ':'
     }
 
     fn is_part_of_byte_string(c: char) -> bool {
