@@ -1864,7 +1864,6 @@ mod tests {
     }
 
     struct Peer {
-        channel: StunChannel,
         candidate: Candidate,
         agent: StunAgent,
         credentials: Credentials,
@@ -1983,10 +1982,9 @@ mod tests {
                 builder.build()
             });
             let clock = self.clock.unwrap_or_else(|| get_clock(ClockType::System));
-            let agent = StunAgent::builder(channel.clone()).clock(clock).build();
+            let agent = StunAgent::builder(channel).clock(clock).build();
 
             Peer {
-                channel,
                 candidate,
                 agent,
                 credentials: self.credentials,
@@ -2165,7 +2163,7 @@ mod tests {
             reply_to_conncheck_task(local.agent.clone(), local_credentials.clone());
 
             let pair = CandidatePair::new(local.candidate, remote.candidate);
-            let conncheck = Arc::new(ConnCheck::new(pair, local.agent, false));
+            let conncheck = Arc::new(ConnCheck::new(pair, local.agent.clone(), false));
 
             // this is what we're testing.  All of the above is setup for performing this check
             let username = remote_credentials.ufrag.clone() + ":" + &local_credentials.ufrag;
@@ -2175,7 +2173,7 @@ mod tests {
                     .unwrap();
             match res {
                 ConnCheckResponse::Success(_check, addr) => {
-                    assert_eq!(addr, local.channel.local_addr().unwrap());
+                    assert_eq!(addr, local.agent.channel().local_addr().unwrap());
                 }
                 _ => unreachable!(),
             }
@@ -2443,7 +2441,7 @@ mod tests {
         set_run: &mut RunningCheckListSet<'_>,
         error_response: Option<u16>,
     ) {
-        let remote_s_recv = state.remote.channel.receive_stream();
+        let remote_s_recv = state.remote.agent.channel().receive_stream();
         futures::pin_mut!(remote_s_recv);
         let local_s_recv = state.local.peer.agent.receive_stream();
         futures::pin_mut!(local_s_recv);
@@ -2466,7 +2464,7 @@ mod tests {
             address: from,
         } = remote_s_recv.next().await.unwrap();
         debug!("received {:?}", data);
-        assert_eq!(from, state.local.peer.channel.local_addr().unwrap());
+        assert_eq!(from, state.local.peer.agent.channel().local_addr().unwrap());
         let msg = Message::from_bytes(&data).unwrap();
         assert_eq!(msg.method(), BINDING);
         assert_eq!(msg.class(), MessageClass::Request);
@@ -2743,7 +2741,7 @@ mod tests {
                     .tcp_type(TcpType::Passive)
                     .build();
             let pair = CandidatePair::new(local.candidate, remote_cand);
-            let conncheck = Arc::new(ConnCheck::new(pair, local.agent, false));
+            let conncheck = Arc::new(ConnCheck::new(pair, local.agent.clone(), false));
 
             // this is what we're testing.  All of the above is setup for performing this check
             let username = remote_credentials.ufrag.clone() + ":" + &local_credentials.ufrag;
@@ -2753,7 +2751,7 @@ mod tests {
                     .unwrap();
             match res {
                 ConnCheckResponse::Success(_check, addr) => {
-                    assert_eq!(addr, local.channel.local_addr().unwrap());
+                    assert_eq!(addr, local.agent.channel().local_addr().unwrap());
                 }
                 _ => unreachable!(),
             }

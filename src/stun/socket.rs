@@ -8,6 +8,7 @@
 
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_std::net::{TcpStream, UdpSocket};
@@ -22,7 +23,7 @@ use crate::utils::{ChannelBroadcast, DebugWrapper};
 
 const MAX_STUN_MESSAGE_SIZE: usize = 1500 * 2;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum StunChannel {
     UdpAny(UdpSocketChannel),
     Udp(UdpConnectionChannel),
@@ -70,6 +71,7 @@ pub struct UdpSocketChannel {
 #[derive(Debug)]
 struct UdpSocketChannelInner {
     receive_loop: Option<async_std::task::JoinHandle<()>>,
+    closed: bool,
 }
 
 impl UdpSocketChannelInner {}
@@ -80,7 +82,10 @@ impl UdpSocketChannel {
             socket: DebugWrapper::wrap(Arc::new(socket), "..."),
             sender_broadcast: Arc::new(ChannelBroadcast::default()),
             inner: DebugWrapper::wrap(
-                Arc::new(Mutex::new(UdpSocketChannelInner { receive_loop: None })),
+                Arc::new(Mutex::new(UdpSocketChannelInner {
+                    receive_loop: None,
+                    closed: false,
+                })),
                 "...",
             ),
         }
@@ -119,8 +124,29 @@ impl UdpSocketChannel {
     }
 
     pub async fn send_to(&self, data: &[u8], to: SocketAddr) -> std::io::Result<()> {
+        {
+            let inner = self.inner.lock().unwrap();
+            if inner.closed {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Connection closed",
+                ));
+            }
+        }
         trace!("socket channel send_to {:?} bytes to {:?}", data.len(), to);
         self.socket.send_to(data, to).await?;
+        Ok(())
+    }
+
+    pub async fn close(&self) -> Result<(), std::io::Error> {
+        let join_handle = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.closed = true;
+            inner.receive_loop.take()
+        };
+        if let Some(join_handle) = join_handle {
+            join_handle.cancel().await;
+        }
         Ok(())
     }
 
@@ -228,7 +254,17 @@ pub(crate) trait ReceiveStream<T> {
     fn receive_stream(&self) -> Pin<Box<dyn Stream<Item = T> + Send>>;
 }
 
-impl StunChannel {}
+impl StunChannel {
+    pub async fn close(&self) -> Result<(), std::io::Error> {
+        match self {
+            StunChannel::UdpAny(c) => c.close().await,
+            StunChannel::Udp(c) => c.close().await,
+            StunChannel::Tcp(c) => c.close().await,
+            #[cfg(test)]
+            StunChannel::AsyncChannel(c) => c.close().await,
+        }
+    }
+}
 
 impl SocketAddresses for StunChannel {
     fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
@@ -294,15 +330,25 @@ impl ReceiveStream<DataAddress> for StunChannel {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct UdpConnectionChannel {
     channel: UdpSocketChannel,
     to: SocketAddr,
+    closed: AtomicBool,
 }
 
 impl UdpConnectionChannel {
     pub fn new(channel: UdpSocketChannel, to: SocketAddr) -> Self {
-        Self { channel, to }
+        Self {
+            channel,
+            to,
+            closed: AtomicBool::new(false),
+        }
+    }
+
+    pub async fn close(&self) -> Result<(), std::io::Error> {
+        self.closed.store(true, Ordering::Relaxed);
+        Ok(())
     }
 }
 
@@ -318,15 +364,14 @@ impl SocketAddresses for UdpConnectionChannel {
 
 impl ReceiveStream<DataAddress> for UdpConnectionChannel {
     fn receive_stream(&self) -> Pin<Box<dyn Stream<Item = DataAddress> + Send>> {
-        let channel = self.channel.clone();
         let to = self.to;
         trace!(
             "retrieving receive_stream for connection channel from {:?}, to {:?}",
-            channel.local_addr(),
+            self.channel.local_addr(),
             to
         );
         Box::pin(
-            channel
+            self.channel
                 .receive_stream()
                 .filter_map(move |data_address| async move {
                     if data_address.address == to {
@@ -358,6 +403,12 @@ impl<'msg> SocketMessageSend<'msg, DataRefAddress<'msg>> for UdpConnectionChanne
                 "Address to send to is different from connected address",
             ));
         }
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Connection closed",
+            ));
+        }
         debug!(
             "socket connection send {} bytes to {:?}",
             msg.data.len(),
@@ -370,13 +421,27 @@ impl<'msg> SocketMessageSend<'msg, DataRefAddress<'msg>> for UdpConnectionChanne
 #[async_trait]
 impl<'msg> SocketMessageSend<'msg, DataFraming<'msg>> for UdpConnectionChannel {
     async fn send<'udp>(&self, msg: DataFraming<'udp>) -> Result<(), std::io::Error> {
-        self.send(DataRefAddress::from(msg.data, self.to)).await
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Connection closed",
+            ));
+        }
+        self.channel
+            .send(DataRefAddress::from(msg.data, self.to))
+            .await
     }
 }
 
 #[async_trait]
 impl<'msg> SocketMessageSend<'msg, &'msg [u8]> for UdpConnectionChannel {
     async fn send<'udp>(&self, msg: &'udp [u8]) -> Result<(), std::io::Error> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Connection closed",
+            ));
+        }
         let msg = DataRefAddress {
             data: msg,
             address: self.to,
@@ -472,6 +537,10 @@ impl TcpChannel {
             std::io::ErrorKind::WriteZero,
             "No more data",
         ))
+    }
+
+    pub async fn close(&self) -> Result<(), std::io::Error> {
+        self.stream.shutdown(std::net::Shutdown::Both)
     }
 }
 
@@ -715,6 +784,10 @@ pub(crate) mod tests {
             };
             router.add_channel(addr);
             ret
+        }
+
+        pub async fn close(&self) -> Result<(), std::io::Error> {
+            Ok(())
         }
     }
 
