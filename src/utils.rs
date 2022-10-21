@@ -49,11 +49,13 @@ impl<T> DebugWrapper<T> {
     }
 }
 
+type MaybeSenderFilterFn<T> = DebugWrapper<Arc<dyn Fn(&T) -> bool + Send + Sync + 'static>>;
+
 #[derive(Debug, Clone)]
 struct MaybeSender<T: std::fmt::Debug> {
     id: usize,
     sender: async_channel::Sender<T>,
-    filter: DebugWrapper<Arc<dyn Fn(&T) -> bool + Send + Sync + 'static>>,
+    filter: MaybeSenderFilterFn<T>,
 }
 
 #[derive(Debug, Clone)]
