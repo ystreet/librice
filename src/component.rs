@@ -20,9 +20,7 @@ use crate::candidate::{Candidate, CandidatePair, TransportType};
 
 use crate::stun::agent::StunAgent;
 use crate::stun::message::MessageIntegrityCredentials;
-use crate::stun::socket::{
-    DataFraming, SocketAddresses, SocketMessageSend, StunChannel, UdpConnectionChannel,
-};
+use crate::stun::socket::StunChannel;
 
 use crate::utils::ChannelBroadcast;
 
@@ -106,14 +104,18 @@ impl Component {
         )
     )]
     pub async fn send(&self, data: &[u8]) -> Result<(), AgentError> {
-        let (channel, to) = {
+        let (local_agent, to) = {
             let inner = self.inner.lock().unwrap();
-            let channel = inner.channel.clone().ok_or(AgentError::ResourceNotFound)?;
-            let to = channel.remote_addr()?;
+            let selected_pair = inner
+                .selected_pair
+                .as_ref()
+                .ok_or(AgentError::ResourceNotFound)?;
+            let local_agent = selected_pair.local_stun_agent.clone();
+            let to = selected_pair.candidate_pair.remote.address;
             trace!("sending {} bytes to {}", data.len(), to);
-            (channel, to)
+            (local_agent, to)
         };
-        channel.send(DataFraming::from(data, to)).await?;
+        local_agent.send_data_to(data, to).await?;
         Ok(())
     }
 
@@ -193,12 +195,11 @@ impl Component {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct ComponentInner {
     id: usize,
     state: ComponentState,
     selected_pair: Option<SelectedPair>,
-    channel: Option<StunChannel>,
     receive_send_channel: async_channel::Sender<Vec<u8>>,
     receive_receive_channel: async_channel::Receiver<Vec<u8>>,
 }
@@ -210,7 +211,6 @@ impl ComponentInner {
             id,
             state: ComponentState::New,
             selected_pair: None,
-            channel: None,
             receive_send_channel: recv_s,
             receive_receive_channel: recv_r,
         }
@@ -234,15 +234,8 @@ impl ComponentInner {
         )
     )]
     fn set_selected_pair(&mut self, selected: SelectedPair) {
-        let remote_addr = selected.candidate_pair.remote.address;
-        let local_channel = selected.local_stun_agent.inner.channel.clone();
         debug!("setting");
         self.selected_pair = Some(selected);
-        let new_channel = match local_channel {
-            StunChannel::UdpAny(c) => StunChannel::Udp(UdpConnectionChannel::new(c, remote_addr)),
-            sc => sc,
-        };
-        self.channel = Some(new_channel);
     }
 }
 
@@ -377,24 +370,29 @@ mod tests {
                 UdpSocketChannel::new(socket1),
                 addr2,
             ));
-            let stun = StunAgent::new(channel1.clone());
-            send.add_recv_agent(stun).await;
+            let stun1 = StunAgent::new(channel1);
+            send.add_recv_agent(stun1.clone()).await;
 
             let channel2 = StunChannel::Udp(UdpConnectionChannel::new(
                 UdpSocketChannel::new(socket2),
                 addr1,
             ));
-            let stun = StunAgent::new(channel2.clone());
-            send.add_recv_agent(stun).await;
+            let stun2 = StunAgent::new(channel2);
+            send.add_recv_agent(stun2.clone()).await;
+
+            let msg = Message::new_request(BINDING);
+            stun1.send_to(msg, addr2).await.unwrap();
+            let msg = Message::new_request(BINDING);
+            stun2.send_to(msg, addr1).await.unwrap();
 
             let mut recv_stream = send.receive_stream();
             let buf = vec![0, 1];
-            channel1.send(DataFraming::from(&buf, addr2)).await.unwrap();
+            stun1.send_data_to(&buf, addr2).await.unwrap();
             info!("send1");
             assert_eq!(&recv_stream.next().await.unwrap(), &buf);
             info!("recv");
             let buf = vec![2, 3];
-            channel2.send(DataFraming::from(&buf, addr1)).await.unwrap();
+            stun2.send_data_to(&buf, addr1).await.unwrap();
             info!("send2");
             assert_eq!(&recv_stream.next().await.unwrap(), &buf);
             info!("recv2");
@@ -451,6 +449,12 @@ mod tests {
                 recv_selected_pair.candidate_pair,
                 recv.selected_pair().unwrap()
             );
+
+            // send initial stun message to get past validation
+            let msg = Message::new_request(BINDING);
+            send.send(&msg.to_bytes()).await.unwrap();
+            let msg = Message::new_request(BINDING);
+            recv.send(&msg.to_bytes()).await.unwrap();
 
             // two-way connection has been setup
             let data = vec![3; 4];

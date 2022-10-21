@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use std::time::Duration;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use futures::future::AbortHandle;
 use futures::future::Either;
@@ -51,6 +51,7 @@ pub(crate) struct StunAgentInner {
 struct StunAgentState {
     id: usize,
     receive_loop_started: bool,
+    validated_peers: HashSet<SocketAddr>,
     outstanding_requests: HashMap<TransactionId, Message>,
     local_credentials: Option<MessageIntegrityCredentials>,
     remote_credentials: Option<MessageIntegrityCredentials>,
@@ -105,8 +106,8 @@ impl StunAgent {
         StunAgentBuilder::new(channel)
     }
 
-    pub fn channel(&self) -> StunChannel {
-        self.inner.channel.clone()
+    pub fn channel(&self) -> &StunChannel {
+        &self.inner.channel
     }
 
     fn maybe_store_message(state: &Mutex<StunAgentState>, msg: Message) {
@@ -151,6 +152,10 @@ impl StunAgent {
         state.remote_credentials.clone()
     }
 
+    pub async fn send_data_to(&self, bytes: &[u8], to: SocketAddr) -> Result<(), std::io::Error> {
+        self.inner.channel.send(DataFraming::from(bytes, to)).await
+    }
+
     #[tracing::instrument(
         name = "send_to",
         skip(self, msg, to),
@@ -162,11 +167,7 @@ impl StunAgent {
     )]
     pub async fn send_to(&self, msg: Message, to: SocketAddr) -> Result<(), std::io::Error> {
         StunAgent::maybe_store_message(&self.inner.state, msg.clone());
-        trace!("channel {:?}", self.inner.channel);
-        self.inner
-            .channel
-            .send(DataFraming::from(&msg.to_bytes(), to))
-            .await
+        self.send_data_to(&msg.to_bytes(), to).await
     }
 
     pub async fn send(&self, msg: Message) -> Result<(), std::io::Error> {
@@ -174,7 +175,7 @@ impl StunAgent {
         self.send_to(msg, to).await
     }
 
-    fn receive_task_loop(inner_weak: Weak<StunAgentInner>, channel: StunChannel, inner_id: usize) {
+    fn receive_task_loop(inner_weak: Weak<StunAgentInner>, channel: &StunChannel, inner_id: usize) {
         // XXX: can we remove this demuxing task?
         // retrieve stream outside task to avoid a race
         let recv_stream = channel.receive_stream();
@@ -206,7 +207,7 @@ impl StunAgent {
                             debug!("received from {:?} {}", data_address.address, stun_msg);
                             let handle = {
                                 let mut state = inner.state.lock().unwrap();
-                                state.handle_stun(stun_msg, &data_address.data)
+                                state.handle_stun(stun_msg, &data_address.data, data_address.address)
                             };
                             match handle {
                                 HandleStunReply::Broadcast(stun_msg) => {
@@ -217,18 +218,34 @@ impl StunAgent {
                                 }
                                 HandleStunReply::Failure(err) => {
                                     warn!("Failed to handle message. {:?}", err);
+                                    break;
                                 }
                                 _ => {}
                             }
                         }
                         Err(_) => {
-                            inner
-                                .broadcaster
-                                .broadcast(StunOrData::Data(
-                                    data_address.data,
-                                    data_address.address,
-                                ))
-                                .await
+                            let peer_validated = {
+                                let state = inner.state.lock().unwrap();
+                                state.validated_peers.get(&data_address.address).is_some()
+                            };
+                            if peer_validated {
+                                inner
+                                    .broadcaster
+                                    .broadcast(StunOrData::Data(
+                                        data_address.data,
+                                        data_address.address,
+                                    ))
+                                    .await
+                            } else if matches!(inner.channel, StunChannel::Tcp(_)) {
+                                // close the tcp channel
+                                warn!("stun message not the first message sent over TCP channel, closing");
+                                if let Err(e) = inner.channel.close().await {
+                                    warn!("error closing channel {:?}", e);
+                                }
+                                break;
+                            } else {
+                                trace!("dropping unvalidated data from peer");
+                            }
                         }
                     }
                 }
@@ -243,7 +260,7 @@ impl StunAgent {
             let mut state = self.inner.state.lock().unwrap();
             if !state.receive_loop_started {
                 let inner_weak = Arc::downgrade(&self.inner);
-                StunAgent::receive_task_loop(inner_weak, self.inner.channel.clone(), self.inner.id);
+                StunAgent::receive_task_loop(inner_weak, &self.inner.channel, self.inner.id);
                 state.receive_loop_started = true;
             }
         }
@@ -428,10 +445,18 @@ impl StunAgentState {
             local_credentials: None,
             remote_credentials: None,
             receive_loop_started: false,
+            validated_peers: HashSet::new(),
         }
     }
 
-    fn handle_stun(&mut self, msg: Message, orig_data: &[u8]) -> HandleStunReply {
+    fn validated_peer(&mut self, addr: SocketAddr) {
+        if self.validated_peers.get(&addr).is_none() {
+            debug!("validated peer {:?}", addr);
+            self.validated_peers.insert(addr);
+        }
+    }
+
+    fn handle_stun(&mut self, msg: Message, orig_data: &[u8], from: SocketAddr) -> HandleStunReply {
         if msg.is_response() {
             if let Some(orig_request) = self.outstanding_requests.remove(&msg.transaction_id()) {
                 // only validate response if the original request had credentials
@@ -441,7 +466,10 @@ impl StunAgentState {
                 {
                     if let Some(remote_creds) = &self.remote_credentials {
                         match msg.validate_integrity(orig_data, remote_creds) {
-                            Ok(_) => HandleStunReply::Broadcast(msg),
+                            Ok(_) => {
+                                self.validated_peer(from);
+                                HandleStunReply::Broadcast(msg)
+                            }
                             Err(e) => {
                                 debug!("message failed integrity check: {:?}", e);
                                 HandleStunReply::Ignore
@@ -453,6 +481,7 @@ impl StunAgentState {
                     }
                 } else {
                     // original message didn't have integrity, reply doesn't need to either
+                    self.validated_peer(from);
                     HandleStunReply::Broadcast(msg)
                 }
             } else {
@@ -461,6 +490,7 @@ impl StunAgentState {
                 HandleStunReply::Ignore
             }
         } else {
+            self.validated_peer(from);
             HandleStunReply::Broadcast(msg)
         }
     }
@@ -479,7 +509,7 @@ pub(crate) mod tests {
         crate::tests::test_init_log();
     }
 
-    fn recv_data(channel: StunChannel) -> impl Future<Output = DataAddress> {
+    fn recv_data(channel: &StunChannel) -> impl Future<Output = DataAddress> {
         let result = Arc::new(Mutex::new(None));
         // retrieve the recv channel before starting the task otherwise, there is a race starting
         // the task against the a sender in the current thread.
@@ -499,7 +529,7 @@ pub(crate) mod tests {
         }
     }
 
-    async fn send_and_receive(send_socket: StunChannel, recv_socket: StunChannel) {
+    async fn send_and_receive(send_socket: &StunChannel, recv_socket: &StunChannel) {
         // this won't work unless the sockets are pointing at each other
         assert_eq!(
             send_socket.local_addr().unwrap(),
@@ -537,11 +567,11 @@ pub(crate) mod tests {
             let socket_channel1 = StunChannel::Udp(UdpConnectionChannel::new(udp1, to));
             let socket_channel2 = StunChannel::Udp(UdpConnectionChannel::new(udp2, from));
 
-            send_and_receive(socket_channel1, socket_channel2).await;
+            send_and_receive(&socket_channel1, &socket_channel2).await;
         });
     }
 
-    async fn send_and_double_receive(send_socket: StunChannel, recv_socket: StunChannel) {
+    async fn send_and_double_receive(send_socket: &StunChannel, recv_socket: &StunChannel) {
         // this won't work unless the sockets are pointing at each other
         assert_eq!(
             send_socket.local_addr().unwrap(),
@@ -555,7 +585,7 @@ pub(crate) mod tests {
         let to = send_socket.remote_addr().unwrap();
 
         // send data and assert that it is received on both receive channels
-        let recv1 = recv_data(recv_socket.clone());
+        let recv1 = recv_data(recv_socket);
         let recv2 = recv_data(recv_socket);
         let data = vec![4; 4];
         send_socket
@@ -584,7 +614,7 @@ pub(crate) mod tests {
             let socket_channel2 = StunChannel::Udp(UdpConnectionChannel::new(udp2, from));
 
             // send data and assert that it is received on both receive channels
-            send_and_double_receive(socket_channel1, socket_channel2).await;
+            send_and_double_receive(&socket_channel1, &socket_channel2).await;
         });
     }
 
@@ -602,11 +632,11 @@ pub(crate) mod tests {
             let socket_channel2 = StunChannel::Udp(UdpConnectionChannel::new(udp2, from));
 
             // send data and assert that it is received on both receive channels
-            send_and_double_receive(socket_channel1.clone(), socket_channel2.clone()).await;
+            send_and_double_receive(&socket_channel1, &socket_channel2).await;
 
             // previous receivers should have been dropped as not connected anymore
             // XXX: doesn't currently test the actual drop just that nothing errors
-            send_and_receive(socket_channel1, socket_channel2).await;
+            send_and_receive(&socket_channel1, &socket_channel2).await;
         });
     }
 
@@ -656,7 +686,7 @@ pub(crate) mod tests {
             let socket_channel1 = StunChannel::Tcp(TcpChannel::new(tcp1));
             let socket_channel2 = StunChannel::Tcp(TcpChannel::new(tcp2));
 
-            send_and_receive(socket_channel1, socket_channel2).await;
+            send_and_receive(&socket_channel1, &socket_channel2).await;
         });
     }
 
