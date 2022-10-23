@@ -548,7 +548,8 @@ impl ConnCheckListInner {
     fn dump_check_state(&self) {
         let mut s = format!("checklist {}", self.checklist_id);
         for pair in self.pairs.iter() {
-            s += &format!(
+            use std::fmt::Write as _;
+            let _ = write!(&mut s,
                 "\nID:{id} foundation:{foundation} state:{state} nom:{nominate} priority:{local_pri},{remote_pri} trans:{transport} local:{local_cand_type} {local_addr} remote:{remote_cand_type} {remote_addr}",
                 id = format_args!("{:<3}", pair.conncheck_id),
                 foundation = format_args!("{:10}", pair.pair.foundation()),
