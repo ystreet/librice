@@ -902,7 +902,7 @@ impl Attribute for XorMappedAddress {
                 buf[1] = 0x2;
                 BigEndian::write_u16(&mut buf[2..4], addr.port());
                 let octets = u128::from(*addr.ip());
-                BigEndian::write_u128(&mut buf[2..4], octets);
+                BigEndian::write_u128(&mut buf[4..20], octets);
                 RawAttribute::new(self.get_type(), &buf)
             }
         }
@@ -1784,7 +1784,10 @@ mod tests {
     fn xor_mapped_address() {
         init();
         let transaction_id = 0x9876_5432_1098_7654_3210_9876.into();
-        let addrs = &["192.168.0.1:40000".parse().unwrap()];
+        let addrs = &[
+            "192.168.0.1:40000".parse().unwrap(),
+            "[fd12:3456:789a:1::1]:41000".parse().unwrap(),
+        ];
         for addr in addrs {
             let mapped = XorMappedAddress::new(*addr, transaction_id);
             assert_eq!(mapped.get_type(), XOR_MAPPED_ADDRESS);
