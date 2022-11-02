@@ -79,6 +79,7 @@ impl From<StunError> for AgentError {
             StunError::IntegrityCheckFailed => AgentError::IntegrityCheckFailed,
             StunError::ParseError(_) => AgentError::StunParse,
             StunError::IoError(e) => AgentError::IoError(e),
+            StunError::Aborted => AgentError::Aborted,
         }
     }
 }

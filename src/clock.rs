@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 
+use futures::future::Either;
+use futures::Future;
 use futures_timer::Delay;
 use once_cell::sync::Lazy;
 
@@ -69,6 +71,34 @@ impl ClockEntry for SystemClockEntry {
     }
 }
 
+pub(crate) struct TimeoutError;
+
+pub(crate) async fn timeout<F, T>(
+    clock: Arc<dyn Clock>,
+    duration: Duration,
+    f: F,
+) -> Result<T, TimeoutError>
+where
+    F: Future<Output = T>,
+{
+    let (abortable, _abort_handle) = futures::future::abortable(f);
+    let wait = clock.delay(duration).await;
+    let wait = async move {
+        wait.wait().await;
+        Err(TimeoutError)
+    };
+
+    futures::pin_mut!(abortable);
+    futures::pin_mut!(wait);
+
+    match futures::future::try_select(abortable, wait).await {
+        Ok(Either::Left((x, _))) => Ok(x),
+        Ok(Either::Right((y, _))) => y,
+        Err(Either::Right((y, _))) => Err(y),
+        _ => unreachable!(),
+    }
+}
+
 pub(crate) enum ClockType {
     System,
     // XXX: currently unused and TestClock is created directly
@@ -108,26 +138,57 @@ pub(crate) mod tests {
         new_instant_send: async_channel::Sender<Instant>,
     }
 
+    #[derive(Debug)]
+    pub(crate) struct AdvanceEntry<'clock> {
+        clock: &'clock TestClock,
+        broadcast: Arc<ChannelBroadcast<Instant>>,
+        instant: Instant,
+    }
+
+    impl<'clock> AdvanceEntry<'clock> {
+        #[tracing::instrument(
+            name = "clock_entry_advance",
+            skip(self),
+            fields(instant = ?self.instant)
+        )]
+        pub(crate) async fn advance(self) {
+            let instant = {
+                let mut inner = self.clock.inner.lock().unwrap();
+                if self.instant > inner.now {
+                    inner.now = self.instant;
+                    trace!("now updated to {:?}", self.instant);
+                    Some(self.instant)
+                } else {
+                    None
+                }
+            };
+            if let Some(instant) = instant {
+                self.broadcast.broadcast(instant).await;
+            }
+        }
+    }
+
     impl TestClock {
-        #[tracing::instrument(level = "debug", skip(self))]
-        pub(crate) async fn advance(&self) {
+        #[tracing::instrument(skip(self), ret)]
+        pub(crate) async fn next_entry(&self) -> AdvanceEntry {
             while let Ok(instant) = self.new_instant_recv.recv().await {
                 trace!("received instant {:?}", instant);
-                let to_broadcast = {
-                    let mut inner = self.inner.lock().unwrap();
-                    if instant > inner.now {
-                        inner.now = instant;
-                        trace!("now is {:?}", instant);
-                        Some((inner.broadcast.clone(), instant))
-                    } else {
-                        None
-                    }
-                };
-                if let Some((broadcast, instant)) = to_broadcast {
-                    broadcast.broadcast(instant).await;
-                    break;
+                let inner = self.inner.lock().unwrap();
+                if instant > inner.now {
+                    return AdvanceEntry {
+                        clock: self,
+                        broadcast: inner.broadcast.clone(),
+                        instant,
+                    };
                 }
             }
+            unreachable!();
+        }
+
+        #[tracing::instrument(level = "debug", skip(self))]
+        pub(crate) async fn advance(&self) {
+            let entry = self.next_entry().await;
+            entry.advance().await;
         }
 
         pub(crate) async fn set_time(&self, instant: Instant) {
@@ -187,7 +248,14 @@ pub(crate) mod tests {
 
     #[async_trait]
     impl ClockEntry for TestClockEntry {
-        #[tracing::instrument(skip(self))]
+        #[tracing::instrument(
+            name = "clock_entry_wait",
+            level = "debug",
+            skip(self),
+            fields(
+                instant = ?self.wait_until
+            )
+        )]
         async fn wait(&self) {
             let inner = match self.inner.upgrade() {
                 Some(inner) => inner,
@@ -232,7 +300,7 @@ pub(crate) mod tests {
             let wait_until = {
                 let inner = self.inner.lock().unwrap();
                 let wait_until = inner.now + duration;
-                trace!("new delay until {:?}", wait_until);
+                trace!("now {:?} new delay until {:?}", inner.now, wait_until);
                 wait_until
             };
             self.new_instant_send.send(wait_until).await.unwrap();

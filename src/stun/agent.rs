@@ -9,6 +9,7 @@
 //! STUN agent
 
 use std::net::SocketAddr;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
@@ -25,7 +26,7 @@ use crate::stun::attribute::*;
 use crate::stun::message::*;
 use crate::stun::socket::*;
 
-use crate::clock::{get_clock, Clock, ClockType};
+use crate::clock::{self, get_clock, Clock, ClockType};
 
 use crate::utils::{ChannelBroadcast, DebugWrapper};
 
@@ -118,6 +119,15 @@ impl StunAgent {
         }
     }
 
+    fn take_outstanding_request(
+        state: &Mutex<StunAgentState>,
+        transaction_id: &TransactionId,
+    ) -> Option<Message> {
+        let mut state = state.lock().unwrap();
+        trace!("removing request {}", transaction_id);
+        state.outstanding_requests.remove(transaction_id)
+    }
+
     #[tracing::instrument(
         level = "debug",
         skip(self),
@@ -199,6 +209,7 @@ impl StunAgent {
                     let inner = match Weak::upgrade(&inner_weak) {
                         Some(inner) => inner,
                         None => {
+                            warn!("stun agent has disappeared, exiting receive loop");
                             break;
                         }
                     };
@@ -280,41 +291,6 @@ impl StunAgent {
     }
 
     #[tracing::instrument(
-        name = "stun_send_request",
-        level = "debug",
-        err,
-        skip(self, msg, recv_abort_handle),
-        fields(
-            msg.transaction_id = %msg.transaction_id()
-        )
-    )]
-    async fn send_request(
-        &self,
-        msg: Message,
-        recv_abort_handle: AbortHandle,
-        to: SocketAddr,
-    ) -> Result<(), StunError> {
-        // FIXME: configurable timeout values: RFC 4389 Secion 7.2.1
-        let timeouts: [u64; 7] = [0, 500, 1500, 3500, 7500, 15500, 31500];
-        for timeout in timeouts.iter() {
-            self.clock
-                .delay(Duration::from_millis(*timeout))
-                .await
-                .wait()
-                .await;
-            trace!("sending {}", msg);
-            self.inner
-                .channel
-                .send(DataFraming::from(&msg.to_bytes(), to))
-                .await?;
-        }
-
-        // on failure, abort the receiver waiting
-        recv_abort_handle.abort();
-        Err(StunError::TimedOut)
-    }
-
-    #[tracing::instrument(
         level = "debug",
         err,
         skip(self, msg, addr),
@@ -325,41 +301,211 @@ impl StunAgent {
             source_addr = ?self.inner.channel.local_addr()
         ),
     )]
-    pub async fn stun_request_transaction(
+    pub fn stun_request_transaction(
         &self,
         msg: &Message,
         addr: SocketAddr,
-    ) -> Result<(Message, SocketAddr), StunError> {
+    ) -> Result<StunRequestBuilder, StunError> {
+        StunRequestBuilder::new(self.clone(), msg.clone(), addr)
+    }
+}
+
+pub struct StunRequestBuilder {
+    agent: StunAgent,
+    msg: Message,
+    to: SocketAddr,
+}
+
+impl StunRequestBuilder {
+    fn new(agent: StunAgent, msg: Message, addr: SocketAddr) -> Result<Self, StunError> {
         if !msg.has_class(MessageClass::Request) {
             return Err(StunError::WrongImplementation);
         }
-        Self::maybe_store_message(&self.inner.state, msg.clone());
-        let tid = msg.transaction_id();
-        let (recv_abort_handle, recv_registration) = futures::future::AbortHandle::new_pair();
-        let (send_abortable, send_abort_handle) =
-            futures::future::abortable(self.send_request(msg.clone(), recv_abort_handle, addr));
+        Ok(Self {
+            agent,
+            msg,
+            to: addr,
+        })
+    }
 
-        let mut receive_s = self.receive_stream_filter(move |stun_or_data| match stun_or_data {
-            StunOrData::Stun(msg, from) => tid == msg.transaction_id() && from == &addr,
-            _ => false,
-        });
-        let recv_abortable = futures::future::Abortable::new(
-            receive_s.next().then(|msg| async move {
-                send_abort_handle.abort();
-                msg.and_then(|msg| msg.stun())
+    pub fn build(self) -> Result<StunRequest, StunError> {
+        let transaction_id = self.msg.transaction_id();
+        Ok(StunRequest(Arc::new(StunRequestState {
+            agent: self.agent,
+            msg: self.msg,
+            to: self.to,
+            inner: Mutex::new(StunRequestInner {
+                transaction_id,
+                send_abort: None,
+                recv_abort: None,
             }),
-            recv_registration,
-        );
+        })))
+    }
+}
+
+#[derive(Debug)]
+struct StunRequestInner {
+    transaction_id: TransactionId,
+    send_abort: Option<AbortHandle>,
+    recv_abort: Option<AbortHandle>,
+}
+
+impl StunRequestInner {
+    #[tracing::instrument(
+        name = "stun_request_cancel_retransmissions",
+        level = "debug",
+        skip(self),
+        fields(
+            msg.transaction_id = %self.transaction_id
+        )
+    )]
+    fn cancel_retransmissions(&mut self) {
+        if let Some(send_abort) = self.send_abort.take() {
+            trace!("aborting sending stun request");
+            send_abort.abort();
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct StunRequestState {
+    agent: StunAgent,
+    msg: Message,
+    to: SocketAddr,
+    inner: Mutex<StunRequestInner>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StunRequest(Arc<StunRequestState>);
+
+impl Deref for StunRequest {
+    type Target = StunRequestState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl StunRequest {
+    pub fn request(&self) -> &Message {
+        &self.msg
+    }
+
+    pub fn peer_address(&self) -> SocketAddr {
+        self.to
+    }
+
+    pub fn cancel_retransmissions(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.cancel_retransmissions();
+    }
+
+    #[tracing::instrument(
+        name = "stun_request_cancel",
+        level = "debug",
+        skip(self),
+        fields(
+            msg.transaction_id = %self.msg.transaction_id()
+        )
+    )]
+    pub fn cancel(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.cancel_retransmissions();
+        if let Some(recv_abort) = inner.recv_abort.take() {
+            trace!("aborting recv stun request");
+            recv_abort.abort();
+        }
+    }
+
+    #[tracing::instrument(
+        name = "stun_send_request",
+        level = "debug",
+        err,
+        skip(agent, msg),
+        fields(
+            msg.transaction_id = %msg.transaction_id()
+        )
+    )]
+    async fn send_request(
+        agent: &StunAgent,
+        msg: Message,
+        to: SocketAddr,
+    ) -> Result<(), StunError> {
+        // FIXME: configurable timeout values: RFC 4389 Secion 7.2.1
+        let timeouts: [u64; 7] = [0, 500, 1500, 3500, 7500, 15500, 31500];
+        for timeout in timeouts.iter() {
+            agent
+                .clock
+                .delay(Duration::from_millis(*timeout))
+                .await
+                .wait()
+                .await;
+            trace!("sending {}", msg);
+            agent
+                .inner
+                .channel
+                .send(DataFraming::from(&msg.to_bytes(), to))
+                .await?;
+        }
+
+        Err(StunError::TimedOut)
+    }
+
+    pub async fn perform(&self) -> Result<(Message, SocketAddr), StunError> {
+        StunAgent::maybe_store_message(&self.agent.inner.state, self.msg.clone());
+        let tid = self.msg.transaction_id();
+        let (send_abortable, send_abort_handle) =
+            futures::future::abortable(Self::send_request(&self.agent, self.msg.clone(), self.to));
+
+        let to = self.to;
+        let mut receive_s =
+            self.agent
+                .receive_stream_filter(move |stun_or_data| match stun_or_data {
+                    StunOrData::Stun(msg, from) => tid == msg.transaction_id() && from == &to,
+                    _ => false,
+                });
+        let (recv_abortable, recv_abort_handle) = {
+            let send_abort_handle = send_abort_handle.clone();
+            futures::future::abortable(clock::timeout(
+                self.agent.clock.clone(),
+                Duration::from_secs(40),
+                receive_s.next().then(|msg| async move {
+                    send_abort_handle.abort();
+                    msg.and_then(|msg| msg.stun())
+                        .ok_or(StunError::ResourceNotFound)
+                }),
+            ))
+        };
+
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.send_abort = Some(send_abort_handle);
+            inner.recv_abort = Some(recv_abort_handle);
+        }
 
         futures::pin_mut!(send_abortable);
         futures::pin_mut!(recv_abortable);
 
         // race the sending and receiving futures returning the first that succeeds
-        match futures::future::try_select(send_abortable, recv_abortable).await {
-            Ok(Either::Left((x, _))) => x.map(|_| (Message::new_error(msg), addr)),
-            Ok(Either::Right((y, _))) => y.ok_or(StunError::TimedOut),
-            Err(_) => unreachable!(),
-        }
+        let ret = match futures::future::try_select(send_abortable, recv_abortable).await {
+            Ok(Either::Left((x, _))) => x.map(|_| (Message::new_error(&self.msg), self.to)),
+            Ok(Either::Right((y, _))) => y.map_err(|_| StunError::TimedOut)?,
+            Err(Either::Left((_send_aborted, recv_abortable))) => {
+                // if both have been aborted, then we return aborted, otherwise, we continue
+                // waiting for a response until timeout
+                recv_abortable
+                    .await
+                    .map_err(|_| StunError::Aborted)?
+                    .unwrap_or(Err(StunError::TimedOut))
+            }
+            _ => unreachable!(),
+        };
+        let _ = StunAgent::take_outstanding_request(
+            &self.agent.inner.state,
+            &self.msg.transaction_id(),
+        );
+
+        ret
     }
 }
 
@@ -412,6 +558,7 @@ pub enum StunError {
     IntegrityCheckFailed,
     ParseError(StunParseError),
     IoError(std::io::Error),
+    Aborted,
 }
 
 impl std::error::Error for StunError {}
@@ -660,12 +807,73 @@ pub(crate) mod tests {
                 .unwrap();
             msg.add_fingerprint().unwrap();
 
-            let f = task::spawn(async move { agent.stun_request_transaction(&msg, to).await });
+            let f = task::spawn(async move {
+                agent
+                    .stun_request_transaction(&msg, to)
+                    .unwrap()
+                    .build()
+                    .unwrap()
+                    .perform()
+                    .await
+            });
 
             // advance through all the waits to get to the timeout return value
-            for _ in 0..6 {
+            let sender_delay = clock.next_entry().await;
+            // this is the receiver timeout wait which should be after all of the sender delay
+            // waits.  We only want to wait on this entry after all the senders have waited
+            let receiver_timeout = clock.next_entry().await;
+            // advance through the sender wait, there should be no more sender-initiated waits after this
+            sender_delay.advance().await;
+            for _ in 0..5 {
+                // there are a total of 6 sender delay waits however we have already waited for one
+                // entry above
                 clock.advance().await;
             }
+            // advance to the receiver timeout
+            receiver_timeout.advance().await;
+            assert!(matches!(f.await, Err(StunError::TimedOut)));
+        });
+    }
+
+    #[test]
+    fn send_udp_request_unanswered_cancelled() {
+        init();
+        task::block_on(async move {
+            // set up sockets
+            let udp1 = crate::stun::socket::tests::setup_udp_channel().await;
+            let udp2 = crate::stun::socket::tests::setup_udp_channel().await;
+            let to = udp2.local_addr().unwrap();
+            let clock = Arc::new(crate::clock::tests::TestClock::default());
+
+            let agent = StunAgent::builder(StunChannel::Udp(UdpConnectionChannel::new(udp1, to)))
+                .clock(clock.clone())
+                .build();
+
+            let software_str = "ab";
+            let mut msg = Message::new_request(48);
+            msg.add_attribute(Software::new(software_str).unwrap())
+                .unwrap();
+            msg.add_fingerprint().unwrap();
+
+            let transaction = agent
+                .stun_request_transaction(&msg, to)
+                .unwrap()
+                .build()
+                .unwrap();
+            let f = task::spawn({
+                let transaction = transaction.clone();
+                async move { transaction.perform().await }
+            });
+
+            // first retrieve both waits so that we don't race setting up a new sender delay wait
+            // with retrieving the receive timeout wait
+            let sender_delay = clock.next_entry().await;
+            let receiver_timeout = clock.next_entry().await;
+            transaction.cancel_retransmissions();
+            // advance through the sender wait, there should be no more sender-initiated waits after this
+            sender_delay.advance().await;
+            // advance to the receiver timeout
+            receiver_timeout.advance().await;
             assert!(matches!(f.await, Err(StunError::TimedOut)));
         });
     }

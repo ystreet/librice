@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use futures::channel::oneshot;
-use futures::future::{AbortHandle, Abortable};
+use futures::future::AbortHandle;
 use futures::prelude::*;
 use tracing_futures::Instrument;
 
@@ -24,7 +24,7 @@ use crate::stream::Credentials;
 
 use crate::clock::{get_clock, Clock, ClockType};
 use crate::component::{Component, ComponentState, SelectedPair};
-use crate::stun::agent::StunAgent;
+use crate::stun::agent::{StunAgent, StunError, StunRequest};
 use crate::stun::attribute::*;
 use crate::stun::message::*;
 use crate::utils::DropLogger;
@@ -62,7 +62,7 @@ struct ConnCheck {
 struct ConnCheckState {
     conncheck_id: usize,
     state: CandidatePairState,
-    abort_handle: Option<AbortHandle>,
+    stun_request: Option<StunRequest>,
 }
 
 impl ConnCheckState {
@@ -79,7 +79,9 @@ impl ConnCheckState {
             debug!(old_state = ?self.state, new_state = ?state, "updating state");
             if state == CandidatePairState::Succeeded || state == CandidatePairState::Failed {
                 debug!("aborting recv task");
-                let _ = self.abort_handle.take();
+                if let Some(stun_request) = self.stun_request.take() {
+                    stun_request.cancel();
+                }
             }
             self.state = state;
         }
@@ -95,7 +97,7 @@ impl ConnCheck {
             state: Mutex::new(ConnCheckState {
                 conncheck_id,
                 state: CandidatePairState::Frozen,
-                abort_handle: None,
+                stun_request: None,
             }),
             agent,
             nominate,
@@ -125,47 +127,64 @@ impl ConnCheck {
     )]
     fn cancel(&self) {
         let mut inner = self.state.lock().unwrap();
-        let abort_handle = inner.abort_handle.take();
-        if let Some(handle) = abort_handle {
+        inner.set_state(CandidatePairState::Failed);
+        if let Some(stun_request) = inner.stun_request.take() {
             debug!(conncheck.id = self.conncheck_id, "cancelling conncheck");
-            handle.abort();
-            inner.set_state(CandidatePairState::Failed);
+            stun_request.cancel();
         }
     }
 
-    async fn connectivity_check(
+    #[tracing::instrument(
+        level = "debug",
+        skip(self),
+        fields(
+            self.state
+        )
+    )]
+    fn cancel_retransmissions(&self) {
+        let inner = self.state.lock().unwrap();
+        if let Some(stun_request) = inner.stun_request.as_ref() {
+            debug!(conncheck.id = self.conncheck_id, "cancelling conncheck retransmissions");
+            stun_request.cancel_retransmissions();
+        }
+    }
+
+    fn generate_stun_request(
         conncheck: Arc<ConnCheck>,
         username: String,
         controlling: bool,
         tie_breaker: u64,
-    ) -> Result<ConnCheckResponse, AgentError> {
-        // generate binding request
-        let msg = {
-            let mut msg = Message::new_request(BINDING);
+    ) -> Result<StunRequest, StunError> {
+        let mut msg = Message::new_request(BINDING);
 
-            // XXX: this needs to be the priority as if the candidate was peer-reflexive
-            msg.add_attribute(Priority::new(conncheck.pair.local.priority))?;
-            if controlling {
-                msg.add_attribute(IceControlling::new(tie_breaker))?;
-            } else {
-                msg.add_attribute(IceControlled::new(tie_breaker))?;
-            }
-            if conncheck.nominate {
-                msg.add_attribute(UseCandidate::new())?;
-            }
-            msg.add_attribute(Username::new(&username)?)?;
-            msg.add_message_integrity(&conncheck.agent.local_credentials().unwrap())?;
-            msg.add_fingerprint()?;
-            msg
-        };
+        // XXX: this needs to be the priority as if the candidate was peer-reflexive
+        msg.add_attribute(Priority::new(conncheck.pair.local.priority))?;
+        if controlling {
+            msg.add_attribute(IceControlling::new(tie_breaker))?;
+        } else {
+            msg.add_attribute(IceControlled::new(tie_breaker))?;
+        }
+        if conncheck.nominate {
+            msg.add_attribute(UseCandidate::new())?;
+        }
+        msg.add_attribute(Username::new(&username)?)?;
+        msg.add_message_integrity(&conncheck.agent.local_credentials().unwrap())?;
+        msg.add_fingerprint()?;
 
         let to = conncheck.pair.remote.address;
+        conncheck.agent.stun_request_transaction(&msg, to)?.build()
+    }
+
+    async fn do_stun_request(
+        conncheck: Arc<ConnCheck>,
+        stun_request: StunRequest,
+    ) -> Result<ConnCheckResponse, AgentError> {
         // send binding request
         // wait for response
         // if timeout -> resend?
         // if longer timeout -> fail
         // TODO: optional: if icmp error -> fail
-        let (response, from) = match conncheck.agent.stun_request_transaction(&msg, to).await {
+        let (response, from) = match stun_request.perform().await {
             Err(e) => {
                 warn!("connectivity check produced error: {:?}", e);
                 return Ok(ConnCheckResponse::Failure(conncheck));
@@ -185,7 +204,10 @@ impl ConnCheck {
             if let Some(err) = response.attribute::<ErrorCode>(ERROR_CODE) {
                 if err.code() == ErrorCode::ROLE_CONFLICT {
                     info!("Role conflict received {}", response);
-                    return Ok(ConnCheckResponse::RoleConflict(conncheck, !controlling));
+                    return Ok(ConnCheckResponse::RoleConflict(
+                        conncheck,
+                        stun_request.request().has_attribute(ICE_CONTROLLED),
+                    ));
                 }
             }
             // FIXME: some failures are recoverable
@@ -194,10 +216,11 @@ impl ConnCheck {
 
         // if response success:
         // if mismatched address -> fail
-        if from != to {
+        if from != stun_request.peer_address() {
             warn!(
                 "response came from different ip {:?} than candidate {:?}",
-                from, to
+                from,
+                stun_request.peer_address()
             );
             return Ok(ConnCheckResponse::Failure(conncheck));
         }
@@ -650,14 +673,14 @@ impl ConnCheckListInner {
                 // for retransmissions of the Binding requests associated with the
                 // original connectivity-check transaction.
                 CandidatePairState::InProgress => {
-                    check.cancel();
-                    if peer_nominating {
-                        check = Arc::new(ConnCheck::new(
-                            check.pair.clone(),
-                            check.agent.clone(),
-                            true,
-                        ));
-                    }
+                    check.cancel_retransmissions();
+
+                    self.add_check(check.clone());
+                    check = Arc::new(ConnCheck::new(
+                        check.pair.clone(),
+                        check.agent.clone(),
+                        peer_nominating,
+                    ));
                     check.set_state(CandidatePairState::Waiting);
                     self.add_triggered(check.clone());
                 }
@@ -671,11 +694,12 @@ impl ConnCheckListInner {
                 CandidatePairState::Waiting
                 | CandidatePairState::Frozen
                 | CandidatePairState::Failed => {
-                    if peer_nominating {
+                    if peer_nominating && !check.nominate() {
+                        check.cancel();
                         check = Arc::new(ConnCheck::new(
                             check.pair.clone(),
                             check.agent.clone(),
-                            true,
+                            peer_nominating,
                         ));
                     }
                     check.set_state(CandidatePairState::Waiting);
@@ -983,7 +1007,7 @@ impl ConnCheckList {
                                     warn!("error! {:?}", e);
                                     break;
                                 }
-                                _ => (),
+                                _ => warn!("nothing to respond with"),
                             }
                         }
                     }
@@ -1454,26 +1478,27 @@ impl ConnCheckListSet {
         controlling: bool,
         tie_breaker: u64,
     ) -> Result<ConnCheckResponse, AgentError> {
-        let abort_registration = {
+        let stun_request = {
             let mut inner = conncheck.state.lock().unwrap();
-            if inner.abort_handle.is_some() {
+            if inner.stun_request.is_some() {
                 panic!("duplicate connection checks!");
                 //            return Err(AgentError::AlreadyExists);
             }
 
-            let (abort_handle, abort_registration) = AbortHandle::new_pair();
-            inner.abort_handle = Some(abort_handle);
-            abort_registration
+            let stun_request = ConnCheck::generate_stun_request(
+                conncheck.clone(),
+                username,
+                controlling,
+                tie_breaker,
+            )?;
+            inner.stun_request = Some(stun_request.clone());
+            stun_request
         };
 
-        let abortable = Abortable::new(
-            ConnCheck::connectivity_check(conncheck, username, controlling, tie_breaker),
-            abort_registration,
-        );
         async_std::task::spawn(
             async move {
-                match abortable.await {
-                    Ok(v) => v,
+                match ConnCheck::do_stun_request(conncheck, stun_request).await {
+                    Ok(v) => Ok(v),
                     Err(_) => Err(AgentError::Aborted),
                 }
             }
@@ -1519,12 +1544,15 @@ impl ConnCheckListSet {
         .await
         {
             Err(e) => {
-                warn!(error = ?e, "conncheck error: {:?}", conncheck);
-                conncheck.set_state(CandidatePairState::Failed);
-                checklist.remove_valid(&conncheck.pair);
                 match e {
-                    AgentError::Aborted => (),
-                    _ => checklist.set_state(CheckListState::Failed),
+                    // ignore us calling conncheck.cancel()
+                    AgentError::Aborted => trace!(error = ?e, "aborted"),
+                    _ => {
+                        warn!(error = ?e, "conncheck error: {:?}", conncheck);
+                        conncheck.set_state(CandidatePairState::Failed);
+                        checklist.remove_valid(&conncheck.pair);
+                        checklist.set_state(CheckListState::Failed);
+                    }
                 }
             }
             Ok(ConnCheckResponse::Failure(conncheck)) => {
@@ -2071,7 +2099,7 @@ mod tests {
             .unwrap_or(false);
 
         let mut response = if ice_controlling.is_none() && ice_controlled.is_none() {
-            error!("missing ice controlled/controlling attribute");
+            warn!("missing ice controlled/controlling attribute");
             let mut response = Message::new_error(msg);
             response.add_attribute(ErrorCode::builder(ErrorCode::BAD_REQUEST).build()?)?;
             response

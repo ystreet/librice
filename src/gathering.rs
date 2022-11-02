@@ -95,7 +95,9 @@ async fn gather_stun_xor_address(
     let msg = generate_bind_request()?;
 
     agent
-        .stun_request_transaction(&msg, stun_server)
+        .stun_request_transaction(&msg, stun_server)?
+        .build()?
+        .perform()
         .await
         .and_then(move |(response, from)| {
             if let Some(attr) = response.attribute::<XorMappedAddress>(XOR_MAPPED_ADDRESS) {
