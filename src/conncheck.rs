@@ -144,7 +144,10 @@ impl ConnCheck {
     fn cancel_retransmissions(&self) {
         let inner = self.state.lock().unwrap();
         if let Some(stun_request) = inner.stun_request.as_ref() {
-            debug!(conncheck.id = self.conncheck_id, "cancelling conncheck retransmissions");
+            debug!(
+                conncheck.id = self.conncheck_id,
+                "cancelling conncheck retransmissions"
+            );
             stun_request.cancel_retransmissions();
         }
     }
@@ -1895,7 +1898,7 @@ mod tests {
     struct Peer {
         candidate: Candidate,
         agent: StunAgent,
-        credentials: Credentials,
+        local_credentials: Option<Credentials>,
     }
 
     impl Peer {
@@ -1908,11 +1911,13 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Default)]
     struct PeerBuilder<'this> {
         channel: Option<StunChannel>,
         foundation: Option<&'this str>,
         clock: Option<Arc<dyn Clock>>,
-        credentials: Credentials,
+        local_credentials: Option<Credentials>,
+        remote_credentials: Option<Credentials>,
         component_id: Option<usize>,
         priority: Option<u32>,
         candidate: Option<Candidate>,
@@ -1934,8 +1939,13 @@ mod tests {
             self
         }
 
-        fn credentials(mut self, credentials: Credentials) -> Self {
-            self.credentials = credentials;
+        fn local_credentials(mut self, credentials: Credentials) -> Self {
+            self.local_credentials = Some(credentials);
+            self
+        }
+
+        fn remote_credentials(mut self, credentials: Credentials) -> Self {
+            self.remote_credentials = Some(credentials);
             self
         }
 
@@ -2012,25 +2022,23 @@ mod tests {
             });
             let clock = self.clock.unwrap_or_else(|| get_clock(ClockType::System));
             let agent = StunAgent::builder(channel).clock(clock).build();
+            let local_credentials = self
+                .local_credentials
+                .clone()
+                .unwrap_or_else(|| Credentials::new(String::from("user"), String::from("pass")));
+            agent.set_local_credentials(MessageIntegrityCredentials::ShortTerm(
+                local_credentials.into(),
+            ));
+            if let Some(remote_credentials) = self.remote_credentials.as_ref() {
+                agent.set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
+                    remote_credentials.clone().into(),
+                ));
+            }
 
             Peer {
                 candidate,
                 agent,
-                credentials: self.credentials,
-            }
-        }
-    }
-
-    impl<'this> Default for PeerBuilder<'this> {
-        fn default() -> Self {
-            Self {
-                channel: None,
-                foundation: None,
-                clock: None,
-                credentials: Credentials::new(String::from("user"), String::from("pass")),
-                component_id: None,
-                priority: None,
-                candidate: None,
+                local_credentials: self.local_credentials,
             }
         }
     }
@@ -2164,29 +2172,17 @@ mod tests {
             let local_credentials = Credentials::new(String::from("luser"), String::from("lpass"));
             let remote_credentials = Credentials::new(String::from("ruser"), String::from("rpass"));
             // start the remote peer
-            let remote = Peer::default().await;
-            remote
-                .agent
-                .set_local_credentials(MessageIntegrityCredentials::ShortTerm(
-                    remote_credentials.clone().into(),
-                ));
-            remote
-                .agent
-                .set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
-                    local_credentials.clone().into(),
-                ));
+            let remote = Peer::builder()
+                .local_credentials(remote_credentials.clone())
+                .remote_credentials(local_credentials.clone())
+                .build()
+                .await;
             // set up the local peer
-            let local = Peer::default().await;
-            local
-                .agent
-                .set_local_credentials(MessageIntegrityCredentials::ShortTerm(
-                    local_credentials.clone().into(),
-                ));
-            local
-                .agent
-                .set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
-                    remote_credentials.clone().into(),
-                ));
+            let local = Peer::builder()
+                .local_credentials(local_credentials.clone())
+                .remote_credentials(remote_credentials.clone())
+                .build()
+                .await;
 
             reply_to_conncheck_task(remote.agent.clone(), remote_credentials.clone());
             reply_to_conncheck_task(local.agent.clone(), local_credentials.clone());
@@ -2379,7 +2375,7 @@ mod tests {
     impl FineControlBuilder {
         async fn build(self) -> FineControl {
             let local_credentials = Credentials::new("luser".into(), "lpass".into());
-            let remote_credentials = Credentials::new("luser".into(), "lpass".into());
+            let remote_credentials = Credentials::new("ruser".into(), "rpass".into());
             let local_agent = Arc::new(Agent::default());
             let local_stream = local_agent.add_stream();
             let local_component = local_stream.add_component().unwrap();
@@ -2393,19 +2389,10 @@ mod tests {
                 )))
                 .foundation("0")
                 .clock(self.clock.clone())
-                .credentials(local_credentials.clone())
+                .local_credentials(local_credentials.clone())
+                .remote_credentials(remote_credentials.clone())
                 .build()
                 .await;
-            local_peer
-                .agent
-                .set_local_credentials(MessageIntegrityCredentials::ShortTerm(
-                    local_credentials.clone().into(),
-                ));
-            local_peer
-                .agent
-                .set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
-                    remote_credentials.clone().into(),
-                ));
 
             let remote_peer = Peer::builder()
                 .channel(StunChannel::AsyncChannel(AsyncChannel::new(
@@ -2415,19 +2402,10 @@ mod tests {
                 )))
                 .foundation("0")
                 .clock(self.clock.clone())
-                .credentials(remote_credentials.clone())
+                .local_credentials(remote_credentials.clone())
+                .remote_credentials(local_credentials.clone())
                 .build()
                 .await;
-            remote_peer
-                .agent
-                .set_local_credentials(MessageIntegrityCredentials::ShortTerm(
-                    remote_credentials.clone().into(),
-                ));
-            remote_peer
-                .agent
-                .set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
-                    local_credentials.clone().into(),
-                ));
 
             let checklist_set = ConnCheckListSet::builder(0, true)
                 .clock(self.clock.clone())
@@ -2498,10 +2476,10 @@ mod tests {
         assert_eq!(msg.method(), BINDING);
         assert_eq!(msg.class(), MessageClass::Request);
 
-        // send a role confilict response
+        // send a response (success or some kind of error like role-conflict)
         let resp = handle_binding_request(
             &state.remote.agent,
-            &state.remote.credentials,
+            state.remote.local_credentials.as_ref().unwrap(),
             &msg,
             from,
             error_response,
@@ -2722,18 +2700,10 @@ mod tests {
                         let remote_peer = Peer::builder()
                             .channel(channel)
                             .candidate(remote_cand)
+                            .local_credentials(remote_credentials.clone())
+                            .remote_credentials(local_credentials.clone())
                             .build()
                             .await;
-                        remote_peer.agent.set_local_credentials(
-                            MessageIntegrityCredentials::ShortTerm(
-                                remote_credentials.clone().into(),
-                            ),
-                        );
-                        remote_peer.agent.set_remote_credentials(
-                            MessageIntegrityCredentials::ShortTerm(
-                                local_credentials.clone().into(),
-                            ),
-                        );
                         reply_to_conncheck_task(
                             remote_peer.agent.clone(),
                             remote_credentials.clone(),
@@ -2753,18 +2723,10 @@ mod tests {
             let local = Peer::builder()
                 .channel(local_channel)
                 .candidate(local_cand)
+                .local_credentials(local_credentials.clone())
+                .remote_credentials(remote_credentials.clone())
                 .build()
                 .await;
-            local
-                .agent
-                .set_local_credentials(MessageIntegrityCredentials::ShortTerm(
-                    local_credentials.clone().into(),
-                ));
-            local
-                .agent
-                .set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
-                    remote_credentials.clone().into(),
-                ));
             let remote_cand =
                 Candidate::builder(0, CandidateType::Host, TransportType::Tcp, "0", remote_addr)
                     .tcp_type(TcpType::Passive)
