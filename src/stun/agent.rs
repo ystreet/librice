@@ -124,8 +124,7 @@ impl StunAgent {
         transaction_id: &TransactionId,
     ) -> Option<Message> {
         let mut state = state.lock().unwrap();
-        trace!("removing request {}", transaction_id);
-        state.outstanding_requests.remove(transaction_id)
+        state.take_outstanding_request(transaction_id)
     }
 
     #[tracing::instrument(
@@ -605,7 +604,7 @@ impl StunAgentState {
 
     fn handle_stun(&mut self, msg: Message, orig_data: &[u8], from: SocketAddr) -> HandleStunReply {
         if msg.is_response() {
-            if let Some(orig_request) = self.outstanding_requests.remove(&msg.transaction_id()) {
+            if let Some(orig_request) = self.take_outstanding_request(&msg.transaction_id()) {
                 // only validate response if the original request had credentials
                 if orig_request
                     .attribute::<MessageIntegrity>(MESSAGE_INTEGRITY)
@@ -639,6 +638,17 @@ impl StunAgentState {
         } else {
             self.validated_peer(from);
             HandleStunReply::Broadcast(msg)
+        }
+    }
+
+    #[tracing::instrument(skip(self))]
+    fn take_outstanding_request(&mut self, transaction_id: &TransactionId) -> Option<Message> {
+        if let Some(msg) = self.outstanding_requests.remove(transaction_id) {
+            trace!("removing request");
+            Some(msg)
+        } else {
+            trace!("no outstanding request");
+            None
         }
     }
 }

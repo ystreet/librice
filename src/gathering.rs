@@ -8,6 +8,7 @@
 
 use async_std::net::{SocketAddr, UdpSocket};
 
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
 use futures::prelude::*;
@@ -40,8 +41,15 @@ pub(crate) fn calculate_priority(
         - component_id as u32
 }
 
-fn candidate_is_redundant_with(a: &Candidate, b: &Candidate) -> bool {
-    a.address.ip() == b.address.ip() && a.base_address.ip() == b.base_address.ip()
+fn address_is_ignorable(ip: IpAddr) -> bool {
+    // TODO: add is_benchmarking() and is_documentation() when they become stable
+    if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
+        return true;
+    }
+    match ip {
+        IpAddr::V4(ipv4) => ipv4.is_broadcast() || ipv4.is_link_local(),
+        IpAddr::V6(_ipv6) => false,
+    }
 }
 
 pub fn iface_udp_sockets(
@@ -52,7 +60,7 @@ pub fn iface_udp_sockets(
     // TODO: remove 'IPv6 site-local unicast addresses [RFC3879]'
     // TODO: remove 'IPv4-mapped IPv6 addresses unless ipv6 only'
     // TODO: location tracking Ipv6 address mismatches
-    ifaces.retain(|e| !e.is_loopback());
+    ifaces.retain(|e| !address_is_ignorable(e.ip()));
 
     for _f in ifaces.iter().inspect(|iface| {
         info!("Found interface {} address {:?}", iface.name, iface.ip());
@@ -187,6 +195,12 @@ pub fn gather_component(
                     let priority =
                         calculate_priority(ga.ctype, ga.local_preference as u32, component_id);
                     trace!("candidate {:?}, {:?}", ga, priority);
+                    if address_is_ignorable(ga.address.ip()) {
+                        return None;
+                    }
+                    if address_is_ignorable(ga.base.ip()) {
+                        return None;
+                    }
                     let mut produced = produced.lock().unwrap();
                     let mut builder = Candidate::builder(
                         component_id,
@@ -204,7 +218,7 @@ pub fn gather_component(
                     for c in produced.iter() {
                         // ignore candidates that produce the same local/remote pair of
                         // addresses
-                        if candidate_is_redundant_with(&cand, c) {
+                        if cand.redundant_with(c) {
                             trace!("redundant {:?}", cand);
                             return None;
                         }

@@ -254,6 +254,37 @@ pub struct ConnCheckList {
     inner: Arc<Mutex<ConnCheckListInner>>,
 }
 
+fn candidate_is_same_connection(a: &Candidate, b: &Candidate) -> bool {
+    if a.component_id != b.component_id {
+        return false;
+    }
+    if a.transport_type != b.transport_type {
+        return false;
+    }
+    if a.base_address != b.base_address {
+        return false;
+    }
+    if a.address != b.address {
+        return false;
+    }
+    // TODO: active vs passive vs simultaneous open
+    if a.tcp_type != b.tcp_type {
+        return false;
+    }
+    // XXX: extensions?
+    true
+}
+
+fn candidate_pair_is_same_connection(a: &CandidatePair, b: &CandidatePair) -> bool {
+    if !candidate_is_same_connection(&a.local, &b.local) {
+        return false;
+    }
+    if !candidate_is_same_connection(&a.remote, &b.remote) {
+        return false;
+    }
+    true
+}
+
 #[derive(Debug)]
 struct ConnCheckLocalCandidate {
     candidate: Candidate,
@@ -374,7 +405,7 @@ impl ConnCheckListInner {
         if let Some(idx) = self
             .triggered
             .iter()
-            .position(|existing| existing.pair == check.pair)
+            .position(|existing| candidate_pair_is_same_connection(&existing.pair, &check.pair))
         {
             // a nominating check trumps not nominating.  Otherwise, if the peers are delay sync,
             // then the non-nominating trigerred check may override the nomination process for a
@@ -406,11 +437,12 @@ impl ConnCheckListInner {
     }
 
     fn check_is_equal(check: &Arc<ConnCheck>, pair: &CandidatePair, nominate: Nominate) -> bool {
-        check.pair.local == pair.local
-            && check.pair.remote == pair.remote
+        candidate_is_same_connection(&check.pair.local, &pair.local)
+            && candidate_is_same_connection(&check.pair.remote, &pair.remote)
             && nominate.eq(&check.nominate)
     }
 
+    #[tracing::instrument(level = "trace", ret, skip(self, pair))]
     fn matching_check(&self, pair: &CandidatePair, nominate: Nominate) -> Option<Arc<ConnCheck>> {
         self.triggered
             .iter()
@@ -427,7 +459,7 @@ impl ConnCheckListInner {
         let pos = self
             .pairs
             .iter()
-            .position(|check| check.pair.local == pair.local && check.pair.remote == pair.remote);
+            .position(|check| Self::check_is_equal(check, pair, Nominate::DontCare));
         if let Some(position) = pos {
             self.pairs.remove(position)
         } else {
@@ -466,7 +498,11 @@ impl ConnCheckListInner {
         fields(component.id = pair.local.component_id)
     )]
     fn nominated_pair(&mut self, pair: &CandidatePair) -> Option<Arc<Component>> {
-        if let Some(idx) = self.valid.iter().position(|valid_pair| valid_pair == pair) {
+        if let Some(idx) = self
+            .valid
+            .iter()
+            .position(|valid_pair| candidate_pair_is_same_connection(valid_pair, pair))
+        {
             info!(
                 ttype = ?pair.local.transport_type,
                 local.address = ?pair.local.address,
@@ -644,7 +680,7 @@ impl ConnCheckListInner {
         let pair = CandidatePair::new(local.clone(), remote);
         if let Some(mut check) = self.take_matching_check(&pair) {
             // When the pair is already on the checklist:
-            trace!("found existing check {:?}", check);
+            trace!("found existing {:?} check {:?}", check.state(), check);
             match check.state() {
                 // If the state of that pair is Succeeded, nothing further is
                 // done.
@@ -677,6 +713,7 @@ impl ConnCheckListInner {
                 // original connectivity-check transaction.
                 CandidatePairState::InProgress => {
                     check.cancel_retransmissions();
+                    // TODO: ignore response timeouts
 
                     self.add_check(check.clone());
                     check = Arc::new(ConnCheck::new(
@@ -699,6 +736,7 @@ impl ConnCheckListInner {
                 | CandidatePairState::Failed => {
                     if peer_nominating && !check.nominate() {
                         check.cancel();
+                        self.add_check(check.clone());
                         check = Arc::new(ConnCheck::new(
                             check.pair.clone(),
                             check.agent.clone(),
@@ -1084,15 +1122,11 @@ impl ConnCheckList {
         let mut pairs: Vec<_> = inner.pairs.iter().map(|check| check.pair.clone()).collect();
         for local in inner.local_candidates.iter() {
             for remote in inner.remote_candidates.iter() {
-                if local.candidate.transport_type == remote.transport_type
-                    && local.candidate.component_id == remote.component_id
-                    && local.candidate.address.is_ipv4() == remote.address.is_ipv4()
-                    && local.candidate.address.is_ipv6() == remote.address.is_ipv6()
-                {
+                if local.candidate.can_pair_with(remote) {
                     let pair = CandidatePair::new(local.candidate.clone(), remote.clone());
 
                     if pair.redundant_with(pairs.iter()) {
-                        trace!("not adding redundant pair");
+                        trace!("not adding redundant pair {:?}", pair);
                     } else {
                         debug!("generated pair {:?}", pair);
                         pairs.push(pair.clone());
@@ -1119,7 +1153,7 @@ impl ConnCheckList {
     )]
     fn initial_thaw(&self, thawn_foundations: &mut Vec<String>) {
         let mut inner = self.inner.lock().unwrap();
-        debug!("state change from {:?} to Running", inner.state);
+        debug!("list state change from {:?} to Running", inner.state);
         inner.state = CheckListState::Running;
 
         let _: Vec<_> = inner
@@ -1284,6 +1318,7 @@ impl ConnCheckList {
         )
     )]
     fn add_valid(&self, pair: CandidatePair) {
+        trace!("adding {:?}", pair);
         self.inner.lock().unwrap().valid.push(pair);
     }
 
@@ -1296,10 +1331,14 @@ impl ConnCheckList {
     )]
     fn remove_valid(&self, pair: &CandidatePair) {
         let mut inner = self.inner.lock().unwrap();
-        if let Some(idx) = inner.valid.iter().position(|valid_pair| valid_pair == pair) {
-            debug!("removing");
-            inner.valid.remove(idx);
-        }
+        inner.valid.retain(|valid_pair| {
+            if !candidate_pair_is_same_connection(valid_pair, pair) {
+                debug!("removing");
+                false
+            } else {
+                true
+            }
+        });
     }
 
     async fn nominated_pair(&self, pair: &CandidatePair) {
@@ -1364,7 +1403,9 @@ impl ConnCheckList {
                     if let Some(agent) = inner
                         .local_candidates
                         .iter()
-                        .find(|&local_cand| local_cand.candidate == pair.local)
+                        .find(|&local_cand| {
+                            candidate_is_same_connection(&local_cand.candidate, &pair.local)
+                        })
                         .map(|local| local.stun_agent.clone())
                     {
                         inner.add_triggered(Arc::new(ConnCheck::new(pair.clone(), agent, true)));
@@ -1395,12 +1436,6 @@ impl ConnCheckListSetBuilder {
             tie_breaker,
             controlling,
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn clock(mut self, clock: Arc<dyn Clock>) -> Self {
-        self.clock = Some(clock);
-        self
     }
 
     pub(crate) fn build(self) -> ConnCheckListSet {
@@ -2351,11 +2386,13 @@ mod tests {
     struct FineControlPeer {
         component: Arc<Component>,
         peer: Peer,
-        checklist_set: ConnCheckListSet,
+        checklist_set: Arc<ConnCheckListSet>,
         checklist: Arc<ConnCheckList>,
     }
 
     struct FineControl {
+        router: ChannelRouter,
+        clock: Arc<dyn Clock>,
         local: FineControlPeer,
         remote: Peer,
     }
@@ -2407,10 +2444,7 @@ mod tests {
                 .build()
                 .await;
 
-            let checklist_set = ConnCheckListSet::builder(0, true)
-                .clock(self.clock.clone())
-                .build();
-            checklist_set.add_stream(local_stream.clone());
+            let checklist_set = local_agent.check_list_set();
             let checklist = local_stream.checklist.clone();
 
             checklist
@@ -2425,6 +2459,8 @@ mod tests {
             checklist.set_remote_credentials(remote_credentials);
 
             FineControl {
+                router,
+                clock: self.clock,
                 local: FineControlPeer {
                     component: local_component,
                     peer: local_peer,
@@ -2442,28 +2478,34 @@ mod tests {
         }
     }
 
-    #[tracing::instrument(name = "test_send_check_and_get_response", skip(state, set_run))]
+    #[tracing::instrument(
+        name = "test_send_check_and_get_response",
+        skip(local_peer, remote_peer, set_run),
+        fields(
+            local_addr = %local_peer.agent.channel().local_addr().unwrap(),
+            remote_addr = %remote_peer.agent.channel().local_addr().unwrap(),
+        )
+    )]
     async fn send_next_check_and_response(
-        state: &FineControl,
+        local_peer: &Peer,
+        remote_peer: &Peer,
         set_run: &mut RunningCheckListSet<'_>,
         error_response: Option<u16>,
     ) {
-        let remote_s_recv = state.remote.agent.channel().receive_stream();
+        let remote_s_recv = remote_peer.agent.channel().receive_stream();
         futures::pin_mut!(remote_s_recv);
-        let local_s_recv = state.local.peer.agent.receive_stream();
+        let local_s_recv = local_peer.agent.receive_stream();
         futures::pin_mut!(local_s_recv);
 
         // perform one tick which will start a connectivity check with the peer
         let set_ret = set_run.process_next().await;
-        assert!(matches!(set_ret, CheckListSetProcess::HaveCheck(_)));
+        let check = if let CheckListSetProcess::HaveCheck(check) = set_ret {
+            check
+        } else {
+            unreachable!()
+        };
         debug!("tick");
-        let check_task = async_std::task::spawn(async move {
-            if let CheckListSetProcess::HaveCheck(check) = set_ret {
-                check.perform().await.unwrap();
-            } else {
-                unreachable!()
-            }
-        });
+        let check_task = async_std::task::spawn(check.perform());
 
         // receive and respond to the connectivity check
         let DataAddress {
@@ -2471,15 +2513,15 @@ mod tests {
             address: from,
         } = remote_s_recv.next().await.unwrap();
         debug!("received {:?}", data);
-        assert_eq!(from, state.local.peer.agent.channel().local_addr().unwrap());
+        assert_eq!(from, local_peer.agent.channel().local_addr().unwrap());
         let msg = Message::from_bytes(&data).unwrap();
         assert_eq!(msg.method(), BINDING);
         assert_eq!(msg.class(), MessageClass::Request);
 
         // send a response (success or some kind of error like role-conflict)
         let resp = handle_binding_request(
-            &state.remote.agent,
-            state.remote.local_credentials.as_ref().unwrap(),
+            &remote_peer.agent,
+            remote_peer.local_credentials.as_ref().unwrap(),
             &msg,
             from,
             error_response,
@@ -2487,10 +2529,10 @@ mod tests {
         .await
         .unwrap();
         info!("handle request {:?}", resp);
-        state.remote.agent.send_to(resp, from).await.unwrap();
+        remote_peer.agent.send_to(resp, from).await.unwrap();
 
         // wait for the response to reach the checklist and update the state
-        check_task.await;
+        check_task.await.unwrap();
         debug!("check done");
         let response = local_s_recv.next().await.unwrap();
         trace!("msg received {:?}", response);
@@ -2524,7 +2566,8 @@ mod tests {
             let mut set_run = RunningCheckListSet::from_set(&state.local.checklist_set);
 
             // perform one tick which will start a connectivity check with the peer
-            send_next_check_and_response(&state, &mut set_run, None).await;
+            send_next_check_and_response(&state.local.peer, &state.remote, &mut set_run, None)
+                .await;
             assert_eq!(check.state(), CandidatePairState::Succeeded);
 
             // should have resulted in a nomination and therefore a triggered check (always a new
@@ -2537,7 +2580,8 @@ mod tests {
             assert!(state.local.checklist.is_triggered(&nominate_check));
 
             // perform one tick which will perform the nomination check
-            send_next_check_and_response(&state, &mut set_run, None).await;
+            send_next_check_and_response(&state.local.peer, &state.remote, &mut set_run, None)
+                .await;
 
             assert_eq!(nominate_check.state(), CandidatePairState::Succeeded);
 
@@ -2582,8 +2626,13 @@ mod tests {
             let mut set_run = RunningCheckListSet::from_set(&state.local.checklist_set);
 
             // perform one tick which will start a connectivity check with the peer
-            send_next_check_and_response(&state, &mut set_run, Some(ErrorCode::ROLE_CONFLICT))
-                .await;
+            send_next_check_and_response(
+                &state.local.peer,
+                &state.remote,
+                &mut set_run,
+                Some(ErrorCode::ROLE_CONFLICT),
+            )
+            .await;
             assert_eq!(check.state(), CandidatePairState::Failed);
 
             // should have resulted in the check being retriggered (always a new
@@ -2596,7 +2645,8 @@ mod tests {
             assert!(state.local.checklist.is_triggered(&triggered_check));
 
             // perform the next tick which will have a different ice controlling/ed attribute
-            send_next_check_and_response(&state, &mut set_run, None).await;
+            send_next_check_and_response(&state.local.peer, &state.remote, &mut set_run, None)
+                .await;
             assert_eq!(triggered_check.state(), CandidatePairState::Succeeded);
 
             // should have resulted in a nomination and therefore a triggered check (always a new
@@ -2609,7 +2659,8 @@ mod tests {
             assert!(state.local.checklist.is_triggered(&nominate_check));
 
             // perform one tick which will perform the nomination check
-            send_next_check_and_response(&state, &mut set_run, None).await;
+            send_next_check_and_response(&state.local.peer, &state.remote, &mut set_run, None)
+                .await;
 
             // check list is done
             assert_eq!(state.local.checklist.state(), CheckListState::Completed);
@@ -2656,7 +2707,13 @@ mod tests {
             let mut set_run = RunningCheckListSet::from_set(&state.local.checklist_set);
 
             // perform one tick which will start a connectivity check with the peer
-            send_next_check_and_response(&state, &mut set_run, Some(ErrorCode::UNAUTHORIZED)).await;
+            send_next_check_and_response(
+                &state.local.peer,
+                &state.remote,
+                &mut set_run,
+                Some(ErrorCode::UNAUTHORIZED),
+            )
+            .await;
             assert_eq!(check.state(), CandidatePairState::Failed);
 
             // TODO: properly failing the checklist on all checks failing
@@ -2748,6 +2805,129 @@ mod tests {
             }
 
             listen_task.cancel().await;
+        });
+    }
+
+    #[test]
+    fn conncheck_prflx() {
+        init();
+        async_std::task::block_on(async move {
+            let state = FineControl::builder().build().await;
+
+            // generate existing checks
+            state.local.checklist.generate_checks();
+
+            let pair = CandidatePair::new(
+                state.local.peer.candidate.clone(),
+                state.remote.candidate.clone(),
+            );
+            let initial_check = state
+                .local
+                .checklist
+                .matching_check(&pair, Nominate::False)
+                .unwrap();
+            assert_eq!(initial_check.state(), CandidatePairState::Frozen);
+
+            let mut thawn = vec![];
+            // thaw the first checklist with only a single pair will unfreeze that pair
+            state.local.checklist.initial_thaw(&mut thawn);
+            assert_eq!(initial_check.state(), CandidatePairState::Waiting);
+
+            let unknown_remote_peer = Peer::builder()
+                .channel(StunChannel::AsyncChannel(AsyncChannel::new(
+                    state.router.clone(),
+                    state.router.generate_addr(),
+                    None,
+                )))
+                .foundation("1")
+                .clock(state.clock.clone())
+                .local_credentials(state.remote.local_credentials.clone().unwrap())
+                .remote_credentials(state.local.peer.local_credentials.clone().unwrap())
+                .build()
+                .await;
+
+            // send a request from some unknown to the local agent address to produce a peer
+            // reflexive candidate on the local agent
+            let mut request = Message::new_request(BINDING);
+            request
+                .add_attribute(Priority::new(unknown_remote_peer.candidate.priority))
+                .unwrap();
+            request.add_attribute(IceControlled::new(200)).unwrap();
+            request
+                .add_attribute(
+                    Username::new(
+                        &(state.local.peer.local_credentials.clone().unwrap().ufrag
+                            + ":"
+                            + &state.remote.local_credentials.clone().unwrap().ufrag),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            request
+                .add_message_integrity(&state.remote.agent.local_credentials().unwrap())
+                .unwrap();
+            request.add_fingerprint().unwrap();
+
+            let local_addr = state.local.peer.agent.channel().local_addr().unwrap();
+            let stun_request = unknown_remote_peer
+                .agent
+                .stun_request_transaction(&request, local_addr)
+                .unwrap()
+                .build()
+                .unwrap();
+
+            let (response, from) = stun_request.perform().await.unwrap();
+            assert_eq!(from, local_addr);
+            assert!(response.has_class(MessageClass::Success));
+
+            // The stun request has created a new peer reflexive triggered check
+            let mut prflx_remote_candidate = unknown_remote_peer.candidate.clone();
+            prflx_remote_candidate.candidate_type = CandidateType::PeerReflexive;
+            let pair = CandidatePair::new(
+                state.local.peer.candidate.clone(),
+                unknown_remote_peer.candidate.clone(),
+            );
+            {
+                let checklist_inner = state.local.checklist.inner.lock().unwrap();
+                checklist_inner.dump_check_state();
+            }
+            let triggered_check = state
+                .local
+                .checklist
+                .matching_check(&pair, Nominate::False)
+                .unwrap();
+            assert_eq!(triggered_check.state(), CandidatePairState::Waiting);
+
+            let mut set_run = RunningCheckListSet::from_set(&state.local.checklist_set);
+
+            // perform one tick which will start a connectivity check with the peer
+            send_next_check_and_response(
+                &state.local.peer,
+                &unknown_remote_peer,
+                &mut set_run,
+                None,
+            )
+            .await;
+            assert_eq!(triggered_check.state(), CandidatePairState::Succeeded);
+            let nominated_check = state
+                .local
+                .checklist
+                .matching_check(&pair, Nominate::True)
+                .unwrap();
+            assert_eq!(nominated_check.state(), CandidatePairState::Frozen);
+            send_next_check_and_response(
+                &state.local.peer,
+                &unknown_remote_peer,
+                &mut set_run,
+                None,
+            )
+            .await;
+            assert_eq!(nominated_check.state(), CandidatePairState::Succeeded);
+
+            assert!(matches!(
+                set_run.process_next().await,
+                CheckListSetProcess::Completed,
+            ));
         });
     }
 }
