@@ -302,11 +302,28 @@ impl Candidate {
         ret
     }
 
-    // address used for checking if a candidate is redundant or not
-    fn match_address(&self) -> SocketAddr {
+    // can this candidate pair with 'remote' in any way
+    pub(crate) fn can_pair_with(&self, remote: &Candidate) -> bool {
+        let address = match self.candidate_type {
+            CandidateType::Host => self.address,
+            _ => self.base_address,
+        };
+        self.transport_type == remote.transport_type
+            && self.component_id == remote.component_id
+            && address.is_ipv4() == remote.address.is_ipv4()
+            && address.is_ipv6() == remote.address.is_ipv6()
+    }
+
+    // RFC 8445 5.1.3.  "Eliminating Redundant Candidates"
+    pub(crate) fn redundant_with(&self, other: &Candidate) -> bool {
+        self.address.ip() == other.address.ip() && self.base_address.ip() == other.base_address.ip()
+    }
+
+    // RFC 8445 6.1.2.4.  Pruning the Pairs
+    fn pair_prune_address(&self) -> SocketAddr {
         match self.candidate_type {
-            CandidateType::ServerReflexive => self.base_address,
-            _ => self.address,
+            CandidateType::Host => self.address,
+            _ => self.base_address,
         }
     }
 }
@@ -569,8 +586,8 @@ impl CandidatePair {
         others: impl IntoIterator<Item = &'pair CandidatePair>,
     ) -> bool {
         others.into_iter().any(|pair| {
-            self.local.match_address() == pair.local.match_address()
-                && self.remote.match_address() == pair.remote.match_address()
+            self.local.pair_prune_address() == pair.local.pair_prune_address()
+                && self.remote == pair.remote
         })
     }
 }
