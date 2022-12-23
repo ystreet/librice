@@ -164,7 +164,7 @@ impl CandidateBuilder {
             transport_type: self.ttype,
             foundation: self.foundation.to_owned(),
             priority: self.priority.unwrap_or_else(|| {
-                crate::gathering::calculate_priority(self.ctype, 0, self.component_id)
+                crate::candidate::Candidate::calculate_priority(self.ctype, 0, self.component_id)
             }),
             address: self.address,
             base_address,
@@ -312,6 +312,24 @@ impl Candidate {
             && self.component_id == remote.component_id
             && address.is_ipv4() == remote.address.is_ipv4()
             && address.is_ipv6() == remote.address.is_ipv6()
+    }
+
+    fn priority_type_preference(ctype: CandidateType) -> u32 {
+        match ctype {
+            CandidateType::Host => 126,
+            CandidateType::PeerReflexive => 110,
+            CandidateType::ServerReflexive => 100,
+            CandidateType::Relayed => 0,
+        }
+    }
+
+    pub(crate) fn calculate_priority(
+        ctype: CandidateType,
+        local_preference: u32,
+        component_id: usize,
+    ) -> u32 {
+        ((1 << 24) * Self::priority_type_preference(ctype)) + ((1 << 8) * local_preference) + 256
+            - component_id as u32
     }
 
     // RFC 8445 5.1.3.  "Eliminating Redundant Candidates"
