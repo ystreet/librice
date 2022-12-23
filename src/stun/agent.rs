@@ -50,6 +50,7 @@ pub(crate) struct StunAgentInner {
 
 #[derive(Debug)]
 struct StunAgentState {
+    #[allow(dead_code)]
     id: usize,
     receive_loop_started: bool,
     validated_peers: HashSet<SocketAddr>,

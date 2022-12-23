@@ -289,7 +289,9 @@ fn candidate_pair_is_same_connection(a: &CandidatePair, b: &CandidatePair) -> bo
 struct ConnCheckLocalCandidate {
     candidate: Candidate,
     stun_agent: StunAgent,
+    #[allow(dead_code)]
     stun_recv_abort: AbortHandle,
+    #[allow(dead_code)]
     data_recv_abort: AbortHandle,
 }
 
