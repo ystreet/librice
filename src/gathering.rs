@@ -23,24 +23,6 @@ use crate::stun::attribute::*;
 use crate::stun::message::*;
 use crate::stun::socket::{StunChannel, UdpSocketChannel};
 
-fn priority_type_preference(ctype: CandidateType) -> u32 {
-    match ctype {
-        CandidateType::Host => 126,
-        CandidateType::PeerReflexive => 110,
-        CandidateType::ServerReflexive => 100,
-        CandidateType::Relayed => 0,
-    }
-}
-
-pub(crate) fn calculate_priority(
-    ctype: CandidateType,
-    local_preference: u32,
-    component_id: usize,
-) -> u32 {
-    ((1 << 24) * priority_type_preference(ctype)) + ((1 << 8) * local_preference) + 256
-        - component_id as u32
-}
-
 fn address_is_ignorable(ip: IpAddr) -> bool {
     // TODO: add is_benchmarking() and is_documentation() when they become stable
     if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
@@ -192,8 +174,11 @@ pub fn gather_component(
         async move {
             match ga {
                 Ok((ga, channel)) => {
-                    let priority =
-                        calculate_priority(ga.ctype, ga.local_preference as u32, component_id);
+                    let priority = Candidate::calculate_priority(
+                        ga.ctype,
+                        ga.local_preference as u32,
+                        component_id,
+                    );
                     trace!("candidate {:?}, {:?}", ga, priority);
                     if address_is_ignorable(ga.address.ip()) {
                         return None;
