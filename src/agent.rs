@@ -106,6 +106,42 @@ pub struct Agent {
     broadcast: Arc<ChannelBroadcast<AgentMessage>>,
 }
 
+#[derive(Debug, Default)]
+pub struct AgentBuilder {
+    trickle_ice: bool,
+    controlling: bool,
+}
+
+impl AgentBuilder {
+    pub fn trickle_ice(mut self, trickle_ice: bool) -> Self {
+        self.trickle_ice = trickle_ice;
+        self
+    }
+
+    pub fn controlling(mut self, controlling: bool) -> Self {
+        self.controlling = controlling;
+        self
+    }
+
+    pub fn build(self) -> Agent {
+        let id = AGENT_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let broadcast = Arc::new(ChannelBroadcast::default());
+        let mut rnd = rand::thread_rng();
+        let tie_breaker = rnd.gen::<u64>();
+        let controlling = self.controlling;
+        Agent {
+            id,
+            inner: Arc::new(Mutex::new(AgentInner::new())),
+            checklistset: Arc::new(
+                ConnCheckListSet::builder(tie_breaker, controlling)
+                    .trickle_ice(self.trickle_ice)
+                    .build(),
+            ),
+            broadcast,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct AgentInner {
     pub(crate) stun_servers: Vec<(TransportType, SocketAddr)>,
@@ -125,21 +161,15 @@ static AGENT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 impl Default for Agent {
     fn default() -> Self {
-        let id = AGENT_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let broadcast = Arc::new(ChannelBroadcast::default());
-        let mut rnd = rand::thread_rng();
-        let tie_breaker = rnd.gen::<u64>();
-        let controlling = true;
-        Agent {
-            id,
-            inner: Arc::new(Mutex::new(AgentInner::new())),
-            checklistset: Arc::new(ConnCheckListSet::builder(tie_breaker, controlling).build()),
-            broadcast,
-        }
+        Agent::builder().build()
     }
 }
 
 impl Agent {
+    pub fn builder() -> AgentBuilder {
+        AgentBuilder::default()
+    }
+
     /// Add a new `Stream` to this agent
     ///
     /// # Examples

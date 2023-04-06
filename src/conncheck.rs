@@ -312,6 +312,9 @@ struct ConnCheckListInner {
     valid: Vec<CandidatePair>,
     nominated: Vec<CandidatePair>,
     controlling: bool,
+    trickle_ice: bool,
+    local_end_of_candidates: bool,
+    remote_end_of_candidates: bool,
 }
 
 impl ConnCheckListInner {
@@ -319,6 +322,7 @@ impl ConnCheckListInner {
         checklist_id: usize,
         set_inner: Weak<Mutex<CheckListSetInner>>,
         controlling: bool,
+        trickle_ice: bool,
     ) -> Self {
         Self {
             checklist_id,
@@ -335,6 +339,9 @@ impl ConnCheckListInner {
             valid: vec![],
             nominated: vec![],
             controlling,
+            trickle_ice,
+            local_end_of_candidates: false,
+            remote_end_of_candidates: false,
         }
     }
 
@@ -436,6 +443,116 @@ impl ConnCheckListInner {
     )]
     fn add_remote_candidate(&mut self, remote: Candidate) {
         self.remote_candidates.push(remote);
+        self.generate_checks();
+    }
+
+    fn foundation_has_check_state(&self, foundation: &str, state: CandidatePairState) -> bool {
+        self.pairs
+            .iter()
+            .any(|check| check.pair.foundation() == foundation && check.state() == state)
+    }
+
+    fn thawn_foundations(&mut self) -> Vec<String> {
+        // XXX: cache this?
+        let mut thawn_foundations = vec![];
+        for check in self.pairs.iter() {
+            if !thawn_foundations
+                .iter()
+                .any(|foundation| check.pair.foundation() == *foundation)
+            {
+                thawn_foundations.push(check.pair.foundation().clone());
+            }
+        }
+        thawn_foundations
+    }
+
+    #[tracing::instrument(
+        level = "debug",
+        skip(self),
+        fields(
+            checklist_id = self.checklist_id
+        )
+    )]
+    fn generate_checks(&mut self) {
+        let mut checks = vec![];
+        // Trickle ICE mandates that we only check redundancy with Frozen or Waiting pairs.  This
+        // is compatible with non-trickle-ICE as checks start off in the frozen state until the
+        // initial thaw.
+        let mut pairs: Vec<_> = self
+            .pairs
+            .iter()
+            .filter_map(|check| {
+                if matches!(
+                    check.state(),
+                    CandidatePairState::Waiting | CandidatePairState::Frozen
+                ) {
+                    Some(check.pair.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut redundant_pairs = vec![];
+
+        for local in self.local_candidates.iter() {
+            for remote in self.remote_candidates.iter() {
+                if local.candidate.can_pair_with(remote) {
+                    let pair = CandidatePair::new(local.candidate.clone(), remote.clone());
+
+                    if let Some(redundant_pair) = pair.redundant_with(pairs.iter()) {
+                        if redundant_pair.remote.candidate_type == CandidateType::PeerReflexive {
+                            redundant_pairs.push((
+                                redundant_pair.clone(),
+                                pair,
+                                local.stun_agent.clone(),
+                            ));
+                        } else {
+                            trace!("not adding redundant pair {:?}", pair);
+                        }
+                    } else {
+                        debug!("generated pair {:?}", pair);
+                        pairs.push(pair.clone());
+                        checks.push(Arc::new(ConnCheck::new(
+                            pair,
+                            local.stun_agent.clone(),
+                            false,
+                        )));
+                    }
+                }
+            }
+        }
+        for (peer_reflexive_pair, pair, local_stun_agent) in redundant_pairs {
+            if let Some(check) = self.take_matching_check(&peer_reflexive_pair) {
+                check.cancel();
+                checks.push(Arc::new(ConnCheck::new(pair, local_stun_agent, false)));
+            }
+        }
+
+        let mut thawn_foundations = if self.trickle_ice {
+            self.thawn_foundations()
+        } else {
+            vec![]
+        };
+        for check in checks {
+            if self.trickle_ice {
+                // for the trickle-ICE case, if the foundation does not already have a waiting check,
+                // then we use this check as the first waiting check
+                // RFC 8838 Section 12 Rule 1, 2, and 3
+                if !thawn_foundations
+                    .iter()
+                    .any(|foundation| check.pair.foundation() == *foundation)
+                {
+                    check.set_state(CandidatePairState::Waiting);
+                    thawn_foundations.push(check.pair.foundation());
+                } else if self.foundation_has_check_state(
+                    &check.pair.foundation(),
+                    CandidatePairState::Succeeded,
+                ) {
+                    check.set_state(CandidatePairState::Waiting);
+                }
+            }
+            self.add_check(check)
+        }
     }
 
     fn check_is_equal(check: &Arc<ConnCheck>, pair: &CandidatePair, nominate: Nominate) -> bool {
@@ -496,6 +613,41 @@ impl ConnCheckListInner {
 
     #[tracing::instrument(
         level = "debug",
+        skip(self),
+        fields(checklist.id = self.checklist_id)
+    )]
+    fn check_for_failure(&mut self) {
+        if self.state == CheckListState::Completed {
+            return;
+        }
+        if !self.trickle_ice || self.local_end_of_candidates && self.remote_end_of_candidates {
+            debug!("all candidates have arrived");
+            let any_not_failed = self
+                .component_ids
+                .iter()
+                .fold(true, |accum, &component_id| {
+                    if !accum {
+                        !accum
+                    } else {
+                        let ret = self.pairs.iter().any(|check| {
+                            if check.pair.local.component_id == component_id {
+                                check.state() != CandidatePairState::Failed
+                            } else {
+                                false
+                            }
+                        });
+                        trace!("component {component_id} has any non-failed check:{ret}");
+                        ret
+                    }
+                });
+            if !any_not_failed {
+                self.set_state(CheckListState::Failed);
+            }
+        }
+    }
+
+    #[tracing::instrument(
+        level = "debug",
         skip(self, pair),
         fields(component.id = pair.local.component_id)
     )]
@@ -515,90 +667,95 @@ impl ConnCheckListInner {
                 "nominated"
             );
             self.nominated.push(self.valid.remove(idx));
+            if self.state != CheckListState::Running {
+                warn!(
+                    "cannot nominate a pair with checklist in state {:?}",
+                    self.state
+                );
+                return None;
+            }
             let component = self
                 .components
                 .iter()
                 .filter_map(|component| component.upgrade())
                 .find(|component| component.id == pair.local.component_id);
-            if self.state == CheckListState::Running {
-                // o Once a candidate pair for a component of a data stream has been
-                //   nominated, and the state of the checklist associated with the data
-                //   stream is Running, the ICE agent MUST remove all candidate pairs
-                //   for the same component from the checklist and from the triggered-
-                //   check queue.  If the state of a pair is In-Progress, the agent
-                //   cancels the In-Progress transaction.  Cancellation means that the
-                //   agent will not retransmit the Binding requests associated with the
-                //   connectivity-check transaction, will not treat the lack of
-                //   response to be a failure, but will wait the duration of the
-                //   transaction timeout for a response.
-                self.dump_check_state();
-                self.triggered.retain(|check| {
-                    if check.pair.local.component_id == pair.local.component_id {
-                        check.cancel_retransmissions();
-                        false
-                    } else {
-                        true
-                    }
-                });
-                self.pairs.retain(|check| {
-                    if check.pair.local.component_id == pair.local.component_id {
-                        check.cancel_retransmissions();
-                        false
-                    } else {
-                        true
-                    }
-                });
-                // XXX: do we also need to clear self.valid?
-                // o Once candidate pairs for each component of a data stream have been
-                //   nominated, and the state of the checklist associated with the data
-                //   stream is Running, the ICE agent sets the state of the checklist
-                //   to Completed.
-                let all_nominated = self.component_ids.iter().all(|&component_id| {
-                    self.nominated
-                        .iter()
-                        .any(|valid_pair| valid_pair.local.component_id == component_id)
-                });
-                if all_nominated {
-                    // ... Once an ICE agent sets the
-                    // state of the checklist to Completed (when there is a nominated pair
-                    // for each component of the data stream), that pair becomes the
-                    // selected pair for that agent and is used for sending and receiving
-                    // data for that component of the data stream.
-                    info!(
-                        "all {} component/s nominated, setting selected pair/s",
-                        self.component_ids.len()
-                    );
-                    self.nominated
-                        .iter()
-                        .fold(vec![], |mut component_ids_selected, valid_pair| {
-                            // Only nominate one valid candidatePair
-                            if !component_ids_selected
-                                .iter()
-                                .any(|&comp_id| comp_id == valid_pair.local.component_id)
-                            {
-                                if let Some(component) = &component {
-                                    let local_agent = self
-                                        .local_candidates
-                                        .iter()
-                                        .find(|cand| {
-                                            cand.candidate.base_address == pair.local.base_address
-                                        })
-                                        .map(|cand| cand.stun_agent.clone());
-                                    if let Some(local_agent) = local_agent {
-                                        component.set_selected_pair(SelectedPair::new(
-                                            pair.clone(),
-                                            local_agent,
-                                        ));
-                                    } else {
-                                        panic!("Cannot find existing local stun agent!");
-                                    }
-                                }
-                                component_ids_selected.push(valid_pair.local.component_id);
-                            }
-                            component_ids_selected
-                        });
-                    self.set_state(CheckListState::Completed);
+            // o Once a candidate pair for a component of a data stream has been
+            //   nominated, and the state of the checklist associated with the data
+            //   stream is Running, the ICE agent MUST remove all candidate pairs
+            //   for the same component from the checklist and from the triggered-
+            //   check queue.  If the state of a pair is In-Progress, the agent
+            //   cancels the In-Progress transaction.  Cancellation means that the
+            //   agent will not retransmit the Binding requests associated with the
+            //   connectivity-check transaction, will not treat the lack of
+            //   response to be a failure, but will wait the duration of the
+            //   transaction timeout for a response.
+            self.dump_check_state();
+            self.triggered.retain(|check| {
+                if check.pair.local.component_id == pair.local.component_id {
+                    check.cancel_retransmissions();
+                    false
+                } else {
+                    true
                 }
+            });
+            self.pairs.retain(|check| {
+                if check.pair.local.component_id == pair.local.component_id {
+                    check.cancel_retransmissions();
+                    false
+                } else {
+                    true
+                }
+            });
+            // XXX: do we also need to clear self.valid?
+            // o Once candidate pairs for each component of a data stream have been
+            //   nominated, and the state of the checklist associated with the data
+            //   stream is Running, the ICE agent sets the state of the checklist
+            //   to Completed.
+            let all_nominated = self.component_ids.iter().all(|&component_id| {
+                self.nominated
+                    .iter()
+                    .any(|valid_pair| valid_pair.local.component_id == component_id)
+            });
+            if all_nominated {
+                // ... Once an ICE agent sets the
+                // state of the checklist to Completed (when there is a nominated pair
+                // for each component of the data stream), that pair becomes the
+                // selected pair for that agent and is used for sending and receiving
+                // data for that component of the data stream.
+                info!(
+                    "all {} component/s nominated, setting selected pair/s",
+                    self.component_ids.len()
+                );
+                self.nominated
+                    .iter()
+                    .fold(vec![], |mut component_ids_selected, valid_pair| {
+                        // Only nominate one valid candidatePair
+                        if !component_ids_selected
+                            .iter()
+                            .any(|&comp_id| comp_id == valid_pair.local.component_id)
+                        {
+                            if let Some(component) = &component {
+                                let local_agent = self
+                                    .local_candidates
+                                    .iter()
+                                    .find(|cand| {
+                                        cand.candidate.base_address == pair.local.base_address
+                                    })
+                                    .map(|cand| cand.stun_agent.clone());
+                                if let Some(local_agent) = local_agent {
+                                    component.set_selected_pair(SelectedPair::new(
+                                        pair.clone(),
+                                        local_agent,
+                                    ));
+                                } else {
+                                    panic!("Cannot find existing local stun agent!");
+                                }
+                            }
+                            component_ids_selected.push(valid_pair.local.component_id);
+                        }
+                        component_ids_selected
+                    });
+                self.set_state(CheckListState::Completed);
             }
             debug!(
                 "trying to signal component {:?}",
@@ -1000,6 +1157,12 @@ impl ConnCheckList {
                 local.component_id, component.id
             );
         }
+        {
+            let inner = self.inner.lock().unwrap();
+            if inner.local_end_of_candidates {
+                panic!("Attempt made to add a local candidate after end-of-candidate received");
+            }
+        }
 
         debug!("adding {:?}", local);
         let checklist_id = self.checklist_id;
@@ -1099,9 +1262,45 @@ impl ConnCheckList {
         }
     }
 
+    #[tracing::instrument(
+        level = "debug",
+        skip(self, component),
+        fields(
+            checklist_id = self.checklist_id,
+            component_id = component.id,
+        )
+    )]
+    pub(crate) fn local_end_of_candidates(&self, component: &Arc<Component>) {
+        let mut inner = self.inner.lock().unwrap();
+        info!("end of local candidates");
+        inner.local_end_of_candidates = true;
+        inner.check_for_failure();
+    }
+
+    #[tracing::instrument(
+        level = "debug",
+        skip(self, component),
+        fields(
+            checklist_id = self.checklist_id,
+            component_id = component.id,
+        )
+    )]
+    pub(crate) fn remote_end_of_candidates(&self, component: &Arc<Component>) {
+        let mut inner = self.inner.lock().unwrap();
+        info!("end of remote candidates");
+        inner.remote_end_of_candidates = true;
+        inner.check_for_failure();
+    }
+
     pub(crate) fn add_remote_candidate(&self, remote: Candidate) {
         {
             let mut inner = self.inner.lock().unwrap();
+            if inner.remote_end_of_candidates {
+                error!(
+                    "Attempt made to add a remote candidate after an end-of-candidates received"
+                );
+                return;
+            }
             if !inner
                 .component_ids
                 .iter()
@@ -1113,39 +1312,9 @@ impl ConnCheckList {
         }
     }
 
-    #[tracing::instrument(
-        level = "debug",
-        skip(self),
-        fields(
-            checklist_id = self.checklist_id
-        )
-    )]
     fn generate_checks(&self) {
         let mut inner = self.inner.lock().unwrap();
-        let mut checks = vec![];
-        let mut pairs: Vec<_> = inner.pairs.iter().map(|check| check.pair.clone()).collect();
-        for local in inner.local_candidates.iter() {
-            for remote in inner.remote_candidates.iter() {
-                if local.candidate.can_pair_with(remote) {
-                    let pair = CandidatePair::new(local.candidate.clone(), remote.clone());
-
-                    if pair.redundant_with(pairs.iter()) {
-                        trace!("not adding redundant pair {:?}", pair);
-                    } else {
-                        debug!("generated pair {:?}", pair);
-                        pairs.push(pair.clone());
-                        checks.push(Arc::new(ConnCheck::new(
-                            pair,
-                            local.stun_agent.clone(),
-                            false,
-                        )));
-                    }
-                }
-            }
-        }
-        for check in checks {
-            inner.add_check(check)
-        }
+        inner.generate_checks();
     }
 
     #[tracing::instrument(
@@ -1434,6 +1603,11 @@ impl ConnCheckList {
                 .collect();
         }
     }
+
+    fn check_for_failure(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.check_for_failure();
+    }
 }
 
 #[derive(Debug)]
@@ -1447,6 +1621,7 @@ pub(crate) struct ConnCheckListSetBuilder {
     clock: Option<Arc<dyn Clock>>,
     tie_breaker: u64,
     controlling: bool,
+    trickle_ice: bool,
 }
 
 impl ConnCheckListSetBuilder {
@@ -1455,7 +1630,13 @@ impl ConnCheckListSetBuilder {
             clock: None,
             tie_breaker,
             controlling,
+            trickle_ice: false,
         }
+    }
+
+    pub(crate) fn trickle_ice(mut self, trickle_ice: bool) -> Self {
+        self.trickle_ice = trickle_ice;
+        self
     }
 
     pub(crate) fn build(self) -> ConnCheckListSet {
@@ -1470,6 +1651,7 @@ impl ConnCheckListSetBuilder {
                 tie_breaker: self.tie_breaker,
                 controlling: self.controlling,
             })),
+            trickle_ice: self.trickle_ice,
         }
     }
 }
@@ -1478,6 +1660,7 @@ impl ConnCheckListSetBuilder {
 pub(crate) struct ConnCheckListSet {
     clock: Arc<dyn Clock>,
     inner: Arc<Mutex<CheckListSetInner>>,
+    trickle_ice: bool,
 }
 
 #[derive(Debug)]
@@ -1502,6 +1685,7 @@ impl ConnCheckListSet {
                 checklist_id,
                 Arc::downgrade(&self.inner),
                 self.controlling(),
+                self.trickle_ice,
             ))),
         }
     }
@@ -1620,6 +1804,7 @@ impl ConnCheckListSet {
                 if conncheck.nominate() {
                     checklist.set_state(CheckListState::Failed);
                 }
+                checklist.check_for_failure();
             }
             Ok(ConnCheckResponse::RoleConflict(conncheck, new_role)) => {
                 if let Some(set_inner) = set_inner.upgrade() {
@@ -1813,8 +1998,8 @@ impl ConnCheckListSet {
 
     #[tracing::instrument(name = "ConnCheckList Loop", level = "debug", err, skip(self))]
     pub(crate) async fn agent_conncheck_process(&self) -> Result<(), AgentError> {
-        // perform initial set up
-        {
+        if !self.trickle_ice {
+            // perform initial set up for the non-trickle-ice case
             let inner = self.inner.lock().unwrap();
             for checklist in inner.checklists.iter() {
                 checklist.generate_checks();
@@ -1882,18 +2067,34 @@ impl<'set> RunningCheckListSet<'set> {
     // perform one tick of the connection state machine
     pub(crate) async fn process_next(&mut self) -> CheckListSetProcess {
         let mut any_running = false;
+        let mut all_failed = true;
         loop {
             let start_idx = self.checklist_i;
             let checklist = {
                 let set_inner = self.set.inner.lock().unwrap();
+                if set_inner.checklists.is_empty() {
+                    // FIXME: will not be correct once we support adding streams at runtime
+                    return CheckListSetProcess::Completed;
+                }
                 let checklist = &set_inner.checklists[self.checklist_i];
                 self.checklist_i += 1;
                 if self.checklist_i >= set_inner.checklists.len() {
                     self.checklist_i = 0;
                 }
-                if checklist.state() == CheckListState::Running {
-                    any_running = true;
+                let checklist_state = checklist.state();
+                match checklist_state {
+                    CheckListState::Running => {
+                        any_running = true;
+                        all_failed = false;
+                    }
+                    CheckListState::Completed => {
+                        if all_failed {
+                            all_failed = false;
+                        }
+                    }
+                    CheckListState::Failed => (),
                 }
+
                 checklist.clone()
             };
             let conncheck = match self.set.next_check(&checklist) {
@@ -2467,21 +2668,33 @@ mod tests {
 
     struct FineControlBuilder {
         clock: Arc<dyn Clock>,
+        trickle_ice: bool,
     }
 
     impl Default for FineControlBuilder {
         fn default() -> Self {
             Self {
                 clock: Arc::new(crate::clock::tests::TestClock::default()),
+                trickle_ice: false,
             }
         }
     }
 
     impl FineControlBuilder {
+        fn trickle_ice(mut self, trickle_ice: bool) -> Self {
+            self.trickle_ice = trickle_ice;
+            self
+        }
+
         async fn build(self) -> FineControl {
             let local_credentials = Credentials::new("luser".into(), "lpass".into());
             let remote_credentials = Credentials::new("ruser".into(), "rpass".into());
-            let local_agent = Arc::new(Agent::default());
+            let local_agent = Arc::new(
+                Agent::builder()
+                    .trickle_ice(self.trickle_ice)
+                    .controlling(true)
+                    .build(),
+            );
             let local_stream = local_agent.add_stream();
             let local_component = local_stream.add_component().unwrap();
             let router = ChannelRouter::default();
@@ -2515,16 +2728,18 @@ mod tests {
             let checklist_set = local_agent.check_list_set();
             let checklist = local_stream.checklist.clone();
 
-            checklist
-                .add_local_candidate(
-                    &local_component,
-                    local_peer.candidate.clone(),
-                    local_peer.agent.clone(),
-                )
-                .await;
-            checklist.add_remote_candidate(remote_peer.candidate.clone());
             checklist.set_local_credentials(local_credentials.clone());
             checklist.set_remote_credentials(remote_credentials);
+            if !self.trickle_ice {
+                checklist
+                    .add_local_candidate(
+                        &local_component,
+                        local_peer.candidate.clone(),
+                        local_peer.agent.clone(),
+                    )
+                    .await;
+                checklist.add_remote_candidate(remote_peer.candidate.clone());
+            }
 
             FineControl {
                 router,
@@ -2797,11 +3012,11 @@ mod tests {
 
             // TODO: properly failing the checklist on all checks failing
             // check should be failed
-            // assert_eq!(state.local.checklist.state(), CheckListState::Failed);
+            assert_eq!(state.local.checklist.state(), CheckListState::Failed);
 
             assert!(matches!(
                 set_run.process_next().await,
-                CheckListSetProcess::NothingToDo //CheckListSetProcess::Completed
+                CheckListSetProcess::Completed
             ));
         });
     }
@@ -3089,6 +3304,138 @@ mod tests {
                 set_run.process_next().await,
                 CheckListSetProcess::Completed,
             ));
+        });
+    }
+
+    #[test]
+    fn conncheck_trickle_ice() {
+        init();
+        async_std::task::block_on(async move {
+            let state = FineControl::builder().trickle_ice(true).build().await;
+            assert_eq!(state.local.component.id, 1);
+
+            // Don't generate any initial checks as they should be done as candidates are added to
+            // the checklist
+            let mut set_run = RunningCheckListSet::from_set(&state.local.checklist_set);
+            let set_ret = set_run.process_next().await;
+            // a checklist with no candidates has nothing to do
+            assert!(matches!(set_ret, CheckListSetProcess::NothingToDo));
+
+            state
+                .local
+                .checklist
+                .add_local_candidate(
+                    &state.local.component,
+                    state.local.peer.candidate.clone(),
+                    state.local.peer.agent.clone(),
+                )
+                .await;
+
+            let set_ret = set_run.process_next().await;
+            // a checklist with only a local candidates has nothing to do
+            assert!(matches!(set_ret, CheckListSetProcess::NothingToDo));
+
+            state
+                .local
+                .checklist
+                .add_remote_candidate(state.remote.candidate.clone());
+
+            // adding one local and one remote candidate that can be paired should have generated
+            // the relevant waiting check. Not frozen because there is not other check with the
+            // same foundation that already exists
+            let pair = CandidatePair::new(
+                state.local.peer.candidate.clone(),
+                state.remote.candidate.clone(),
+            );
+            let check = state
+                .local
+                .checklist
+                .matching_check(&pair, Nominate::False)
+                .unwrap();
+            assert_eq!(check.state(), CandidatePairState::Waiting);
+
+            // perform one tick which will start a connectivity check with the peer
+            send_next_check_and_response(&state.local.peer, &state.remote)
+                .perform(&mut set_run)
+                .await;
+            assert_eq!(check.state(), CandidatePairState::Succeeded);
+
+            {
+                let checklist_inner = state.local.checklist.inner.lock().unwrap();
+                checklist_inner.dump_check_state();
+                error!("pair: {pair:?}");
+            }
+
+            // should have resulted in a nomination and therefore a triggered check (always a new
+            // check in our implementation)
+            let nominate_check = state
+                .local
+                .checklist
+                .matching_check(&pair, Nominate::True)
+                .unwrap();
+            assert!(state.local.checklist.is_triggered(&nominate_check));
+
+            // perform one tick which will perform the nomination check
+            send_next_check_and_response(&state.local.peer, &state.remote)
+                .perform(&mut set_run)
+                .await;
+
+            assert_eq!(nominate_check.state(), CandidatePairState::Succeeded);
+
+            // check list is done
+            // TODO: provide end-of-candidate notification and delay completed until we receive
+            // end-of-candidate
+            assert_eq!(state.local.checklist.state(), CheckListState::Completed);
+
+            // perform one final tick attempt which should end the processing
+            assert!(matches!(
+                set_run.process_next().await,
+                CheckListSetProcess::Completed
+            ));
+        });
+    }
+
+    #[test]
+    fn conncheck_trickle_ice_no_remote_candidates_fail() {
+        init();
+        async_std::task::block_on(async move {
+            let state = FineControl::builder().trickle_ice(true).build().await;
+            assert_eq!(state.local.component.id, 1);
+
+            // Don't generate any initial checks as they should be done as candidates are added to
+            // the checklist
+            let mut set_run = RunningCheckListSet::from_set(&state.local.checklist_set);
+            let set_ret = set_run.process_next().await;
+            // a checklist with no candidates has nothing to do
+            assert!(matches!(set_ret, CheckListSetProcess::NothingToDo));
+
+            state
+                .local
+                .checklist
+                .add_local_candidate(
+                    &state.local.component,
+                    state.local.peer.candidate.clone(),
+                    state.local.peer.agent.clone(),
+                )
+                .await;
+            state
+                .local
+                .checklist
+                .local_end_of_candidates(&state.local.component);
+
+            let set_ret = set_run.process_next().await;
+            // a checklist with only a local candidates has nothing to do
+            assert!(matches!(set_ret, CheckListSetProcess::NothingToDo));
+
+            state
+                .local
+                .checklist
+                .remote_end_of_candidates(&state.local.component);
+
+            let set_ret = set_run.process_next().await;
+            // a checklist with only a local candidates but no more possible candidates will error
+            assert_eq!(state.local.checklist.state(), CheckListState::Failed);
+            assert!(matches!(set_ret, CheckListSetProcess::Completed));
         });
     }
 }

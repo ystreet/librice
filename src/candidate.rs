@@ -602,8 +602,8 @@ impl CandidatePair {
     pub(crate) fn redundant_with<'pair>(
         &self,
         others: impl IntoIterator<Item = &'pair CandidatePair>,
-    ) -> bool {
-        others.into_iter().any(|pair| {
+    ) -> Option<&'pair CandidatePair> {
+        others.into_iter().find(|&pair| {
             self.local.pair_prune_address() == pair.local.pair_prune_address()
                 && self.remote == pair.remote
         })
@@ -642,7 +642,7 @@ mod tests {
             .build(),
         );
         let pair2 = pair.clone();
-        assert!(pair.redundant_with([pair2].iter()));
+        assert!(pair.redundant_with([pair2].iter()).is_some());
     }
 
     mod parse {

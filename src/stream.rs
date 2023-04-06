@@ -410,6 +410,7 @@ impl Stream {
                         Some(v) => Some((v, cstream)),
                         None => {
                             info!("gathering completed");
+                            self.checklist.local_end_of_candidates(component);
                             self.broadcast
                                 .broadcast(AgentMessage::GatheringCompleted(component.clone()))
                                 .await;
@@ -486,6 +487,29 @@ impl Stream {
     /// ```
     pub fn remote_candidates(&self) -> Vec<Candidate> {
         self.checklist.remote_candidates()
+    }
+
+    /// Indicate that no more candidates are expected from the peer.  This may allow the ICE
+    /// process to fully complete.
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            component.id = self.id,
+        )
+    )]
+    pub fn end_of_candidates(&self) {
+        // FIXME: how to deal with ice restarts?
+        let components: Vec<_> = {
+            let state = self.state.lock().unwrap();
+            state
+                .components
+                .iter()
+                .filter_map(|comp| comp.clone())
+                .collect()
+        };
+        for comp in components {
+            self.checklist.remote_end_of_candidates(&comp);
+        }
     }
 }
 
