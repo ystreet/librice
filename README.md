@@ -27,7 +27,7 @@ This still very much WIP code and everything is still subject to change.
    Session Traversal Utilities for NAT (STUN) Usage for Consent Freshness
  - [RFC6544](https://tools.ietf.org/html/rfc6544):
    TCP Candidates with Interactive Connectivity Establishment (ICE)
- - [draft-ietf-ice-trickle-21](https://tools.ietf.org/html/draft-ietf-ice-trickle-21):
+ - [RFC8838](https://tools.ietf.org/html/rfc8838):
    Trickle ICE: Incremental Provisioning of Candidates for the Interactive Connectivity Establishment (ICE) Protocol
 
 ## Current status

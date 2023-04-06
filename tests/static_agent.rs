@@ -23,20 +23,41 @@ extern crate tracing;
 
 mod common;
 
+#[derive(Debug)]
+struct AgentConfig {
+    controlling: bool,
+    trickle_ice: bool,
+}
+
+#[derive(Debug)]
+struct AgentStaticTestConfig {
+    local: AgentConfig,
+    remote: AgentConfig,
+}
+
 #[tracing::instrument(name = "agent_static_connection")]
-async fn agent_static_connection_test(local_controlling: bool, remote_controlling: bool) {
+async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     let stun_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let stun_addr = stun_socket.local_addr().unwrap();
     let (abort_handle, abort_registration) = AbortHandle::new_pair();
     let stun_server = Abortable::new(common::stund_udp(stun_socket), abort_registration);
     let stun_server = async_std::task::spawn(stun_server);
 
-    let lagent = Arc::new(Agent::default());
+    let lagent = Arc::new(
+        Agent::builder()
+            .controlling(config.local.controlling)
+            .trickle_ice(config.local.trickle_ice)
+            .build(),
+    );
     lagent.add_stun_server(TransportType::Udp, stun_addr);
-    lagent.set_controlling(local_controlling);
-    let ragent = Arc::new(Agent::default());
+
+    let ragent = Arc::new(
+        Agent::builder()
+            .controlling(config.remote.controlling)
+            .trickle_ice(config.remote.trickle_ice)
+            .build(),
+    );
     ragent.add_stun_server(TransportType::Udp, stun_addr);
-    ragent.set_controlling(remote_controlling);
 
     let lcreds = Credentials::new("luser".into(), "lpass".into());
     let rcreds = Credentials::new("ruser".into(), "rpass".into());
@@ -46,12 +67,20 @@ async fn agent_static_connection_test(local_controlling: bool, remote_controllin
     lstream.set_local_credentials(lcreds.clone());
     lstream.set_remote_credentials(rcreds.clone());
     let lcomp = lstream.add_component().unwrap();
+    // XXX: currently must be after stream creation as dynamically adding streams is not currently
+    // supported
+    if config.local.trickle_ice {
+        lagent.start().unwrap();
+    }
 
     let mut r_msg_s = ragent.message_channel();
     let rstream = ragent.add_stream();
     rstream.set_local_credentials(rcreds);
     rstream.set_remote_credentials(lcreds);
     let rcomp = rstream.add_component().unwrap();
+    if config.remote.trickle_ice {
+        ragent.start().unwrap();
+    }
 
     // poor-man's async semaphore
     let (lgatherdone_send, lgatherdone_recv) = async_channel::bounded::<i32>(1);
@@ -64,7 +93,7 @@ async fn agent_static_connection_test(local_controlling: bool, remote_controllin
                         rstream.add_remote_candidate(comp.id, cand).unwrap()
                     }
                     AgentMessage::GatheringCompleted(_comp) => {
-                        lgatherdone_send.send(0).await.unwrap()
+                        let _ = lgatherdone_send.send(0).await;
                     }
                     AgentMessage::ComponentStateChange(_comp, state) => {
                         if state == ComponentState::Connected || state == ComponentState::Failed {
@@ -85,7 +114,7 @@ async fn agent_static_connection_test(local_controlling: bool, remote_controllin
                         lstream.add_remote_candidate(comp.id, cand).unwrap()
                     }
                     AgentMessage::GatheringCompleted(_comp) => {
-                        rgatherdone_send.send(0).await.unwrap()
+                        let _ = rgatherdone_send.send(0).await;
                     }
                     AgentMessage::ComponentStateChange(_comp, state) => {
                         if state == ComponentState::Connected || state == ComponentState::Failed {
@@ -98,15 +127,22 @@ async fn agent_static_connection_test(local_controlling: bool, remote_controllin
     });
 
     futures::try_join!(lstream.gather_candidates(), rstream.gather_candidates()).unwrap();
-
-    futures::try_join!(lgatherdone_recv.recv(), rgatherdone_recv.recv()).unwrap();
+    if config.local.trickle_ice {
+        lgatherdone_recv.recv().await.unwrap();
+    }
     drop(lgatherdone_recv);
+    if config.remote.trickle_ice {
+        rgatherdone_recv.recv().await.unwrap();
+    }
     drop(rgatherdone_recv);
     trace!("gathered");
 
-    /* no trickle support yet so we have to start after gathering */
-    lagent.start().unwrap();
-    ragent.start().unwrap();
+    if !config.local.trickle_ice {
+        lagent.start().unwrap();
+    }
+    if !config.remote.trickle_ice {
+        ragent.start().unwrap();
+    }
 
     futures::join!(lgather, rgather);
     trace!("connected");
@@ -138,23 +174,74 @@ async fn agent_static_connection_test(local_controlling: bool, remote_controllin
 #[test]
 fn agent_static_connection_none_controlling() {
     common::debug_init();
-    async_std::task::block_on(agent_static_connection_test(false, false));
+    async_std::task::block_on(agent_static_connection_test(AgentStaticTestConfig {
+        local: AgentConfig {
+            controlling: false,
+            trickle_ice: false,
+        },
+        remote: AgentConfig {
+            controlling: false,
+            trickle_ice: false,
+        },
+    }));
 }
 
 #[test]
 fn agent_static_connection_both_controlling() {
     common::debug_init();
-    async_std::task::block_on(agent_static_connection_test(true, true));
+    async_std::task::block_on(agent_static_connection_test(AgentStaticTestConfig {
+        local: AgentConfig {
+            controlling: true,
+            trickle_ice: false,
+        },
+        remote: AgentConfig {
+            controlling: true,
+            trickle_ice: false,
+        },
+    }));
 }
 
 #[test]
 fn agent_static_connection_remote_controlling() {
     common::debug_init();
-    async_std::task::block_on(agent_static_connection_test(false, true));
+    async_std::task::block_on(agent_static_connection_test(AgentStaticTestConfig {
+        local: AgentConfig {
+            controlling: false,
+            trickle_ice: false,
+        },
+        remote: AgentConfig {
+            controlling: true,
+            trickle_ice: false,
+        },
+    }));
 }
 
 #[test]
 fn agent_static_connection_local_controlling() {
     common::debug_init();
-    async_std::task::block_on(agent_static_connection_test(true, false));
+    async_std::task::block_on(agent_static_connection_test(AgentStaticTestConfig {
+        local: AgentConfig {
+            controlling: true,
+            trickle_ice: false,
+        },
+        remote: AgentConfig {
+            controlling: false,
+            trickle_ice: false,
+        },
+    }));
+}
+
+#[test]
+fn agent_static_connection_local_controlling_both_trickle() {
+    common::debug_init();
+    async_std::task::block_on(agent_static_connection_test(AgentStaticTestConfig {
+        local: AgentConfig {
+            controlling: true,
+            trickle_ice: true,
+        },
+        remote: AgentConfig {
+            controlling: false,
+            trickle_ice: true,
+        },
+    }));
 }
