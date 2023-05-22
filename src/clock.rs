@@ -99,17 +99,13 @@ where
     }
 }
 
+#[derive(Default)]
 pub(crate) enum ClockType {
+    #[default]
     System,
     // XXX: currently unused and TestClock is created directly
     //#[cfg(test)]
     // Test,
-}
-
-impl Default for ClockType {
-    fn default() -> Self {
-        ClockType::System
-    }
 }
 
 static SYSTEM_CLOCK_INSTANCE: Lazy<Arc<dyn Clock>> = Lazy::new(|| Arc::new(SystemClock::default()));
