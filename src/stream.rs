@@ -58,7 +58,7 @@ pub struct Stream {
 #[derive(Debug)]
 pub(crate) struct StreamState {
     gathering: bool,
-    components: Vec<Option<Arc<Component>>>,
+    components: Vec<Option<Component>>,
     local_credentials: Option<Credentials>,
     remote_credentials: Option<Credentials>,
 }
@@ -95,7 +95,7 @@ impl Stream {
     /// let component = stream.add_component().unwrap();
     /// assert_eq!(component.id, component::RTP);
     /// ```
-    pub fn add_component(&self) -> Result<Arc<Component>, AgentError> {
+    pub fn add_component(&self) -> Result<Component, AgentError> {
         let mut state = self.state.lock().unwrap();
         let index = state
             .components
@@ -111,8 +111,9 @@ impl Stream {
         while state.components.len() <= index {
             state.components.push(None);
         }
-        let component = Arc::new(Component::new(index + 1, self.broadcast.clone()));
+        let component = Component::new(index + 1, self.broadcast.clone());
         state.components[index] = Some(component.clone());
+        self.checklist.add_component(&component);
         info!("Added component at index {}", index);
         Ok(component)
     }
@@ -153,12 +154,13 @@ impl Stream {
             return Err(AgentError::ResourceNotFound);
         }
         let index = component_id - 1;
-        state
+        let component = state
             .components
             .get(index)
             .ok_or(AgentError::ResourceNotFound)?
             .as_ref()
             .ok_or(AgentError::ResourceNotFound)?;
+        self.checklist.remove_component(component);
         state.components[index] = None;
         Ok(())
     }
@@ -193,7 +195,7 @@ impl Stream {
     /// let stream = agent.add_stream();
     /// assert!(stream.component(component::RTP).is_none());
     /// ```
-    pub fn component(&self, index: usize) -> Option<Arc<Component>> {
+    pub fn component(&self, index: usize) -> Option<Component> {
         let state = self.state.lock().unwrap();
         if index < 1 {
             return None;
@@ -426,7 +428,7 @@ impl Stream {
         futures::pin_mut!(gather);
         while let Some((cand, agent, component)) = gather.next().await {
             self.checklist
-                .add_local_candidate(component, cand.clone(), agent)
+                .add_local_candidate(cand.clone(), agent)
                 .await;
             self.broadcast
                 .broadcast(AgentMessage::NewLocalCandidate(component.clone(), cand))
