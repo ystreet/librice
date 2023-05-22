@@ -301,7 +301,7 @@ struct ConnCheckListInner {
     set_inner: Weak<Mutex<CheckListSetInner>>,
     state: CheckListState,
     component_ids: Vec<usize>,
-    components: Vec<Weak<Component>>,
+    components: Vec<Component>,
     local_credentials: Credentials,
     remote_credentials: Credentials,
     local_candidates: Vec<ConnCheckLocalCandidate>,
@@ -651,7 +651,7 @@ impl ConnCheckListInner {
         skip(self, pair),
         fields(component.id = pair.local.component_id)
     )]
-    fn nominated_pair(&mut self, pair: &CandidatePair) -> Option<Arc<Component>> {
+    fn nominated_pair(&mut self, pair: &CandidatePair) -> Option<Component> {
         if let Some(idx) = self
             .valid
             .iter()
@@ -677,8 +677,8 @@ impl ConnCheckListInner {
             let component = self
                 .components
                 .iter()
-                .filter_map(|component| component.upgrade())
-                .find(|component| component.id == pair.local.component_id);
+                .find(|component| component.id == pair.local.component_id)
+                .cloned();
             // o Once a candidate pair for a component of a data stream has been
             //   nominated, and the state of the checklist associated with the data
             //   stream is Running, the ICE agent MUST remove all candidate pairs
@@ -759,7 +759,7 @@ impl ConnCheckListInner {
             }
             debug!(
                 "trying to signal component {:?}",
-                component.clone().map(|c| c.id)
+                component.as_ref().map(|c| c.id)
             );
             return component;
         } else {
@@ -807,7 +807,7 @@ impl ConnCheckListInner {
         agent: StunAgent,
         from: SocketAddr,
         priority: u32,
-    ) -> Result<Option<Arc<Component>>, AgentError> {
+    ) -> Result<Option<Component>, AgentError> {
         let remote = self
             .find_remote_candidate(component_id, local.transport_type, from)
             .unwrap_or_else(|| {
@@ -976,6 +976,33 @@ impl ConnCheckList {
         inner.remote_credentials = credentials;
     }
 
+    pub(crate) fn add_component(&self, component: &Component) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner
+            .components
+            .iter()
+            .any(|needle| needle.id == component.id)
+        {
+            panic!(
+                "Component with ID {} already exists in checklist!",
+                component.id
+            );
+        };
+        inner.components.push(component.clone());
+        inner.component_ids.push(component.id);
+    }
+
+    pub(crate) fn remove_component(&self, component: &Component) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(idx) = inner
+            .components
+            .iter()
+            .position(|existing| existing.id == component.id)
+        {
+            inner.components.remove(idx);
+        }
+    }
+
     async fn handle_binding_request(
         weak_inner: Weak<Mutex<ConnCheckListInner>>,
         component_id: usize,
@@ -1135,38 +1162,38 @@ impl ConnCheckList {
 
     #[tracing::instrument(
         level = "debug",
-        skip(self, component, local, agent),
+        skip(self, local, agent),
         fields(
             checklist_id = self.checklist_id,
-            component_id = component.id,
+            component_id = local.component_id,
             ttype = ?local.transport_type,
             ctype = ?local.candidate_type,
             foundation = %local.foundation,
             address = ?local.address
         )
     )]
-    pub(crate) async fn add_local_candidate(
-        &self,
-        component: &Arc<Component>,
-        local: Candidate,
-        agent: StunAgent,
-    ) {
-        if component.id != local.component_id {
-            panic!(
-                "attempt to add local candidate with component id {} to component with id {}",
-                local.component_id, component.id
-            );
-        }
-        {
+    pub(crate) async fn add_local_candidate(&self, local: Candidate, agent: StunAgent) {
+        let component = {
             let inner = self.inner.lock().unwrap();
             if inner.local_end_of_candidates {
                 panic!("Attempt made to add a local candidate after end-of-candidate received");
             }
-        }
+            let existing = inner
+                .components
+                .iter()
+                .find(|&c| c.id == local.component_id);
+            if let Some(existing) = existing {
+                existing.clone()
+            } else {
+                panic!(
+                    "Attempt made to add a local candidate without a corresponding add_component()"
+                );
+            }
+        };
 
         debug!("adding {:?}", local);
         let checklist_id = self.checklist_id;
-        let component_id = component.id;
+        let component_id = local.component_id;
         let weak_inner = Arc::downgrade(&self.inner);
         let (stun_send, stun_recv) = oneshot::channel();
 
@@ -1245,20 +1272,6 @@ impl ConnCheckList {
                 stun_recv_abort: stun_abort_handle,
                 data_recv_abort: data_abort_handle,
             });
-            let existing = inner.components.iter().find(|&v| {
-                if let Some(component) = Weak::upgrade(v) {
-                    component.id == component_id
-                } else {
-                    false
-                }
-            });
-            if existing.is_none() {
-                debug!("adding component {:?}", component);
-                inner.component_ids.push(component_id);
-                inner.components.push(Arc::downgrade(component));
-            } else {
-                trace!("not adding component {} again", component_id);
-            }
         }
     }
 
@@ -1270,7 +1283,7 @@ impl ConnCheckList {
             component_id = component.id,
         )
     )]
-    pub(crate) fn local_end_of_candidates(&self, component: &Arc<Component>) {
+    pub(crate) fn local_end_of_candidates(&self, component: &Component) {
         let mut inner = self.inner.lock().unwrap();
         info!("end of local candidates");
         inner.local_end_of_candidates = true;
@@ -1285,7 +1298,7 @@ impl ConnCheckList {
             component_id = component.id,
         )
     )]
-    pub(crate) fn remote_end_of_candidates(&self, component: &Arc<Component>) {
+    pub(crate) fn remote_end_of_candidates(&self, component: &Component) {
         let mut inner = self.inner.lock().unwrap();
         info!("end of remote candidates");
         inner.remote_end_of_candidates = true;
@@ -2345,7 +2358,8 @@ mod tests {
 
             let set = agent.check_list_set();
             let list = set.new_list();
-            list.add_local_candidate(&component, local.candidate.clone(), local.agent.clone())
+            list.add_component(&component);
+            list.add_local_candidate(local.candidate.clone(), local.agent.clone())
                 .await;
             list.add_remote_candidate(remote.candidate.clone());
 
@@ -2537,13 +2551,15 @@ mod tests {
 
             let set = agent.check_list_set();
             let list = set.new_list();
-            list.add_local_candidate(&component1, local1.candidate.clone(), local1.agent)
+            list.add_component(&component1);
+            list.add_component(&component2);
+            list.add_local_candidate(local1.candidate.clone(), local1.agent)
                 .await;
             list.add_remote_candidate(remote1.candidate.clone());
-            list.add_local_candidate(&component2, local2.candidate.clone(), local2.agent)
+            list.add_local_candidate(local2.candidate.clone(), local2.agent)
                 .await;
             list.add_remote_candidate(remote2.candidate.clone());
-            list.add_local_candidate(&component1, local3.candidate.clone(), local3.agent)
+            list.add_local_candidate(local3.candidate.clone(), local3.agent)
                 .await;
             list.add_remote_candidate(remote3.candidate.clone());
 
@@ -2596,16 +2612,18 @@ mod tests {
                 .build()
                 .await;
 
+            list1.add_component(&component1);
             list1
-                .add_local_candidate(&component1, local1.candidate.clone(), local1.agent)
+                .add_local_candidate(local1.candidate.clone(), local1.agent)
                 .await;
             list1.add_remote_candidate(remote1.candidate.clone());
+            list2.add_component(&component2);
             list2
-                .add_local_candidate(&component2, local2.candidate.clone(), local2.agent)
+                .add_local_candidate(local2.candidate.clone(), local2.agent)
                 .await;
             list2.add_remote_candidate(remote2.candidate.clone());
             list2
-                .add_local_candidate(&component2, local3.candidate.clone(), local3.agent)
+                .add_local_candidate(local3.candidate.clone(), local3.agent)
                 .await;
             list2.add_remote_candidate(remote3.candidate.clone());
 
@@ -2653,7 +2671,7 @@ mod tests {
     }
 
     struct FineControlPeer {
-        component: Arc<Component>,
+        component: Component,
         peer: Peer,
         checklist_set: Arc<ConnCheckListSet>,
         checklist: Arc<ConnCheckList>,
@@ -2726,11 +2744,7 @@ mod tests {
             checklist.set_remote_credentials(remote_credentials);
             if !self.trickle_ice {
                 checklist
-                    .add_local_candidate(
-                        &local_component,
-                        local_peer.candidate.clone(),
-                        local_peer.agent.clone(),
-                    )
+                    .add_local_candidate(local_peer.candidate.clone(), local_peer.agent.clone())
                     .await;
                 checklist.add_remote_candidate(remote_peer.candidate.clone());
             }
@@ -3317,7 +3331,6 @@ mod tests {
                 .local
                 .checklist
                 .add_local_candidate(
-                    &state.local.component,
                     state.local.peer.candidate.clone(),
                     state.local.peer.agent.clone(),
                 )
@@ -3405,7 +3418,6 @@ mod tests {
                 .local
                 .checklist
                 .add_local_candidate(
-                    &state.local.component,
                     state.local.peer.candidate.clone(),
                     state.local.peer.agent.clone(),
                 )

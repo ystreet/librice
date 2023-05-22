@@ -93,9 +93,9 @@ impl From<StunParseError> for AgentError {
 
 #[derive(Debug, Clone)]
 pub enum AgentMessage {
-    NewLocalCandidate(Arc<Component>, Candidate),
-    GatheringCompleted(Arc<Component>),
-    ComponentStateChange(Arc<Component>, ComponentState),
+    NewLocalCandidate(Component, Candidate),
+    GatheringCompleted(Component),
+    ComponentStateChange(Component, ComponentState),
 }
 
 #[derive(Debug)]

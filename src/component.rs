@@ -71,7 +71,7 @@ impl Component {
         inner.state
     }
 
-    pub(crate) async fn set_state(self: &Arc<Self>, state: ComponentState) {
+    pub(crate) async fn set_state(&self, state: ComponentState) {
         if let Some(new_state) = {
             let mut inner = self.inner.lock().unwrap();
             if inner.set_state(state) {
