@@ -95,7 +95,7 @@ fn udp_message(out: Message, to: SocketAddr) -> Result<(), std::io::Error> {
     info!("generated to {}", out);
     let buf = out.to_bytes();
     trace!("generated to {:?}", buf);
-    socket.send_to(&buf, &to)?;
+    socket.send_to(&buf, to)?;
     let mut buf = [0; 1500];
     let (amt, src) = socket.recv_from(&mut buf)?;
     let buf = &buf[..amt];

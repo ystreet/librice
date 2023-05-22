@@ -151,10 +151,10 @@ impl CandidateBuilder {
     pub fn build(self) -> Candidate {
         let base_address = self.base_address.unwrap_or(self.address);
 
-        if self.ttype == TransportType::Tcp && self.tcp_type == None {
+        if self.ttype == TransportType::Tcp && self.tcp_type.is_none() {
             panic!("A TCP tranport requires the a tcp_type to be specified");
         }
-        if self.ttype != TransportType::Tcp && self.tcp_type != None {
+        if self.ttype != TransportType::Tcp && self.tcp_type.is_some() {
             panic!("Specified a TCP type for a non TCP tranport");
         }
 
@@ -512,7 +512,7 @@ pub mod parse {
             iter_s = s;
         }
 
-        if builder.ttype == TransportType::Tcp && builder.tcp_type == None {
+        if builder.ttype == TransportType::Tcp && builder.tcp_type.is_none() {
             return Err(ParseCandidateError::BadTransportType);
         }
 
