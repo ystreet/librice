@@ -2698,13 +2698,10 @@ mod tests {
             let local_stream = local_agent.add_stream();
             let local_component = local_stream.add_component().unwrap();
             let router = ChannelRouter::default();
+            let local_host = router.add_host();
 
             let local_peer = Peer::builder()
-                .channel(StunChannel::AsyncChannel(AsyncChannel::new(
-                    router.clone(),
-                    router.generate_addr(),
-                    None,
-                )))
+                .channel(StunChannel::AsyncChannel(local_host.new_channel(None)))
                 .foundation("0")
                 .clock(self.clock.clone())
                 .local_credentials(local_credentials.clone())
@@ -2712,12 +2709,9 @@ mod tests {
                 .build()
                 .await;
 
+            let remote_host = router.add_host();
             let remote_peer = Peer::builder()
-                .channel(StunChannel::AsyncChannel(AsyncChannel::new(
-                    router.clone(),
-                    router.generate_addr(),
-                    None,
-                )))
+                .channel(StunChannel::AsyncChannel(remote_host.new_channel(None)))
                 .foundation("0")
                 .clock(self.clock.clone())
                 .local_credentials(remote_credentials.clone())
@@ -2742,7 +2736,7 @@ mod tests {
             }
 
             FineControl {
-                router,
+                router: router.clone(),
                 clock: self.clock,
                 local: FineControlPeer {
                     component: local_component,
@@ -3127,12 +3121,11 @@ mod tests {
             state.local.checklist.initial_thaw(&mut thawn);
             assert_eq!(initial_check.state(), CandidatePairState::Waiting);
 
+            let unknown_remote_host = state.router.add_host();
             let unknown_remote_peer = Peer::builder()
-                .channel(StunChannel::AsyncChannel(AsyncChannel::new(
-                    state.router.clone(),
-                    state.router.generate_addr(),
-                    None,
-                )))
+                .channel(StunChannel::AsyncChannel(
+                    unknown_remote_host.new_channel(None),
+                ))
                 .foundation("1")
                 .clock(state.clock.clone())
                 .local_credentials(state.remote.local_credentials.clone().unwrap())
@@ -3242,12 +3235,11 @@ mod tests {
             state.local.checklist.initial_thaw(&mut thawn);
             assert_eq!(initial_check.state(), CandidatePairState::Waiting);
 
+            let unknown_remote_host = state.router.add_host();
             let unknown_remote_peer = Peer::builder()
-                .channel(StunChannel::AsyncChannel(AsyncChannel::new(
-                    state.router.clone(),
-                    state.router.generate_addr(),
-                    None,
-                )))
+                .channel(StunChannel::AsyncChannel(
+                    unknown_remote_host.new_channel(None),
+                ))
                 .foundation("1")
                 .clock(state.clock.clone())
                 .local_credentials(state.remote.local_credentials.clone().unwrap())

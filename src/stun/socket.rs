@@ -686,23 +686,307 @@ pub(crate) mod tests {
     use super::*;
     use crate::agent::AgentError;
     use async_std::task;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+    use std::sync::Weak;
+
+    pub struct ChannelRouterBuilder {
+        start_ip: IpAddr,
+        end_ip: IpAddr,
+        gateway: Option<ChannelRouter>,
+    }
+
+    impl ChannelRouterBuilder {
+        pub fn allocate_range(mut self, start: IpAddr, end: IpAddr) -> Self {
+            self.start_ip = start;
+            self.end_ip = end;
+            self
+        }
+
+        pub fn gateway(mut self, gateway: ChannelRouter) -> Self {
+            self.gateway = Some(gateway);
+            self
+        }
+
+        pub fn build(self) -> ChannelRouter {
+            let broadcast = Arc::new(ChannelBroadcast::default());
+            let mut receiver: async_channel::Receiver<(DataAddress, SocketAddr)> =
+                broadcast.channel();
+            let inner = Arc::new(Mutex::new(ChannelRouterInner {
+                hosts: Default::default(),
+                routers: Default::default(),
+                last_generated_ip: self.start_ip,
+                last_generated_port: 0,
+                addr_map: Default::default(),
+            }));
+            let weak_inner = Arc::downgrade(&inner);
+            let our_ip = self.start_ip;
+            let public_ip = if let Some(ref gw) = self.gateway {
+                let ip = gw.generate_ip();
+                gw.add_router(ip, broadcast);
+                Some(ip)
+            } else {
+                None
+            };
+            let _task_handle = task::spawn({
+                let public_ip = public_ip;
+                let our_ip = our_ip;
+                let span = tracing::debug_span!("ChannelRouter::recv", public_ip = ?public_ip, our_ip = ?our_ip);
+                async move {
+                    while let Some((msg, from)) = receiver.next().await {
+                        trace!("got {msg:?} from {from:?}");
+                        let (host, router, ia) = {
+                            let inner = match weak_inner.upgrade() {
+                                Some(inner) => inner,
+                                None => break,
+                            };
+                            let inner = inner.lock().unwrap();
+                            let internal_address = inner
+                                .addr_map
+                                .iter()
+                                .find(|(_key, &value)| value == msg.address.port())
+                                .map(|(key, _value)| key);
+                            trace!(
+                                "external_address: {:?} -> internal_address: {internal_address:?}",
+                                msg.address
+                            );
+                            // map from public to private
+                            if let Some(addr) = internal_address {
+                                //trace!("hosts: {:?}", inner.hosts);
+                                //trace!("routers: {:?}", inner.routers);
+                                (
+                                    inner.hosts.get(&addr.ip()).cloned(),
+                                    inner.routers.get(&addr.ip()).cloned(),
+                                    *addr,
+                                )
+                            } else {
+                                trace!("Could not find nat mapping for {:?}", msg.address);
+                                continue;
+                            }
+                        };
+                        let msg = DataAddress {
+                            data: msg.data,
+                            address: ia,
+                        };
+                        if let Some(host) = host {
+                            if let Err(e) = host.handle_incoming(msg, from).await {
+                                warn!("Failed to send to {ia:?}: {e:?}");
+                            }
+                            continue;
+                        }
+                        if let Some(router) = router {
+                            router.broadcast((msg, from)).await;
+                            continue;
+                        }
+                        trace!("no host found for {ia:?}");
+                    }
+                }
+                .instrument(span)
+            });
+            ChannelRouter {
+                inner,
+                our_ip,
+                start_ip: self.start_ip,
+                end_ip: self.end_ip,
+                public_ip,
+                gateway: self.gateway.map(|router| Arc::downgrade(&router.inner)),
+            }
+        }
+    }
 
     #[derive(Debug, Clone)]
     pub struct ChannelRouter {
         inner: Arc<Mutex<ChannelRouterInner>>,
+        our_ip: IpAddr,
+        start_ip: IpAddr,
+        end_ip: IpAddr,
+        gateway: Option<Weak<Mutex<ChannelRouterInner>>>,
+        public_ip: Option<IpAddr>,
     }
 
     #[derive(Debug)]
     struct ChannelRouterInner {
-        channels: std::collections::HashMap<SocketAddr, Arc<ChannelBroadcast<DataAddress>>>,
+        hosts: std::collections::HashMap<IpAddr, ChannelHost>,
+        routers:
+            std::collections::HashMap<IpAddr, Arc<ChannelBroadcast<(DataAddress, SocketAddr)>>>,
+        last_generated_ip: IpAddr,
         last_generated_port: u16,
+        addr_map: std::collections::HashMap<SocketAddr, u16>,
+    }
+
+    impl ChannelRouterInner {
+        fn generate_port(&mut self) -> u16 {
+            self.last_generated_port += 1;
+            self.last_generated_port
+        }
     }
 
     impl Default for ChannelRouter {
         fn default() -> Self {
-            Self {
-                inner: Arc::new(Mutex::new(ChannelRouterInner {
+            Self::builder().build()
+        }
+    }
+
+    impl ChannelRouter {
+        pub fn builder() -> ChannelRouterBuilder {
+            ChannelRouterBuilder {
+                start_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                end_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 254)),
+                gateway: None,
+            }
+        }
+
+        fn add_router(
+            &self,
+            address: IpAddr,
+            router_broadcast: Arc<ChannelBroadcast<(DataAddress, SocketAddr)>>,
+        ) {
+            let mut inner = self.inner.lock().unwrap();
+            inner.routers.insert(address, router_broadcast);
+        }
+
+        pub fn add_host(&self) -> ChannelHost {
+            let host = ChannelHost::builder().router(self.clone()).build();
+            let ip = host.our_ip;
+            debug!("adding host with ip: {ip:?}");
+            let mut inner = self.inner.lock().unwrap();
+            inner.hosts.insert(ip, host.clone());
+            host
+        }
+
+        fn ip_octets_inc<T: std::ops::Add + std::ops::AddAssign + PartialEq + Copy>(
+            octets: &mut [T],
+            min: T,
+            max: T,
+            add: T,
+        ) {
+            let mut i = (octets.len() as isize) - 1;
+            while i >= 0 {
+                if octets[i as usize] == max {
+                    octets[i as usize] = min;
+                } else {
+                    octets[i as usize] += add;
+                    break;
+                }
+                i += 1;
+            }
+        }
+
+        fn generate_ip(&self) -> IpAddr {
+            let mut inner = self.inner.lock().unwrap();
+            inner.last_generated_ip = match inner.last_generated_ip {
+                IpAddr::V4(ipv4) => {
+                    let mut octets = ipv4.octets();
+                    Self::ip_octets_inc(&mut octets, std::u8::MIN, std::u8::MAX, 1);
+                    IpAddr::V4(Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]))
+                }
+                IpAddr::V6(ipv6) => {
+                    let mut segments = ipv6.segments();
+                    Self::ip_octets_inc(&mut segments, std::u16::MIN, std::u16::MAX, 1);
+                    IpAddr::V6(Ipv6Addr::new(
+                        segments[0],
+                        segments[1],
+                        segments[2],
+                        segments[3],
+                        segments[4],
+                        segments[5],
+                        segments[6],
+                        segments[7],
+                    ))
+                }
+            };
+            inner.last_generated_ip
+        }
+
+        #[tracing::instrument(
+            name = "ChannelRouter::send",
+            skip(self),
+            fields(
+                public_ip = ?self.public_ip,
+                our_ip = ?self.our_ip,
+            ),
+            err
+        )]
+        async fn send(&self, msg: DataAddress, from: SocketAddr) -> Result<(), AgentError> {
+            trace!("router send");
+            if msg.address.ip() >= self.start_ip && msg.address.ip() <= self.end_ip {
+                let (host, router) = {
+                    let inner = self.inner.lock().unwrap();
+                    //trace!("trying to send to {:?}", msg.address.ip());
+                    //trace!("hosts {:?}", inner.hosts);
+                    let host = inner.hosts.get(&msg.address.ip()).cloned();
+                    let router = inner.routers.get(&msg.address.ip()).cloned();
+                    (host, router)
+                };
+                //trace!("found host {host:?}");
+                if let Some(host) = host {
+                    return host.handle_incoming(msg, from).await;
+                }
+                if let Some(router) = router {
+                    router.broadcast((msg, from)).await;
+                    return Ok(());
+                }
+            }
+            if let Some(ref gw) = self.gateway {
+                let nat_addr = {
+                    let mut inner = self.inner.lock().unwrap();
+                    let nat_port = inner.addr_map.get(&from);
+                    let nat_port = if let Some(nat_port) = nat_port {
+                        *nat_port
+                    } else {
+                        let nat_port = inner.generate_port();
+                        inner.addr_map.insert(from, nat_port);
+                        nat_port
+                    };
+                    SocketAddr::new(self.public_ip.unwrap(), nat_port)
+                };
+                trace!(
+                    "NAT translated send address {:?} to external {nat_addr:?}",
+                    from
+                );
+                let gw = match gw.upgrade() {
+                    Some(gw) => gw,
+                    None => return Err(AgentError::ResourceNotFound),
+                };
+                let (host, router) = {
+                    let gw = gw.lock().unwrap();
+                    let host = gw.hosts.get(&msg.address.ip()).cloned();
+                    let router = gw.routers.get(&msg.address.ip()).cloned();
+                    (host, router)
+                };
+                //trace!("found host {host:?}");
+                if let Some(host) = host {
+                    return host.handle_incoming(msg, nat_addr).await;
+                }
+                if let Some(router) = router {
+                    router.broadcast((msg, nat_addr)).await;
+                    return Ok(());
+                }
+            }
+            trace!("no gateway?");
+            Err(AgentError::ResourceNotFound)
+        }
+    }
+
+    pub struct ChannelHostBuilder {
+        router: Option<ChannelRouter>,
+    }
+
+    impl ChannelHostBuilder {
+        pub fn router(mut self, router: ChannelRouter) -> Self {
+            self.router = Some(router);
+            self
+        }
+
+        pub fn build(self) -> ChannelHost {
+            let our_ip = self
+                .router
+                .clone()
+                .map(|router| router.generate_ip())
+                .unwrap_or_else(|| IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+            ChannelHost {
+                router: self.router,
+                our_ip,
+                inner: Arc::new(Mutex::new(ChannelHostInner {
                     channels: Default::default(),
                     last_generated_port: 0,
                 })),
@@ -710,17 +994,22 @@ pub(crate) mod tests {
         }
     }
 
-    impl ChannelRouter {
-        fn add_channel(&self, addr: SocketAddr) {
-            let mut inner = self.inner.lock().unwrap();
-            debug!("adding channel {}", addr);
-            match inner.channels.get(&addr) {
-                Some(_) => unreachable!(),
-                None => {
-                    let recv = Arc::new(ChannelBroadcast::default());
-                    inner.channels.insert(addr, recv);
-                }
-            }
+    #[derive(Debug, Clone)]
+    pub struct ChannelHost {
+        router: Option<ChannelRouter>,
+        our_ip: IpAddr,
+        inner: Arc<Mutex<ChannelHostInner>>,
+    }
+
+    #[derive(Debug)]
+    struct ChannelHostInner {
+        channels: std::collections::HashMap<SocketAddr, Arc<ChannelBroadcast<DataAddress>>>,
+        last_generated_port: u16,
+    }
+
+    impl ChannelHost {
+        pub fn builder() -> ChannelHostBuilder {
+            ChannelHostBuilder { router: None }
         }
 
         fn receiver(&self, addr: SocketAddr) -> impl Stream<Item = DataAddress> {
@@ -738,54 +1027,69 @@ pub(crate) mod tests {
         }
 
         async fn send(&self, msg: DataAddress, from: SocketAddr) -> Result<(), AgentError> {
+            if msg.address.ip() == from.ip() {
+                self.handle_incoming(msg, from).await
+            } else {
+                self.router.clone().unwrap().send(msg, from).await
+            }
+        }
+
+        async fn handle_incoming(
+            &self,
+            msg: DataAddress,
+            from: SocketAddr,
+        ) -> Result<(), AgentError> {
             let broadcast = {
                 let inner = self.inner.lock().unwrap();
-                //trace!("send channels {:?}", inner.channels);
+                //trace!("trying to send to {:?}", msg.address);
+                //trace!("channels {:?}", inner.channels);
                 inner
                     .channels
                     .get(&msg.address)
                     .ok_or(AgentError::ResourceNotFound)?
                     .clone()
             };
+            //trace!("have channel {broadcast:?}");
             let msg = DataAddress::new(msg.data, from);
             broadcast.broadcast(msg).await;
             Ok(())
         }
 
-        pub fn remove_addr(&self, addr: SocketAddr) {
-            let mut inner = self.inner.lock().unwrap();
-            debug!("removing channel {}", addr);
-            inner.channels.remove(&addr);
-        }
-
-        pub fn generate_addr(&self) -> SocketAddr {
+        fn generate_addr(&self) -> SocketAddr {
             let mut inner = self.inner.lock().unwrap();
             inner.last_generated_port += 1;
-            SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-                inner.last_generated_port,
-            )
+            SocketAddr::new(self.our_ip, inner.last_generated_port)
+        }
+
+        pub fn new_channel(&self, peer_addr: Option<SocketAddr>) -> AsyncChannel {
+            let addr = self.generate_addr();
+            let ret = AsyncChannel {
+                host: self.clone(),
+                addr,
+                peer_addr,
+            };
+            let mut inner = self.inner.lock().unwrap();
+            match inner.channels.get(&addr) {
+                Some(_) => unreachable!(),
+                None => {
+                    let recv = Arc::new(ChannelBroadcast::default());
+                    debug!("adding channel {}", addr);
+                    inner.channels.insert(addr, recv);
+                }
+            };
+
+            ret
         }
     }
 
     #[derive(Debug, Clone)]
     pub struct AsyncChannel {
-        router: ChannelRouter,
+        host: ChannelHost,
         addr: SocketAddr,
         peer_addr: Option<SocketAddr>,
     }
 
     impl AsyncChannel {
-        pub fn new(router: ChannelRouter, addr: SocketAddr, peer_addr: Option<SocketAddr>) -> Self {
-            let ret = Self {
-                router: router.clone(),
-                addr,
-                peer_addr,
-            };
-            router.add_channel(addr);
-            ret
-        }
-
         pub async fn close(&self) -> Result<(), std::io::Error> {
             Ok(())
         }
@@ -814,12 +1118,13 @@ pub(crate) mod tests {
                     ));
                 }
             }
+            let to = msg.address;
             let msg = DataAddress::new(msg.data.to_vec(), msg.address);
 
-            self.router.send(msg, self.addr).await.map_err(|_| {
+            self.host.send(msg, self.addr).await.map_err(|e| {
                 std::io::Error::new(
                     std::io::ErrorKind::ConnectionAborted,
-                    "Channel failed to send",
+                    format!("Channel {:?} failed to send to {to:?}: {e:?}", self.addr),
                 )
             })?;
             Ok(())
@@ -835,7 +1140,7 @@ pub(crate) mod tests {
 
     impl ReceiveStream<DataAddress> for AsyncChannel {
         fn receive_stream(&self) -> Pin<Box<dyn Stream<Item = DataAddress> + Send>> {
-            Box::pin(self.router.receiver(self.addr))
+            Box::pin(self.host.receiver(self.addr))
         }
     }
 
@@ -861,7 +1166,7 @@ pub(crate) mod tests {
         UdpSocketChannel::new(socket)
     }
 
-    fn recv_data(channel: UdpSocketChannel) -> impl Future<Output = DataAddress> {
+    fn recv_data(channel: StunChannel) -> impl Future<Output = DataAddress> {
         let result = Arc::new(Mutex::new(None));
         // retrieve the recv channel before starting the task otherwise, there is a race starting
         // the task against the a sender in the current thread.
@@ -881,17 +1186,30 @@ pub(crate) mod tests {
         }
     }
 
-    async fn send_to_and_receive(send_socket: UdpSocketChannel, recv_socket: UdpSocketChannel) {
+    pub(crate) async fn send_to_address_and_receive(
+        send_socket: StunChannel,
+        to: SocketAddr,
+        recv_socket: StunChannel,
+        check_from: bool,
+    ) -> DataAddress {
         let from = send_socket.local_addr().unwrap();
-        let to = recv_socket.local_addr().unwrap();
 
         // send data and assert that it is received
         let recv = recv_data(recv_socket);
         let data = vec![4; 4];
-        send_socket.send_to(&data.clone(), to).await.unwrap();
+        let da = DataRefAddress::from(&data, to);
+        send_socket.send(da).await.unwrap();
         let result = recv.await;
         assert_eq!(result.data, data);
-        assert_eq!(result.address, from);
+        if check_from {
+            assert_eq!(result.address, from);
+        }
+        result
+    }
+
+    async fn send_to_and_receive(send_socket: StunChannel, recv_socket: StunChannel) {
+        let to = recv_socket.local_addr().unwrap();
+        send_to_address_and_receive(send_socket, to, recv_socket, true).await;
     }
 
     #[test]
@@ -902,7 +1220,104 @@ pub(crate) mod tests {
             let udp1 = setup_udp_channel().await;
             let udp2 = setup_udp_channel().await;
 
-            send_to_and_receive(udp1, udp2).await;
+            send_to_and_receive(StunChannel::UdpAny(udp1), StunChannel::UdpAny(udp2)).await;
+        });
+    }
+
+    #[test]
+    fn async_channel_host_local_send_recv() {
+        init();
+        task::block_on(async move {
+            let host = ChannelHost::builder().build();
+            let local = host.new_channel(None);
+            let remote = host.new_channel(None);
+            send_to_and_receive(
+                StunChannel::AsyncChannel(local),
+                StunChannel::AsyncChannel(remote),
+            )
+            .await;
+        });
+    }
+
+    #[test]
+    fn async_channel_host_send_recv() {
+        init();
+        task::block_on(async move {
+            let router = ChannelRouter::builder().build();
+            let local_host = router.add_host();
+            let local = local_host.new_channel(None);
+            let remote_host = router.add_host();
+            let remote = remote_host.new_channel(None);
+            send_to_and_receive(
+                StunChannel::AsyncChannel(local),
+                StunChannel::AsyncChannel(remote),
+            )
+            .await;
+        });
+    }
+
+    #[test]
+    fn async_router_ip_range() {
+        init();
+        task::block_on(async move {
+            let start_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 10, 4));
+            let end_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 10, 40));
+            let router = ChannelRouter::builder()
+                .allocate_range(start_ip, end_ip)
+                .build();
+            assert!(router.start_ip == start_ip);
+            assert!(router.end_ip == end_ip);
+            assert!(router.our_ip >= router.start_ip);
+            assert!(router.our_ip <= router.end_ip);
+            let host = router.add_host();
+            assert!(host.our_ip >= router.start_ip);
+            assert!(host.our_ip <= router.end_ip);
+        });
+    }
+
+    pub(crate) fn async_public_router() -> ChannelRouter {
+        let start_ip = IpAddr::V4(Ipv4Addr::new(4, 4, 4, 1));
+        let end_ip = IpAddr::V4(Ipv4Addr::new(4, 4, 4, 254));
+        ChannelRouter::builder()
+            .allocate_range(start_ip, end_ip)
+            .build()
+    }
+
+    pub(crate) fn async_nat_router(public_router: ChannelRouter) -> ChannelRouter {
+        let start_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 10, 4));
+        let end_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 10, 40));
+        ChannelRouter::builder()
+            .allocate_range(start_ip, end_ip)
+            .gateway(public_router)
+            .build()
+    }
+
+    #[test]
+    fn async_router_nat_send_receive() {
+        init();
+        task::block_on(async move {
+            let public_router = async_public_router();
+            let nat_router = async_nat_router(public_router.clone());
+            assert!(nat_router.public_ip.is_some());
+            let private_host = nat_router.add_host();
+            let local = private_host.new_channel(None);
+            let remote_host = public_router.add_host();
+            let remote = remote_host.new_channel(None);
+            let to = remote.local_addr().unwrap();
+            let recved = send_to_address_and_receive(
+                StunChannel::AsyncChannel(local.clone()),
+                to,
+                StunChannel::AsyncChannel(remote.clone()),
+                false,
+            )
+            .await;
+            send_to_address_and_receive(
+                StunChannel::AsyncChannel(remote),
+                recved.address,
+                StunChannel::AsyncChannel(local),
+                true,
+            )
+            .await;
         });
     }
 }
