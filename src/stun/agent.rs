@@ -658,10 +658,12 @@ impl StunAgentState {
 pub(crate) mod tests {
     use super::*;
     use crate::stun::attribute::{Software, SOFTWARE};
+    use crate::stun::socket::tests::*;
     use crate::stun::socket::{TcpChannel, UdpConnectionChannel};
     use async_std::net::{TcpListener, TcpStream};
     use async_std::task;
     use byteorder::{BigEndian, ByteOrder};
+    use std::net::{IpAddr, Ipv4Addr};
 
     fn init() {
         crate::tests::test_init_log();
@@ -974,6 +976,190 @@ pub(crate) mod tests {
             assert_eq!(from, addr2);
             let attr: Software = stun_msg.attribute(SOFTWARE).unwrap();
             assert_eq!(attr.software(), software_str2);
+        });
+    }
+
+    pub async fn async_stund(channel: AsyncChannel) -> Result<(), std::io::Error> {
+        let stun_agent = StunAgent::new(StunChannel::AsyncChannel(channel));
+        stund::handle_stun(stun_agent).await
+    }
+
+    mod stund {
+        use crate::agent::*;
+        use crate::stun::agent::*;
+        use std::net::SocketAddr;
+
+        fn warn_on_err<T, E>(res: Result<T, E>, default: T) -> T
+        where
+            E: std::fmt::Display,
+        {
+            match res {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("{}", e);
+                    default
+                }
+            }
+        }
+
+        pub(crate) fn handle_binding_request(
+            msg: &Message,
+            from: SocketAddr,
+        ) -> Result<Message, AgentError> {
+            if let Some(error_msg) = Message::check_attribute_types(msg, &[FINGERPRINT], &[]) {
+                return Ok(error_msg);
+            }
+
+            let mut response = Message::new_success(msg);
+            response.add_attribute(XorMappedAddress::new(from, msg.transaction_id()))?;
+            response.add_fingerprint()?;
+            Ok(response)
+        }
+
+        pub async fn handle_stun(stun_agent: StunAgent) -> std::io::Result<()> {
+            let mut receive_stream = stun_agent.receive_stream();
+
+            let channel = stun_agent.channel();
+            let addr = channel.local_addr()?;
+
+            debug!("starting stun server at {}", addr);
+            while let Some(stun_or_data) = receive_stream.next().await {
+                match stun_or_data {
+                    StunOrData::Data(data, from) => {
+                        info!("received from {} data: {:?}", from, data)
+                    }
+                    StunOrData::Stun(msg, from) => {
+                        info!("received from {}: {}", from, msg);
+                        if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
+                            match handle_binding_request(&msg, from) {
+                                Ok(response) => {
+                                    info!("sending response to {}: {}", from, response);
+                                    /* XXX: probably want a explicity vfunc/check for this rather than relying on
+                                     * th error */
+                                    match channel.remote_addr() {
+                                        Ok(_) => warn_on_err(stun_agent.send(response).await, ()),
+                                        Err(_) => warn_on_err(
+                                            stun_agent.send_to(response, from).await,
+                                            (),
+                                        ),
+                                    }
+                                }
+                                Err(err) => warn!("error: {}", err),
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    async fn async_find_public_ip(send_agent: &StunAgent, stund_addr: SocketAddr) -> SocketAddr {
+        let mut msg = Message::new_request(BINDING);
+        msg.add_fingerprint().unwrap();
+        let (response, _from) = send_agent
+            .stun_request_transaction(&msg, stund_addr)
+            .unwrap()
+            .build()
+            .unwrap()
+            .perform()
+            .await
+            .unwrap();
+        response
+            .attribute::<XorMappedAddress>(XOR_MAPPED_ADDRESS)
+            .unwrap()
+            .addr(response.transaction_id())
+    }
+
+    async fn async_prime_stun(
+        send_agent: &StunAgent,
+        remote_addr: SocketAddr,
+        receive_agent: &StunAgent,
+    ) {
+        let mut recv_stream = receive_agent.receive_stream();
+        let receive_agent = receive_agent.clone();
+        let recv_data = task::spawn(async move {
+            if let Some(stun_or_data) = recv_stream.next().await {
+                error!("received {stun_or_data:?}");
+                let (msg, from) = stun_or_data.stun().unwrap();
+                if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
+                    let response = stund::handle_binding_request(&msg, from).unwrap();
+                    error!("sending response {response}");
+                    receive_agent.send_to(response.clone(), from).await.unwrap();
+                    error!("sent response {response}");
+                }
+            }
+        });
+
+        let mut msg = Message::new_request(BINDING);
+        msg.add_fingerprint().unwrap();
+        let (_response, _from) = send_agent
+            .stun_request_transaction(&msg, remote_addr)
+            .unwrap()
+            .build()
+            .unwrap()
+            .perform()
+            .await
+            .unwrap();
+        error!("async prime request done");
+        recv_data.await;
+    }
+
+    #[test]
+    fn async_router_double_nat_stund() {
+        init();
+        task::block_on(async move {
+            let public_router = async_public_router();
+            let nat1_router = async_nat_router(public_router.clone());
+            let local_host = nat1_router.add_host();
+            let local = local_host.new_channel(None);
+            let local_agent = StunAgent::new(StunChannel::AsyncChannel(local.clone()));
+            let nat2_router = {
+                let start_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 20, 4));
+                let end_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 20, 40));
+                ChannelRouter::builder()
+                    .allocate_range(start_ip, end_ip)
+                    .gateway(public_router.clone())
+                    .build()
+            };
+            let remote_host = nat2_router.add_host();
+            let remote = remote_host.new_channel(None);
+            let remote_agent = StunAgent::new(StunChannel::AsyncChannel(remote.clone()));
+            let stund_host = public_router.add_host();
+            let stund_channel = stund_host.new_channel(None);
+            let stund_addr = stund_channel.local_addr().unwrap();
+            let stund_join = task::spawn(async move { async_stund(stund_channel).await });
+
+            let local_public_addr = async_find_public_ip(&local_agent, stund_addr).await;
+            info!("found local public ip addr {local_public_addr:?}");
+
+            let remote_public_addr = async_find_public_ip(&remote_agent, stund_addr).await;
+            info!("found remote public ip addr {remote_public_addr:?}");
+
+            // prime remote stun agent with a stun message to allow further data
+            async_prime_stun(&local_agent, remote_public_addr, &remote_agent).await;
+            info!("remote stun agent has validated local peer");
+
+            // prime local stun agent with a stun message to allow further data
+            async_prime_stun(&remote_agent, local_public_addr, &local_agent).await;
+            info!("local stun agent has validated remote peer");
+
+            // actually send the data
+            send_to_address_and_receive(
+                StunChannel::AsyncChannel(local.clone()),
+                remote_public_addr,
+                StunChannel::AsyncChannel(remote.clone()),
+                false,
+            )
+            .await;
+            send_to_address_and_receive(
+                StunChannel::AsyncChannel(remote),
+                local_public_addr,
+                StunChannel::AsyncChannel(local),
+                false,
+            )
+            .await;
+            stund_join.cancel().await;
         });
     }
 }
