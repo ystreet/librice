@@ -302,12 +302,28 @@ impl Candidate {
         ret
     }
 
+    pub(crate) fn pair_tcp_type(local: TcpType) -> TcpType {
+        match local {
+            TcpType::Active => TcpType::Passive,
+            TcpType::Passive => TcpType::Active,
+            TcpType::So => TcpType::So,
+        }
+    }
+
     // can this candidate pair with 'remote' in any way
     pub(crate) fn can_pair_with(&self, remote: &Candidate) -> bool {
         let address = match self.candidate_type {
             CandidateType::Host => self.address,
             _ => self.base_address,
         };
+        if self.transport_type == TransportType::Tcp
+            && remote.transport_type == TransportType::Tcp
+            && (self.tcp_type.is_none()
+                || remote.tcp_type.is_none()
+                || Candidate::pair_tcp_type(self.tcp_type.unwrap()) != remote.tcp_type.unwrap())
+        {
+            return false;
+        }
         self.transport_type == remote.transport_type
             && self.component_id == remote.component_id
             && address.is_ipv4() == remote.address.is_ipv4()
@@ -334,6 +350,12 @@ impl Candidate {
 
     // RFC 8445 5.1.3.  "Eliminating Redundant Candidates"
     pub(crate) fn redundant_with(&self, other: &Candidate) -> bool {
+        if self.transport_type != other.transport_type {
+            return false;
+        }
+        if self.transport_type == TransportType::Tcp && self.tcp_type != other.tcp_type {
+            return false;
+        }
         self.address.ip() == other.address.ip() && self.base_address.ip() == other.base_address.ip()
     }
 

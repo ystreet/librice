@@ -858,7 +858,7 @@ impl Message {
         )
     )]
     pub fn add_attribute<A: Attribute>(&mut self, attr: A) -> Result<(), StunError> {
-        trace!("adding attribute {:?}", attr);
+        //trace!("adding attribute {:?}", attr);
         if attr.get_type() == MESSAGE_INTEGRITY {
             return Err(StunError::WrongImplementation);
         }

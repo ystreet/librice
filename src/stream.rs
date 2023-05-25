@@ -370,24 +370,14 @@ impl Stream {
             inner.stun_servers.clone()
         };
 
-        let (components, local_credentials, remote_credentials) = {
+        let components = {
             let mut state = self.state.lock().unwrap();
             if state.gathering {
                 return Err(AgentError::AlreadyInProgress);
             }
             state.gathering = true;
 
-            (
-                state.components.clone(),
-                state
-                    .local_credentials
-                    .clone()
-                    .ok_or(AgentError::ResourceNotFound)?,
-                state
-                    .remote_credentials
-                    .clone()
-                    .ok_or(AgentError::ResourceNotFound)?,
-            )
+            state.components.clone()
         };
 
         let mut gather = futures::stream::select_all(vec![]);
@@ -395,14 +385,11 @@ impl Stream {
             component.set_state(ComponentState::Connecting).await;
             let cstream = Box::pin(
                 component
-                    .gather_stream(
-                        MessageIntegrityCredentials::ShortTerm(local_credentials.clone().into()),
-                        MessageIntegrityCredentials::ShortTerm(remote_credentials.clone().into()),
-                        stun_servers.clone(),
-                    )
+                    .gather_stream(stun_servers.clone())
                     .await?
-                    .map(move |(cand, agent)| (cand, agent, component)),
+                    .map(move |(cand, socket)| (cand, socket, component)),
             );
+
             // make a stream that notifies after completing
             let stream = futures::stream::unfold(cstream, move |cstream| {
                 let span = debug_span!("gather_component", component.id);
@@ -426,9 +413,9 @@ impl Stream {
         }
 
         futures::pin_mut!(gather);
-        while let Some((cand, agent, component)) = gather.next().await {
+        while let Some((cand, socket, component)) = gather.next().await {
             self.checklist
-                .add_local_candidate(cand.clone(), agent)
+                .add_local_candidate(cand.clone(), socket)
                 .await;
             self.broadcast
                 .broadcast(AgentMessage::NewLocalCandidate(component.clone(), cand))

@@ -9,6 +9,7 @@
 #[macro_use]
 extern crate tracing;
 
+use librice::gathering::GatherSocket;
 use librice::stun::socket::StunChannel;
 use tracing_subscriber::EnvFilter;
 
@@ -31,16 +32,22 @@ fn main() -> io::Result<()> {
         let stun_servers = [(TransportType::Udp, "127.0.0.1:3478".parse().unwrap())].to_vec();
         //let stun_servers = ["172.253.56.127:19302".parse().unwrap()].to_vec();
 
-        let agents = librice::gathering::iface_udp_sockets()
+        let sockets = librice::gathering::iface_sockets()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e))?
-            .filter_map(|channel| async move {
-                channel.ok().map(|c| StunAgent::new(StunChannel::UdpAny(c)))
-            })
+            .filter_map(|channel| async move { channel.ok() })
             .collect::<Vec<_>>()
             .await;
 
         info!("retreived sockets");
-        let gather_stream = librice::gathering::gather_component(1, agents, stun_servers);
+        let gather_stream = librice::gathering::gather_component(1, &sockets, stun_servers)
+            .filter_map(|(candidate, socket)| async move {
+                match socket {
+                    GatherSocket::Udp(channel) => {
+                        Some((candidate, StunAgent::new(StunChannel::UdpAny(channel))))
+                    }
+                    GatherSocket::Tcp(_listener) => None,
+                }
+            });
         futures::pin_mut!(gather_stream);
         while let Some(candidate) = gather_stream.next().await {
             println! {"{:?}", candidate};

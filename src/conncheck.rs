@@ -12,14 +12,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use futures::channel::oneshot;
+use async_std::net::TcpListener;
 use futures::future::AbortHandle;
 use futures::prelude::*;
-use tracing_futures::Instrument;
 
-use crate::candidate::{Candidate, CandidatePair, CandidateType, TransportType};
+use crate::candidate::{Candidate, CandidatePair, CandidateType, TcpType, TransportType};
 
 use crate::agent::AgentError;
+use crate::gathering::GatherSocket;
 use crate::stream::Credentials;
 
 use crate::clock::{get_clock, Clock, ClockType};
@@ -27,6 +27,7 @@ use crate::component::{Component, ComponentState, SelectedPair};
 use crate::stun::agent::{StunAgent, StunError, StunRequest};
 use crate::stun::attribute::*;
 use crate::stun::message::*;
+use crate::stun::socket::{StunChannel, TcpChannel};
 use crate::utils::DropLogger;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +47,18 @@ impl std::fmt::Display for CandidatePairState {
 
 static CONN_CHECK_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+#[derive(Debug, Clone)]
+struct TcpConnCheck {
+    weak_inner: Weak<Mutex<ConnCheckListInner>>,
+    component: Component,
+}
+
+#[derive(Debug, Clone)]
+enum ConnCheckType {
+    Agent(StunAgent),
+    Tcp(TcpConnCheck),
+}
+
 #[derive(Derivative)]
 #[derivative(Debug)]
 struct ConnCheck {
@@ -55,7 +68,7 @@ struct ConnCheck {
     #[derivative(Debug = "ignore")]
     state: Mutex<ConnCheckState>,
     #[derivative(Debug = "ignore")]
-    agent: StunAgent,
+    agent: ConnCheckType,
 }
 
 #[derive(Debug)]
@@ -79,8 +92,8 @@ impl ConnCheckState {
             debug!(old_state = ?self.state, new_state = ?state, "updating state");
             if state == CandidatePairState::Succeeded || state == CandidatePairState::Failed {
                 debug!("aborting recv task");
-                if let Some(stun_request) = self.stun_request.take() {
-                    stun_request.cancel();
+                if let Some(ref stun_request) = self.stun_request {
+                    stun_request.cancel_retransmissions();
                 }
             }
             self.state = state;
@@ -99,8 +112,70 @@ impl ConnCheck {
                 state: CandidatePairState::Frozen,
                 stun_request: None,
             }),
-            agent,
+            agent: ConnCheckType::Agent(agent),
             nominate,
+        }
+    }
+
+    fn new_tcp(
+        pair: CandidatePair,
+        nominate: bool,
+        weak_inner: Weak<Mutex<ConnCheckListInner>>,
+        component: Component,
+    ) -> Self {
+        let conncheck_id = CONN_CHECK_COUNT.fetch_add(1, Ordering::SeqCst);
+        Self {
+            conncheck_id,
+            pair,
+            state: Mutex::new(ConnCheckState {
+                conncheck_id,
+                state: CandidatePairState::Frozen,
+                stun_request: None,
+            }),
+            agent: ConnCheckType::Tcp(TcpConnCheck {
+                weak_inner,
+                component,
+            }),
+            nominate,
+        }
+    }
+
+    fn clone_with_pair_nominate(
+        conncheck: &Arc<ConnCheck>,
+        pair: CandidatePair,
+        new_nominate: bool,
+    ) -> Arc<ConnCheck> {
+        Arc::new(match &conncheck.agent {
+            ConnCheckType::Agent(agent) => ConnCheck::new(pair, agent.clone(), new_nominate),
+            ConnCheckType::Tcp(tcp) => {
+                if let Some(agent) = conncheck.agent() {
+                    // if we have an existing agent/channel/socket, use that
+                    ConnCheck::new(pair, agent, new_nominate)
+                } else {
+                    if new_nominate {
+                        panic!("nomination without an existing agent for original conncheck {conncheck:?}");
+                    }
+                    ConnCheck::new_tcp(
+                        pair,
+                        new_nominate,
+                        tcp.weak_inner.clone(),
+                        tcp.component.clone(),
+                    )
+                }
+            }
+        })
+    }
+
+    fn agent(&self) -> Option<StunAgent> {
+        match self.agent {
+            ConnCheckType::Agent(ref agent) => Some(agent.clone()),
+            ConnCheckType::Tcp(_) => {
+                let inner = self.state.lock().unwrap();
+                inner
+                    .stun_request
+                    .as_ref()
+                    .and_then(|sr| sr.created_agent())
+            }
         }
     }
 
@@ -154,13 +229,17 @@ impl ConnCheck {
 
     fn generate_stun_request(
         conncheck: Arc<ConnCheck>,
-        username: String,
+        clock: Arc<dyn Clock>,
         controlling: bool,
         tie_breaker: u64,
+        local_credentials: Credentials,
+        remote_credentials: Credentials,
     ) -> Result<StunRequest, StunError> {
-        let mut msg = Message::new_request(BINDING);
+        let to = conncheck.pair.remote.address;
+        let username = remote_credentials.ufrag.clone() + ":" + &local_credentials.ufrag;
 
         // XXX: this needs to be the priority as if the candidate was peer-reflexive
+        let mut msg = Message::new_request(BINDING);
         msg.add_attribute(Priority::new(conncheck.pair.local.priority))?;
         if controlling {
             msg.add_attribute(IceControlling::new(tie_breaker))?;
@@ -171,11 +250,57 @@ impl ConnCheck {
             msg.add_attribute(UseCandidate::new())?;
         }
         msg.add_attribute(Username::new(&username)?)?;
-        msg.add_message_integrity(&conncheck.agent.local_credentials().unwrap())?;
+        msg.add_message_integrity(&MessageIntegrityCredentials::ShortTerm(
+            local_credentials.clone().into(),
+        ))?;
         msg.add_fingerprint()?;
 
-        let to = conncheck.pair.remote.address;
-        conncheck.agent.stun_request_transaction(&msg, to)?.build()
+        match &conncheck.agent {
+            ConnCheckType::Agent(agent) => agent.stun_request_transaction(&msg, to)?.build(),
+            ConnCheckType::Tcp(tcp) => {
+                let (create_agent_request_tx, mut create_agent_request_rx) =
+                    async_channel::bounded::<StunAgent>(1);
+                let (create_agent_reply_tx, create_agent_reply_rx) = async_channel::bounded(1);
+                let local = conncheck.pair.local.clone();
+                let weak_inner = tcp.weak_inner.clone();
+                let component = tcp.component.clone();
+                let local_credentials =
+                    MessageIntegrityCredentials::ShortTerm(local_credentials.into());
+                let remote_credentials =
+                    MessageIntegrityCredentials::ShortTerm(remote_credentials.into());
+                async_std::task::spawn(async move {
+                    while let Some(agent) = create_agent_request_rx.next().await {
+                        debug!("have new agent to configure");
+                        agent.set_local_credentials(local_credentials.clone());
+                        agent.set_remote_credentials(remote_credentials.clone());
+                        // TODO: abort when done
+                        let _data_abort = component.add_recv_agent(agent.clone()).await;
+                        let (start_notify_tx, mut start_notify_rx) = async_channel::bounded(1);
+                        async_std::task::spawn({
+                            let agent = agent.clone();
+                            let local = local.clone();
+                            let weak_inner = weak_inner.clone();
+                            ConnCheckList::local_candidate_handling_incoming_data_loop(
+                                weak_inner, agent, local, start_notify_tx,
+                            )
+                        });
+                        let _ = start_notify_rx.next().await;
+                        if create_agent_reply_tx.send(agent).await.is_err() {
+                            // no request anymore
+                            break;
+                        }
+                    }
+                });
+                StunAgent::tcp_connect_stun_request_transaction(
+                    clock,
+                    &msg,
+                    to,
+                    create_agent_request_tx,
+                    create_agent_reply_rx,
+                )?
+                .build()
+            }
+        }
     }
 
     async fn do_stun_request(
@@ -285,14 +410,34 @@ fn candidate_pair_is_same_connection(a: &CandidatePair, b: &CandidatePair) -> bo
     true
 }
 
-#[derive(Debug)]
-struct ConnCheckLocalCandidate {
-    candidate: Candidate,
+#[derive(Debug, Clone)]
+struct StunAgentCandidate {
     stun_agent: StunAgent,
+    // FIXME: abort when closing or not needing stun for candidate
     #[allow(dead_code)]
     stun_recv_abort: AbortHandle,
     #[allow(dead_code)]
     data_recv_abort: AbortHandle,
+}
+
+#[derive(Debug, Clone)]
+struct TcpListenCandidate {
+    // FIXME: abort when closing or not needing stun for candidate
+    #[allow(dead_code)]
+    stun_recv_abort: AbortHandle,
+}
+
+#[derive(Debug, Clone)]
+enum LocalCandidateVariant {
+    StunAgent(StunAgentCandidate),
+    TcpListen(TcpListenCandidate),
+    TcpActive,
+}
+
+#[derive(Debug)]
+struct ConnCheckLocalCandidate {
+    candidate: Candidate,
+    variant: LocalCandidateVariant,
 }
 
 #[derive(Debug)]
@@ -309,8 +454,8 @@ struct ConnCheckListInner {
     // TODO: move to BinaryHeap or similar
     triggered: VecDeque<Arc<ConnCheck>>,
     pairs: VecDeque<Arc<ConnCheck>>,
-    valid: Vec<CandidatePair>,
-    nominated: Vec<CandidatePair>,
+    valid: Vec<Arc<ConnCheck>>,
+    nominated: Vec<Arc<ConnCheck>>,
     controlling: bool,
     trickle_ice: bool,
     local_end_of_candidates: bool,
@@ -433,7 +578,7 @@ impl ConnCheckListInner {
 
     #[tracing::instrument(
         level = "debug",
-        skip(self)
+        skip(self, weak_inner, remote)
         fields(
             self.checklist_id,
             remote.ctype = ?remote.candidate_type,
@@ -441,9 +586,13 @@ impl ConnCheckListInner {
             remote.address = ?remote.address
         )
     )]
-    fn add_remote_candidate(&mut self, remote: Candidate) {
+    fn add_remote_candidate(
+        &mut self,
+        weak_inner: Weak<Mutex<ConnCheckListInner>>,
+        remote: Candidate,
+    ) {
         self.remote_candidates.push(remote);
-        self.generate_checks();
+        self.generate_checks(weak_inner);
     }
 
     fn foundation_has_check_state(&self, foundation: &str, state: CandidatePairState) -> bool {
@@ -468,12 +617,12 @@ impl ConnCheckListInner {
 
     #[tracing::instrument(
         level = "debug",
-        skip(self),
+        skip(self, weak_inner),
         fields(
             checklist_id = self.checklist_id
         )
     )]
-    fn generate_checks(&mut self) {
+    fn generate_checks(&mut self, weak_inner: Weak<Mutex<ConnCheckListInner>>) {
         let mut checks = vec![];
         // Trickle ICE mandates that we only check redundancy with Frozen or Waiting pairs.  This
         // is compatible with non-trickle-ICE as checks start off in the frozen state until the
@@ -498,35 +647,67 @@ impl ConnCheckListInner {
             for remote in self.remote_candidates.iter() {
                 if local.candidate.can_pair_with(remote) {
                     let pair = CandidatePair::new(local.candidate.clone(), remote.clone());
+                    let component = self
+                        .components
+                        .iter()
+                        .find(|component| component.id == local.candidate.component_id)
+                        .unwrap_or_else(|| panic!("No component {} for local candidate",
+                                        local.candidate.component_id));
 
                     if let Some(redundant_pair) = pair.redundant_with(pairs.iter()) {
                         if redundant_pair.remote.candidate_type == CandidateType::PeerReflexive {
                             redundant_pairs.push((
                                 redundant_pair.clone(),
                                 pair,
-                                local.stun_agent.clone(),
+                                local.variant.clone(),
+                                component.clone(),
                             ));
                         } else {
                             trace!("not adding redundant pair {:?}", pair);
                         }
                     } else {
+                        match local.variant {
+                            LocalCandidateVariant::StunAgent(ref local_agent) => {
+                                pairs.push(pair.clone());
+                                checks.push(Arc::new(ConnCheck::new(
+                                    pair.clone(),
+                                    local_agent.stun_agent.clone(),
+                                    false,
+                                )));
+                            }
+                            LocalCandidateVariant::TcpListen(ref _listener) => continue,
+                            LocalCandidateVariant::TcpActive => {
+                                pairs.push(pair.clone());
+
+                                checks.push(Arc::new(ConnCheck::new_tcp(
+                                    pair.clone(),
+                                    false,
+                                    weak_inner.clone(),
+                                    component.clone(),
+                                )));
+                            }
+                        }
                         debug!("generated pair {:?}", pair);
-                        pairs.push(pair.clone());
-                        checks.push(Arc::new(ConnCheck::new(
-                            pair,
-                            local.stun_agent.clone(),
-                            false,
-                        )));
                     }
                 }
             }
         }
-        for (peer_reflexive_pair, pair, local_stun_agent) in redundant_pairs {
+        /*
+        for (peer_reflexive_pair, pair, local, component) in redundant_pairs {
+            // try to replace the existing check with a non-peer reflexive version
             if let Some(check) = self.take_matching_check(&peer_reflexive_pair) {
-                check.cancel();
-                checks.push(Arc::new(ConnCheck::new(pair, local_stun_agent, false)));
+                if !matches!(check.state(), CandidatePairState::InProgress) {
+                    check.cancel();
+                    match local {
+                        LocalCandidateVariant::StunAgent(agent) => checks.push(Arc::new(ConnCheck::new(pair, agent.stun_agent.clone(), false))),
+                        LocalCandidateVariant::TcpListen(_tcp) => checks.push(Arc::new(ConnCheck::new_tcp(pair, false, weak_inner.clone(), component))),
+                        LocalCandidateVariant::TcpActive => (),
+                    }
+                } else {
+                    self.add_check(check);
+                }
             }
-        }
+        }*/
 
         let mut thawn_foundations = if self.trickle_ice {
             self.thawn_foundations()
@@ -587,6 +768,24 @@ impl ConnCheckListInner {
     }
 
     fn add_check(&mut self, check: Arc<ConnCheck>) {
+        debug!("adding check {:?}", check);
+        if let Some(idx) = self
+            .pairs
+            .iter()
+            .position(|existing| candidate_pair_is_same_connection(&existing.pair, &check.pair))
+        {
+            // a nominating check trumps not nominating.  Otherwise, if the peers are delay sync,
+            // then the non-nominating trigerred check may override the nomination process for a
+            // long time and delay the connection process
+            if check.nominate() && !self.pairs[idx].nominate() {
+                let existing = self.pairs.remove(idx).unwrap();
+                debug!("removing existing check {:?}", existing);
+            } else {
+                debug!("not adding duplicate check");
+                return;
+            }
+        }
+
         let idx = self
             .pairs
             .binary_search_by(|existing| {
@@ -655,7 +854,7 @@ impl ConnCheckListInner {
         if let Some(idx) = self
             .valid
             .iter()
-            .position(|valid_pair| candidate_pair_is_same_connection(valid_pair, pair))
+            .position(|check| candidate_pair_is_same_connection(&check.pair, pair))
         {
             info!(
                 ttype = ?pair.local.transport_type,
@@ -714,7 +913,7 @@ impl ConnCheckListInner {
             let all_nominated = self.component_ids.iter().all(|&component_id| {
                 self.nominated
                     .iter()
-                    .any(|valid_pair| valid_pair.local.component_id == component_id)
+                    .any(|check| check.pair.local.component_id == component_id)
             });
             if all_nominated {
                 // ... Once an ICE agent sets the
@@ -728,20 +927,14 @@ impl ConnCheckListInner {
                 );
                 self.nominated
                     .iter()
-                    .fold(vec![], |mut component_ids_selected, valid_pair| {
+                    .fold(vec![], |mut component_ids_selected, check| {
                         // Only nominate one valid candidatePair
                         if !component_ids_selected
                             .iter()
-                            .any(|&comp_id| comp_id == valid_pair.local.component_id)
+                            .any(|&comp_id| comp_id == check.pair.local.component_id)
                         {
                             if let Some(component) = &component {
-                                let local_agent = self
-                                    .local_candidates
-                                    .iter()
-                                    .find(|cand| {
-                                        cand.candidate.base_address == pair.local.base_address
-                                    })
-                                    .map(|cand| cand.stun_agent.clone());
+                                let local_agent = check.agent();
                                 if let Some(local_agent) = local_agent {
                                     component.set_selected_pair(SelectedPair::new(
                                         pair.clone(),
@@ -751,7 +944,7 @@ impl ConnCheckListInner {
                                     panic!("Cannot find existing local stun agent!");
                                 }
                             }
-                            component_ids_selected.push(valid_pair.local.component_id);
+                            component_ids_selected.push(check.pair.local.component_id);
                         }
                         component_ids_selected
                     });
@@ -790,17 +983,10 @@ impl ConnCheckListInner {
         debug!("{}", s);
     }
 
-    #[tracing::instrument(
-        level = "debug",
-        err
-        skip(self, local, agent, from, priority)
-        fields(
-            checklist_id = self.checklist_id,
-            state = ?self.state,
-        )
-    )]
+    #[allow(clippy::too_many_arguments)]
     fn handle_binding_request(
         &mut self,
+        weak_inner: Weak<Mutex<ConnCheckListInner>>,
         peer_nominating: bool,
         component_id: usize,
         local: &Candidate,
@@ -811,6 +997,7 @@ impl ConnCheckListInner {
         let remote = self
             .find_remote_candidate(component_id, local.transport_type, from)
             .unwrap_or_else(|| {
+                debug!("no existing remote candidate for {from}");
                 // If the source transport address of the request does not match any
                 // existing remote candidates, it represents a new peer-reflexive remote
                 // candidate.  This candidate is constructed as follows:
@@ -823,20 +1010,24 @@ impl ConnCheckListInner {
                 //   o  The foundation is an arbitrary value, different from the
                 //      foundations of all other remote candidates.  If any subsequent
                 //      candidate exchanges contain this peer-reflexive candidate, it will
-                //      signal the actual foundation for the candidate.
-                let cand = Candidate::builder(
+                //      signal the actual foundation for the candidate
+                let mut builder = Candidate::builder(
                     component_id,
                     CandidateType::PeerReflexive,
                     local.transport_type,
                     /* FIXME */ "rflx",
                     from,
                 )
-                .priority(priority)
-                .build();
+                .priority(priority);
+                if local.transport_type == TransportType::Tcp {
+                    builder = builder.tcp_type(Candidate::pair_tcp_type(local.tcp_type.unwrap()))
+                }
+                let cand = builder.build();
                 debug!("new reflexive remote {:?}", cand);
-                self.add_remote_candidate(cand.clone());
+                self.add_remote_candidate(weak_inner, cand.clone());
                 cand
             });
+        trace!("remote candidate {remote:?}");
         // RFC 8445 Section 7.3.1.4. Triggered Checks
         let pair = CandidatePair::new(local.clone(), remote);
         if let Some(mut check) = self.take_matching_check(&pair) {
@@ -848,11 +1039,8 @@ impl ConnCheckListInner {
                 CandidatePairState::Succeeded => {
                     if peer_nominating {
                         debug!("existing pair succeeded -> nominate");
-                        check = Arc::new(ConnCheck::new(
-                            check.pair.clone(),
-                            check.agent.clone(),
-                            true,
-                        ));
+                        check =
+                            ConnCheck::clone_with_pair_nominate(&check, check.pair.clone(), true);
                         if let Some(component) = self.nominated_pair(&pair) {
                             self.add_check(check);
                             return Ok(Some(component));
@@ -877,11 +1065,11 @@ impl ConnCheckListInner {
                     // TODO: ignore response timeouts
 
                     self.add_check(check.clone());
-                    check = Arc::new(ConnCheck::new(
+                    check = ConnCheck::clone_with_pair_nominate(
+                        &check,
                         check.pair.clone(),
-                        check.agent.clone(),
                         peer_nominating,
-                    ));
+                    );
                     check.set_state(CandidatePairState::Waiting);
                     self.add_triggered(check.clone());
                 }
@@ -898,11 +1086,11 @@ impl ConnCheckListInner {
                     if peer_nominating && !check.nominate() {
                         check.cancel();
                         self.add_check(check.clone());
-                        check = Arc::new(ConnCheck::new(
+                        check = ConnCheck::clone_with_pair_nominate(
+                            &check,
                             check.pair.clone(),
-                            check.agent.clone(),
                             peer_nominating,
-                        ));
+                        );
                     }
                     check.set_state(CandidatePairState::Waiting);
                     self.add_triggered(check.clone());
@@ -1003,6 +1191,11 @@ impl ConnCheckList {
         }
     }
 
+    #[tracing::instrument(
+        ret,
+        err,
+        skip(weak_inner, local, agent, msg)
+    )]
     async fn handle_binding_request(
         weak_inner: Weak<Mutex<ConnCheckListInner>>,
         component_id: usize,
@@ -1017,7 +1210,7 @@ impl ConnCheckList {
             .local_credentials()
             .ok_or(AgentError::ResourceNotFound)?;
 
-        if let Some(error_msg) = Message::check_attribute_types(
+        if let Some(mut error_msg) = Message::check_attribute_types(
             msg,
             &[
                 USERNAME,
@@ -1031,6 +1224,8 @@ impl ConnCheckList {
             &[USERNAME, FINGERPRINT, MESSAGE_INTEGRITY, PRIORITY],
         ) {
             // failure -> send error response
+            error_msg.add_fingerprint()?;
+            error_msg.add_message_integrity(&local_credentials)?;
             return Ok(Some(error_msg));
         }
         let peer_nominating =
@@ -1038,7 +1233,10 @@ impl ConnCheckList {
                 if UseCandidate::from_raw(&use_candidate_raw).is_ok() {
                     true
                 } else {
-                    return Ok(Some(Message::bad_request(msg)?));
+                    let mut response = Message::bad_request(msg)?;
+                    response.add_fingerprint()?;
+                    response.add_message_integrity(&local_credentials)?;
+                    return Ok(Some(response));
                 }
             } else {
                 false
@@ -1047,7 +1245,10 @@ impl ConnCheckList {
         let priority = match msg.attribute::<Priority>(PRIORITY) {
             Some(p) => p.priority(),
             None => {
-                return Ok(Some(Message::bad_request(msg)?));
+                let mut response = Message::bad_request(msg)?;
+                response.add_fingerprint()?;
+                response.add_message_integrity(&local_credentials)?;
+                return Ok(Some(response));
             }
         };
 
@@ -1058,11 +1259,12 @@ impl ConnCheckList {
             let checklist = weak_inner.upgrade().ok_or(AgentError::ConnectionClosed)?;
             let mut checklist = checklist.lock().unwrap();
 
+            /*
             if checklist.state == CheckListState::Completed && !peer_nominating {
                 // ignore binding requests if we are completed
                 trace!("ignoring binding request as we have completed");
                 return Ok(None);
-            }
+            }*/
 
             // validate username
             if let Some(username) = msg.attribute::<Username>(USERNAME) {
@@ -1070,16 +1272,23 @@ impl ConnCheckList {
                     warn!("binding request failed username validation -> UNAUTHORIZED");
                     let mut response = Message::new_error(msg);
                     response.add_attribute(ErrorCode::builder(ErrorCode::UNAUTHORIZED).build()?)?;
+                    let mut response = Message::bad_request(msg)?;
+                    response.add_fingerprint()?;
+                    response.add_message_integrity(&local_credentials)?;
                     return Ok(Some(response));
                 }
             } else {
                 // existence is checked above so can only fail when the username is invalid
-                return Ok(Some(Message::bad_request(msg)?));
+                let mut response = Message::bad_request(msg)?;
+                response.add_fingerprint()?;
+                response.add_message_integrity(&local_credentials)?;
+                return Ok(Some(response));
             }
 
             {
                 // Deal with role conflicts
                 // RFC 8445 7.3.1.1.  Detecting and Repairing Role Conflicts
+                trace!("checking for role conflicts");
                 let set = checklist
                     .set_inner
                     .upgrade()
@@ -1090,6 +1299,7 @@ impl ConnCheckList {
                     //     attribute is present in the request:
                     if set.controlling {
                         if set.tie_breaker >= ice_controlling.tie_breaker() {
+                            debug!("role conflict detected (controlling=true), returning ROLE_CONFLICT");
                             // *  If the agent's tiebreaker value is larger than or equal to the
                             //    contents of the ICE-CONTROLLING attribute, the agent generates
                             //    a Binding error response and includes an ERROR-CODE attribute
@@ -1098,26 +1308,16 @@ impl ConnCheckList {
                             response.add_attribute(
                                 ErrorCode::builder(ErrorCode::ROLE_CONFLICT).build()?,
                             )?;
+                            response.add_fingerprint()?;
+                            response.add_message_integrity(&local_credentials)?;
                             return Ok(Some(response));
                         } else {
+                            debug!("role conflict detected, updating controlling state to false");
                             // *  If the agent's tiebreaker value is less than the contents of
                             //    the ICE-CONTROLLING attribute, the agent switches to the
                             //    controlled role.
                             set.controlling = false;
                             checklist.controlling = false;
-                            // TODO: update priorities and other things
-                        }
-                    }
-                }
-                if let Some(ice_controlled) = ice_controlled {
-                    // o  If the agent is in the controlled role, and the ICE-CONTROLLED
-                    //    attribute is present in the request:
-                    if !set.controlling {
-                        if set.tie_breaker >= ice_controlled.tie_breaker() {
-                            // *  If the agent's tiebreaker value is larger than or equal to the
-                            //    contents of the ICE-CONTROLLED attribute, the agent switches to
-                            //    the controlling role.
-                            set.controlling = true;
                             checklist.set_controlling(false);
                             for l in set.checklists.iter() {
                                 if l.checklist_id == checklist.checklist_id {
@@ -1126,7 +1326,29 @@ impl ConnCheckList {
                                 let mut l = l.inner.lock().unwrap();
                                 l.set_controlling(false);
                             }
+                        }
+                    }
+                }
+                if let Some(ice_controlled) = ice_controlled {
+                    // o  If the agent is in the controlled role, and the ICE-CONTROLLED
+                    //    attribute is present in the request:
+                    if !set.controlling {
+                        if set.tie_breaker >= ice_controlled.tie_breaker() {
+                            debug!("role conflict detected, updating controlling state to true");
+                            // *  If the agent's tiebreaker value is larger than or equal to the
+                            //    contents of the ICE-CONTROLLED attribute, the agent switches to
+                            //    the controlling role.
+                            set.controlling = true;
+                            checklist.set_controlling(true);
+                            for l in set.checklists.iter() {
+                                if l.checklist_id == checklist.checklist_id {
+                                    continue;
+                                }
+                                let mut l = l.inner.lock().unwrap();
+                                l.set_controlling(true);
+                            }
                         } else {
+                            debug!("role conflict detected (controlling=false), returning ROLE_CONFLICT");
                             // *  If the agent's tiebreaker value is less than the contents of
                             //    the ICE-CONTROLLED attribute, the agent generates a Binding
                             //    error response and includes an ERROR-CODE attribute with a
@@ -1135,13 +1357,17 @@ impl ConnCheckList {
                             response.add_attribute(
                                 ErrorCode::builder(ErrorCode::ROLE_CONFLICT).build()?,
                             )?;
+                            response.add_fingerprint()?;
+                            response.add_message_integrity(&local_credentials)?;
                             return Ok(Some(response));
                         }
                     }
                 }
+                trace!("checked for role conflicts");
             }
 
             checklist.handle_binding_request(
+                weak_inner,
                 peer_nominating,
                 component_id,
                 local,
@@ -1161,8 +1387,105 @@ impl ConnCheckList {
     }
 
     #[tracing::instrument(
+       name = "conncheck_local_tcp_listener_loop"
+       skip(weak_inner, listener, local, local_credentials, remote_credentials, component)
+       fields(
+            checklist_id,
+            component_id = local.component_id,
+            ttype = ?local.transport_type,
+            ctype = ?local.candidate_type,
+            foundation = %local.foundation,
+            address = ?local.address
+        )
+    )]
+    async fn local_candidate_tcp_listener_handle_incoming(
+        weak_inner: Weak<Mutex<ConnCheckListInner>>,
+        listener: Arc<TcpListener>,
+        local: Candidate,
+        local_credentials: Credentials,
+        remote_credentials: Credentials,
+        component: Component,
+    ) {
+        let mut incoming = listener.incoming();
+        while let Some(stream) = incoming.next().await {
+            if let Ok(stream) = stream {
+                let agent = StunAgent::new(StunChannel::Tcp(TcpChannel::new(stream)));
+                agent.set_local_credentials(MessageIntegrityCredentials::ShortTerm(
+                    local_credentials.clone().into(),
+                ));
+                agent.set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
+                    remote_credentials.clone().into(),
+                ));
+                // TODO: stop this eventually
+                let _data_abort = component.add_recv_agent(agent.clone()).await;
+                let (start_notify_tx, mut start_notify_rx) = async_channel::bounded(1);
+                async_std::task::spawn(ConnCheckList::local_candidate_handling_incoming_data_loop(
+                    weak_inner.clone(),
+                    agent,
+                    local.clone(),
+                    start_notify_tx,
+                ));
+                let _ = start_notify_rx.next().await;
+            }
+        }
+    }
+
+    #[tracing::instrument(
+       name = "conncheck_local_cand_recv_loop"
+       skip(weak_inner, agent, local, start_notify_tx)
+       fields(
+            checklist_id,
+            component_id = local.component_id,
+            ttype = ?local.transport_type,
+            ctype = ?local.candidate_type,
+            foundation = %local.foundation,
+            address = ?local.address
+        )
+    )]
+    async fn local_candidate_handling_incoming_data_loop(
+        weak_inner: Weak<Mutex<ConnCheckListInner>>,
+        agent: StunAgent,
+        local: Candidate,
+        start_notify_tx: async_channel::Sender<()>
+    ) {
+        let _drop_log = DropLogger::new("dropping stun receive stream");
+        let mut recv_stun = agent.receive_stream();
+        let _ = start_notify_tx.send(()).await;
+        while let Some(stun_or_data) = recv_stun.next().await {
+            if let Some((msg, from)) = stun_or_data.stun() {
+                // RFC8445 Section 7.3. STUN Server Procedures
+                if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
+                    match ConnCheckList::handle_binding_request(
+                        weak_inner.clone(),
+                        local.component_id,
+                        &local,
+                        agent.clone(),
+                        &msg,
+                        from,
+                    )
+                    .await
+                    {
+                        Ok(Some(response)) => {
+                            trace!("sending response {}", response);
+                            if let Err(e) = agent.send_to(response, from).await {
+                                warn!("error sending response {:?}", e);
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            warn!("error generating response {:?}", e);
+                            break;
+                        }
+                        _ => warn!("nothing to respond with"),
+                    }
+                }
+            }
+        }
+    }
+
+    #[tracing::instrument(
         level = "debug",
-        skip(self, local, agent),
+        skip(self, local, socket),
         fields(
             checklist_id = self.checklist_id,
             component_id = local.component_id,
@@ -1172,8 +1495,8 @@ impl ConnCheckList {
             address = ?local.address
         )
     )]
-    pub(crate) async fn add_local_candidate(&self, local: Candidate, agent: StunAgent) {
-        let component = {
+    pub(crate) async fn add_local_candidate(&self, local: Candidate, socket: GatherSocket) {
+        let (component, local_credentials, remote_credentials) = {
             let inner = self.inner.lock().unwrap();
             if inner.local_end_of_candidates {
                 panic!("Attempt made to add a local candidate after end-of-candidate received");
@@ -1183,7 +1506,11 @@ impl ConnCheckList {
                 .iter()
                 .find(|&c| c.id == local.component_id);
             if let Some(existing) = existing {
-                existing.clone()
+                (
+                    existing.clone(),
+                    inner.local_credentials.clone(),
+                    inner.remote_credentials.clone(),
+                )
             } else {
                 panic!(
                     "Attempt made to add a local candidate without a corresponding add_component()"
@@ -1192,85 +1519,102 @@ impl ConnCheckList {
         };
 
         debug!("adding {:?}", local);
-        let checklist_id = self.checklist_id;
-        let component_id = local.component_id;
         let weak_inner = Arc::downgrade(&self.inner);
-        let (stun_send, stun_recv) = oneshot::channel();
+        let (start_notify_tx, mut start_notify_rx) = async_channel::bounded(1);
 
         // We need to listen for and respond to stun binding requests for the local candidate
-        let (abortable, stun_abort_handle) = futures::future::abortable({
-            let agent = agent.clone();
-            let local = local.clone();
-            let span = debug_span!(
-                parent: None,
-                "conncheck_cand_recv_loop",
-                checklist_id,
-                component_id,
-                ttype = ?local.transport_type,
-                ctype = ?local.candidate_type,
-                foundation = %local.foundation,
-                address = ?local.address
-            );
-            async move {
-                let _drop_log = DropLogger::new("dropping stun receive stream");
-                let mut recv_stun = agent.receive_stream();
-                if stun_send.send(()).is_err() {
-                    panic!("stun receiver not connected anymore async task run");
-                }
-                while let Some(stun_or_data) = recv_stun.next().await {
-                    if let Some((msg, from)) = stun_or_data.stun() {
-                        // RFC8445 Section 7.3. STUN Server Procedures
-                        if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
-                            match ConnCheckList::handle_binding_request(
-                                weak_inner.clone(),
-                                component_id,
-                                &local,
-                                agent.clone(),
-                                &msg,
-                                from,
-                            )
-                            .await
-                            {
-                                Ok(Some(response)) => {
-                                    trace!("sending response {}", response);
-                                    if let Err(e) = agent.send_to(response, from).await {
-                                        warn!("error! {:?}", e);
-                                        break;
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!("error! {:?}", e);
-                                    break;
-                                }
-                                _ => warn!("nothing to respond with"),
-                            }
-                        }
+        let variant = match socket {
+            GatherSocket::Udp(channel) => {
+                let agent = StunAgent::new(StunChannel::UdpAny(channel));
+                agent.set_local_credentials(MessageIntegrityCredentials::ShortTerm(
+                    local_credentials.into(),
+                ));
+                agent.set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
+                    remote_credentials.into(),
+                ));
+                let (abortable, stun_recv_abort) = futures::future::abortable(
+                    ConnCheckList::local_candidate_handling_incoming_data_loop(
+                        weak_inner,
+                        agent.clone(),
+                        local.clone(),
+                        start_notify_tx,
+                    ),
+                );
+                let data_recv_abort = component.add_recv_agent(agent.clone()).await;
+                async_std::task::spawn(abortable);
+                LocalCandidateVariant::StunAgent(StunAgentCandidate {
+                    stun_agent: agent,
+                    stun_recv_abort,
+                    data_recv_abort,
+                })
+            }
+            GatherSocket::Tcp(listener) => {
+                let tcp_type = match local.tcp_type {
+                    Some(tcp_type) => tcp_type,
+                    None => {
+                        panic!("local TCP candidate without a tcp type!");
                     }
+                };
+                let _ = start_notify_tx.send(()).await;
+                match tcp_type {
+                    TcpType::So => unimplemented!(),
+                    TcpType::Passive => {
+                        let (abortable, stun_recv_abort) = futures::future::abortable(
+                            ConnCheckList::local_candidate_tcp_listener_handle_incoming(
+                                weak_inner,
+                                listener,
+                                local.clone(),
+                                local_credentials,
+                                remote_credentials,
+                                component.clone(),
+                            ),
+                        );
+                        async_std::task::spawn(abortable);
+                        LocalCandidateVariant::TcpListen(TcpListenCandidate { stun_recv_abort })
+                    }
+                    TcpType::Active => LocalCandidateVariant::TcpActive,
                 }
             }
-            .instrument(span.or_current())
-        });
+            #[cfg(test)]
+            GatherSocket::Async(channel) => {
+                let agent = StunAgent::new(StunChannel::AsyncChannel(channel));
+                agent.set_local_credentials(MessageIntegrityCredentials::ShortTerm(
+                    local_credentials.into(),
+                ));
+                agent.set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
+                    remote_credentials.into(),
+                ));
+                let (abortable, stun_recv_abort) = futures::future::abortable(
+                    ConnCheckList::local_candidate_handling_incoming_data_loop(
+                        weak_inner,
+                        agent.clone(),
+                        local.clone(),
+                        start_notify_tx,
+                    ),
+                );
+                let data_recv_abort = component.add_recv_agent(agent.clone()).await;
+                async_std::task::spawn(abortable);
+                LocalCandidateVariant::StunAgent(StunAgentCandidate {
+                    stun_agent: agent,
+                    stun_recv_abort,
+                    data_recv_abort,
+                })
+            }
+        };
 
-        async_std::task::spawn(abortable);
-        if stun_recv.await.is_err() {
-            warn!("Failed to start listening task");
-            return;
-        }
-        let data_abort_handle = component.add_recv_agent(agent.clone()).await;
         trace!(
             "checklist {} added recv task for candidate {:?}",
             self.checklist_id,
             local
         );
 
+        let _ = start_notify_rx.next().await;
+
         {
             let mut inner = self.inner.lock().unwrap();
             inner.local_candidates.push(ConnCheckLocalCandidate {
                 candidate: local,
-                stun_agent: agent,
-                // FIXME: abort when closing or not needing stun for candidate
-                stun_recv_abort: stun_abort_handle,
-                data_recv_abort: data_abort_handle,
+                variant,
             });
         }
     }
@@ -1306,6 +1650,7 @@ impl ConnCheckList {
     }
 
     pub(crate) fn add_remote_candidate(&self, remote: Candidate) {
+        let weak_inner = Arc::downgrade(&self.inner);
         {
             let mut inner = self.inner.lock().unwrap();
             if inner.remote_end_of_candidates {
@@ -1321,13 +1666,15 @@ impl ConnCheckList {
             {
                 inner.component_ids.push(remote.component_id);
             }
-            inner.add_remote_candidate(remote);
+            inner.dump_check_state();
+            inner.add_remote_candidate(weak_inner, remote);
         }
     }
 
     fn generate_checks(&self) {
+        let weak_inner = Arc::downgrade(&self.inner);
         let mut inner = self.inner.lock().unwrap();
-        inner.generate_checks();
+        inner.generate_checks(weak_inner);
     }
 
     #[tracing::instrument(
@@ -1498,14 +1845,16 @@ impl ConnCheckList {
 
     #[tracing::instrument(
         level = "debug",
-        skip(self),
+        skip(self, check),
         fields(
-            checklist_id = self.checklist_id
+            checklist_id = self.checklist_id,
+            pair = ?check.pair,
         )
     )]
-    fn add_valid(&self, pair: CandidatePair) {
-        trace!("adding {:?}", pair);
-        self.inner.lock().unwrap().valid.push(pair);
+    fn add_valid(&self, check: Arc<ConnCheck>) {
+        trace!("adding {:?}", check.pair);
+        check.agent().unwrap();
+        self.inner.lock().unwrap().valid.push(check);
     }
 
     #[tracing::instrument(
@@ -1517,8 +1866,8 @@ impl ConnCheckList {
     )]
     fn remove_valid(&self, pair: &CandidatePair) {
         let mut inner = self.inner.lock().unwrap();
-        inner.valid.retain(|valid_pair| {
-            if !candidate_pair_is_same_connection(valid_pair, pair) {
+        inner.valid.retain(|check| {
+            if !candidate_pair_is_same_connection(&check.pair, pair) {
                 debug!("removing");
                 false
             } else {
@@ -1574,12 +1923,13 @@ impl ConnCheckList {
                     .valid
                     .iter()
                     .cloned()
-                    .filter(|pair| pair.local.component_id == component_id)
+                    .filter(|check| check.pair.local.component_id == component_id)
                     .collect();
-                valid.sort_by(|pair1, pair2| {
-                    pair1
+                valid.sort_by(|check1, check2| {
+                    check1
+                        .pair
                         .priority(true /* if we are nominating, we are controlling */)
-                        .cmp(&pair2.priority(true))
+                        .cmp(&check2.pair.priority(true))
                 });
                 // FIXME: Nominate when there are two valid candidates
                 // what if there is only ever one valid?
@@ -1593,25 +1943,18 @@ impl ConnCheckList {
         trace!("retriggered {:?}", retrigerred);
         // need to wait until all component have a valid pair before we send nominations
         if retrigerred.iter().all(|pair| pair.is_some()) {
+            info!("all components have successful connchecks");
             let _: Vec<_> = retrigerred
                 .iter()
-                .map(|pair| {
-                    let pair = pair.as_ref().unwrap(); // checked earlier
-                                                       // find the local stun agent for this pair
-                    if let Some(agent) = inner
-                        .local_candidates
-                        .iter()
-                        .find(|&local_cand| {
-                            local_cand.candidate.base_address == pair.local.base_address
-                        })
-                        .map(|local| local.stun_agent.clone())
-                    {
-                        let check = Arc::new(ConnCheck::new(pair.clone(), agent, true));
-                        check.set_state(CandidatePairState::Waiting);
-                        debug!("attempting nomination with check {:?}", check);
-                        inner.add_check(check.clone());
-                        inner.add_triggered(check);
-                    }
+                .map(|check| {
+                    let check = check.as_ref().unwrap(); // checked earlier
+                                                         // find the local stun agent for this pair
+                    let check =
+                        ConnCheck::clone_with_pair_nominate(check, check.pair.clone(), true);
+                    check.set_state(CandidatePairState::Waiting);
+                    debug!("attempting nomination with check {:?}", check);
+                    inner.add_check(check.clone());
+                    inner.add_triggered(check);
                 })
                 .collect();
         }
@@ -1722,51 +2065,48 @@ impl ConnCheckListSet {
     #[tracing::instrument(
         level = "trace",
         ret,
-        skip(conncheck),
+        skip(conncheck, local_credentials, remote_credentials),
         fields(
             conncheck.conncheck_id
         )
     )]
     async fn connectivity_check_cancellable(
         conncheck: Arc<ConnCheck>,
-        username: String,
+        clock: Arc<dyn Clock>,
         controlling: bool,
         tie_breaker: u64,
+        local_credentials: Credentials,
+        remote_credentials: Credentials,
     ) -> Result<ConnCheckResponse, AgentError> {
         let stun_request = {
             let mut inner = conncheck.state.lock().unwrap();
-            if inner.stun_request.is_some() {
-                panic!("duplicate connection checks!");
-                //            return Err(AgentError::AlreadyExists);
-            }
-
             let stun_request = ConnCheck::generate_stun_request(
                 conncheck.clone(),
-                username,
+                clock,
                 controlling,
                 tie_breaker,
+                local_credentials,
+                remote_credentials,
             )?;
+
             inner.stun_request = Some(stun_request.clone());
             stun_request
         };
 
-        async_std::task::spawn(
-            async move {
-                match ConnCheck::do_stun_request(conncheck, stun_request).await {
-                    Ok(v) => Ok(v),
-                    Err(_) => Err(AgentError::Aborted),
-                }
+        match ConnCheck::do_stun_request(conncheck, stun_request).await {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                warn!("Ignoring stun request failure {e:?}");
+                Err(AgentError::Aborted)
             }
-            .in_current_span(),
-        )
-        .await
+        }
     }
 
     #[tracing::instrument(
         name = "perform_conncheck"
         level = "debug",
         err,
-        skip(conncheck, checklist, set_inner),
+        skip(conncheck, checklist, clock, set_inner),
         fields(
             checklist_id = checklist.checklist_id,
             conncheck_id = conncheck.conncheck_id
@@ -1775,6 +2115,7 @@ impl ConnCheckListSet {
     async fn perform_conncheck(
         conncheck: Arc<ConnCheck>,
         checklist: Arc<ConnCheckList>,
+        clock: Arc<dyn Clock>,
         set_inner: Weak<Mutex<CheckListSetInner>>,
     ) -> Result<(), AgentError> {
         trace!("performing connectivity {:?}", &conncheck);
@@ -1786,15 +2127,20 @@ impl ConnCheckListSet {
                 return Err(AgentError::Aborted);
             }
         };
-        let username = {
+        let (local_credentials, remote_credentials) = {
             let inner = checklist.inner.lock().unwrap();
-            inner.remote_credentials.ufrag.clone() + ":" + &inner.local_credentials.ufrag
+            (
+                inner.local_credentials.clone(),
+                inner.remote_credentials.clone(),
+            )
         };
         match ConnCheckListSet::connectivity_check_cancellable(
             conncheck.clone(),
-            username,
+            clock,
             controlling,
             tie_breaker,
+            local_credentials,
+            remote_credentials,
         )
         .await
         {
@@ -1830,11 +2176,11 @@ impl ConnCheckListSet {
                         set_inner.controlling = new_role;
                         checklist.remove_valid(&conncheck.pair);
                         conncheck.cancel();
-                        let conncheck = Arc::new(ConnCheck::new(
+                        let conncheck = ConnCheck::clone_with_pair_nominate(
+                            &conncheck,
                             conncheck.pair.clone(),
-                            conncheck.agent.clone(),
                             false,
-                        ));
+                        );
                         conncheck.set_state(CandidatePairState::Waiting);
                         let mut list_inner = checklist.inner.lock().unwrap();
                         list_inner.add_triggered(conncheck);
@@ -1865,7 +2211,7 @@ impl ConnCheckListSet {
                 // pair is added to the valid list associated with the checklist to
                 // which the pair belongs; or
                 if let Some(_check) = checklist.matching_check(&ok_pair, Nominate::DontCare) {
-                    checklist.add_valid(ok_pair.clone());
+                    checklist.add_valid(conncheck.clone());
                     if conncheck.nominate() {
                         checklist.nominated_pair(&conncheck.pair).await;
                         return Ok(());
@@ -1888,7 +2234,7 @@ impl ConnCheckListSet {
                     for checklist in checklists.iter() {
                         if let Some(check) = checklist.matching_check(&ok_pair, Nominate::DontCare)
                         {
-                            checklist.add_valid(check.pair.clone());
+                            checklist.add_valid(check.clone());
                             if conncheck.nominate() {
                                 checklist.nominated_pair(&conncheck.pair).await;
                                 return Ok(());
@@ -1916,15 +2262,12 @@ impl ConnCheckListSet {
                 if !pair_dealt_with {
                     // TODO: need to construct correct pair priorities and foundations,
                     // just use whatever the conncheck produced for now
-                    let ok_check = Arc::new(ConnCheck::new(
-                        ok_pair.clone(),
-                        conncheck.agent.clone(),
-                        false,
-                    ));
+                    let ok_check =
+                        ConnCheck::clone_with_pair_nominate(&conncheck, ok_pair.clone(), false);
                     ok_check.set_state(CandidatePairState::Succeeded);
-                    checklist.add_check(ok_check);
-                    checklist.add_valid(ok_pair);
-                    checklist.add_valid(conncheck.pair.clone());
+                    checklist.add_check(ok_check.clone());
+                    checklist.add_valid(ok_check);
+                    checklist.add_valid(conncheck.clone());
 
                     if conncheck.nominate() {
                         checklist.nominated_pair(&conncheck.pair).await;
@@ -2049,11 +2392,18 @@ struct OutstandingConnCheck {
     conncheck: Arc<ConnCheck>,
     checklist: Arc<ConnCheckList>,
     set_inner: Weak<Mutex<CheckListSetInner>>,
+    clock: Arc<dyn Clock>,
 }
 
 impl OutstandingConnCheck {
     async fn perform(self) -> Result<(), AgentError> {
-        ConnCheckListSet::perform_conncheck(self.conncheck, self.checklist, self.set_inner).await
+        ConnCheckListSet::perform_conncheck(
+            self.conncheck,
+            self.checklist,
+            self.clock,
+            self.set_inner,
+        )
+        .await
     }
 }
 
@@ -2131,6 +2481,7 @@ impl<'set> RunningCheckListSet<'set> {
             return CheckListSetProcess::HaveCheck(OutstandingConnCheck {
                 conncheck,
                 checklist,
+                clock: self.set.clock.clone(),
                 set_inner: weak_set_inner,
             });
         }
@@ -2164,7 +2515,7 @@ mod tests {
     use crate::stun::agent::*;
     use crate::stun::socket::tests::*;
     use crate::stun::socket::*;
-    use async_std::net::{TcpListener, TcpStream, UdpSocket};
+    use async_std::net::{TcpStream, UdpSocket};
     use async_std::task::{self, JoinHandle};
     use std::sync::Arc;
 
@@ -2198,9 +2549,11 @@ mod tests {
     }
 
     struct Peer {
+        clock: Arc<dyn Clock>,
         candidate: Candidate,
-        agent: StunAgent,
+        socket: GatherSocket,
         local_credentials: Option<Credentials>,
+        remote_credentials: Option<Credentials>,
     }
 
     impl Peer {
@@ -2211,11 +2564,40 @@ mod tests {
         fn builder<'this>() -> PeerBuilder<'this> {
             PeerBuilder::default()
         }
+
+        async fn stun_agent(&self) -> StunAgent {
+            let agent = match self.socket {
+                GatherSocket::Udp(ref channel) => {
+                    StunAgent::builder(StunChannel::UdpAny(channel.clone()))
+                        .clock(self.clock.clone())
+                        .build()
+                }
+                GatherSocket::Async(ref channel) => {
+                    StunAgent::builder(StunChannel::AsyncChannel(channel.clone()))
+                        .clock(self.clock.clone())
+                        .build()
+                }
+                _ => unimplemented!(),
+            };
+            let local_credentials = self
+                .local_credentials
+                .clone()
+                .unwrap_or_else(|| Credentials::new(String::from("user"), String::from("pass")));
+            agent.set_local_credentials(MessageIntegrityCredentials::ShortTerm(
+                local_credentials.into(),
+            ));
+            if let Some(remote_credentials) = self.remote_credentials.as_ref() {
+                agent.set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
+                    remote_credentials.clone().into(),
+                ));
+            }
+            agent
+        }
     }
 
     #[derive(Debug, Default)]
     struct PeerBuilder<'this> {
-        channel: Option<StunChannel>,
+        socket: Option<GatherSocket>,
         foundation: Option<&'this str>,
         clock: Option<Arc<dyn Clock>>,
         local_credentials: Option<Credentials>,
@@ -2226,8 +2608,8 @@ mod tests {
     }
 
     impl<'this> PeerBuilder<'this> {
-        fn channel(mut self, channel: StunChannel) -> Self {
-            self.channel = Some(channel);
+        fn gather_socket(mut self, socket: GatherSocket) -> Self {
+            self.socket = Some(socket);
             self
         }
 
@@ -2267,6 +2649,10 @@ mod tests {
         }
 
         async fn build(self) -> Peer {
+            let clock = self
+                .clock
+                .clone()
+                .unwrap_or_else(|| get_clock(ClockType::System));
             let addr = self
                 .candidate
                 .as_ref()
@@ -2276,26 +2662,26 @@ mod tests {
                 .candidate
                 .as_ref()
                 .map(|c| c.transport_type)
-                .unwrap_or(TransportType::Udp);
-            let channel = match self.channel {
+                .unwrap_or(self.socket.as_ref().map(|socket| match socket {
+                        GatherSocket::Udp(_) => TransportType::Udp,
+                        GatherSocket::Tcp(_) => TransportType::Tcp,
+                        GatherSocket::Async(_) => TransportType::AsyncChannel,
+                    }).unwrap_or(TransportType::Udp));
+            let socket = match self.socket {
                 Some(c) => c,
                 None => match ttype {
                     TransportType::Udp => {
                         let socket = UdpSocket::bind(addr).await.unwrap();
-                        StunChannel::UdpAny(UdpSocketChannel::new(socket))
+                        GatherSocket::Udp(UdpSocketChannel::new(socket))
                     }
                     TransportType::Tcp => {
-                        if addr.port() != 0 {
-                            let stream = TcpStream::connect(addr).await.unwrap();
-                            StunChannel::Tcp(TcpChannel::new(stream))
-                        } else {
-                            panic!("can't create tcp channel peer")
-                        }
+                        GatherSocket::Tcp(Arc::new(TcpListener::bind(addr).await.unwrap()))
                     }
                     #[cfg(test)]
                     TransportType::AsyncChannel => panic!("can't create async channel peer"),
                 },
             };
+
             if let Some(candidate) = &self.candidate {
                 if let Some(component_id) = self.component_id {
                     if component_id != candidate.component_id {
@@ -2308,12 +2694,16 @@ mod tests {
                     }
                 }
             }
-            let addr = channel.local_addr().unwrap();
+            let addr = match &socket {
+                GatherSocket::Udp(channel) => channel.local_addr().unwrap(),
+                GatherSocket::Tcp(listener) => listener.local_addr().unwrap(),
+                GatherSocket::Async(channel) => channel.local_addr().unwrap(),
+            };
             let candidate = self.candidate.unwrap_or_else(|| {
                 let mut builder = Candidate::builder(
                     self.component_id.unwrap_or(1),
                     CandidateType::Host,
-                    TransportType::Udp,
+                    ttype,
                     self.foundation.unwrap_or("0"),
                     addr,
                 );
@@ -2322,25 +2712,13 @@ mod tests {
                 }
                 builder.build()
             });
-            let clock = self.clock.unwrap_or_else(|| get_clock(ClockType::System));
-            let agent = StunAgent::builder(channel).clock(clock).build();
-            let local_credentials = self
-                .local_credentials
-                .clone()
-                .unwrap_or_else(|| Credentials::new(String::from("user"), String::from("pass")));
-            agent.set_local_credentials(MessageIntegrityCredentials::ShortTerm(
-                local_credentials.into(),
-            ));
-            if let Some(remote_credentials) = self.remote_credentials.as_ref() {
-                agent.set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
-                    remote_credentials.clone().into(),
-                ));
-            }
 
             Peer {
+                clock,
                 candidate,
-                agent,
+                socket,
                 local_credentials: self.local_credentials,
+                remote_credentials: self.remote_credentials,
             }
         }
     }
@@ -2359,7 +2737,7 @@ mod tests {
             let set = agent.check_list_set();
             let list = set.new_list();
             list.add_component(&component);
-            list.add_local_candidate(local.candidate.clone(), local.agent.clone())
+            list.add_local_candidate(local.candidate.clone(), local.socket.clone())
                 .await;
             list.add_remote_candidate(remote.candidate.clone());
 
@@ -2495,28 +2873,35 @@ mod tests {
                 .remote_credentials(local_credentials.clone())
                 .build()
                 .await;
+            let remote_agent = remote.stun_agent().await;
             // set up the local peer
             let local = Peer::builder()
                 .local_credentials(local_credentials.clone())
                 .remote_credentials(remote_credentials.clone())
                 .build()
                 .await;
+            let local_agent = local.stun_agent().await;
 
-            reply_to_conncheck_task(remote.agent.clone(), remote_credentials.clone());
-            reply_to_conncheck_task(local.agent.clone(), local_credentials.clone());
+            reply_to_conncheck_task(remote_agent.clone(), remote_credentials.clone());
+            reply_to_conncheck_task(local_agent.clone(), local_credentials.clone());
 
-            let pair = CandidatePair::new(local.candidate, remote.candidate);
-            let conncheck = Arc::new(ConnCheck::new(pair, local.agent.clone(), false));
+            let pair = CandidatePair::new(local.candidate.clone(), remote.candidate);
+            let conncheck = Arc::new(ConnCheck::new(pair, local_agent.clone(), false));
 
             // this is what we're testing.  All of the above is setup for performing this check
-            let username = remote_credentials.ufrag.clone() + ":" + &local_credentials.ufrag;
-            let res =
-                ConnCheckListSet::connectivity_check_cancellable(conncheck, username, true, 0)
-                    .await
-                    .unwrap();
+            let res = ConnCheckListSet::connectivity_check_cancellable(
+                conncheck,
+                local.clock,
+                true,
+                0,
+                local_credentials,
+                remote_credentials,
+            )
+            .await
+            .unwrap();
             match res {
                 ConnCheckResponse::Success(_check, addr) => {
-                    assert_eq!(addr, local.agent.channel().local_addr().unwrap());
+                    assert_eq!(addr, local.candidate.address);
                 }
                 _ => unreachable!(),
             }
@@ -2553,13 +2938,13 @@ mod tests {
             let list = set.new_list();
             list.add_component(&component1);
             list.add_component(&component2);
-            list.add_local_candidate(local1.candidate.clone(), local1.agent)
+            list.add_local_candidate(local1.candidate.clone(), local1.socket)
                 .await;
             list.add_remote_candidate(remote1.candidate.clone());
-            list.add_local_candidate(local2.candidate.clone(), local2.agent)
+            list.add_local_candidate(local2.candidate.clone(), local2.socket)
                 .await;
             list.add_remote_candidate(remote2.candidate.clone());
-            list.add_local_candidate(local3.candidate.clone(), local3.agent)
+            list.add_local_candidate(local3.candidate.clone(), local3.socket)
                 .await;
             list.add_remote_candidate(remote3.candidate.clone());
 
@@ -2614,16 +2999,16 @@ mod tests {
 
             list1.add_component(&component1);
             list1
-                .add_local_candidate(local1.candidate.clone(), local1.agent)
+                .add_local_candidate(local1.candidate.clone(), local1.socket)
                 .await;
             list1.add_remote_candidate(remote1.candidate.clone());
             list2.add_component(&component2);
             list2
-                .add_local_candidate(local2.candidate.clone(), local2.agent)
+                .add_local_candidate(local2.candidate.clone(), local2.socket)
                 .await;
             list2.add_remote_candidate(remote2.candidate.clone());
             list2
-                .add_local_candidate(local3.candidate.clone(), local3.agent)
+                .add_local_candidate(local3.candidate.clone(), local3.socket)
                 .await;
             list2.add_remote_candidate(remote3.candidate.clone());
 
@@ -2719,7 +3104,7 @@ mod tests {
             let local_host = router.add_host();
 
             let local_peer = Peer::builder()
-                .channel(StunChannel::AsyncChannel(local_host.new_channel(None)))
+                .gather_socket(GatherSocket::Async(local_host.new_channel(None)))
                 .foundation("0")
                 .clock(self.clock.clone())
                 .local_credentials(local_credentials.clone())
@@ -2729,7 +3114,7 @@ mod tests {
 
             let remote_host = router.add_host();
             let remote_peer = Peer::builder()
-                .channel(StunChannel::AsyncChannel(remote_host.new_channel(None)))
+                .gather_socket(GatherSocket::Async(remote_host.new_channel(None)))
                 .foundation("0")
                 .clock(self.clock.clone())
                 .local_credentials(remote_credentials.clone())
@@ -2744,7 +3129,7 @@ mod tests {
             checklist.set_remote_credentials(remote_credentials);
             if !self.trickle_ice {
                 checklist
-                    .add_local_candidate(local_peer.candidate.clone(), local_peer.agent.clone())
+                    .add_local_candidate(local_peer.candidate.clone(), local_peer.socket.clone())
                     .await;
                 checklist.add_remote_candidate(remote_peer.candidate.clone());
             }
@@ -2791,15 +3176,14 @@ mod tests {
             name = "test_send_check_and_get_response",
             skip(self, set_run),
             fields(
-                local_addr = %self.local_peer.agent.channel().local_addr().unwrap(),
-                remote_addr = %self.remote_peer.agent.channel().local_addr().unwrap(),
+                local_addr = %self.local_peer.candidate.address,
+                remote_addr = %self.remote_peer.candidate.address,
             )
         )]
         async fn perform(self, set_run: &mut RunningCheckListSet<'_>) {
-            let remote_s_recv = self.remote_peer.agent.receive_stream();
+            let remote_agent = self.remote_peer.stun_agent().await;
+            let remote_s_recv = remote_agent.receive_stream();
             futures::pin_mut!(remote_s_recv);
-            let local_s_recv = self.local_peer.agent.receive_stream();
-            futures::pin_mut!(local_s_recv);
 
             // perform one tick which will start a connectivity check with the peer
             let set_ret = set_run.process_next().await;
@@ -2814,7 +3198,7 @@ mod tests {
             let stun_or_data = remote_s_recv.next().await.unwrap();
             // send a response (success or some kind of error like role-conflict)
             reply_to_conncheck(
-                &self.remote_peer.agent,
+                &remote_agent,
                 &self.remote_peer.local_credentials.clone().unwrap(),
                 stun_or_data,
                 self.error_response,
@@ -2825,8 +3209,9 @@ mod tests {
             // wait for the response to reach the checklist and update the state
             check_task.await.unwrap();
             debug!("check done");
-            let response = local_s_recv.next().await.unwrap();
-            trace!("msg received {:?}", response);
+            // FIXME
+            //let response = local_s_recv.next().await.unwrap();
+            //trace!("msg received {:?}", response);
         }
     }
 
@@ -3030,7 +3415,7 @@ mod tests {
     }
 
     #[test]
-    fn conncheck_tcp_host() {
+    fn conncheck_tcp_active() {
         init();
         async_std::task::block_on(async move {
             let local_credentials = Credentials::new(String::from("luser"), String::from("lpass"));
@@ -3045,33 +3430,24 @@ mod tests {
                     let mut incoming = listener.incoming();
                     while let Some(stream) = incoming.next().await {
                         let stream = stream.unwrap();
-                        let remote_addr = stream.local_addr().unwrap();
-                        let remote_cand = Candidate::builder(
-                            0,
-                            CandidateType::Host,
-                            TransportType::Tcp,
-                            "0",
-                            remote_addr,
-                        )
-                        .tcp_type(TcpType::Active)
-                        .build();
                         let channel = StunChannel::Tcp(TcpChannel::new(stream));
-                        let remote_peer = Peer::builder()
-                            .channel(channel)
-                            .candidate(remote_cand)
-                            .local_credentials(remote_credentials.clone())
-                            .remote_credentials(local_credentials.clone())
-                            .build()
-                            .await;
-                        reply_to_conncheck_task(
-                            remote_peer.agent.clone(),
-                            remote_credentials.clone(),
+                        let remote_agent = StunAgent::new(channel);
+                        remote_agent.set_local_credentials(MessageIntegrityCredentials::ShortTerm(
+                            remote_credentials.clone().into(),
+                        ));
+                        remote_agent.set_remote_credentials(
+                            MessageIntegrityCredentials::ShortTerm(
+                                local_credentials.clone().into(),
+                            ),
                         );
+                        reply_to_conncheck_task(remote_agent.clone(), remote_credentials.clone());
                     }
                 }
             });
 
             // set up the local peer
+            // XXX: dummy local listener
+            let local_listener = Arc::new(TcpListener::bind("127.0.0.1:0").await.unwrap());
             let local_stream = TcpStream::connect(remote_addr).await.unwrap();
             let local_addr = local_stream.local_addr().unwrap();
             let local_channel = StunChannel::Tcp(TcpChannel::new(local_stream));
@@ -3079,8 +3455,9 @@ mod tests {
                 Candidate::builder(0, CandidateType::Host, TransportType::Tcp, "0", local_addr)
                     .tcp_type(TcpType::Active)
                     .build();
+            let local_socket = GatherSocket::Tcp(local_listener);
             let local = Peer::builder()
-                .channel(local_channel)
+                .gather_socket(local_socket)
                 .candidate(local_cand)
                 .local_credentials(local_credentials.clone())
                 .remote_credentials(remote_credentials.clone())
@@ -3090,18 +3467,30 @@ mod tests {
                 Candidate::builder(0, CandidateType::Host, TransportType::Tcp, "0", remote_addr)
                     .tcp_type(TcpType::Passive)
                     .build();
-            let pair = CandidatePair::new(local.candidate, remote_cand);
-            let conncheck = Arc::new(ConnCheck::new(pair, local.agent.clone(), false));
+            let pair = CandidatePair::new(local.candidate.clone(), remote_cand);
+            let local_agent = StunAgent::new(local_channel);
+            local_agent.set_local_credentials(MessageIntegrityCredentials::ShortTerm(
+                local_credentials.clone().into(),
+            ));
+            local_agent.set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
+                remote_credentials.clone().into(),
+            ));
+            let conncheck = Arc::new(ConnCheck::new(pair, local_agent, false));
 
             // this is what we're testing.  All of the above is setup for performing this check
-            let username = remote_credentials.ufrag.clone() + ":" + &local_credentials.ufrag;
-            let res =
-                ConnCheckListSet::connectivity_check_cancellable(conncheck, username, true, 0)
-                    .await
-                    .unwrap();
+            let res = ConnCheckListSet::connectivity_check_cancellable(
+                conncheck,
+                local.clock,
+                true,
+                0,
+                local_credentials,
+                remote_credentials.clone(),
+            )
+            .await
+            .unwrap();
             match res {
                 ConnCheckResponse::Success(_check, addr) => {
-                    assert_eq!(addr, local.agent.channel().local_addr().unwrap());
+                    assert_eq!(addr, local_addr);
                 }
                 _ => unreachable!(),
             }
@@ -3137,15 +3526,14 @@ mod tests {
 
             let unknown_remote_host = state.router.add_host();
             let unknown_remote_peer = Peer::builder()
-                .channel(StunChannel::AsyncChannel(
-                    unknown_remote_host.new_channel(None),
-                ))
+                .gather_socket(GatherSocket::Async(unknown_remote_host.new_channel(None)))
                 .foundation("1")
                 .clock(state.clock.clone())
                 .local_credentials(state.remote.local_credentials.clone().unwrap())
                 .remote_credentials(state.local.peer.local_credentials.clone().unwrap())
                 .build()
                 .await;
+            let remote_agent = unknown_remote_peer.stun_agent().await;
 
             // send a request from some unknown to the local agent address to produce a peer
             // reflexive candidate on the local agent
@@ -3165,21 +3553,29 @@ mod tests {
                 )
                 .unwrap();
             request
-                .add_message_integrity(&state.remote.agent.local_credentials().unwrap())
+                .add_message_integrity(&remote_agent.local_credentials().unwrap())
                 .unwrap();
             request.add_fingerprint().unwrap();
 
-            let local_addr = state.local.peer.agent.channel().local_addr().unwrap();
-            let stun_request = unknown_remote_peer
-                .agent
+            let local_addr = state
+                .local
+                .peer
+                .stun_agent()
+                .await
+                .channel()
+                .local_addr()
+                .unwrap();
+            let stun_request = remote_agent
                 .stun_request_transaction(&request, local_addr)
                 .unwrap()
                 .build()
                 .unwrap();
 
+            info!("sending prflx request");
             let (response, from) = stun_request.perform().await.unwrap();
             assert_eq!(from, local_addr);
             assert!(response.has_class(MessageClass::Success));
+            info!("have prflx response");
 
             // The stun request has created a new peer reflexive triggered check
             let mut prflx_remote_candidate = unknown_remote_peer.candidate.clone();
@@ -3202,9 +3598,11 @@ mod tests {
             let mut set_run = RunningCheckListSet::from_set(&state.local.checklist_set);
 
             // perform one tick which will start a connectivity check with the peer
+            info!("perform triggered check");
             send_next_check_and_response(&state.local.peer, &unknown_remote_peer)
                 .perform(&mut set_run)
                 .await;
+            info!("have reply to triggered check");
             assert_eq!(triggered_check.state(), CandidatePairState::Succeeded);
             let nominated_check = state
                 .local
@@ -3212,9 +3610,11 @@ mod tests {
                 .matching_check(&pair, Nominate::True)
                 .unwrap();
             assert_eq!(nominated_check.state(), CandidatePairState::Waiting);
+            info!("perform nominated check");
             send_next_check_and_response(&state.local.peer, &unknown_remote_peer)
                 .perform(&mut set_run)
                 .await;
+            info!("have reply to nominated check");
             assert_eq!(nominated_check.state(), CandidatePairState::Succeeded);
 
             assert!(matches!(
@@ -3251,21 +3651,20 @@ mod tests {
 
             let unknown_remote_host = state.router.add_host();
             let unknown_remote_peer = Peer::builder()
-                .channel(StunChannel::AsyncChannel(
-                    unknown_remote_host.new_channel(None),
-                ))
+                .gather_socket(GatherSocket::Async(unknown_remote_host.new_channel(None)))
                 .foundation("1")
                 .clock(state.clock.clone())
                 .local_credentials(state.remote.local_credentials.clone().unwrap())
                 .remote_credentials(state.local.peer.local_credentials.clone().unwrap())
                 .build()
                 .await;
+            let remote_agent = unknown_remote_peer.stun_agent().await;
 
             // send the next connectivity check but response with a different xor-mapped-address
             // which should result in a PeerReflexive address being produced in the check list
             let mut set_run = RunningCheckListSet::from_set(&state.local.checklist_set);
             send_next_check_and_response(&state.local.peer, &state.remote)
-                .response_address(unknown_remote_peer.agent.channel().local_addr().unwrap())
+                .response_address(remote_agent.channel().local_addr().unwrap())
                 .perform(&mut set_run)
                 .await;
             assert_eq!(initial_check.state(), CandidatePairState::Succeeded);
@@ -3275,7 +3674,7 @@ mod tests {
                 Candidate::builder(
                     unknown_remote_peer.candidate.component_id,
                     CandidateType::PeerReflexive,
-                    TransportType::Udp,
+                    TransportType::AsyncChannel,
                     "0",
                     unknown_remote_peer.candidate.address,
                 )
@@ -3283,12 +3682,6 @@ mod tests {
                 .build(),
                 state.remote.candidate.clone(),
             );
-            let prflx_check = state
-                .local
-                .checklist
-                .matching_check(&pair, Nominate::False)
-                .unwrap();
-            assert_eq!(prflx_check.state(), CandidatePairState::Succeeded);
             let nominated_check = state
                 .local
                 .checklist
@@ -3301,7 +3694,7 @@ mod tests {
             assert_eq!(nominated_check.state(), CandidatePairState::Waiting);
 
             send_next_check_and_response(&state.local.peer, &state.remote)
-                .response_address(unknown_remote_peer.agent.channel().local_addr().unwrap())
+                .response_address(unknown_remote_peer.candidate.address)
                 .perform(&mut set_run)
                 .await;
             assert_eq!(nominated_check.state(), CandidatePairState::Succeeded);
@@ -3332,7 +3725,7 @@ mod tests {
                 .checklist
                 .add_local_candidate(
                     state.local.peer.candidate.clone(),
-                    state.local.peer.agent.clone(),
+                    state.local.peer.socket.clone(),
                 )
                 .await;
 
@@ -3368,7 +3761,6 @@ mod tests {
             {
                 let checklist_inner = state.local.checklist.inner.lock().unwrap();
                 checklist_inner.dump_check_state();
-                error!("pair: {pair:?}");
             }
 
             // should have resulted in a nomination and therefore a triggered check (always a new
@@ -3419,7 +3811,7 @@ mod tests {
                 .checklist
                 .add_local_candidate(
                     state.local.peer.candidate.clone(),
-                    state.local.peer.agent.clone(),
+                    state.local.peer.socket.clone(),
                 )
                 .await;
             state
