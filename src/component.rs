@@ -18,9 +18,8 @@ use tracing_futures::Instrument;
 use crate::agent::{AgentError, AgentMessage};
 use crate::candidate::{Candidate, CandidatePair, TransportType};
 
+use crate::gathering::GatherSocket;
 use crate::stun::agent::StunAgent;
-use crate::stun::message::MessageIntegrityCredentials;
-use crate::stun::socket::StunChannel;
 
 use crate::utils::ChannelBroadcast;
 
@@ -121,29 +120,17 @@ impl Component {
 
     pub(crate) async fn gather_stream(
         &self,
-        local_credentials: MessageIntegrityCredentials,
-        remote_credentials: MessageIntegrityCredentials,
         stun_servers: Vec<(TransportType, SocketAddr)>,
-    ) -> Result<impl Stream<Item = (Candidate, StunAgent)>, AgentError> {
-        let schannels = crate::gathering::iface_udp_sockets()?
+    ) -> Result<impl Stream<Item = (Candidate, GatherSocket)>, AgentError> {
+        let sockets = crate::gathering::iface_sockets()?
             .filter_map(move |s| async move { s.ok() })
             .collect::<Vec<_>>()
             .await;
 
-        let agents: Vec<_> = schannels
-            .iter()
-            .map(|channel| {
-                let agent = StunAgent::new(StunChannel::UdpAny(channel.clone()));
-                agent.set_local_credentials(local_credentials.clone());
-                agent.set_remote_credentials(remote_credentials.clone());
-                agent
-            })
-            .collect();
-
         info!("retreived sockets");
         Ok(crate::gathering::gather_component(
             self.id,
-            agents,
+            &sockets,
             stun_servers,
         ))
     }
@@ -159,10 +146,10 @@ impl Component {
 
         debug!("adding");
         let span = debug_span!("component_recv");
+        // need to keep some reference to the StunAgent until the task completes
+        let mut recv_stream = agent.receive_stream();
         let (abortable, abort_handle) = futures::future::abortable(
             async move {
-                // need to keep some reference to the StunAgent until the task completes
-                let mut recv_stream = agent.receive_stream();
                 debug!("started");
                 while let Some(stun_or_data) = recv_stream.next().await {
                     if let Some((data, _from)) = stun_or_data.data() {
@@ -415,22 +402,30 @@ mod tests {
             let s1 = a.add_stream();
             let send = s1.add_component().unwrap();
             // assumes the first candidate works
-            let send_stream = send
-                .gather_stream(send_credentials.clone(), recv_credentials.clone(), vec![])
-                .await
-                .unwrap();
+            let send_stream = send.gather_stream(vec![]).await.unwrap();
             futures::pin_mut!(send_stream);
-            let (send_cand, send_agent) = send_stream.next().await.unwrap();
+            let (send_cand, send_socket) = send_stream.next().await.unwrap();
+            let udp_socket = match send_socket {
+                GatherSocket::Udp(udp) => udp,
+                _ => unreachable!(),
+            };
+            let send_agent = StunAgent::new(StunChannel::UdpAny(udp_socket));
+            send_agent.set_local_credentials(send_credentials.clone());
+            send_agent.set_remote_credentials(recv_credentials.clone());
 
             let s2 = a.add_stream();
             let recv = s2.add_component().unwrap();
-            let recv_stream = recv
-                .gather_stream(recv_credentials, send_credentials, vec![])
-                .await
-                .unwrap();
+            let recv_stream = recv.gather_stream(vec![]).await.unwrap();
             futures::pin_mut!(recv_stream);
             // assumes the first candidate works
-            let (recv_cand, recv_agent) = recv_stream.next().await.unwrap();
+            let (recv_cand, recv_socket) = recv_stream.next().await.unwrap();
+            let udp_socket = match recv_socket {
+                GatherSocket::Udp(udp) => udp,
+                _ => unreachable!(),
+            };
+            let recv_agent = StunAgent::new(StunChannel::UdpAny(udp_socket));
+            recv_agent.set_local_credentials(send_credentials.clone());
+            recv_agent.set_remote_credentials(recv_credentials.clone());
 
             let send_candidate_pair = CandidatePair::new(send_cand.clone(), recv_cand.clone());
             let send_selected_pair = SelectedPair::new(send_candidate_pair, send_agent.clone());

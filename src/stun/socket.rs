@@ -21,6 +21,8 @@ use byteorder::{BigEndian, ByteOrder};
 
 use crate::utils::{ChannelBroadcast, DebugWrapper};
 
+use super::TransportType;
+
 const MAX_STUN_MESSAGE_SIZE: usize = 1500 * 2;
 
 #[derive(Debug)]
@@ -264,6 +266,16 @@ impl StunChannel {
             StunChannel::AsyncChannel(c) => c.close().await,
         }
     }
+
+    pub fn transport(&self) -> TransportType {
+        match self {
+            StunChannel::Udp(_) => TransportType::Udp,
+            StunChannel::UdpAny(_) => TransportType::Udp,
+            StunChannel::Tcp(_) => TransportType::Tcp,
+            #[cfg(test)]
+            StunChannel::AsyncChannel(_) => TransportType::AsyncChannel,
+        }
+    }
 }
 
 impl SocketAddresses for StunChannel {
@@ -319,7 +331,6 @@ impl<'msg> SocketMessageSend<'msg, DataFraming<'msg>> for StunChannel {
 
 impl ReceiveStream<DataAddress> for StunChannel {
     fn receive_stream(&self) -> Pin<Box<dyn Stream<Item = DataAddress> + Send>> {
-        debug!("stun channel receive stream for {:?}", self);
         match self {
             StunChannel::UdpAny(c) => c.receive_stream(),
             StunChannel::Udp(c) => c.receive_stream(),
@@ -733,7 +744,7 @@ pub(crate) mod tests {
                 let span = tracing::debug_span!("ChannelRouter::recv", public_ip = ?public_ip, our_ip = ?our_ip);
                 async move {
                     while let Some((msg, from)) = receiver.next().await {
-                        trace!("got {msg:?} from {from:?}");
+                        trace!("got {} bytes from {from:?}", msg.data.len());
                         let (host, router, ia) = {
                             let inner = match weak_inner.upgrade() {
                                 Some(inner) => inner,
@@ -899,10 +910,12 @@ pub(crate) mod tests {
 
         #[tracing::instrument(
             name = "ChannelRouter::send",
-            skip(self),
+            skip(self, msg),
             fields(
                 public_ip = ?self.public_ip,
                 our_ip = ?self.our_ip,
+                to = ?msg.address,
+                len = msg.data.len(),
             ),
             err
         )]

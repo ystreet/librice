@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use async_std::net::UdpSocket;
+use async_std::net::{TcpListener, UdpSocket};
 
 use futures::future::{AbortHandle, Abortable, Aborted};
 use futures::StreamExt;
@@ -37,11 +37,17 @@ struct AgentStaticTestConfig {
 
 #[tracing::instrument(name = "agent_static_connection")]
 async fn agent_static_connection_test(config: AgentStaticTestConfig) {
-    let stun_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let stun_addr = stun_socket.local_addr().unwrap();
-    let (abort_handle, abort_registration) = AbortHandle::new_pair();
-    let stun_server = Abortable::new(common::stund_udp(stun_socket), abort_registration);
-    let stun_server = async_std::task::spawn(stun_server);
+    let udp_stun_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let udp_stun_addr = udp_stun_socket.local_addr().unwrap();
+    let (udp_abort_handle, abort_registration) = AbortHandle::new_pair();
+    let udp_stun_server = Abortable::new(common::stund_udp(udp_stun_socket), abort_registration);
+    let udp_stun_server = async_std::task::spawn(udp_stun_server);
+
+    let tcp_stun_socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let tcp_stun_addr = tcp_stun_socket.local_addr().unwrap();
+    let (tcp_abort_handle, abort_registration) = AbortHandle::new_pair();
+    let tcp_stun_server = Abortable::new(common::stund_tcp(tcp_stun_socket), abort_registration);
+    let tcp_stun_server = async_std::task::spawn(tcp_stun_server);
 
     let lagent = Arc::new(
         Agent::builder()
@@ -49,7 +55,8 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
             .trickle_ice(config.local.trickle_ice)
             .build(),
     );
-    lagent.add_stun_server(TransportType::Udp, stun_addr);
+    lagent.add_stun_server(TransportType::Udp, udp_stun_addr);
+    lagent.add_stun_server(TransportType::Tcp, tcp_stun_addr);
 
     let ragent = Arc::new(
         Agent::builder()
@@ -57,7 +64,8 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
             .trickle_ice(config.remote.trickle_ice)
             .build(),
     );
-    ragent.add_stun_server(TransportType::Udp, stun_addr);
+    ragent.add_stun_server(TransportType::Udp, udp_stun_addr);
+    ragent.add_stun_server(TransportType::Tcp, tcp_stun_addr);
 
     let lcreds = Credentials::new("luser".into(), "lpass".into());
     let rcreds = Credentials::new("ruser".into(), "rpass".into());
@@ -153,6 +161,7 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     futures::pin_mut!(rcomp_recv_stream);
     let received = rcomp_recv_stream.next().await.unwrap();
     assert_eq!(data, received);
+    trace!("local sent remote received");
 
     let lcomp_recv_stream = lcomp.receive_stream();
     let data = vec![3; 8];
@@ -160,14 +169,16 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     futures::pin_mut!(lcomp_recv_stream);
     let received = lcomp_recv_stream.next().await.unwrap();
     assert_eq!(data, received);
-    trace!("sent/received");
+    trace!("remote sent local received");
 
     futures::try_join!(lagent.close(), ragent.close()).unwrap();
     trace!("agents closed");
 
-    abort_handle.abort();
+    udp_abort_handle.abort();
+    tcp_abort_handle.abort();
     trace!("agents aborted");
-    assert!(matches!(stun_server.await, Err(Aborted)));
+    assert!(matches!(udp_stun_server.await, Err(Aborted)));
+    assert!(matches!(tcp_stun_server.await, Err(Aborted)));
     trace!("done");
 }
 

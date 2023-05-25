@@ -253,7 +253,7 @@ impl Agent {
 
     pub fn add_stun_server(&self, ttype: TransportType, addr: SocketAddr) {
         let mut inner = self.inner.lock().unwrap();
-        info!("Adding stun server {}", addr);
+        info!("Adding stun server {addr} transport {ttype:?}");
         inner.stun_servers.push((ttype, addr));
         // TODO: propagate towards the gatherer as required
     }
