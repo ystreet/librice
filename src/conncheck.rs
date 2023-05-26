@@ -2697,15 +2697,16 @@ mod tests {
                 .as_ref()
                 .map(|c| c.base_address)
                 .unwrap_or_else(|| "127.0.0.1:0".parse().unwrap());
-            let ttype = self
-                .candidate
-                .as_ref()
-                .map(|c| c.transport_type)
-                .unwrap_or(self.socket.as_ref().map(|socket| match socket {
+            let ttype = self.candidate.as_ref().map(|c| c.transport_type).unwrap_or(
+                self.socket
+                    .as_ref()
+                    .map(|socket| match socket {
                         GatherSocket::Udp(_) => TransportType::Udp,
                         GatherSocket::Tcp(_) => TransportType::Tcp,
                         GatherSocket::Async(_) => TransportType::AsyncChannel,
-                    }).unwrap_or(TransportType::Udp));
+                    })
+                    .unwrap_or(TransportType::Udp),
+            );
             let socket = match self.socket {
                 Some(c) => c,
                 None => match ttype {
