@@ -27,7 +27,7 @@ use crate::component::{Component, ComponentState, SelectedPair};
 use crate::stun::agent::{StunAgent, StunError, StunRequest};
 use crate::stun::attribute::*;
 use crate::stun::message::*;
-use crate::stun::socket::{StunChannel, TcpChannel};
+use crate::stun::socket::{SocketAddresses, StunChannel, TcpChannel};
 use crate::utils::DropLogger;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,6 +228,7 @@ impl ConnCheck {
     }
 
     fn generate_stun_request(
+        checklist_id: usize,
         conncheck: Arc<ConnCheck>,
         clock: Arc<dyn Clock>,
         controlling: bool,
@@ -281,7 +282,11 @@ impl ConnCheck {
                             let local = local.clone();
                             let weak_inner = weak_inner.clone();
                             ConnCheckList::local_candidate_handling_incoming_data_loop(
-                                weak_inner, agent, local, start_notify_tx,
+                                checklist_id,
+                                weak_inner,
+                                agent,
+                                local,
+                                start_notify_tx,
                             )
                         });
                         let _ = start_notify_rx.next().await;
@@ -651,8 +656,12 @@ impl ConnCheckListInner {
                         .components
                         .iter()
                         .find(|component| component.id == local.candidate.component_id)
-                        .unwrap_or_else(|| panic!("No component {} for local candidate",
-                                        local.candidate.component_id));
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "No component {} for local candidate",
+                                local.candidate.component_id
+                            )
+                        });
 
                     if let Some(redundant_pair) = pair.redundant_with(pairs.iter()) {
                         if redundant_pair.remote.candidate_type == CandidateType::PeerReflexive {
@@ -1192,9 +1201,11 @@ impl ConnCheckList {
     }
 
     #[tracing::instrument(
-        ret,
         err,
         skip(weak_inner, local, agent, msg)
+        fields(
+            msg.transaction_id = %msg.transaction_id()
+        )
     )]
     async fn handle_binding_request(
         weak_inner: Weak<Mutex<ConnCheckListInner>>,
@@ -1399,6 +1410,7 @@ impl ConnCheckList {
         )
     )]
     async fn local_candidate_tcp_listener_handle_incoming(
+        checklist_id: usize,
         weak_inner: Weak<Mutex<ConnCheckListInner>>,
         listener: Arc<TcpListener>,
         local: Candidate,
@@ -1420,6 +1432,7 @@ impl ConnCheckList {
                 let _data_abort = component.add_recv_agent(agent.clone()).await;
                 let (start_notify_tx, mut start_notify_rx) = async_channel::bounded(1);
                 async_std::task::spawn(ConnCheckList::local_candidate_handling_incoming_data_loop(
+                    checklist_id,
                     weak_inner.clone(),
                     agent,
                     local.clone(),
@@ -1434,19 +1447,19 @@ impl ConnCheckList {
        name = "conncheck_local_cand_recv_loop"
        skip(weak_inner, agent, local, start_notify_tx)
        fields(
-            checklist_id,
             component_id = local.component_id,
             ttype = ?local.transport_type,
             ctype = ?local.candidate_type,
             foundation = %local.foundation,
-            address = ?local.address
+            local.address = ?agent.channel().local_addr()
         )
     )]
     async fn local_candidate_handling_incoming_data_loop(
+        checklist_id: usize,
         weak_inner: Weak<Mutex<ConnCheckListInner>>,
         agent: StunAgent,
         local: Candidate,
-        start_notify_tx: async_channel::Sender<()>
+        start_notify_tx: async_channel::Sender<()>,
     ) {
         let _drop_log = DropLogger::new("dropping stun receive stream");
         let mut recv_stun = agent.receive_stream();
@@ -1466,7 +1479,7 @@ impl ConnCheckList {
                     .await
                     {
                         Ok(Some(response)) => {
-                            trace!("sending response {}", response);
+                            trace!("sending to {from:?} response {}", response);
                             if let Err(e) = agent.send_to(response, from).await {
                                 warn!("error sending response {:?}", e);
                                 break;
@@ -1534,6 +1547,7 @@ impl ConnCheckList {
                 ));
                 let (abortable, stun_recv_abort) = futures::future::abortable(
                     ConnCheckList::local_candidate_handling_incoming_data_loop(
+                        self.checklist_id,
                         weak_inner,
                         agent.clone(),
                         local.clone(),
@@ -1561,6 +1575,7 @@ impl ConnCheckList {
                     TcpType::Passive => {
                         let (abortable, stun_recv_abort) = futures::future::abortable(
                             ConnCheckList::local_candidate_tcp_listener_handle_incoming(
+                                self.checklist_id,
                                 weak_inner,
                                 listener,
                                 local.clone(),
@@ -1586,6 +1601,7 @@ impl ConnCheckList {
                 ));
                 let (abortable, stun_recv_abort) = futures::future::abortable(
                     ConnCheckList::local_candidate_handling_incoming_data_loop(
+                        self.checklist_id,
                         weak_inner,
                         agent.clone(),
                         local.clone(),
@@ -2071,6 +2087,7 @@ impl ConnCheckListSet {
         )
     )]
     async fn connectivity_check_cancellable(
+        checklist_id: usize,
         conncheck: Arc<ConnCheck>,
         clock: Arc<dyn Clock>,
         controlling: bool,
@@ -2081,6 +2098,7 @@ impl ConnCheckListSet {
         let stun_request = {
             let mut inner = conncheck.state.lock().unwrap();
             let stun_request = ConnCheck::generate_stun_request(
+                checklist_id,
                 conncheck.clone(),
                 clock,
                 controlling,
@@ -2135,6 +2153,7 @@ impl ConnCheckListSet {
             )
         };
         match ConnCheckListSet::connectivity_check_cancellable(
+            checklist.checklist_id,
             conncheck.clone(),
             clock,
             controlling,
@@ -2890,6 +2909,7 @@ mod tests {
 
             // this is what we're testing.  All of the above is setup for performing this check
             let res = ConnCheckListSet::connectivity_check_cancellable(
+                0,
                 conncheck,
                 local.clock,
                 true,
@@ -3479,6 +3499,7 @@ mod tests {
 
             // this is what we're testing.  All of the above is setup for performing this check
             let res = ConnCheckListSet::connectivity_check_cancellable(
+                0,
                 conncheck,
                 local.clock,
                 true,
