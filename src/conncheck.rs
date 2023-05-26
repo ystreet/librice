@@ -2322,6 +2322,10 @@ impl ConnCheckListSet {
     fn next_check(&self, checklist: &ConnCheckList) -> Option<Arc<ConnCheck>> {
         {
             let checklist_inner = checklist.inner.lock().unwrap();
+            if checklist_inner.state != CheckListState::Running {
+                // A non-running checklist has no next check
+                return None;
+            }
             checklist_inner.dump_check_state();
         }
 
@@ -2494,6 +2498,7 @@ impl<'set> RunningCheckListSet<'set> {
 
                 checklist.clone()
             };
+
             let conncheck = match self.set.next_check(&checklist) {
                 Some(c) => c,
                 None => {
