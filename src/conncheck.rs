@@ -1939,25 +1939,28 @@ impl ConnCheckList {
             .component_ids
             .iter()
             .map(|&component_id| {
-                let mut valid: Vec<_> = inner
-                    .valid
-                    .iter()
-                    .cloned()
-                    .filter(|check| check.pair.local.component_id == component_id)
-                    .collect();
-                valid.sort_by(|check1, check2| {
-                    check1
-                        .pair
-                        .priority(true /* if we are nominating, we are controlling */)
-                        .cmp(&check2.pair.priority(true))
-                });
-                // FIXME: Nominate when there are two valid candidates
-                // what if there is only ever one valid?
-                if !valid.is_empty() {
-                    valid.get(0).cloned()
-                } else {
-                    None
-                }
+                let nominated = inner.pairs.iter().cloned().find(|check| check.nominate());
+                nominated.or({
+                    let mut valid: Vec<_> = inner
+                        .valid
+                        .iter()
+                        .cloned()
+                        .filter(|check| check.pair.local.component_id == component_id)
+                        .collect();
+                    valid.sort_by(|check1, check2| {
+                        check1
+                            .pair
+                            .priority(true /* if we are nominating, we are controlling */)
+                            .cmp(&check2.pair.priority(true))
+                    });
+                    // FIXME: Nominate when there are two valid candidates
+                    // what if there is only ever one valid?
+                    if !valid.is_empty() {
+                        valid.get(0).cloned()
+                    } else {
+                        None
+                    }
+                })
             })
             .collect();
         trace!("retriggered {:?}", retrigerred);
@@ -1969,12 +1972,19 @@ impl ConnCheckList {
                 .map(|check| {
                     let check = check.as_ref().unwrap(); // checked earlier
                                                          // find the local stun agent for this pair
-                    let check =
-                        ConnCheck::clone_with_pair_nominate(check, check.pair.clone(), true);
-                    check.set_state(CandidatePairState::Waiting);
-                    debug!("attempting nomination with check {:?}", check);
-                    inner.add_check(check.clone());
-                    inner.add_triggered(check);
+                    if check.nominate() {
+                        trace!(
+                            "already have nominate check for component {}",
+                            check.pair.local.component_id
+                        );
+                    } else {
+                        let check =
+                            ConnCheck::clone_with_pair_nominate(check, check.pair.clone(), true);
+                        check.set_state(CandidatePairState::Waiting);
+                        debug!("attempting nomination with check {:?}", check);
+                        inner.add_check(check.clone());
+                        inner.add_triggered(check);
+                    }
                 })
                 .collect();
         }
