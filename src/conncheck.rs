@@ -1268,7 +1268,6 @@ impl ConnCheckList {
 
         let response = {
             let checklist = weak_inner.upgrade().ok_or(AgentError::ConnectionClosed)?;
-            let mut checklist = checklist.lock().unwrap();
 
             /*
             if checklist.state == CheckListState::Completed && !peer_nominating {
@@ -1276,10 +1275,17 @@ impl ConnCheckList {
                 trace!("ignoring binding request as we have completed");
                 return Ok(None);
             }*/
+            let (set_inner, checklist_local_credentials) = {
+                let checklist = checklist.lock().unwrap();
+                (
+                    checklist.set_inner.clone(),
+                    checklist.local_credentials.clone(),
+                )
+            };
 
             // validate username
             if let Some(username) = msg.attribute::<Username>(USERNAME) {
-                if !validate_username(username, &checklist.local_credentials) {
+                if !validate_username(username, &checklist_local_credentials) {
                     warn!("binding request failed username validation -> UNAUTHORIZED");
                     let mut response = Message::new_error(msg);
                     response.add_attribute(ErrorCode::builder(ErrorCode::UNAUTHORIZED).build()?)?;
@@ -1300,11 +1306,9 @@ impl ConnCheckList {
                 // Deal with role conflicts
                 // RFC 8445 7.3.1.1.  Detecting and Repairing Role Conflicts
                 trace!("checking for role conflicts");
-                let set = checklist
-                    .set_inner
-                    .upgrade()
-                    .ok_or(AgentError::ConnectionClosed)?;
+                let set = set_inner.upgrade().ok_or(AgentError::ConnectionClosed)?;
                 let mut set = set.lock().unwrap();
+                let mut checklist = checklist.lock().unwrap();
                 if let Some(ice_controlling) = ice_controlling {
                     //  o  If the agent is in the controlling role, and the ICE-CONTROLLING
                     //     attribute is present in the request:
@@ -1375,17 +1379,17 @@ impl ConnCheckList {
                     }
                 }
                 trace!("checked for role conflicts");
+                drop(set);
+                checklist.handle_binding_request(
+                    weak_inner,
+                    peer_nominating,
+                    component_id,
+                    local,
+                    agent,
+                    from,
+                    priority,
+                )?
             }
-
-            checklist.handle_binding_request(
-                weak_inner,
-                peer_nominating,
-                component_id,
-                local,
-                agent,
-                from,
-                priority,
-            )?
         };
         if let Some(component) = response {
             component.set_state(ComponentState::Connected).await;
@@ -2193,6 +2197,7 @@ impl ConnCheckListSet {
                     );
                     if set_inner.controlling != new_role {
                         set_inner.controlling = new_role;
+                        drop(set_inner);
                         checklist.remove_valid(&conncheck.pair);
                         conncheck.cancel();
                         let conncheck = ConnCheck::clone_with_pair_nominate(
