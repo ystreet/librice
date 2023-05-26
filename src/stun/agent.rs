@@ -191,7 +191,12 @@ impl StunAgent {
             channel.transport()
         );
         async_std::task::spawn({
-            let span = debug_span!("stun_recv_loop", stun.id = inner_id, ?local_addr, ?remote_addr);
+            let span = debug_span!(
+                "stun_recv_loop",
+                stun.id = inner_id,
+                ?local_addr,
+                ?remote_addr
+            );
             async move {
                 futures::pin_mut!(recv_stream);
 
@@ -503,18 +508,14 @@ impl StunRequest {
         }
     }
 
-    #[tracing::instrument(
-        name = "stun_send_request",
-        level = "debug",
-        err,
-        skip(self, agent),
-    )]
-    async fn send_request(
-        self,
-        agent: StunAgent,
-    ) -> Result<(), StunError> {
+    #[tracing::instrument(name = "stun_send_request", level = "debug", err, skip(self, agent))]
+    async fn send_request(self, agent: StunAgent) -> Result<(), StunError> {
         for timeout in self.timeouts_ms.iter() {
-            trace!("sending from {:?}, request {}", agent.inner.channel.local_addr(), self.msg);
+            trace!(
+                "sending from {:?}, request {}",
+                agent.inner.channel.local_addr(),
+                self.msg
+            );
             agent.send_to(self.msg.clone(), self.to).await?;
             agent
                 .clock
@@ -529,7 +530,6 @@ impl StunRequest {
 
     #[tracing::instrument(
         name = "stun_request_perform",
-        ret,
         err,
         skip(self)
         fields(
@@ -541,18 +541,20 @@ impl StunRequest {
         let tid = self.msg.transaction_id();
         let (req_tx, mut req_rx) = async_channel::bounded(1);
         let (reply_tx, mut reply_rx) = async_channel::bounded(1);
-        let (send_abortable, send_abort_handle) =
-            futures::future::abortable(async move {
-                // agent creation (e.g. tcp stream) is included in the timeout values
-                let agent = self.create_agent().await?;
-                {
-                    let mut inner = self.inner.lock().unwrap();
-                    inner.created_agent = Some(agent.clone());
-                }
-                req_tx.send(agent.clone()).await.map_err(|_| StunError::Aborted)?;
-                reply_rx.next().await.ok_or(StunError::Aborted)?;
-                self.clone().send_request(agent).await
-            });
+        let (send_abortable, send_abort_handle) = futures::future::abortable(async move {
+            // agent creation (e.g. tcp stream) is included in the timeout values
+            let agent = self.create_agent().await?;
+            {
+                let mut inner = self.inner.lock().unwrap();
+                inner.created_agent = Some(agent.clone());
+            }
+            req_tx
+                .send(agent.clone())
+                .await
+                .map_err(|_| StunError::Aborted)?;
+            reply_rx.next().await.ok_or(StunError::Aborted)?;
+            self.clone().send_request(agent).await
+        });
 
         let to = self.to;
         let (recv_abortable, recv_abort_handle) = {
@@ -569,7 +571,10 @@ impl StunRequest {
                                 }
                                 _ => false,
                             });
-                        reply_tx.send(agent).await.map_err(|_e| StunError::Aborted)?;
+                        reply_tx
+                            .send(agent)
+                            .await
+                            .map_err(|_e| StunError::Aborted)?;
                         receive_s
                             .next()
                             .then(|msg| async move {
@@ -597,7 +602,7 @@ impl StunRequest {
         futures::pin_mut!(recv_abortable);
 
         // race the sending and receiving futures returning the first that succeeds
-        match futures::future::try_select(send_abortable, recv_abortable).await {
+        let ret = match futures::future::try_select(send_abortable, recv_abortable).await {
             Ok(Either::Left((x, _))) => x.map(|_| (Message::new_error(&self.msg), self.to)),
             Ok(Either::Right((y, _))) => y.map_err(|_| StunError::TimedOut)?,
             Err(Either::Left((_send_aborted, recv_abortable))) => {
@@ -609,7 +614,11 @@ impl StunRequest {
                     .unwrap_or(Err(StunError::TimedOut))
             }
             _ => unreachable!(),
+        };
+        if let Ok(ret) = &ret {
+            debug!("response from {:?} {}", ret.1, ret.0);
         }
+        ret
     }
 
     pub(crate) fn created_agent(&self) -> Option<StunAgent> {
@@ -751,7 +760,8 @@ impl StunAgentState {
         }
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, transaction_id),
+        fields(transaction_id = %transaction_id))]
     fn take_outstanding_request(&mut self, transaction_id: &TransactionId) -> Option<Message> {
         if let Some(msg) = self.outstanding_requests.remove(transaction_id) {
             trace!("removing request");
@@ -1081,7 +1091,10 @@ pub(crate) mod tests {
         });
     }
 
-    pub async fn async_stund(channel: AsyncChannel, start_notify: async_channel::Sender<()>) -> Result<(), std::io::Error> {
+    pub async fn async_stund(
+        channel: AsyncChannel,
+        start_notify: async_channel::Sender<()>,
+    ) -> Result<(), std::io::Error> {
         let stun_agent = StunAgent::new(StunChannel::AsyncChannel(channel));
         stund::handle_stun(stun_agent, start_notify).await
     }
@@ -1118,7 +1131,10 @@ pub(crate) mod tests {
             Ok(response)
         }
 
-        pub async fn handle_stun(stun_agent: StunAgent, start_notify: async_channel::Sender<()>) -> std::io::Result<()> {
+        pub async fn handle_stun(
+            stun_agent: StunAgent,
+            start_notify: async_channel::Sender<()>,
+        ) -> std::io::Result<()> {
             let mut receive_stream = stun_agent.receive_stream();
             start_notify.send(()).await.unwrap();
 
@@ -1231,7 +1247,8 @@ pub(crate) mod tests {
             let stund_channel = stund_host.new_channel(None);
             let stund_addr = stund_channel.local_addr().unwrap();
             let (tx, mut rx) = async_channel::bounded(1);
-            let stund_join = task::spawn(async move { async_stund(stund_channel, tx.clone()).await });
+            let stund_join =
+                task::spawn(async move { async_stund(stund_channel, tx.clone()).await });
             rx.next().await.unwrap();
 
             let local_public_addr = async_find_public_ip(&local_agent, stund_addr).await;
