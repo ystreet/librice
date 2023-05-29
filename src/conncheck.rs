@@ -777,7 +777,7 @@ impl ConnCheckListInner {
     }
 
     fn add_check(&mut self, check: Arc<ConnCheck>) {
-        debug!("adding check {:?}", check);
+        trace!("adding check {:?}", check);
         if let Some(idx) = self
             .pairs
             .iter()
@@ -860,6 +860,14 @@ impl ConnCheckListInner {
         fields(component.id = pair.local.component_id)
     )]
     fn nominated_pair(&mut self, pair: &CandidatePair) -> Option<Component> {
+        if self.state != CheckListState::Running {
+            warn!(
+                "cannot nominate a pair with checklist in state {:?}",
+                self.state
+            );
+            return None;
+        }
+        self.dump_check_state();
         if let Some(idx) = self
             .valid
             .iter()
@@ -875,13 +883,6 @@ impl ConnCheckListInner {
                 "nominated"
             );
             self.nominated.push(self.valid.remove(idx));
-            if self.state != CheckListState::Running {
-                warn!(
-                    "cannot nominate a pair with checklist in state {:?}",
-                    self.state
-                );
-                return None;
-            }
             let component = self
                 .components
                 .iter()
@@ -897,7 +898,6 @@ impl ConnCheckListInner {
             //   connectivity-check transaction, will not treat the lack of
             //   response to be a failure, but will wait the duration of the
             //   transaction timeout for a response.
-            self.dump_check_state();
             self.triggered.retain(|check| {
                 if check.pair.local.component_id == pair.local.component_id {
                     check.cancel_retransmissions();
@@ -1465,7 +1465,12 @@ impl ConnCheckList {
         local: Candidate,
         start_notify_tx: async_channel::Sender<()>,
     ) {
-        let _drop_log = DropLogger::new("dropping stun receive stream");
+        let _drop_log = DropLogger::new(&format!(
+            "checklist {checklist_id} component {} dropping stun receive stream for {:?}",
+            local.component_id,
+            agent.channel().local_addr()
+        ));
+
         let mut recv_stun = agent.receive_stream();
         let _ = start_notify_tx.send(()).await;
         while let Some(stun_or_data) = recv_stun.next().await {
@@ -1872,8 +1877,13 @@ impl ConnCheckList {
         )
     )]
     fn add_valid(&self, check: Arc<ConnCheck>) {
+        if check.pair.local.transport_type == TransportType::Tcp
+            && check.pair.local.tcp_type == Some(TcpType::Passive)
+            && check.pair.local.address.port() == 9
+        {
+            trace!("no adding local passive tcp candidate without a valid port");
+        }
         trace!("adding {:?}", check.pair);
-        check.agent().unwrap();
         self.inner.lock().unwrap().valid.push(check);
     }
 
@@ -1966,6 +1976,7 @@ impl ConnCheckList {
         trace!("retriggered {:?}", retrigerred);
         // need to wait until all component have a valid pair before we send nominations
         if retrigerred.iter().all(|pair| pair.is_some()) {
+            inner.dump_check_state();
             info!("all components have successful connchecks");
             let _: Vec<_> = retrigerred
                 .iter()
@@ -2238,13 +2249,19 @@ impl ConnCheckListSet {
                 );
                 conncheck.set_state(CandidatePairState::Succeeded);
 
+                if checklist.state() != CheckListState::Running {
+                    debug!("checklist is not running, ignoring check response");
+                    return Ok(());
+                }
+
                 let mut pair_dealt_with = false;
                 let ok_pair = conncheck.pair.construct_valid(addr);
                 // 1.
                 // If the valid pair equals the pair that generated the check, the
                 // pair is added to the valid list associated with the checklist to
                 // which the pair belongs; or
-                if let Some(_check) = checklist.matching_check(&ok_pair, Nominate::DontCare) {
+                if let Some(check) = checklist.matching_check(&ok_pair, Nominate::DontCare) {
+                    debug!(existing.id = check.conncheck_id, "found existing check");
                     checklist.add_valid(conncheck.clone());
                     if conncheck.nominate() {
                         checklist.nominated_pair(&conncheck.pair).await;
@@ -2268,6 +2285,10 @@ impl ConnCheckListSet {
                     for checklist in checklists.iter() {
                         if let Some(check) = checklist.matching_check(&ok_pair, Nominate::DontCare)
                         {
+                            debug!(
+                                existing.id = check.conncheck_id,
+                                "found existing check in checklist {}", checklist.checklist_id
+                            );
                             checklist.add_valid(check.clone());
                             if conncheck.nominate() {
                                 checklist.nominated_pair(&conncheck.pair).await;
@@ -2294,6 +2315,7 @@ impl ConnCheckListSet {
                 // the Binding request that triggered the check that just completed.
                 // The pair is then added to the valid list.
                 if !pair_dealt_with {
+                    debug!("no existing check");
                     // TODO: need to construct correct pair priorities and foundations,
                     // just use whatever the conncheck produced for now
                     let ok_check =

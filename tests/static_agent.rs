@@ -158,6 +158,7 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     let rcomp_recv_stream = rcomp.receive_stream();
     let data = vec![5; 8];
     lcomp.send(&data).await.unwrap();
+    trace!("local sent");
     futures::pin_mut!(rcomp_recv_stream);
     let received = rcomp_recv_stream.next().await.unwrap();
     assert_eq!(data, received);
@@ -166,6 +167,7 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     let lcomp_recv_stream = lcomp.receive_stream();
     let data = vec![3; 8];
     rcomp.send(&data).await.unwrap();
+    trace!("remote sent");
     futures::pin_mut!(lcomp_recv_stream);
     let received = lcomp_recv_stream.next().await.unwrap();
     assert_eq!(data, received);

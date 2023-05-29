@@ -512,6 +512,7 @@ impl TcpChannel {
             )
         })?;
 
+        trace!("start reading from tcp buffer");
         while let Ok(size) = stream.read(buf.ref_mut()).await {
             trace!("recved {} bytes", size);
             buf.read_size(size);
@@ -540,6 +541,7 @@ impl TcpChannel {
             if data_length <= buf.len() {
                 let bytes = buf.take(data_length);
                 *running.lock().unwrap() = Some(buf);
+                trace!("return {} bytes", data_length - 2);
                 return Ok(DataAddress::new(bytes[2..].to_vec(), from));
             }
         }
