@@ -9,12 +9,14 @@
 use std::sync::{Arc, Mutex};
 
 pub(crate) struct DropLogger {
-    msg: &'static str,
+    msg: String,
 }
 
 impl DropLogger {
-    pub(crate) fn new(msg: &'static str) -> Self {
-        Self { msg }
+    pub(crate) fn new(msg: &str) -> Self {
+        Self {
+            msg: msg.to_string(),
+        }
     }
 }
 

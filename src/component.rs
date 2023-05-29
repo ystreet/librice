@@ -20,8 +20,10 @@ use crate::candidate::{Candidate, CandidatePair, TransportType};
 
 use crate::gathering::GatherSocket;
 use crate::stun::agent::StunAgent;
+use crate::stun::socket::SocketAddresses;
 
 use crate::utils::ChannelBroadcast;
+use crate::utils::DropLogger;
 
 pub const RTP: usize = 1;
 pub const RTCP: usize = 2;
@@ -148,8 +150,13 @@ impl Component {
         let span = debug_span!("component_recv");
         // need to keep some reference to the StunAgent until the task completes
         let mut recv_stream = agent.receive_stream();
+        let local_addr = agent.channel().local_addr();
+        let component_id = self.id;
         let (abortable, abort_handle) = futures::future::abortable(
             async move {
+                let _drop_log = DropLogger::new(&format!(
+                    "Dropping component {component_id} receive stream for {local_addr:?}"
+                ));
                 debug!("started");
                 while let Some(stun_or_data) = recv_stream.next().await {
                     if let Some((data, _from)) = stun_or_data.data() {
