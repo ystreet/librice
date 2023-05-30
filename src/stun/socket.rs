@@ -482,13 +482,35 @@ impl<'msg> SocketMessageRecv<'msg> for UdpConnectionChannel
 pub struct TcpChannel {
     stream: DebugWrapper<TcpStream>,
     running_buffer: Arc<Mutex<Option<TcpBuffer>>>,
+    sender_channel: async_channel::Sender<Vec<u8>>,
+    sender_task: Arc<async_std::sync::Mutex<Option<async_std::task::JoinHandle<()>>>>,
 }
 
 impl TcpChannel {
     pub fn new(stream: TcpStream) -> Self {
+        let (tx, mut rx) = async_channel::bounded::<Vec<u8>>(1);
+        let sender_task = async_std::task::spawn({
+            let mut stream = stream.clone();
+            async move {
+                while let Some(data) = rx.next().await {
+                    let mut header_len = [0, 0];
+                    BigEndian::write_u16(&mut header_len, data.len() as u16);
+                    if let Err(e) = stream.write_all(&header_len).await {
+                        warn!("tcp write produced error {:?}", e);
+                        break;
+                    }
+                    if let Err(e) = stream.write_all(&data).await {
+                        warn!("tcp write produced error {:?}", e);
+                        break;
+                    }
+                }
+            }
+        });
         Self {
             stream: DebugWrapper::wrap(stream, "..."),
             running_buffer: Arc::new(Mutex::new(Some(TcpBuffer::new(MAX_STUN_MESSAGE_SIZE)))),
+            sender_channel: tx,
+            sender_task: Arc::new(async_std::sync::Mutex::new(Some(sender_task))),
         }
     }
 
@@ -511,6 +533,20 @@ impl TcpChannel {
                 "Unsupported: multiple calls to recv()",
             )
         })?;
+
+        if buf.len() > 2 {
+            let data_length = (BigEndian::read_u16(&buf.buf[..2]) as usize) + 2;
+            trace!(
+                "check for enough data in existing buffer of length {}, data length {data_length}",
+                buf.len()
+            );
+            if data_length <= buf.len() {
+                let bytes = buf.take(data_length);
+                *running.lock().unwrap() = Some(buf);
+                trace!("return {} bytes", data_length - 2);
+                return Ok(DataAddress::new(bytes[2..].to_vec(), from));
+            }
+        }
 
         trace!("start reading from tcp buffer");
         while let Ok(size) = stream.read(buf.ref_mut()).await {
@@ -553,6 +589,9 @@ impl TcpChannel {
     }
 
     pub async fn close(&self) -> Result<(), std::io::Error> {
+        if let Some(task_handle) = self.sender_task.lock().await.take() {
+            task_handle.cancel().await;
+        }
         self.stream.shutdown(std::net::Shutdown::Both)
     }
 }
@@ -607,12 +646,10 @@ impl<'msg> SocketMessageSend<'msg, DataFraming<'msg>> for TcpChannel {
             ));
         }
 
-        let mut stream = self.stream.clone();
-        let mut len_bytes = [0; 2];
-        BigEndian::write_u16(&mut len_bytes, msg.data.len() as u16);
-        // XXX: may need to check this will not be interpreted as STUN and reject the send
-        stream.write_all(&len_bytes).await?;
-        stream.write_all(msg.data).await
+        self.sender_channel
+            .send(msg.data.to_vec())
+            .await
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::ConnectionAborted))
     }
 }
 
