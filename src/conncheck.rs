@@ -764,18 +764,6 @@ impl ConnCheckListInner {
             .cloned()
     }
 
-    fn take_matching_check(&mut self, pair: &CandidatePair) -> Option<Arc<ConnCheck>> {
-        let pos = self
-            .pairs
-            .iter()
-            .position(|check| Self::check_is_equal(check, pair, Nominate::DontCare));
-        if let Some(position) = pos {
-            self.pairs.remove(position)
-        } else {
-            None
-        }
-    }
-
     fn add_check(&mut self, check: Arc<ConnCheck>) {
         trace!("adding check {:?}", check);
         if let Some(idx) = self
@@ -1039,19 +1027,20 @@ impl ConnCheckListInner {
         trace!("remote candidate {remote:?}");
         // RFC 8445 Section 7.3.1.4. Triggered Checks
         let pair = CandidatePair::new(local.clone(), remote);
-        if let Some(mut check) = self.take_matching_check(&pair) {
+        if let Some(mut check) = self.matching_check(&pair, Nominate::DontCare) {
             // When the pair is already on the checklist:
             trace!("found existing {:?} check {:?}", check.state(), check);
             match check.state() {
                 // If the state of that pair is Succeeded, nothing further is
                 // done.
                 CandidatePairState::Succeeded => {
-                    if peer_nominating {
+                    if peer_nominating && !check.nominate() {
                         debug!("existing pair succeeded -> nominate");
                         check =
                             ConnCheck::clone_with_pair_nominate(&check, check.pair.clone(), true);
+                        check.set_state(CandidatePairState::Waiting);
+                        self.add_check(check);
                         if let Some(component) = self.nominated_pair(&pair) {
-                            self.add_check(check);
                             return Ok(Some(component));
                         }
                     }
@@ -1073,14 +1062,14 @@ impl ConnCheckListInner {
                     check.cancel_retransmissions();
                     // TODO: ignore response timeouts
 
-                    self.add_check(check.clone());
                     check = ConnCheck::clone_with_pair_nominate(
                         &check,
                         check.pair.clone(),
                         peer_nominating,
                     );
                     check.set_state(CandidatePairState::Waiting);
-                    self.add_triggered(check.clone());
+                    self.add_check(check.clone());
+                    self.add_triggered(check);
                 }
                 // If the state of that pair is Waiting, Frozen, or Failed, the
                 // agent MUST enqueue the pair in the triggered checklist
@@ -1094,18 +1083,21 @@ impl ConnCheckListInner {
                 | CandidatePairState::Failed => {
                     if peer_nominating && !check.nominate() {
                         check.cancel();
-                        self.add_check(check.clone());
+                        error!("local: {:?}", local);
+                        error!("agent local addr: {:?}", agent.channel().local_addr());
+                        error!("agent local transport: {:?}", agent.channel().transport());
+                        error!("check.pair: {:?}", check.pair);
                         check = ConnCheck::clone_with_pair_nominate(
                             &check,
                             check.pair.clone(),
                             peer_nominating,
                         );
+                        self.add_check(check.clone());
                     }
                     check.set_state(CandidatePairState::Waiting);
-                    self.add_triggered(check.clone());
+                    self.add_triggered(check);
                 }
             }
-            self.add_check(check);
         } else {
             debug!("creating new check for pair {:?}", pair);
             let check = Arc::new(ConnCheck::new(pair, agent.clone(), peer_nominating));
