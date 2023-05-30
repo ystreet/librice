@@ -1947,7 +1947,11 @@ impl ConnCheckList {
                         .valid
                         .iter()
                         .cloned()
-                        .filter(|check| check.pair.local.component_id == component_id)
+                        .filter(|check| {
+                            check.pair.local.component_id == component_id
+                                && (check.pair.local.transport_type != TransportType::Tcp
+                                    || check.pair.local.address.port() != 9)
+                        })
                         .collect();
                     valid.sort_by(|check1, check2| {
                         check1
