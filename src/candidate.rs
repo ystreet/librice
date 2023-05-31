@@ -164,7 +164,13 @@ impl CandidateBuilder {
             transport_type: self.ttype,
             foundation: self.foundation.to_owned(),
             priority: self.priority.unwrap_or_else(|| {
-                crate::candidate::Candidate::calculate_priority(self.ctype, 0, self.component_id)
+                crate::candidate::Candidate::calculate_priority(
+                    self.ctype,
+                    self.ttype,
+                    self.tcp_type,
+                    0,
+                    self.component_id,
+                )
             }),
             address: self.address,
             base_address,
@@ -341,9 +347,38 @@ impl Candidate {
 
     pub(crate) fn calculate_priority(
         ctype: CandidateType,
-        local_preference: u32,
+        ttype: TransportType,
+        tcp_type: Option<TcpType>,
+        other_preference: u32,
         component_id: usize,
     ) -> u32 {
+        let local_preference = {
+            let direction_preference = {
+                match ttype {
+                    TransportType::Udp => 7,
+                    TransportType::Tcp => {
+                        if matches!(ctype, CandidateType::Host | CandidateType::Relayed) {
+                            match tcp_type {
+                                Some(TcpType::So) => 2,
+                                Some(TcpType::Active) => 6,
+                                Some(TcpType::Passive) => 4,
+                                None => 0,
+                            }
+                        } else {
+                            match tcp_type {
+                                Some(TcpType::So) => 6,
+                                Some(TcpType::Active) => 4,
+                                Some(TcpType::Passive) => 2,
+                                None => 0,
+                            }
+                        }
+                    }
+                    #[cfg(test)]
+                    TransportType::AsyncChannel => 7,
+                }
+            };
+            (1 << 13) * direction_preference + other_preference
+        };
         ((1 << 24) * Self::priority_type_preference(ctype)) + ((1 << 8) * local_preference) + 256
             - component_id as u32
     }
@@ -665,6 +700,55 @@ mod tests {
         );
         let pair2 = pair.clone();
         assert!(pair.redundant_with([pair2].iter()).is_some());
+    }
+
+    #[test]
+    fn candidate_priority() {
+        init();
+        let ctypes = [
+            CandidateType::Host,
+            CandidateType::ServerReflexive,
+            CandidateType::PeerReflexive,
+            CandidateType::Relayed,
+        ];
+        let ttypes = [
+            (TransportType::Udp, None),
+            (TransportType::Tcp, Some(TcpType::So)),
+            (TransportType::Tcp, Some(TcpType::Active)),
+            (TransportType::Tcp, Some(TcpType::Passive)),
+        ];
+        let udp_priority =
+            Candidate::calculate_priority(CandidateType::Host, TransportType::Udp, None, 8191, 1);
+        /* udp prioirty should be larger than all tcp candidates */
+        for ctype in ctypes {
+            for (ttype, tcp_type) in ttypes {
+                if ttype != TransportType::Udp {
+                    /* udp prioirty should be larger than all tcp candidates */
+                    assert!(
+                        udp_priority
+                            > Candidate::calculate_priority(ctype, ttype, tcp_type, 8191, 1)
+                    );
+                }
+            }
+        }
+        for (ttype, tcp_type) in ttypes {
+            /* peer reflexive must be greater than server reflexive */
+            assert!(
+                Candidate::calculate_priority(
+                    CandidateType::PeerReflexive,
+                    ttype,
+                    tcp_type,
+                    8191,
+                    1
+                ) > Candidate::calculate_priority(
+                    CandidateType::ServerReflexive,
+                    ttype,
+                    tcp_type,
+                    8191,
+                    1
+                )
+            );
+        }
     }
 
     mod parse {
