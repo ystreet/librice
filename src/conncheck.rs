@@ -66,7 +66,7 @@ struct ConnCheck {
     nominate: bool,
     pair: CandidatePair,
     #[derivative(Debug = "ignore")]
-    state: Mutex<ConnCheckState>,
+    state: Arc<Mutex<ConnCheckState>>,
     #[derivative(Debug = "ignore")]
     agent: ConnCheckType,
 }
@@ -76,6 +76,7 @@ struct ConnCheckState {
     conncheck_id: usize,
     state: CandidatePairState,
     stun_request: Option<StunRequest>,
+    agent: Option<StunAgent>,
 }
 
 impl ConnCheckState {
@@ -107,11 +108,12 @@ impl ConnCheck {
         Self {
             conncheck_id,
             pair,
-            state: Mutex::new(ConnCheckState {
+            state: Arc::new(Mutex::new(ConnCheckState {
                 conncheck_id,
                 state: CandidatePairState::Frozen,
                 stun_request: None,
-            }),
+                agent: Some(agent.clone()),
+            })),
             agent: ConnCheckType::Agent(agent),
             nominate,
         }
@@ -127,11 +129,12 @@ impl ConnCheck {
         Self {
             conncheck_id,
             pair,
-            state: Mutex::new(ConnCheckState {
+            state: Arc::new(Mutex::new(ConnCheckState {
                 conncheck_id,
                 state: CandidatePairState::Frozen,
                 stun_request: None,
-            }),
+                agent: None,
+            })),
             agent: ConnCheckType::Tcp(TcpConnCheck {
                 weak_inner,
                 component,
@@ -171,10 +174,7 @@ impl ConnCheck {
             ConnCheckType::Agent(ref agent) => Some(agent.clone()),
             ConnCheckType::Tcp(_) => {
                 let inner = self.state.lock().unwrap();
-                inner
-                    .stun_request
-                    .as_ref()
-                    .and_then(|sr| sr.created_agent())
+                inner.agent.clone()
             }
         }
     }
@@ -269,6 +269,7 @@ impl ConnCheck {
                     MessageIntegrityCredentials::ShortTerm(local_credentials.into());
                 let remote_credentials =
                     MessageIntegrityCredentials::ShortTerm(remote_credentials.into());
+                let weak_check_state = Arc::downgrade(&conncheck.state);
                 async_std::task::spawn(async move {
                     while let Some(agent) = create_agent_request_rx.next().await {
                         debug!("have new agent to configure");
@@ -277,9 +278,20 @@ impl ConnCheck {
                         // TODO: abort when done
                         let _data_abort = component.add_recv_agent(agent.clone()).await;
                         let (start_notify_tx, mut start_notify_rx) = async_channel::bounded(1);
+                        {
+                            match weak_check_state.upgrade() {
+                                Some(check_state) => {
+                                    let mut check_state = check_state.lock().unwrap();
+                                    check_state.agent = Some(agent.clone());
+                                }
+                                None => warn!("check has disappeared!"),
+                            }
+                        }
                         async_std::task::spawn({
                             let agent = agent.clone();
-                            let local = local.clone();
+                            let mut local = local.clone();
+                            // use the actual address in the local candidate from here on out
+                            local.address = agent.channel().local_addr().unwrap();
                             let weak_inner = weak_inner.clone();
                             ConnCheckList::local_candidate_handling_incoming_data_loop(
                                 checklist_id,
