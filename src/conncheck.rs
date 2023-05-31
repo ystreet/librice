@@ -1225,7 +1225,7 @@ impl ConnCheckList {
             .local_credentials()
             .ok_or(AgentError::ResourceNotFound)?;
 
-        if let Some(mut error_msg) = Message::check_attribute_types(
+        if let Some(error_msg) = Message::check_attribute_types(
             msg,
             &[
                 USERNAME,
@@ -1239,8 +1239,6 @@ impl ConnCheckList {
             &[USERNAME, FINGERPRINT, MESSAGE_INTEGRITY, PRIORITY],
         ) {
             // failure -> send error response
-            error_msg.add_fingerprint()?;
-            error_msg.add_message_integrity(&local_credentials)?;
             return Ok(Some(error_msg));
         }
         let peer_nominating =
@@ -1248,9 +1246,7 @@ impl ConnCheckList {
                 if UseCandidate::from_raw(&use_candidate_raw).is_ok() {
                     true
                 } else {
-                    let mut response = Message::bad_request(msg)?;
-                    response.add_fingerprint()?;
-                    response.add_message_integrity(&local_credentials)?;
+                    let response = Message::bad_request(msg)?;
                     return Ok(Some(response));
                 }
             } else {
@@ -1260,9 +1256,7 @@ impl ConnCheckList {
         let priority = match msg.attribute::<Priority>(PRIORITY) {
             Some(p) => p.priority(),
             None => {
-                let mut response = Message::bad_request(msg)?;
-                response.add_fingerprint()?;
-                response.add_message_integrity(&local_credentials)?;
+                let response = Message::bad_request(msg)?;
                 return Ok(Some(response));
             }
         };
@@ -1293,16 +1287,11 @@ impl ConnCheckList {
                     warn!("binding request failed username validation -> UNAUTHORIZED");
                     let mut response = Message::new_error(msg);
                     response.add_attribute(ErrorCode::builder(ErrorCode::UNAUTHORIZED).build()?)?;
-                    let mut response = Message::bad_request(msg)?;
-                    response.add_fingerprint()?;
-                    response.add_message_integrity(&local_credentials)?;
                     return Ok(Some(response));
                 }
             } else {
                 // existence is checked above so can only fail when the username is invalid
-                let mut response = Message::bad_request(msg)?;
-                response.add_fingerprint()?;
-                response.add_message_integrity(&local_credentials)?;
+                let response = Message::bad_request(msg)?;
                 return Ok(Some(response));
             }
 
@@ -1327,8 +1316,6 @@ impl ConnCheckList {
                             response.add_attribute(
                                 ErrorCode::builder(ErrorCode::ROLE_CONFLICT).build()?,
                             )?;
-                            response.add_fingerprint()?;
-                            response.add_message_integrity(&local_credentials)?;
                             return Ok(Some(response));
                         } else {
                             debug!("role conflict detected, updating controlling state to false");
@@ -1376,8 +1363,6 @@ impl ConnCheckList {
                             response.add_attribute(
                                 ErrorCode::builder(ErrorCode::ROLE_CONFLICT).build()?,
                             )?;
-                            response.add_fingerprint()?;
-                            response.add_message_integrity(&local_credentials)?;
                             return Ok(Some(response));
                         }
                     }
