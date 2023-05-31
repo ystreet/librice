@@ -94,7 +94,7 @@ fn generate_bind_request() -> std::io::Result<Message> {
 #[derive(Debug)]
 struct GatherCandidateAddress {
     ctype: CandidateType,
-    local_preference: u8,
+    other_preference: u16,
     transport: TransportType,
     tcp_type: Option<TcpType>,
     address: SocketAddr,
@@ -103,7 +103,7 @@ struct GatherCandidateAddress {
 }
 
 async fn gather_stun_xor_address(
-    local_preference: u8,
+    other_preference: u16,
     socket: GatherSocket,
     stun_transport: TransportType,
     stun_server: SocketAddr,
@@ -129,7 +129,7 @@ async fn gather_stun_xor_address(
                         );
                         return Ok(GatherCandidateAddress {
                             ctype: CandidateType::ServerReflexive,
-                            local_preference,
+                            other_preference,
                             transport: stun_transport,
                             tcp_type: None,
                             address: attr.addr(response.transaction_id()),
@@ -149,12 +149,12 @@ async fn gather_stun_xor_address(
 
 fn udp_socket_host_gather_candidate(
     socket: Arc<UdpSocket>,
-    local_preference: u8,
+    other_preference: u16,
 ) -> Result<GatherCandidateAddress, StunError> {
     let local_addr = socket.local_addr().unwrap();
     Ok(GatherCandidateAddress {
         ctype: CandidateType::Host,
-        local_preference,
+        other_preference,
         transport: TransportType::Udp,
         tcp_type: None,
         address: local_addr,
@@ -165,12 +165,12 @@ fn udp_socket_host_gather_candidate(
 
 fn tcp_passive_host_gather_candidate(
     socket: Arc<TcpListener>,
-    local_preference: u8,
+    other_preference: u16,
 ) -> Result<GatherCandidateAddress, StunError> {
     let local_addr = socket.local_addr().unwrap();
     Ok(GatherCandidateAddress {
         ctype: CandidateType::Host,
-        local_preference,
+        other_preference,
         transport: TransportType::Tcp,
         tcp_type: Some(TcpType::Passive),
         address: local_addr,
@@ -181,14 +181,14 @@ fn tcp_passive_host_gather_candidate(
 
 fn tcp_active_host_gather_candidate(
     socket: Arc<TcpListener>,
-    local_preference: u8,
+    other_preference: u16,
 ) -> Result<GatherCandidateAddress, StunError> {
     let local_addr = socket.local_addr().unwrap();
     // port is ignored with tcp active candidates
     let local_addr = SocketAddr::new(local_addr.ip(), 9);
     Ok(GatherCandidateAddress {
         ctype: CandidateType::Host,
-        local_preference,
+        other_preference,
         transport: TransportType::Tcp,
         tcp_type: Some(TcpType::Active),
         address: local_addr,
@@ -204,27 +204,38 @@ pub fn gather_component(
 ) -> impl Stream<Item = (Candidate, GatherSocket)> {
     let futures = futures::stream::FuturesUnordered::new();
 
+    let sockets_len = sockets.len();
+
     for (i, socket) in sockets.iter().enumerate() {
         match socket {
             GatherSocket::Udp(channel) => futures.push(
                 futures::future::ready(
-                    udp_socket_host_gather_candidate(channel.socket(), (i * 2) as u8)
-                        .map(|ga| (ga, socket.clone())),
+                    udp_socket_host_gather_candidate(
+                        channel.socket(),
+                        (sockets_len - i) as u16 * 3 + 2,
+                    )
+                    .map(|ga| (ga, socket.clone())),
                 )
                 .boxed_local(),
             ),
             GatherSocket::Tcp(listener) => {
                 futures.push(
                     futures::future::ready(
-                        tcp_passive_host_gather_candidate(listener.clone(), (i * 2) as u8)
-                            .map(|ga| (ga, socket.clone())),
+                        tcp_passive_host_gather_candidate(
+                            listener.clone(),
+                            (sockets_len - i) as u16 * 2 + 1,
+                        )
+                        .map(|ga| (ga, socket.clone())),
                     )
                     .boxed_local(),
                 );
                 futures.push(
                     futures::future::ready(
-                        tcp_active_host_gather_candidate(listener.clone(), (i * 2) as u8)
-                            .map(|ga| (ga, socket.clone())),
+                        tcp_active_host_gather_candidate(
+                            listener.clone(),
+                            (sockets_len - i) as u16 * 3,
+                        )
+                        .map(|ga| (ga, socket.clone())),
                     )
                     .boxed_local(),
                 );
@@ -242,7 +253,7 @@ pub fn gather_component(
                     let stun_server = *stun_server;
                     async move {
                         gather_stun_xor_address(
-                            (i * 10) as u8,
+                            (sockets_len - i) as u16 * 3,
                             socket.clone(),
                             stun_server.0,
                             stun_server.1,
@@ -266,7 +277,9 @@ pub fn gather_component(
                 Ok((ga, channel)) => {
                     let priority = Candidate::calculate_priority(
                         ga.ctype,
-                        ga.local_preference as u32,
+                        ga.transport,
+                        ga.tcp_type,
+                        ga.other_preference as u32,
                         component_id,
                     );
                     trace!("candidate {:?}, {:?}", ga, priority);
