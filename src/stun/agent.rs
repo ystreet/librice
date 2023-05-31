@@ -390,7 +390,6 @@ impl StunRequestBuilder {
                 transaction_id,
                 send_abort: None,
                 recv_abort: None,
-                created_agent: None,
             }),
             timeouts_ms,
             create_agent_tx: tx,
@@ -407,7 +406,6 @@ struct StunRequestInner {
     send_abort: Option<AbortHandle>,
     #[derivative(Debug = "ignore")]
     recv_abort: Option<AbortHandle>,
-    created_agent: Option<StunAgent>,
 }
 
 impl StunRequestInner {
@@ -544,10 +542,6 @@ impl StunRequest {
         let (send_abortable, send_abort_handle) = futures::future::abortable(async move {
             // agent creation (e.g. tcp stream) is included in the timeout values
             let agent = self.create_agent().await?;
-            {
-                let mut inner = self.inner.lock().unwrap();
-                inner.created_agent = Some(agent.clone());
-            }
             req_tx
                 .send(agent.clone())
                 .await
@@ -619,11 +613,6 @@ impl StunRequest {
             debug!("response from {:?} {}", ret.1, ret.0);
         }
         ret
-    }
-
-    pub(crate) fn created_agent(&self) -> Option<StunAgent> {
-        let inner = self.inner.lock().unwrap();
-        inner.created_agent.clone()
     }
 }
 
