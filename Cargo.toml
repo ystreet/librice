@@ -22,6 +22,7 @@ futures = "0.3"
 futures-timer = "3"
 crc = "3"
 sha-1 = "0.10"
+sha2 = "0.10"
 hmac = "0.12"
 derivative = "2"
 tracing = { version = "0.1", features = ["log"] }

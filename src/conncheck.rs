@@ -251,9 +251,10 @@ impl ConnCheck {
             msg.add_attribute(UseCandidate::new())?;
         }
         msg.add_attribute(Username::new(&username)?)?;
-        msg.add_message_integrity(&MessageIntegrityCredentials::ShortTerm(
-            local_credentials.clone().into(),
-        ))?;
+        msg.add_message_integrity(
+            &MessageIntegrityCredentials::ShortTerm(local_credentials.clone().into()),
+            IntegrityAlgorithm::Sha1,
+        )?;
         msg.add_fingerprint()?;
 
         match &conncheck.agent {
@@ -1129,7 +1130,7 @@ fn binding_success_response(
 ) -> Result<Message, AgentError> {
     let mut response = Message::new_success(msg);
     response.add_attribute(XorMappedAddress::new(from, msg.transaction_id()))?;
-    response.add_message_integrity(&local_credentials)?;
+    response.add_message_integrity(&local_credentials, IntegrityAlgorithm::Sha1)?;
     response.add_fingerprint()?;
     Ok(response)
 }
@@ -2865,7 +2866,7 @@ mod tests {
             ))?;
             response
         };
-        response.add_message_integrity(&local_stun_credentials)?;
+        response.add_message_integrity(&local_stun_credentials, IntegrityAlgorithm::Sha1)?;
         response.add_fingerprint()?;
         Ok(response)
     }
@@ -3610,7 +3611,10 @@ mod tests {
                 )
                 .unwrap();
             request
-                .add_message_integrity(&remote_agent.local_credentials().unwrap())
+                .add_message_integrity(
+                    &remote_agent.local_credentials().unwrap(),
+                    IntegrityAlgorithm::Sha1,
+                )
                 .unwrap();
             request.add_fingerprint().unwrap();
 

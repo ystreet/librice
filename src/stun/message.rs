@@ -308,12 +308,10 @@ impl std::fmt::Display for Message {
     }
 }
 
-fn padded_attr_size(attr: &RawAttribute) -> usize {
-    if attr.length() % 4 == 0 {
-        4 + attr.length() as usize
-    } else {
-        8 + attr.length() as usize - attr.length() as usize % 4
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntegrityAlgorithm {
+    Sha1,
+    Sha256,
 }
 
 impl Message {
@@ -676,14 +674,20 @@ impl Message {
         orig_data: &[u8],
         credentials: &MessageIntegrityCredentials,
     ) -> Result<(), StunError> {
-        let raw = self
-            .attribute::<RawAttribute>(MESSAGE_INTEGRITY)
-            .ok_or_else(|| {
-                warn!("no INTEGRITY attribute in message");
-                StunError::ResourceNotFound
-            })?;
-        let integrity = MessageIntegrity::try_from(&raw)?;
-        let msg_hmac = integrity.hmac();
+        let raw_sha1 = self.attribute::<RawAttribute>(MESSAGE_INTEGRITY);
+        let raw_sha256 = self.attribute::<RawAttribute>(MESSAGE_INTEGRITY_SHA256);
+        let (algo, msg_hmac) = match (raw_sha1, raw_sha256) {
+            (Some(_), Some(_)) => return Err(StunError::Failed),
+            (Some(sha1), None) => {
+                let integrity = MessageIntegrity::try_from(&sha1)?;
+                (IntegrityAlgorithm::Sha1, integrity.hmac().to_vec())
+            }
+            (None, Some(sha256)) => {
+                let integrity = MessageIntegritySha256::try_from(&sha256)?;
+                (IntegrityAlgorithm::Sha256, integrity.hmac().to_vec())
+            }
+            (None, None) => return Err(StunError::ResourceNotFound),
+        };
 
         // find the location of the original MessageIntegrity attribute: XXX: maybe encode this into
         // the attribute instead?
@@ -697,8 +701,28 @@ impl Message {
         let mut data_offset = 20;
         while !data.is_empty() {
             let attr = RawAttribute::from_bytes(data)?;
-            if attr.get_type() == MESSAGE_INTEGRITY {
+            if algo == IntegrityAlgorithm::Sha1 && attr.get_type() == MESSAGE_INTEGRITY {
                 let msg = MessageIntegrity::try_from(&attr)?;
+                if msg.hmac().as_slice() != msg_hmac {
+                    // data hmac is different from message hmac -> wrong data for this message.
+                    warn!("hmac from data does not match message hmac");
+                    return Err(StunError::ParseError(StunParseError::InvalidData));
+                }
+
+                // HMAC is computed using all the data up to (exclusive of) the MESSAGE_INTEGRITY
+                // but with a length field including the MESSAGE_INTEGRITY attribute...
+                let key = credentials.make_hmac_key();
+                let mut hmac_data = orig_data[..data_offset].to_vec();
+                BigEndian::write_u16(&mut hmac_data[2..4], data_offset as u16 + 24 - 20);
+                return MessageIntegrity::verify(
+                    &hmac_data,
+                    &key,
+                    msg_hmac.as_slice().try_into().unwrap(),
+                );
+            } else if algo == IntegrityAlgorithm::Sha256
+                && attr.get_type() == MESSAGE_INTEGRITY_SHA256
+            {
+                let msg = MessageIntegritySha256::try_from(&attr)?;
                 if msg.hmac() != msg_hmac {
                     // data hmac is different from message hmac -> wrong data for this message.
                     warn!("hmac from data does not match message hmac");
@@ -710,7 +734,7 @@ impl Message {
                 let key = credentials.make_hmac_key();
                 let mut hmac_data = orig_data[..data_offset].to_vec();
                 BigEndian::write_u16(&mut hmac_data[2..4], data_offset as u16 + 24 - 20);
-                return MessageIntegrity::verify(&hmac_data, &key, msg_hmac);
+                return MessageIntegritySha256::verify(&hmac_data, &key, &msg_hmac);
             }
             let padded_len = padded_attr_size(&attr);
             if padded_len > data.len() {
@@ -728,27 +752,38 @@ impl Message {
         Err(StunError::ParseError(StunParseError::InvalidData))
     }
 
+    // message-integrity is computed using all the data up to (exclusive of) the
+    // MESSAGE-INTEGRITY but with a length field including the MESSAGE-INTEGRITY attribute...
+    fn integrity_bytes_from_message(&self) -> Vec<u8> {
+        let mut bytes = self.to_bytes();
+        // rewrite the length to include the message-integrity attribute
+        let existing_len = BigEndian::read_u16(&bytes[2..4]);
+        BigEndian::write_u16(&mut bytes[2..4], existing_len + 24);
+        bytes
+    }
+
     /// Adds MESSAGE_INTEGRITY attribute to a [`Message`] using the provided credentials
     ///
     /// # Errors
     ///
     /// - If a MESSAGE_INTEGRITY attribute is already present
+    /// - If a MESSAGE_INTEGRITY_SHA256 attribute is already present
     /// - If a FINGERPRINT attribute is already present
     ///
     /// # Examples
     ///
     /// ```
     /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING,
-    ///     MessageIntegrityCredentials, ShortTermCredentials};
+    ///     MessageIntegrityCredentials, ShortTermCredentials, IntegrityAlgorithm};
     /// let mut message = Message::new_request(BINDING);
     /// let credentials = MessageIntegrityCredentials::ShortTerm(ShortTermCredentials { password:
     ///     "pass".to_owned() });
-    /// assert!(message.add_message_integrity(&credentials).is_ok());
+    /// assert!(message.add_message_integrity(&credentials, IntegrityAlgorithm::Sha1).is_ok());
     /// let data = message.to_bytes();
     /// assert!(message.validate_integrity(&data, &credentials).is_ok());
     ///
     /// // duplicate MESSAGE_INTEGRITY is an error
-    /// assert!(message.add_message_integrity(&credentials).is_err());
+    /// assert!(message.add_message_integrity(&credentials, IntegrityAlgorithm::Sha1).is_err());
     /// ```
     #[tracing::instrument(
         name = "message_add_integrity",
@@ -762,24 +797,32 @@ impl Message {
     pub fn add_message_integrity(
         &mut self,
         credentials: &MessageIntegrityCredentials,
+        algorithm: IntegrityAlgorithm,
     ) -> Result<(), StunError> {
         if self.has_attribute(MESSAGE_INTEGRITY) {
+            return Err(StunError::AlreadyExists);
+        }
+        if self.has_attribute(MESSAGE_INTEGRITY_SHA256) {
             return Err(StunError::AlreadyExists);
         }
         if self.has_attribute(FINGERPRINT) {
             return Err(StunError::AlreadyExists);
         }
 
-        // message-integrity is computed using all the data up to (exclusive of) the
-        // MESSAGE-INTEGRITY but with a length field including the MESSAGE-INTEGRITY attribute...
-        let mut bytes = self.to_bytes();
-        // rewrite the length to include the message-integrity attribute
-        let existing_len = BigEndian::read_u16(&bytes[2..4]);
-        BigEndian::write_u16(&mut bytes[2..4], existing_len + 24);
+        let bytes = self.integrity_bytes_from_message();
         let key = credentials.make_hmac_key();
-        let integrity = MessageIntegrity::compute(&bytes, &key)?;
-        self.attributes
-            .push(MessageIntegrity::new(integrity).into());
+        match algorithm {
+            IntegrityAlgorithm::Sha1 => {
+                let integrity = MessageIntegrity::compute(&bytes, &key)?;
+                self.attributes
+                    .push(MessageIntegrity::new(integrity).into());
+            }
+            IntegrityAlgorithm::Sha256 => {
+                let integrity = MessageIntegritySha256::compute(&bytes, &key)?;
+                self.attributes
+                    .push(MessageIntegritySha256::new(integrity.as_slice())?.into());
+            }
+        }
         Ok(())
     }
 
@@ -1162,28 +1205,48 @@ mod tests {
     #[test]
     fn integrity() {
         init();
-        let mut msg = Message::new_request(BINDING);
-        let software_str = "s";
-        let credentials = MessageIntegrityCredentials::ShortTerm(ShortTermCredentials {
-            password: "secret".to_owned(),
-        });
-        msg.add_attribute(Software::new(software_str).unwrap())
-            .unwrap();
-        msg.add_message_integrity(&credentials).unwrap();
-        let bytes: Vec<_> = msg.clone().into();
-        msg.validate_integrity(&bytes, &credentials).unwrap();
-        let orig_integrity = msg
-            .attribute::<MessageIntegrity>(MESSAGE_INTEGRITY)
-            .unwrap();
-        // validates the fingerprint of the data when available
-        let new_msg = Message::from_bytes(&bytes).unwrap();
-        let software = new_msg.attribute::<Software>(SOFTWARE).unwrap();
-        assert_eq!(software.software(), software_str);
-        let new_integrity = new_msg
-            .attribute::<MessageIntegrity>(MESSAGE_INTEGRITY)
-            .unwrap();
-        assert_eq!(orig_integrity.hmac(), new_integrity.hmac());
-        new_msg.validate_integrity(&bytes, &credentials).unwrap();
+        for algorithm in [IntegrityAlgorithm::Sha1, IntegrityAlgorithm::Sha256] {
+            let mut msg = Message::new_request(BINDING);
+            let software_str = "s";
+            let credentials = MessageIntegrityCredentials::ShortTerm(ShortTermCredentials {
+                password: "secret".to_owned(),
+            });
+            msg.add_attribute(Software::new(software_str).unwrap())
+                .unwrap();
+            msg.add_message_integrity(&credentials, algorithm).unwrap();
+            let bytes: Vec<_> = msg.clone().into();
+            msg.validate_integrity(&bytes, &credentials).unwrap();
+            let orig_hmac = match algorithm {
+                IntegrityAlgorithm::Sha1 => msg
+                    .attribute::<MessageIntegrity>(MESSAGE_INTEGRITY)
+                    .unwrap()
+                    .hmac()
+                    .to_vec(),
+                IntegrityAlgorithm::Sha256 => msg
+                    .attribute::<MessageIntegritySha256>(MESSAGE_INTEGRITY_SHA256)
+                    .unwrap()
+                    .hmac()
+                    .to_vec(),
+            };
+            // validates the fingerprint of the data when available
+            let new_msg = Message::from_bytes(&bytes).unwrap();
+            let software = new_msg.attribute::<Software>(SOFTWARE).unwrap();
+            assert_eq!(software.software(), software_str);
+            let new_hmac = match algorithm {
+                IntegrityAlgorithm::Sha1 => new_msg
+                    .attribute::<MessageIntegrity>(MESSAGE_INTEGRITY)
+                    .unwrap()
+                    .hmac()
+                    .to_vec(),
+                IntegrityAlgorithm::Sha256 => new_msg
+                    .attribute::<MessageIntegritySha256>(MESSAGE_INTEGRITY_SHA256)
+                    .unwrap()
+                    .hmac()
+                    .to_vec(),
+            };
+            assert_eq!(orig_hmac, new_hmac);
+            new_msg.validate_integrity(&bytes, &credentials).unwrap();
+        }
     }
 
     #[test]
@@ -1495,15 +1558,109 @@ mod tests {
         assert_eq!(username.username(), &long_term.username);
 
         // NONCE
-        /* XXX: not currently implemented
         assert!(msg.has_attribute(NONCE));
         let raw = msg.attribute::<RawAttribute>(NONCE).unwrap();
         assert!(matches!(Nonce::try_from(&raw), Ok(_)));
         let nonce = Nonce::try_from(&raw).unwrap();
-        assert_eq!(nonce., &long_term.username);
-        */
+        assert_eq!(nonce.nonce(), &long_term.nonce);
 
         // MESSAGE_INTEGRITY
+        /* XXX: the password needs SASLPrep-ing to be useful here
+        let credentials = MessageIntegrityCredentials::LongTerm(long_term);
+        assert!(matches!(msg.validate_integrity(&data, &credentials), Ok(())));
+        */
+
+        assert_eq!(msg.to_bytes(), data);
+    }
+
+    #[test]
+    fn rfc8489_vector1() {
+        init();
+        // https://www.rfc-editor.org/rfc/rfc8489#appendix-B.1
+        // https://www.rfc-editor.org/errata/eid6268
+        let data = vec![
+            0x00, 0x01, 0x00, 0x90, //     Request type and message length
+            0x21, 0x12, 0xa4, 0x42, //     Magic cookie
+            0x78, 0xad, 0x34, 0x33, //  }
+            0xc6, 0xad, 0x72, 0xc0, //  }  Transaction ID
+            0x29, 0xda, 0x41, 0x2e, //  }
+            0x00, 0x1e, 0x00, 0x20, //     USERHASH attribute header
+            0x4a, 0x3c, 0xf3, 0x8f, //  }
+            0xef, 0x69, 0x92, 0xbd, //  }
+            0xa9, 0x52, 0xc6, 0x78, //  }
+            0x04, 0x17, 0xda, 0x0f, //  }  Userhash value (32 bytes)
+            0x24, 0x81, 0x94, 0x15, //  }
+            0x56, 0x9e, 0x60, 0xb2, //  }
+            0x05, 0xc4, 0x6e, 0x41, //  }
+            0x40, 0x7f, 0x17, 0x04, //  }
+            0x00, 0x15, 0x00, 0x29, //     NONCE attribute header
+            0x6f, 0x62, 0x4d, 0x61, //  }
+            0x74, 0x4a, 0x6f, 0x73, //  }
+            0x32, 0x41, 0x41, 0x41, //  }
+            0x43, 0x66, 0x2f, 0x2f, //  }
+            0x34, 0x39, 0x39, 0x6b, //  }  Nonce value and padding (3 bytes)
+            0x39, 0x35, 0x34, 0x64, //  }
+            0x36, 0x4f, 0x4c, 0x33, //  }
+            0x34, 0x6f, 0x4c, 0x39, //  }
+            0x46, 0x53, 0x54, 0x76, //  }
+            0x79, 0x36, 0x34, 0x73, //  }
+            0x41, 0x00, 0x00, 0x00, //  }
+            0x00, 0x14, 0x00, 0x0b, //     REALM attribute header
+            0x65, 0x78, 0x61, 0x6d, //  }
+            0x70, 0x6c, 0x65, 0x2e, //  }  Realm value (11 bytes) and padding (1 byte)
+            0x6f, 0x72, 0x67, 0x00, //  }
+            0x00, 0x1d, 0x00, 0x04, //    PASSWORD-ALGORITHM attribute header
+            0x00, 0x02, 0x00, 0x00, //    PASSWORD-ALGORITHM value (4 bytes)
+            0x00, 0x1c, 0x00, 0x20, //    MESSAGE-INTEGRITY-SHA256 attribute header
+            0xb5, 0xc7, 0xbf, 0x00, // }
+            0x5b, 0x6c, 0x52, 0xa2, // }
+            0x1c, 0x51, 0xc5, 0xe8, // }
+            0x92, 0xf8, 0x19, 0x24, // }  HMAC-SHA256 value
+            0x13, 0x62, 0x96, 0xcb, // }
+            0x92, 0x7c, 0x43, 0x14, // }
+            0x93, 0x09, 0x27, 0x8c, // }
+            0xc6, 0x51, 0x8e, 0x65, // }
+        ];
+
+        let msg = Message::from_bytes(&data).unwrap();
+        assert!(msg.has_class(MessageClass::Request));
+        assert!(msg.has_method(BINDING));
+        assert_eq!(msg.transaction_id(), 0x78ad_3433_c6ad_72c0_29da_412e.into());
+
+        let long_term = LongTermCredentials {
+            username: "\u{30DE}\u{30C8}\u{30EA}\u{30C3}\u{30AF}\u{30B9}".to_owned(),
+            password: "The\u{00AD}M\u{00AA}tr\u{2168}".to_owned(),
+            nonce: "obMatJos2AAACf//499k954d6OL34oL9FSTvy64sA".to_owned(),
+        };
+        // USERHASH
+        assert!(msg.has_attribute(USERHASH));
+        let raw = msg.attribute::<RawAttribute>(USERHASH).unwrap();
+        assert!(matches!(Userhash::try_from(&raw), Ok(_)));
+        let _userhash = Userhash::try_from(&raw).unwrap();
+
+        // NONCE
+        assert!(msg.has_attribute(NONCE));
+        let raw = msg.attribute::<RawAttribute>(NONCE).unwrap();
+        assert!(matches!(Nonce::try_from(&raw), Ok(_)));
+        let nonce = Nonce::try_from(&raw).unwrap();
+        assert_eq!(nonce.nonce(), long_term.nonce);
+
+        // REALM
+        let expected_realm = "example.org";
+        assert!(msg.has_attribute(REALM));
+        let raw = msg.attribute::<RawAttribute>(REALM).unwrap();
+        assert!(matches!(Realm::try_from(&raw), Ok(_)));
+        let realm = Realm::try_from(&raw).unwrap();
+        assert_eq!(realm.realm(), expected_realm);
+
+        // PASSWORD_ALGORITHM
+        assert!(msg.has_attribute(PASSWORD_ALGORITHM));
+        let raw = msg.attribute::<RawAttribute>(PASSWORD_ALGORITHM).unwrap();
+        assert!(matches!(PasswordAlgorithm::try_from(&raw), Ok(_)));
+        let algo = PasswordAlgorithm::try_from(&raw).unwrap();
+        assert_eq!(algo.algorithm(), PasswordAlgorithmValue::SHA256);
+
+        // MESSAGE_INTEGRITY_SHA256
         /* XXX: the password needs SASLPrep-ing to be useful here
         let credentials = MessageIntegrityCredentials::LongTerm(long_term);
         assert!(matches!(msg.validate_integrity(&data, &credentials), Ok(())));
