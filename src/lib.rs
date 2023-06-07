@@ -20,6 +20,7 @@ mod conncheck;
 pub mod gathering;
 pub mod stream;
 pub mod stun;
+pub mod turn;
 mod utils;
 
 #[cfg(test)]
