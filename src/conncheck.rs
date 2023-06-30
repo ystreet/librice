@@ -1113,7 +1113,7 @@ impl ConnCheckListInner {
             }
         } else {
             debug!("creating new check for pair {:?}", pair);
-            let check = Arc::new(ConnCheck::new(pair, agent.clone(), peer_nominating));
+            let check = Arc::new(ConnCheck::new(pair, agent, peer_nominating));
             check.set_state(CandidatePairState::Waiting);
             self.add_check(check.clone());
             self.add_triggered(check);
