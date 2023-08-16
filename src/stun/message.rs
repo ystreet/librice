@@ -35,7 +35,7 @@ pub const BINDING: u16 = 0x0001;
 pub struct LongTermCredentials {
     pub username: String,
     pub password: String,
-    pub nonce: String,
+    pub realm: String,
 }
 
 /// Structure for holding the required credentials for handling short-term STUN credentials
@@ -58,12 +58,15 @@ impl MessageIntegrityCredentials {
         match self {
             MessageIntegrityCredentials::ShortTerm(short) => short.password.clone().into(),
             MessageIntegrityCredentials::LongTerm(long) => {
+                use md5::{Md5, Digest};
                 let data = long.username.clone()
                     + ":"
-                    + &long.nonce.clone()
+                    + &long.realm.clone()
                     + ":"
                     + &long.password.clone();
-                data.into()
+                let mut digest = Md5::new();
+                digest.update(&data);
+                digest.finalize().to_vec()
             }
         }
     }
@@ -1548,7 +1551,7 @@ mod tests {
         let long_term = LongTermCredentials {
             username: "\u{30DE}\u{30C8}\u{30EA}\u{30C3}\u{30AF}\u{30B9}".to_owned(),
             password: "The\u{00AD}M\u{00AA}tr\u{2168}".to_owned(),
-            nonce: "f//499k954d6OL34oL9FSTvy64sA".to_owned(),
+            realm: "example.org".to_owned(),
         };
         // USERNAME
         assert!(msg.has_attribute(USERNAME));
@@ -1558,11 +1561,12 @@ mod tests {
         assert_eq!(username.username(), &long_term.username);
 
         // NONCE
+        let expected_nonce = "f//499k954d6OL34oL9FSTvy64sA";
         assert!(msg.has_attribute(NONCE));
         let raw = msg.attribute::<RawAttribute>(NONCE).unwrap();
         assert!(matches!(Nonce::try_from(&raw), Ok(_)));
         let nonce = Nonce::try_from(&raw).unwrap();
-        assert_eq!(nonce.nonce(), &long_term.nonce);
+        assert_eq!(nonce.nonce(), expected_nonce);
 
         // MESSAGE_INTEGRITY
         /* XXX: the password needs SASLPrep-ing to be useful here
@@ -1630,7 +1634,7 @@ mod tests {
         let long_term = LongTermCredentials {
             username: "\u{30DE}\u{30C8}\u{30EA}\u{30C3}\u{30AF}\u{30B9}".to_owned(),
             password: "The\u{00AD}M\u{00AA}tr\u{2168}".to_owned(),
-            nonce: "obMatJos2AAACf//499k954d6OL34oL9FSTvy64sA".to_owned(),
+            realm: "example.org".to_owned(),
         };
         // USERHASH
         assert!(msg.has_attribute(USERHASH));
@@ -1639,19 +1643,19 @@ mod tests {
         let _userhash = Userhash::try_from(&raw).unwrap();
 
         // NONCE
+        let expected_nonce = "obMatJos2AAACf//499k954d6OL34oL9FSTvy64sA";
         assert!(msg.has_attribute(NONCE));
         let raw = msg.attribute::<RawAttribute>(NONCE).unwrap();
         assert!(matches!(Nonce::try_from(&raw), Ok(_)));
         let nonce = Nonce::try_from(&raw).unwrap();
-        assert_eq!(nonce.nonce(), long_term.nonce);
+        assert_eq!(nonce.nonce(), expected_nonce);
 
         // REALM
-        let expected_realm = "example.org";
         assert!(msg.has_attribute(REALM));
         let raw = msg.attribute::<RawAttribute>(REALM).unwrap();
         assert!(matches!(Realm::try_from(&raw), Ok(_)));
         let realm = Realm::try_from(&raw).unwrap();
-        assert_eq!(realm.realm(), expected_realm);
+        assert_eq!(realm.realm(), long_term.realm);
 
         // PASSWORD_ALGORITHM
         assert!(msg.has_attribute(PASSWORD_ALGORITHM));
