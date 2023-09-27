@@ -728,11 +728,13 @@ impl StunAgentState {
                             }
                             Err(e) => {
                                 debug!("message failed integrity check: {:?}", e);
+                                self.outstanding_requests.insert(msg.transaction_id(), msg);
                                 HandleStunReply::Ignore
                             }
                         }
                     } else {
                         debug!("no remote credentials, ignoring");
+                        self.outstanding_requests.insert(msg.transaction_id(), msg);
                         HandleStunReply::Ignore
                     }
                 } else {
@@ -742,6 +744,7 @@ impl StunAgentState {
                 }
             } else {
                 debug!("unmatched stun response, dropping {}", msg);
+                self.outstanding_requests.insert(msg.transaction_id(), msg);
                 // unmatched response -> drop
                 HandleStunReply::Ignore
             }
