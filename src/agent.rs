@@ -25,6 +25,7 @@ use crate::conncheck::ConnCheckListSet;
 use crate::stream::Stream;
 use crate::stun::agent::StunError;
 use crate::stun::attribute::StunParseError;
+use crate::turn::agent::TurnCredentials;
 use crate::utils::ChannelBroadcast;
 
 #[derive(Debug)]
@@ -46,6 +47,7 @@ pub enum AgentError {
     StunParse,
     CandidateParse(ParseCandidateError),
     IoError(std::io::Error),
+    ProtocolViolation,
 }
 
 impl Error for AgentError {}
@@ -77,6 +79,7 @@ impl From<StunError> for AgentError {
             StunError::ResourceNotFound => AgentError::ResourceNotFound,
             StunError::TimedOut => AgentError::TimedOut,
             StunError::IntegrityCheckFailed => AgentError::IntegrityCheckFailed,
+            StunError::ProtocolViolation => AgentError::ProtocolViolation,
             StunError::ParseError(_) => AgentError::StunParse,
             StunError::IoError(e) => AgentError::IoError(e),
             StunError::Aborted => AgentError::Aborted,
@@ -145,6 +148,7 @@ impl AgentBuilder {
 #[derive(Debug)]
 pub(crate) struct AgentInner {
     pub(crate) stun_servers: Vec<(TransportType, SocketAddr)>,
+    pub(crate) turn_servers: Vec<(TransportType, SocketAddr, TurnCredentials)>,
     task: Option<task::JoinHandle<Result<(), AgentError>>>,
 }
 
@@ -152,6 +156,7 @@ impl AgentInner {
     fn new() -> Self {
         Self {
             stun_servers: vec![],
+            turn_servers: vec![],
             task: None,
         }
     }
@@ -255,6 +260,13 @@ impl Agent {
         let mut inner = self.inner.lock().unwrap();
         info!("Adding stun server {addr} transport {ttype:?}");
         inner.stun_servers.push((ttype, addr));
+        // TODO: propagate towards the gatherer as required
+    }
+
+    pub fn add_turn_server(&self, ttype: TransportType, addr: SocketAddr, credentials: TurnCredentials) {
+        let mut inner = self.inner.lock().unwrap();
+        info!("Adding stun server {addr} transport {ttype:?}");
+        inner.turn_servers.push((ttype, addr, credentials));
         // TODO: propagate towards the gatherer as required
     }
 

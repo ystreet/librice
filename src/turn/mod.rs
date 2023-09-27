@@ -6,5 +6,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+pub(crate) mod agent;
 pub mod attribute;
 pub mod message;

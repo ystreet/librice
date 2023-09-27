@@ -39,7 +39,7 @@ fn main() -> io::Result<()> {
             .await;
 
         info!("retreived sockets");
-        let gather_stream = librice::gathering::gather_component(1, &sockets, stun_servers)
+        let gather_stream = librice::gathering::gather_component(1, &sockets, stun_servers, vec![])
             .filter_map(|(candidate, socket)| async move {
                 match socket {
                     GatherSocket::Udp(channel) => {
