@@ -128,7 +128,12 @@ impl AttributeType {
             UNKNOWN_ATTRIBUTES => "UNKNOWN-ATTRIBUTES",
             REALM => "REALM",
             NONCE => "NONCE",
+            MESSAGE_INTEGRITY_SHA256 => "MESSAGE-INTEGRITY-SHA256",
+            PASSWORD_ALGORITHM => "PASSWORD-ALGORITHM",
+            USERHASH => "USERHASH",
             XOR_MAPPED_ADDRESS => "XOR-MAPPED-ADDRESS",
+            PASSWORD_ALGORITHMS => "PASSWORD_ALGORITHMS",
+            ALTERNATE_DOMAIN => "ALTERNATE-DOMAIN",
             SOFTWARE => "SOFTWARE",
             ALTERNATE_SERVER => "ALTERNATE-SERVER",
             FINGERPRINT => "FINGERPRINT",
@@ -283,33 +288,30 @@ impl std::fmt::Display for RawAttribute {
             self.header.length,
             self.value
         );
-        let display_str = if self.get_type() == SOFTWARE {
-            display_attr!(self, Software, malformed_str)
-        } else if self.get_type() == UNKNOWN_ATTRIBUTES {
-            display_attr!(self, UnknownAttributes, malformed_str)
-        } else if self.get_type() == ERROR_CODE {
-            display_attr!(self, ErrorCode, malformed_str)
-        } else if self.get_type() == USERNAME {
-            display_attr!(self, Username, malformed_str)
-        } else if self.get_type() == XOR_MAPPED_ADDRESS {
-            display_attr!(self, XorMappedAddress, malformed_str)
-        } else if self.get_type() == PRIORITY {
-            display_attr!(self, Priority, malformed_str)
-        } else if self.get_type() == USE_CANDIDATE {
-            display_attr!(self, UseCandidate, malformed_str)
-        } else if self.get_type() == ICE_CONTROLLED {
-            display_attr!(self, IceControlled, malformed_str)
-        } else if self.get_type() == ICE_CONTROLLING {
-            display_attr!(self, IceControlling, malformed_str)
-        } else if self.get_type() == MESSAGE_INTEGRITY {
-            display_attr!(self, MessageIntegrity, malformed_str)
-        } else if self.get_type() == FINGERPRINT {
-            display_attr!(self, Fingerprint, malformed_str)
-        } else {
-            format!(
+        let display_str = match self.get_type() {
+            USERNAME => display_attr!(self, Username, malformed_str),
+            MESSAGE_INTEGRITY => display_attr!(self, MessageIntegrity, malformed_str),
+            ERROR_CODE => display_attr!(self, ErrorCode, malformed_str),
+            UNKNOWN_ATTRIBUTES => display_attr!(self, UnknownAttributes, malformed_str),
+            REALM => display_attr!(self, Realm, malformed_str),
+            NONCE => display_attr!(self, Nonce, malformed_str),
+            MESSAGE_INTEGRITY_SHA256 => display_attr!(self, MessageIntegritySha256, malformed_str),
+            PASSWORD_ALGORITHM => display_attr!(self, PasswordAlgorithm, malformed_str),
+            //USERHASH => display_attr!(self, UserHash, malformed_str),
+            XOR_MAPPED_ADDRESS => display_attr!(self, XorMappedAddress, malformed_str),
+            PASSWORD_ALGORITHMS => display_attr!(self, PasswordAlgorithms, malformed_str),
+            ALTERNATE_DOMAIN => display_attr!(self, AlternateDomain, malformed_str),
+            SOFTWARE => display_attr!(self, Software, malformed_str),
+            ALTERNATE_SERVER => display_attr!(self, AlternateServer, malformed_str),
+            FINGERPRINT => display_attr!(self, Fingerprint, malformed_str),
+            PRIORITY => display_attr!(self, Priority, malformed_str),
+            USE_CANDIDATE => display_attr!(self, UseCandidate, malformed_str),
+            ICE_CONTROLLED => display_attr!(self, IceControlled, malformed_str),
+            ICE_CONTROLLING => display_attr!(self, IceControlling, malformed_str),
+            _ => format!(
                 "RawAttribute (type: {:?}, len: {}, data: {:?})",
                 self.header.atype, self.header.length, &self.value
-            )
+            ),
         };
         write!(f, "{}", display_str)
     }
@@ -1980,7 +1982,7 @@ impl std::fmt::Display for Nonce {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasswordAlgorithmValue {
     MD5,
     SHA256,

@@ -155,12 +155,10 @@ impl UdpSocketChannel {
     pub(crate) fn ensure_receive_loop(&self) {
         let mut inner = self.inner.lock().unwrap();
         if inner.receive_loop.is_none() {
-            let span = debug_span!("udp_recv_loop");
             inner.receive_loop = Some(async_std::task::spawn({
                 let socket = (*self.socket).clone();
                 let broadcaster = self.sender_broadcast.clone();
-                async move { UdpSocketChannel::receive_loop(socket, broadcaster).await }
-                    .instrument(span.or_current())
+                UdpSocketChannel::receive_loop(socket, broadcaster)
             }));
         }
     }
@@ -376,28 +374,13 @@ impl SocketAddresses for UdpConnectionChannel {
 impl ReceiveStream<DataAddress> for UdpConnectionChannel {
     fn receive_stream(&self) -> Pin<Box<dyn Stream<Item = DataAddress> + Send>> {
         let to = self.to;
-        trace!(
-            "retrieving receive_stream for connection channel from {:?}, to {:?}",
-            self.channel.local_addr(),
-            to
-        );
         Box::pin(
             self.channel
                 .receive_stream()
                 .filter_map(move |data_address| async move {
                     if data_address.address == to {
-                        trace!(
-                            "passing through message of {} bytes from {:?}",
-                            data_address.data.len(),
-                            data_address.address
-                        );
                         Some(data_address)
                     } else {
-                        trace!(
-                            "filtered message out as {:?} != {:?}",
-                            data_address.address,
-                            to
-                        );
                         None
                     }
                 }),

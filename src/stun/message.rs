@@ -802,10 +802,10 @@ impl Message {
         credentials: &MessageIntegrityCredentials,
         algorithm: IntegrityAlgorithm,
     ) -> Result<(), StunError> {
-        if self.has_attribute(MESSAGE_INTEGRITY) {
+        if algorithm == IntegrityAlgorithm::Sha1 && self.has_attribute(MESSAGE_INTEGRITY) {
             return Err(StunError::AlreadyExists);
         }
-        if self.has_attribute(MESSAGE_INTEGRITY_SHA256) {
+        if algorithm == IntegrityAlgorithm::Sha256 && self.has_attribute(MESSAGE_INTEGRITY_SHA256) {
             return Err(StunError::AlreadyExists);
         }
         if self.has_attribute(FINGERPRINT) {

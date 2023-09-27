@@ -364,10 +364,10 @@ impl Stream {
         )
     )]
     pub async fn gather_candidates(&self) -> Result<(), AgentError> {
-        let stun_servers = {
+        let (stun_servers, turn_servers) = {
             let agent = Weak::upgrade(&self.agent).ok_or(AgentError::ResourceNotFound)?;
             let inner = agent.lock().unwrap();
-            inner.stun_servers.clone()
+            (inner.stun_servers.clone(), inner.turn_servers.clone())
         };
 
         let components = {
@@ -385,7 +385,7 @@ impl Stream {
             component.set_state(ComponentState::Connecting).await;
             let cstream = Box::pin(
                 component
-                    .gather_stream(stun_servers.clone())
+                    .gather_stream(stun_servers.clone(), turn_servers.clone())
                     .await?
                     .map(move |(cand, socket)| (cand, socket, component)),
             );

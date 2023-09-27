@@ -17,11 +17,11 @@ use futures::StreamExt;
 use get_if_addrs::get_if_addrs;
 
 use crate::candidate::{Candidate, CandidateType, TcpType, TransportType};
-use crate::stun::agent::StunAgent;
-use crate::stun::agent::StunError;
+use crate::stun::agent::{StunAgent, StunError};
 use crate::stun::attribute::*;
 use crate::stun::message::*;
-use crate::stun::socket::{StunChannel, UdpSocketChannel};
+use crate::stun::socket::{StunChannel, UdpSocketChannel, UdpConnectionChannel, SocketAddresses};
+use crate::turn::agent::{TurnAgent, TurnCredentials};
 
 #[derive(Debug, Clone)]
 pub enum GatherSocket {
@@ -197,10 +197,43 @@ fn tcp_active_host_gather_candidate(
     })
 }
 
+async fn gather_turn_address(
+    other_preference: u16,
+    socket: GatherSocket,
+    turn_transport: TransportType,
+    turn_server: SocketAddr,
+    turn_credentials: TurnCredentials,
+) -> Result<GatherCandidateAddress, StunError> {
+    match socket {
+        GatherSocket::Udp(channel) => {
+            let from = channel.local_addr()?;
+            let channel = UdpConnectionChannel::new(channel, turn_server);
+            if turn_transport != TransportType::Udp {
+                return Err(StunError::WrongImplementation);
+            }
+            let agent = TurnAgent::allocate(StunChannel::Udp(channel), turn_credentials).await?;
+            Ok(GatherCandidateAddress {
+                ctype: CandidateType::Relayed,
+                other_preference,
+                transport: turn_transport,
+                tcp_type: None,
+                address: agent.relayed_address(),
+                base: from,
+                related: Some(turn_server),
+            })
+        }
+        // FIXME: implement TCP STUN gather
+        GatherSocket::Tcp(_listener) => Err(StunError::ResourceNotFound),
+        #[cfg(test)]
+        GatherSocket::Async(_channel) => Err(StunError::ResourceNotFound),
+    }
+}
+
 pub fn gather_component(
     component_id: usize,
     sockets: &[GatherSocket],
     stun_servers: Vec<(TransportType, SocketAddr)>,
+    turn_servers: Vec<(TransportType, SocketAddr, TurnCredentials)>,
 ) -> impl Stream<Item = (Candidate, GatherSocket)> {
     let futures = futures::stream::FuturesUnordered::new();
 
@@ -257,6 +290,29 @@ pub fn gather_component(
                             socket.clone(),
                             stun_server.0,
                             stun_server.1,
+                        )
+                        .await
+                        .map(move |ga| (ga, socket))
+                    }
+                }
+                .boxed_local(),
+            )
+        }
+    }
+
+    for (i, socket) in sockets.iter().cloned().enumerate() {
+        for turn_server in turn_servers.iter() {
+            futures.push(
+                {
+                    let socket = socket.clone();
+                    let (turn_transport, turn_server, turn_credentials) = turn_server.clone();
+                    async move {
+                        gather_turn_address(
+                            (sockets_len - i) as u16 * 3,
+                            socket.clone(),
+                            turn_transport,
+                            turn_server,
+                            turn_credentials,
                         )
                         .await
                         .map(move |ga| (ga, socket))

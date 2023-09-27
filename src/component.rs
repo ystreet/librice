@@ -22,6 +22,7 @@ use crate::gathering::GatherSocket;
 use crate::stun::agent::StunAgent;
 use crate::stun::socket::SocketAddresses;
 
+use crate::turn::agent::TurnCredentials;
 use crate::utils::ChannelBroadcast;
 use crate::utils::DropLogger;
 
@@ -123,6 +124,7 @@ impl Component {
     pub(crate) async fn gather_stream(
         &self,
         stun_servers: Vec<(TransportType, SocketAddr)>,
+        turn_servers: Vec<(TransportType, SocketAddr, TurnCredentials)>,
     ) -> Result<impl Stream<Item = (Candidate, GatherSocket)>, AgentError> {
         let sockets = crate::gathering::iface_sockets()?
             .filter_map(move |s| async move { s.ok() })
@@ -134,6 +136,7 @@ impl Component {
             self.id,
             &sockets,
             stun_servers,
+            turn_servers,
         ))
     }
 
@@ -409,7 +412,7 @@ mod tests {
             let s1 = a.add_stream();
             let send = s1.add_component().unwrap();
             // assumes the first candidate works
-            let send_stream = send.gather_stream(vec![]).await.unwrap();
+            let send_stream = send.gather_stream(vec![], vec![]).await.unwrap();
             futures::pin_mut!(send_stream);
             let (send_cand, send_socket) = send_stream.next().await.unwrap();
             let udp_socket = match send_socket {
@@ -422,7 +425,7 @@ mod tests {
 
             let s2 = a.add_stream();
             let recv = s2.add_component().unwrap();
-            let recv_stream = recv.gather_stream(vec![]).await.unwrap();
+            let recv_stream = recv.gather_stream(vec![], vec![]).await.unwrap();
             futures::pin_mut!(recv_stream);
             // assumes the first candidate works
             let (recv_cand, recv_socket) = recv_stream.next().await.unwrap();

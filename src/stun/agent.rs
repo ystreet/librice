@@ -192,6 +192,7 @@ impl StunAgent {
         );
         async_std::task::spawn({
             let span = debug_span!(
+                parent: None,
                 "stun_recv_loop",
                 stun.id = inner_id,
                 ?local_addr,
@@ -663,6 +664,7 @@ pub enum StunError {
     ResourceNotFound,
     TimedOut,
     IntegrityCheckFailed,
+    ProtocolViolation,
     ParseError(StunParseError),
     IoError(std::io::Error),
     Aborted,
