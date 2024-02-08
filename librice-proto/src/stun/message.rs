@@ -58,7 +58,7 @@ impl MessageIntegrityCredentials {
         match self {
             MessageIntegrityCredentials::ShortTerm(short) => short.password.clone().into(),
             MessageIntegrityCredentials::LongTerm(long) => {
-                use md5::{Md5, Digest};
+                use md5::{Digest, Md5};
                 let data = long.username.clone()
                     + ":"
                     + &long.realm.clone()
@@ -130,7 +130,7 @@ impl MessageType {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::message::{MessageType, MessageClass, BINDING};
     /// let mtype = MessageType::from_class_method(MessageClass::Indication, BINDING);
     /// assert_eq!(mtype.has_class(MessageClass::Indication), true);
     /// assert_eq!(mtype.has_method(BINDING), true);
@@ -148,7 +148,7 @@ impl MessageType {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::message::{MessageType, MessageClass, BINDING};
     /// let mtype = MessageType::from_class_method(MessageClass::Indication, BINDING);
     /// assert_eq!(mtype.class(), MessageClass::Indication);
     /// ```
@@ -168,7 +168,7 @@ impl MessageType {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::message::{MessageType, MessageClass, BINDING};
     /// let mtype = MessageType::from_class_method(MessageClass::Indication, BINDING);
     /// assert!(mtype.has_class(MessageClass::Indication));
     /// ```
@@ -181,7 +181,7 @@ impl MessageType {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::message::{MessageType, MessageClass, BINDING};
     /// assert_eq!(MessageType::from_class_method(MessageClass::Indication, BINDING)
     ///     .is_response(), false);
     /// assert_eq!(MessageType::from_class_method(MessageClass::Request, BINDING)
@@ -200,7 +200,7 @@ impl MessageType {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::message::{MessageType, MessageClass, BINDING};
     /// let mtype = MessageType::from_class_method(MessageClass::Indication, BINDING);
     /// assert_eq!(mtype.method(), BINDING);
     /// ```
@@ -213,7 +213,7 @@ impl MessageType {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::message::{MessageType, MessageClass, BINDING};
     /// let mtype = MessageType::from_class_method(MessageClass::Indication, BINDING);
     /// assert_eq!(mtype.has_method(BINDING), true);
     /// ```
@@ -277,7 +277,7 @@ impl std::fmt::Display for TransactionId {
 /// The structure that encapsulates the entirety of a STUN message
 ///
 /// Contains the [`MessageType`], a transaction ID, and a list of STUN
-/// [`Attribute`](crate::stun::attribute::Attribute)s.
+/// [`Attribute`]
 #[derive(Debug, Clone)]
 pub struct Message {
     msg_type: MessageType,
@@ -325,7 +325,7 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::message::{Message, MessageType, MessageClass, BINDING};
     /// let mtype = MessageType::from_class_method(MessageClass::Indication, BINDING);
     /// let message = Message::new(mtype, 0.into());
     /// assert!(message.has_class(MessageClass::Indication));
@@ -344,7 +344,7 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::message::{Message, MessageType, MessageClass, BINDING};
     /// let message = Message::new_request(BINDING);
     /// assert!(message.has_class(MessageClass::Request));
     /// assert!(message.has_method(BINDING));
@@ -365,7 +365,7 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::message::{Message, MessageType, MessageClass, BINDING};
     /// let message = Message::new_request(BINDING);
     /// let success = Message::new_success(&message);
     /// assert!(success.has_class(MessageClass::Success));
@@ -392,7 +392,7 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::message::{Message, MessageType, MessageClass, BINDING};
     /// let message = Message::new_request(BINDING);
     /// let success = Message::new_error(&message);
     /// assert!(success.has_class(MessageClass::Error));
@@ -410,7 +410,7 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::message::{Message, MessageType, MessageClass, BINDING};
     /// let message = Message::new_request(BINDING);
     /// assert!(message.get_type().has_class(MessageClass::Request));
     /// assert!(message.get_type().has_method(BINDING));
@@ -424,7 +424,7 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::message::{Message, MessageType, MessageClass, BINDING};
     /// let message = Message::new_request(BINDING);
     /// assert_eq!(message.class(), MessageClass::Request);
     /// ```
@@ -437,7 +437,7 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::message::{Message, MessageType, MessageClass, BINDING};
     /// let message = Message::new_request(BINDING);
     /// assert!(message.has_class(MessageClass::Request));
     /// ```
@@ -452,7 +452,7 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::message::{Message, MessageType, MessageClass, BINDING};
     /// let message = Message::new_request(BINDING);
     /// assert_eq!(message.is_response(), false);
     ///
@@ -471,7 +471,7 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::message::{Message, MessageType, MessageClass, BINDING};
     /// let message = Message::new_request(BINDING);
     /// assert_eq!(message.method(), BINDING);
     /// ```
@@ -484,7 +484,7 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::message::{Message, MessageType, MessageClass, BINDING};
     /// let message = Message::new_request(BINDING);
     /// assert_eq!(message.has_method(BINDING), true);
     /// assert_eq!(message.has_method(0), false);
@@ -498,7 +498,7 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::message::{Message, MessageType, MessageClass, BINDING};
     /// let mtype = MessageType::from_class_method(MessageClass::Request, BINDING);
     /// let transaction_id = Message::generate_transaction();
     /// let message = Message::new(mtype, transaction_id);
@@ -519,8 +519,8 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::{RawAttribute, Attribute};
-    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::attribute::{RawAttribute, Attribute};
+    /// # use librice_proto::stun::message::{Message, MessageType, MessageClass, BINDING};
     /// let mut message = Message::new(MessageType::from_class_method(MessageClass::Request, BINDING), 1000.into());
     /// let attr = RawAttribute::new(1.into(), &[3]);
     /// assert!(message.add_attribute(attr).is_ok());
@@ -558,13 +558,13 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::{RawAttribute, Attribute};
-    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::attribute::{RawAttribute, Attribute};
+    /// # use librice_proto::stun::message::{Message, MessageType, MessageClass, BINDING};
     /// let msg_data = vec![0, 1, 0, 8, 33, 18, 164, 66, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 232, 0, 1, 0, 1, 3, 0, 0, 0];
     /// let mut message = Message::from_bytes(&msg_data).unwrap();
     /// let attr = RawAttribute::new(1.into(), &[3]);
-    /// let msg_attr = message.attribute::<RawAttribute>(1.into()).unwrap();
-    /// assert_eq!(msg_attr, attr);
+    /// let msg_attr = message.raw_attribute(1.into()).unwrap();
+    /// assert_eq!(msg_attr, &attr);
     /// assert_eq!(message.get_type(), MessageType::from_class_method(MessageClass::Request, BINDING));
     /// assert_eq!(message.transaction_id(), 1000.into());
     /// ```
@@ -677,16 +677,16 @@ impl Message {
         orig_data: &[u8],
         credentials: &MessageIntegrityCredentials,
     ) -> Result<(), StunError> {
-        let raw_sha1 = self.attribute::<RawAttribute>(MESSAGE_INTEGRITY);
-        let raw_sha256 = self.attribute::<RawAttribute>(MESSAGE_INTEGRITY_SHA256);
+        let raw_sha1 = self.raw_attribute(MESSAGE_INTEGRITY);
+        let raw_sha256 = self.raw_attribute(MESSAGE_INTEGRITY_SHA256);
         let (algo, msg_hmac) = match (raw_sha1, raw_sha256) {
             (Some(_), Some(_)) => return Err(StunError::Failed),
             (Some(sha1), None) => {
-                let integrity = MessageIntegrity::try_from(&sha1)?;
+                let integrity = MessageIntegrity::try_from(sha1)?;
                 (IntegrityAlgorithm::Sha1, integrity.hmac().to_vec())
             }
             (None, Some(sha256)) => {
-                let integrity = MessageIntegritySha256::try_from(&sha256)?;
+                let integrity = MessageIntegritySha256::try_from(sha256)?;
                 (IntegrityAlgorithm::Sha256, integrity.hmac().to_vec())
             }
             (None, None) => return Err(StunError::ResourceNotFound),
@@ -776,7 +776,7 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING,
+    /// # use librice_proto::stun::message::{Message, MessageType, MessageClass, BINDING,
     ///     MessageIntegrityCredentials, ShortTermCredentials, IntegrityAlgorithm};
     /// let mut message = Message::new_request(BINDING);
     /// let credentials = MessageIntegrityCredentials::ShortTerm(ShortTermCredentials { password:
@@ -838,7 +838,7 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::message::{Message, MessageType, MessageClass, BINDING};
     /// let mut message = Message::new_request(BINDING);
     /// assert!(message.add_fingerprint().is_ok());
     ///
@@ -886,8 +886,8 @@ impl Message {
     /// Add an `Attribute`
     ///
     /// ```
-    /// # use librice::stun::attribute::RawAttribute;
-    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::attribute::RawAttribute;
+    /// # use librice_proto::stun::message::{Message, MessageType, MessageClass, BINDING};
     /// let mut message = Message::new_request(BINDING);
     /// let attr = RawAttribute::new(1.into(), &[3]);
     /// assert!(message.add_attribute(attr.clone()).is_ok());
@@ -900,18 +900,18 @@ impl Message {
         skip(self, attr),
         fields(
             msg.transaction = %self.transaction_id(),
-            attribute_type = %attr.get_type(),
         )
     )]
-    pub fn add_attribute<A: Attribute>(&mut self, attr: A) -> Result<(), StunError> {
+    pub fn add_attribute(&mut self, attr: impl Into<RawAttribute>) -> Result<(), StunError> {
+        let raw = attr.into();
         //trace!("adding attribute {:?}", attr);
-        if attr.get_type() == MESSAGE_INTEGRITY {
+        if raw.get_type() == MESSAGE_INTEGRITY {
             return Err(StunError::WrongImplementation);
         }
-        if attr.get_type() == FINGERPRINT {
+        if raw.get_type() == FINGERPRINT {
             return Err(StunError::WrongImplementation);
         }
-        if self.has_attribute(attr.get_type()) {
+        if self.has_attribute(raw.get_type()) {
             return Err(StunError::AlreadyExists);
         }
         // can't validly add generic attributes after message integrity or fingerprint
@@ -921,8 +921,38 @@ impl Message {
         if self.has_attribute(FINGERPRINT) {
             return Err(StunError::AlreadyExists);
         }
-        self.attributes.push(attr.to_raw());
+        self.attributes.push(raw);
         Ok(())
+    }
+
+    /// Retrieve a `RawAttribute` from this `Message`.
+    ///
+    /// # Examples
+    ///
+    /// Retrieve a`RawAttribute`
+    ///
+    /// ```
+    /// # use librice_proto::stun::attribute::{RawAttribute, Attribute};
+    /// # use librice_proto::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// let mut message = Message::new_request(BINDING);
+    /// let attr = RawAttribute::new(1.into(), &[3]);
+    /// assert!(message.add_attribute(attr.clone()).is_ok());
+    /// assert_eq!(message.raw_attribute(1.into()).unwrap(), &attr);
+    /// ```
+    #[tracing::instrument(
+        name = "message_get_raw_attribute",
+        level = "trace",
+        ret,
+        skip(self, atype),
+        fields(
+            msg.transaction = %self.transaction_id(),
+            attribute_type = %atype,
+        )
+    )]
+    pub fn raw_attribute(&self, atype: AttributeType) -> Option<&RawAttribute> {
+        self.attributes
+            .iter()
+            .find(|attr| attr.get_type() == atype)
     }
 
     /// Retrieve an `Attribute` from this `Message`.
@@ -932,12 +962,12 @@ impl Message {
     /// Retrieve an `Attribute`
     ///
     /// ```
-    /// # use librice::stun::attribute::{RawAttribute, Attribute};
-    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::attribute::{Software, Attribute, SOFTWARE};
+    /// # use librice_proto::stun::message::{Message, MessageType, MessageClass, BINDING};
     /// let mut message = Message::new_request(BINDING);
-    /// let attr = RawAttribute::new(1.into(), &[3]);
+    /// let attr = Software::new("librice").unwrap();
     /// assert!(message.add_attribute(attr.clone()).is_ok());
-    /// assert_eq!(message.attribute::<RawAttribute>(1.into()).unwrap(), attr);
+    /// assert_eq!(message.attribute::<Software>(SOFTWARE).unwrap(), attr);
     /// ```
     #[tracing::instrument(
         name = "message_get_attribute",
@@ -949,7 +979,7 @@ impl Message {
             attribute_type = %atype,
         )
     )]
-    pub fn attribute<A: Attribute>(&self, atype: AttributeType) -> Option<A> {
+    pub fn attribute<A: AttributeFromRaw<StunParseError>>(&self, atype: AttributeType) -> Option<A> {
         self.attributes
             .iter()
             .find(|attr| attr.get_type() == atype)
@@ -968,8 +998,8 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
-    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::attribute::*;
+    /// # use librice_proto::stun::message::{Message, MessageType, MessageClass, BINDING};
     /// # use std::convert::TryInto;
     /// let mut message = Message::new_request(BINDING);
     /// // If nothing is required, no error response is returned
@@ -1039,8 +1069,8 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{Message, BINDING};
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::message::{Message, BINDING};
+    /// # use librice_proto::stun::attribute::*;
     /// # use std::convert::TryInto;
     /// let msg = Message::new_request(BINDING);
     /// let error_msg = Message::unknown_attributes(&msg, &[USERNAME]).unwrap();
@@ -1069,8 +1099,8 @@ impl Message {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::message::{Message, MessageType, MessageClass, BINDING};
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::message::{Message, MessageType, MessageClass, BINDING};
+    /// # use librice_proto::stun::attribute::*;
     /// # use std::convert::TryInto;
     /// let msg = Message::new_request(BINDING);
     /// let error_msg = Message::bad_request(&msg).unwrap();
@@ -1149,8 +1179,8 @@ mod tests {
                     let data = msg.to_bytes();
 
                     let msg = Message::from_bytes(&data).unwrap();
-                    let msg_attr = msg.attribute::<RawAttribute>(1.into()).unwrap();
-                    assert_eq!(msg_attr, attr);
+                    let msg_attr = msg.raw_attribute(1.into()).unwrap();
+                    assert_eq!(msg_attr, &attr);
                     assert_eq!(msg.get_type(), mtype);
                     assert_eq!(msg.transaction_id(), tid.into());
                 }
@@ -1327,23 +1357,23 @@ mod tests {
 
         // SOFTWARE
         assert!(msg.has_attribute(SOFTWARE));
-        let raw = msg.attribute::<RawAttribute>(SOFTWARE).unwrap();
-        assert!(matches!(Software::try_from(&raw), Ok(_)));
-        let software = Software::try_from(&raw).unwrap();
+        let raw = msg.raw_attribute(SOFTWARE).unwrap();
+        assert!(matches!(Software::try_from(raw), Ok(_)));
+        let software = Software::try_from(raw).unwrap();
         assert_eq!(software.software(), "STUN test client");
 
         // PRIORITY
         assert!(msg.has_attribute(PRIORITY));
-        let raw = msg.attribute::<RawAttribute>(PRIORITY).unwrap();
-        assert!(matches!(Priority::try_from(&raw), Ok(_)));
-        let priority = Priority::try_from(&raw).unwrap();
+        let raw = msg.raw_attribute(PRIORITY).unwrap();
+        assert!(matches!(Priority::try_from(raw), Ok(_)));
+        let priority = Priority::try_from(raw).unwrap();
         assert_eq!(priority.priority(), 0x6e0001ff);
 
         // USERNAME
         assert!(msg.has_attribute(USERNAME));
-        let raw = msg.attribute::<RawAttribute>(USERNAME).unwrap();
-        assert!(matches!(Username::try_from(&raw), Ok(_)));
-        let username = Username::try_from(&raw).unwrap();
+        let raw = msg.raw_attribute(USERNAME).unwrap();
+        assert!(matches!(Username::try_from(raw), Ok(_)));
+        let username = Username::try_from(raw).unwrap();
         assert_eq!(username.username(), "evtj:h6vY");
 
         // MESSAGE_INTEGRITY
@@ -1401,16 +1431,16 @@ mod tests {
 
         // SOFTWARE
         assert!(msg.has_attribute(SOFTWARE));
-        let raw = msg.attribute::<RawAttribute>(SOFTWARE).unwrap();
-        assert!(matches!(Software::try_from(&raw), Ok(_)));
-        let software = Software::try_from(&raw).unwrap();
+        let raw = msg.raw_attribute(SOFTWARE).unwrap();
+        assert!(matches!(Software::try_from(raw), Ok(_)));
+        let software = Software::try_from(raw).unwrap();
         assert_eq!(software.software(), "test vector");
 
         // XOR_MAPPED_ADDRESS
         assert!(msg.has_attribute(XOR_MAPPED_ADDRESS));
-        let raw = msg.attribute::<RawAttribute>(XOR_MAPPED_ADDRESS).unwrap();
-        assert!(matches!(XorMappedAddress::try_from(&raw), Ok(_)));
-        let xor_mapped_addres = XorMappedAddress::try_from(&raw).unwrap();
+        let raw = msg.raw_attribute(XOR_MAPPED_ADDRESS).unwrap();
+        assert!(matches!(XorMappedAddress::try_from(raw), Ok(_)));
+        let xor_mapped_addres = XorMappedAddress::try_from(raw).unwrap();
         assert_eq!(
             xor_mapped_addres.addr(msg.transaction_id()),
             "192.0.2.1:32853".parse().unwrap()
@@ -1471,16 +1501,16 @@ mod tests {
 
         // SOFTWARE
         assert!(msg.has_attribute(SOFTWARE));
-        let raw = msg.attribute::<RawAttribute>(SOFTWARE).unwrap();
-        assert!(matches!(Software::try_from(&raw), Ok(_)));
-        let software = Software::try_from(&raw).unwrap();
+        let raw = msg.raw_attribute(SOFTWARE).unwrap();
+        assert!(matches!(Software::try_from(raw), Ok(_)));
+        let software = Software::try_from(raw).unwrap();
         assert_eq!(software.software(), "test vector");
 
         // XOR_MAPPED_ADDRESS
         assert!(msg.has_attribute(XOR_MAPPED_ADDRESS));
-        let raw = msg.attribute::<RawAttribute>(XOR_MAPPED_ADDRESS).unwrap();
-        assert!(matches!(XorMappedAddress::try_from(&raw), Ok(_)));
-        let xor_mapped_addres = XorMappedAddress::try_from(&raw).unwrap();
+        let raw = msg.raw_attribute(XOR_MAPPED_ADDRESS).unwrap();
+        assert!(matches!(XorMappedAddress::try_from(raw), Ok(_)));
+        let xor_mapped_addres = XorMappedAddress::try_from(raw).unwrap();
         assert_eq!(
             xor_mapped_addres.addr(msg.transaction_id()),
             "[2001:db8:1234:5678:11:2233:4455:6677]:32853"
@@ -1555,17 +1585,17 @@ mod tests {
         };
         // USERNAME
         assert!(msg.has_attribute(USERNAME));
-        let raw = msg.attribute::<RawAttribute>(USERNAME).unwrap();
-        assert!(matches!(Username::try_from(&raw), Ok(_)));
-        let username = Username::try_from(&raw).unwrap();
+        let raw = msg.raw_attribute(USERNAME).unwrap();
+        assert!(matches!(Username::try_from(raw), Ok(_)));
+        let username = Username::try_from(raw).unwrap();
         assert_eq!(username.username(), &long_term.username);
 
         // NONCE
         let expected_nonce = "f//499k954d6OL34oL9FSTvy64sA";
         assert!(msg.has_attribute(NONCE));
-        let raw = msg.attribute::<RawAttribute>(NONCE).unwrap();
-        assert!(matches!(Nonce::try_from(&raw), Ok(_)));
-        let nonce = Nonce::try_from(&raw).unwrap();
+        let raw = msg.raw_attribute(NONCE).unwrap();
+        assert!(matches!(Nonce::try_from(raw), Ok(_)));
+        let nonce = Nonce::try_from(raw).unwrap();
         assert_eq!(nonce.nonce(), expected_nonce);
 
         // MESSAGE_INTEGRITY
@@ -1638,30 +1668,30 @@ mod tests {
         };
         // USERHASH
         assert!(msg.has_attribute(USERHASH));
-        let raw = msg.attribute::<RawAttribute>(USERHASH).unwrap();
-        assert!(matches!(Userhash::try_from(&raw), Ok(_)));
-        let _userhash = Userhash::try_from(&raw).unwrap();
+        let raw = msg.raw_attribute(USERHASH).unwrap();
+        assert!(matches!(Userhash::try_from(raw), Ok(_)));
+        let _userhash = Userhash::try_from(raw).unwrap();
 
         // NONCE
         let expected_nonce = "obMatJos2AAACf//499k954d6OL34oL9FSTvy64sA";
         assert!(msg.has_attribute(NONCE));
-        let raw = msg.attribute::<RawAttribute>(NONCE).unwrap();
-        assert!(matches!(Nonce::try_from(&raw), Ok(_)));
-        let nonce = Nonce::try_from(&raw).unwrap();
+        let raw = msg.raw_attribute(NONCE).unwrap();
+        assert!(matches!(Nonce::try_from(raw), Ok(_)));
+        let nonce = Nonce::try_from(raw).unwrap();
         assert_eq!(nonce.nonce(), expected_nonce);
 
         // REALM
         assert!(msg.has_attribute(REALM));
-        let raw = msg.attribute::<RawAttribute>(REALM).unwrap();
-        assert!(matches!(Realm::try_from(&raw), Ok(_)));
-        let realm = Realm::try_from(&raw).unwrap();
+        let raw = msg.raw_attribute(REALM).unwrap();
+        assert!(matches!(Realm::try_from(raw), Ok(_)));
+        let realm = Realm::try_from(raw).unwrap();
         assert_eq!(realm.realm(), long_term.realm);
 
         // PASSWORD_ALGORITHM
         assert!(msg.has_attribute(PASSWORD_ALGORITHM));
-        let raw = msg.attribute::<RawAttribute>(PASSWORD_ALGORITHM).unwrap();
-        assert!(matches!(PasswordAlgorithm::try_from(&raw), Ok(_)));
-        let algo = PasswordAlgorithm::try_from(&raw).unwrap();
+        let raw = msg.raw_attribute(PASSWORD_ALGORITHM).unwrap();
+        assert!(matches!(PasswordAlgorithm::try_from(raw), Ok(_)));
+        let algo = PasswordAlgorithm::try_from(raw).unwrap();
         assert_eq!(algo.algorithm(), PasswordAlgorithmValue::SHA256);
 
         // MESSAGE_INTEGRITY_SHA256

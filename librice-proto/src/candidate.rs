@@ -6,38 +6,61 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+//! ICE Candidates
+
 pub use crate::stun::TransportType;
+pub use parse::ParseCandidateError;
 
 use std::error::Error;
 use std::net::SocketAddr;
 use std::str::FromStr;
 
+/// An ICE candidate
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
+    /// The component
     pub component_id: usize,
+    /// The type of the Candidate
     pub candidate_type: CandidateType,
+    /// The network transport
     pub transport_type: TransportType,
+    /// The (unique) foundation
     pub foundation: String,
+    /// The priority
     pub priority: u32,
+    /// The address to send to 
     pub address: SocketAddr,
+    /// The address to send from
     pub base_address: SocketAddr,
+    /// Any related address that generated this candidate, e.g. STUN/TURN server
     pub related_address: Option<SocketAddr>,
+    /// The type of TCP candidate
     pub tcp_type: Option<TcpType>,
+    /// Any key-value extensions for this candidate
     pub extensions: Vec<(String, String)>,
 }
 
+/// The type of the candidate
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CandidateType {
+    /// The candidate is a local network interface
     Host,
+    /// The candidate was discovered from an incoming data
     PeerReflexive,
+    /// The candidate was discovered by asking an external server (STUN/TURN)
     ServerReflexive,
+    /// The candidate will relay all data through an external server (TURN).
     Relayed,
 }
 
+/// The type of TCP candidate
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpType {
+    /// The candidate will perform a connection to a remote candidate
     Active,
+    /// The candidate will wait for an incoming connection to the candidate
     Passive,
+    /// Simultaneous Open will both listen and connect from the same candidate.
     So,
 }
 
@@ -64,8 +87,10 @@ impl std::fmt::Display for TcpType {
     }
 }
 
+/// Errors when parsing a [`TcpType`]
 #[derive(Debug)]
 pub enum ParseTcpTypeError {
+    /// The value provided is not recognised
     UnknownTcpType,
 }
 
@@ -77,8 +102,10 @@ impl std::fmt::Display for ParseTcpTypeError {
     }
 }
 
+/// Errors when parsing the candidate type
 #[derive(Debug)]
 pub enum ParseCandidateTypeError {
+    /// The value provided is not recognised
     UnknownCandidateType,
 }
 
@@ -115,6 +142,7 @@ impl std::fmt::Display for CandidateType {
     }
 }
 
+/// A builder for a [`Candidate`]
 pub struct CandidateBuilder {
     component_id: usize,
     ctype: CandidateType,
@@ -134,7 +162,7 @@ impl CandidateBuilder {
     /// # Examples
     ///
     /// ```
-    /// # use librice::candidate::*;
+    /// # use librice_proto::candidate::*;
     /// # use std::net::SocketAddr;
     /// let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
     /// let candidate = Candidate::builder(
@@ -221,7 +249,7 @@ impl Candidate {
     /// # Examples
     ///
     /// ```
-    /// # use librice::candidate::*;
+    /// # use librice_proto::candidate::*;
     /// # use std::net::SocketAddr;
     /// let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
     /// let candidate = Candidate::builder(
@@ -261,7 +289,7 @@ impl Candidate {
     /// # Examples
     ///
     /// ```
-    /// # use librice::candidate::*;
+    /// # use librice_proto::candidate::*;
     /// # use std::net::SocketAddr;
     /// let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
     /// let candidate = Candidate::builder(
@@ -345,7 +373,8 @@ impl Candidate {
         }
     }
 
-    pub(crate) fn calculate_priority(
+    /// Calculate the priority of a candidate
+    pub fn calculate_priority(
         ctype: CandidateType,
         ttype: TransportType,
         tcp_type: Option<TcpType>,
@@ -373,8 +402,6 @@ impl Candidate {
                             }
                         }
                     }
-                    #[cfg(test)]
-                    TransportType::AsyncChannel => 7,
                 }
             };
             (1 << 13) * direction_preference + other_preference
@@ -383,8 +410,10 @@ impl Candidate {
             - component_id as u32
     }
 
+    /// Whether the candidate is redundant with another candidate is also provided.  One of the
+    /// candidates should not be used for ICE connections.
     // RFC 8445 5.1.3.  "Eliminating Redundant Candidates"
-    pub(crate) fn redundant_with(&self, other: &Candidate) -> bool {
+    pub fn redundant_with(&self, other: &Candidate) -> bool {
         if self.transport_type != other.transport_type {
             return false;
         }
@@ -403,7 +432,8 @@ impl Candidate {
     }
 }
 
-pub mod parse {
+/// Candidate parsing
+mod parse {
     use std::{net::SocketAddr, str::FromStr};
 
     use nom::bytes::complete::{tag, take_while1, take_while_m_n};
@@ -413,6 +443,7 @@ pub mod parse {
     use super::{ParseTcpTypeError, TcpType};
     use crate::stun::{ParseTransportTypeError, TransportType};
 
+    /// Errors produced when parsing a candidate
     #[derive(Debug)]
     pub enum ParseCandidateError {
         NotCandidate,
@@ -585,9 +616,12 @@ pub mod parse {
     }
 }
 
+/// Paired local and remote candidate
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidatePair {
+    /// The local [`Candidate`]
     pub local: Candidate,
+    /// The remote ['Candidate']
     pub remote: Candidate,
 }
 
@@ -602,7 +636,7 @@ impl CandidatePair {
     /// # Examples
     ///
     /// ```
-    /// # use librice::candidate::*;
+    /// # use librice_proto::candidate::*;
     /// # use std::net::SocketAddr;
     /// let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
     /// let candidate = Candidate::builder(
@@ -656,7 +690,10 @@ impl CandidatePair {
         }
     }
 
-    pub(crate) fn redundant_with<'pair>(
+    /// Whether the pair is redundant when combined with the provided list.  Returns the existing
+    /// candidate that this pair is redundant with.  If redundant, this pair should not be used for
+    /// ICE connectivity checks.
+    pub fn redundant_with<'pair>(
         &self,
         others: impl IntoIterator<Item = &'pair CandidatePair>,
     ) -> Option<&'pair CandidatePair> {

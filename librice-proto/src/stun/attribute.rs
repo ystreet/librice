@@ -92,7 +92,7 @@ impl AttributeType {
     ///
     /// # Examples
     /// ```
-    /// # use librice::stun::attribute::AttributeType;
+    /// # use librice_proto::stun::attribute::AttributeType;
     /// assert_eq!(AttributeType::new(0x123).value(), 0x123);
     /// ```
     pub fn new(val: u16) -> Self {
@@ -105,7 +105,7 @@ impl AttributeType {
     ///
     /// # Examples
     /// ```
-    /// # use librice::stun::attribute::AttributeType;
+    /// # use librice_proto::stun::attribute::AttributeType;
     /// assert_eq!(AttributeType::new(0x123).value(), 0x123);
     /// ```
     pub fn value(&self) -> u16 {
@@ -116,7 +116,7 @@ impl AttributeType {
     ///
     /// # Examples
     /// ```
-    /// # use librice::stun::attribute::XOR_MAPPED_ADDRESS;
+    /// # use librice_proto::stun::attribute::XOR_MAPPED_ADDRESS;
     /// assert_eq!(XOR_MAPPED_ADDRESS.name(), "XOR-MAPPED-ADDRESS");
     /// ```
     pub fn name(self) -> &'static str {
@@ -151,7 +151,7 @@ impl AttributeType {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::AttributeType;
+    /// # use librice_proto::stun::attribute::AttributeType;
     /// assert_eq!(AttributeType::new(0x0).comprehension_required(), true);
     /// assert_eq!(AttributeType::new(0x8000).comprehension_required(), false);
     /// ```
@@ -218,14 +218,34 @@ pub trait Attribute: std::fmt::Debug {
     /// Retrieve the length of an `Attribute`.  This is not the padded length as stored in a
     /// `Message`
     fn length(&self) -> u16;
+}
 
+pub trait AttributeToRaw: Attribute + Into<RawAttribute>
+where RawAttribute: for<'a> From<&'a Self> {
     /// Convert an `Attribute` to a `RawAttribute`
     fn to_raw(&self) -> RawAttribute;
-
+//    where RawAttribute: for<'a> From<&'a Self>;
+}
+impl<T: Attribute + Into<RawAttribute>> AttributeToRaw
+for T
+    where RawAttribute: for<'a> From<&'a Self> {
+    fn to_raw(&self) -> RawAttribute
+    where RawAttribute: for<'a> From<&'a Self>
+    {
+        self.into()
+    }
+}
+pub trait AttributeFromRaw<E>: Attribute + for<'a> TryFrom<&'a RawAttribute, Error = E> {
     /// Convert an `Attribute` from a `RawAttribute`
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError>
+    fn from_raw(raw: &RawAttribute) -> Result<Self, E>
     where
         Self: Sized;
+}
+
+impl<E, T: Attribute + for<'a> TryFrom<&'a RawAttribute, Error = E>> AttributeFromRaw<E> for T {
+    fn from_raw(raw: &RawAttribute) -> Result<T, E> {
+        Self::try_from(raw)
+    }
 }
 
 fn padded_attr_len(len: usize) -> usize {
@@ -325,13 +345,10 @@ impl Attribute for RawAttribute {
     fn get_type(&self) -> AttributeType {
         self.header.atype
     }
-
-    fn to_raw(&self) -> RawAttribute {
-        self.clone()
-    }
-
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
-        Ok(raw.clone())
+}
+impl From<&RawAttribute> for RawAttribute {
+    fn from(value: &RawAttribute) -> Self {
+        value.clone()
     }
 }
 
@@ -351,7 +368,7 @@ impl RawAttribute {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::{RawAttribute, Attribute, AttributeType};
+    /// # use librice_proto::stun::attribute::{RawAttribute, Attribute, AttributeType};
     /// let data = &[0, 1, 0, 2, 5, 6, 0, 0];
     /// let attr = RawAttribute::from_bytes(data).unwrap();
     /// assert_eq!(attr.get_type(), AttributeType::new(1));
@@ -377,7 +394,7 @@ impl RawAttribute {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::{RawAttribute, Attribute, AttributeType};
+    /// # use librice_proto::stun::attribute::{RawAttribute, Attribute, AttributeType};
     /// let attr = RawAttribute::new(AttributeType::new(1), &[5, 6]);
     /// assert_eq!(attr.to_bytes(), &[0, 1, 0, 2, 5, 6, 0, 0]);
     /// ```
@@ -408,7 +425,7 @@ impl TryFrom<&[u8]> for RawAttribute {
 }
 
 /// The username [`Attribute`]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Username {
     user: String,
 }
@@ -420,12 +437,16 @@ impl Attribute for Username {
     fn length(&self) -> u16 {
         self.user.len() as u16
     }
-
-    fn to_raw(&self) -> RawAttribute {
-        RawAttribute::new(self.get_type(), self.user.as_bytes())
+}
+impl From<Username> for RawAttribute {
+    fn from(value: Username) -> RawAttribute {
+        RawAttribute::new(value.get_type(), value.user.as_bytes())
     }
+}
+impl TryFrom<&RawAttribute> for Username {
+    type Error = StunParseError;
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
+    fn try_from(raw: &RawAttribute) -> Result<Self, Self::Error> {
         if raw.header.atype != USERNAME {
             return Err(StunParseError::WrongImplementation);
         }
@@ -439,7 +460,6 @@ impl Attribute for Username {
         })
     }
 }
-attr_from!(Username);
 
 impl Username {
     /// Create a new [`Username`] [`Attribute`]
@@ -453,7 +473,7 @@ impl Username {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let username = Username::new ("user").unwrap();
     /// assert_eq!(username.username(), "user");
     /// ```
@@ -472,7 +492,7 @@ impl Username {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let username = Username::new ("user").unwrap();
     /// assert_eq!(username.username(), "user");
     /// ```
@@ -487,7 +507,7 @@ impl std::fmt::Display for Username {
     }
 }
 /// The ErrorCode [`Attribute`]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorCode {
     code: u16,
     reason: String,
@@ -500,18 +520,22 @@ impl Attribute for ErrorCode {
     fn length(&self) -> u16 {
         self.reason.len() as u16 + 4
     }
-
-    fn to_raw(&self) -> RawAttribute {
-        let mut data = Vec::with_capacity(self.length() as usize);
+}
+impl From<ErrorCode> for RawAttribute {
+    fn from(value: ErrorCode) -> RawAttribute {
+        let mut data = Vec::with_capacity(value.length() as usize);
         data.push(0u8);
         data.push(0u8);
-        data.push((self.code / 100) as u8);
-        data.push((self.code % 100) as u8);
-        data.extend(self.reason.as_bytes());
-        RawAttribute::new(self.get_type(), &data)
+        data.push((value.code / 100) as u8);
+        data.push((value.code % 100) as u8);
+        data.extend(value.reason.as_bytes());
+        RawAttribute::new(value.get_type(), &data)
     }
+}
+impl TryFrom<&RawAttribute> for ErrorCode {
+    type Error = StunParseError;
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
+    fn try_from(raw: &RawAttribute) -> Result<Self, Self::Error> {
         if raw.header.atype != ERROR_CODE {
             return Err(StunParseError::WrongImplementation);
         }
@@ -536,6 +560,7 @@ impl Attribute for ErrorCode {
     }
 }
 
+/// Builder for an [`ErrorCode`]
 pub struct ErrorCodeBuilder<'reason> {
     code: u16,
     reason: Option<&'reason str>,
@@ -594,7 +619,7 @@ impl ErrorCode {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let error = ErrorCode::builder (400).reason("bad error").build().unwrap();
     /// assert_eq!(error.code(), 400);
     /// assert_eq!(error.reason(), "bad error");
@@ -612,7 +637,7 @@ impl ErrorCode {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let error = ErrorCode::new (400, "bad error").unwrap();
     /// assert_eq!(error.code(), 400);
     /// assert_eq!(error.reason(), "bad error");
@@ -632,7 +657,7 @@ impl ErrorCode {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let error = ErrorCode::new (400, "bad error").unwrap();
     /// assert_eq!(error.code(), 400);
     /// ```
@@ -645,7 +670,7 @@ impl ErrorCode {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let error = ErrorCode::new (400, "bad error").unwrap();
     /// assert_eq!(error.reason(), "bad error");
     /// ```
@@ -699,10 +724,9 @@ impl std::fmt::Display for ErrorCode {
         write!(f, "{}: {} '{}'", self.get_type(), self.code, self.reason)
     }
 }
-attr_from!(ErrorCode);
 
 /// The UnknownAttributes [`Attribute`]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownAttributes {
     attributes: Vec<AttributeType>,
 }
@@ -714,18 +738,22 @@ impl Attribute for UnknownAttributes {
     fn length(&self) -> u16 {
         (self.attributes.len() as u16) * 2
     }
-
-    fn to_raw(&self) -> RawAttribute {
-        let mut data = Vec::with_capacity(self.length() as usize);
-        for attr in &self.attributes {
+}
+impl From<UnknownAttributes> for RawAttribute {
+    fn from(value: UnknownAttributes) -> RawAttribute {
+        let mut data = Vec::with_capacity(value.length() as usize);
+        for attr in &value.attributes {
             let mut encoded = vec![0; 2];
             BigEndian::write_u16(&mut encoded, (*attr).into());
             data.extend(encoded);
         }
-        RawAttribute::new(self.get_type(), &data)
+        RawAttribute::new(value.get_type(), &data)
     }
+}
+impl TryFrom<&RawAttribute> for UnknownAttributes {
+    type Error = StunParseError;
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
+    fn try_from(raw: &RawAttribute) -> Result<Self, Self::Error> {
         if raw.header.atype != UNKNOWN_ATTRIBUTES {
             return Err(StunParseError::WrongImplementation);
         }
@@ -746,7 +774,7 @@ impl UnknownAttributes {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let unknown = UnknownAttributes::new(&[USERNAME]);
     /// assert!(unknown.has_attribute(USERNAME));
     /// ```
@@ -761,7 +789,7 @@ impl UnknownAttributes {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let mut unknown = UnknownAttributes::new(&[]);
     /// unknown.add_attribute(USERNAME);
     /// assert!(unknown.has_attribute(USERNAME));
@@ -777,7 +805,7 @@ impl UnknownAttributes {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let unknown = UnknownAttributes::new(&[USERNAME]);
     /// assert!(unknown.has_attribute(USERNAME));
     /// ```
@@ -791,10 +819,9 @@ impl std::fmt::Display for UnknownAttributes {
         write!(f, "{}: {:?}", self.get_type(), self.attributes)
     }
 }
-attr_from!(UnknownAttributes);
 
 /// The Software [`Attribute`]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Software {
     software: String,
 }
@@ -806,12 +833,16 @@ impl Attribute for Software {
     fn length(&self) -> u16 {
         self.software.len() as u16
     }
-
-    fn to_raw(&self) -> RawAttribute {
-        RawAttribute::new(self.get_type(), self.software.as_bytes())
+}
+impl From<Software> for RawAttribute {
+    fn from(value: Software) -> RawAttribute {
+        RawAttribute::new(value.get_type(), value.software.as_bytes())
     }
+}
+impl TryFrom<&RawAttribute> for Software {
+    type Error = StunParseError;
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
+    fn try_from(raw: &RawAttribute) -> Result<Self, Self::Error> {
         if raw.header.atype != SOFTWARE {
             return Err(StunParseError::WrongImplementation);
         }
@@ -836,7 +867,7 @@ impl Software {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let software = Software::new("librice 0.1").unwrap();
     /// assert_eq!(software.software(), "librice 0.1");
     /// ```
@@ -854,7 +885,7 @@ impl Software {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let software = Software::new("librice 0.1").unwrap();
     /// assert_eq!(software.software(), "librice 0.1");
     /// ```
@@ -868,7 +899,6 @@ impl std::fmt::Display for Software {
         write!(f, "{}: '{}'", self.get_type(), self.software)
     }
 }
-attr_from!(Software);
 
 macro_rules! bytewise_xor {
     ($size:literal, $a:expr, $b:expr, $default:literal) => {{
@@ -880,7 +910,7 @@ macro_rules! bytewise_xor {
     }};
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MappedSocketAddr {
     pub(crate) addr: SocketAddr,
 }
@@ -963,7 +993,7 @@ impl std::fmt::Display for MappedSocketAddr {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct XorSocketAddr {
     pub(crate) addr: MappedSocketAddr,
 }
@@ -1025,7 +1055,7 @@ impl std::fmt::Display for XorSocketAddr {
 }
 
 /// The XorMappedAddress [`Attribute`]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XorMappedAddress {
     // stored XOR-ed as we need the transaction id to get the original value
     addr: XorSocketAddr,
@@ -1038,17 +1068,21 @@ impl Attribute for XorMappedAddress {
     fn length(&self) -> u16 {
         self.addr.length()
     }
-
-    fn to_raw(&self) -> RawAttribute {
-        self.addr.to_raw(self.get_type())
+}
+impl From<XorMappedAddress> for RawAttribute {
+    fn from(value: XorMappedAddress) -> RawAttribute {
+        value.addr.to_raw(value.get_type())
     }
+}
+impl TryFrom<&RawAttribute> for XorMappedAddress {
+    type Error = StunParseError;
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
+    fn try_from(raw: &RawAttribute) -> Result<Self, Self::Error> {
         if raw.header.atype != XOR_MAPPED_ADDRESS {
             return Err(StunParseError::WrongImplementation);
         }
         Ok(Self {
-            addr: XorSocketAddr::from_raw(raw)?,
+            addr: XorSocketAddr::from_raw(&raw)?,
         })
     }
 }
@@ -1059,7 +1093,7 @@ impl XorMappedAddress {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// # use std::net::SocketAddr;
     /// let addr = "127.0.0.1:1234".parse().unwrap();
     /// let mapped_addr = XorMappedAddress::new(addr, 0x5678.into());
@@ -1076,7 +1110,7 @@ impl XorMappedAddress {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// # use std::net::SocketAddr;
     /// let addr = "[::1]:1234".parse().unwrap();
     /// let mapped_addr = XorMappedAddress::new(addr, 0x5678.into());
@@ -1092,10 +1126,9 @@ impl std::fmt::Display for XorMappedAddress {
         write!(f, "{}: {}", self.get_type(), self.addr)
     }
 }
-attr_from!(XorMappedAddress);
 
 /// The Priority [`Attribute`]
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Priority {
     priority: u32,
 }
@@ -1108,14 +1141,18 @@ impl Attribute for Priority {
     fn length(&self) -> u16 {
         4
     }
-
-    fn to_raw(&self) -> RawAttribute {
+}
+impl From<Priority> for RawAttribute {
+    fn from(value: Priority) -> RawAttribute {
         let mut buf = [0; 4];
-        BigEndian::write_u32(&mut buf[0..4], self.priority);
-        RawAttribute::new(self.get_type(), &buf)
+        BigEndian::write_u32(&mut buf[0..4], value.priority);
+        RawAttribute::new(value.get_type(), &buf)
     }
+}
+impl TryFrom<&RawAttribute> for Priority {
+    type Error = StunParseError;
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
+    fn try_from(raw: &RawAttribute) -> Result<Self, Self::Error> {
         if raw.header.atype != PRIORITY {
             return Err(StunParseError::WrongImplementation);
         }
@@ -1137,7 +1174,7 @@ impl Priority {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let priority = Priority::new(1234);
     /// assert_eq!(priority.priority(), 1234);
     /// ```
@@ -1150,7 +1187,7 @@ impl Priority {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let priority = Priority::new(1234);
     /// assert_eq!(priority.priority(), 1234);
     /// ```
@@ -1158,7 +1195,6 @@ impl Priority {
         self.priority
     }
 }
-attr_from!(Priority);
 
 impl std::fmt::Display for Priority {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1167,7 +1203,7 @@ impl std::fmt::Display for Priority {
 }
 
 /// The UseCandidate [`Attribute`]
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UseCandidate {}
 
 impl Attribute for UseCandidate {
@@ -1178,13 +1214,17 @@ impl Attribute for UseCandidate {
     fn length(&self) -> u16 {
         0
     }
-
-    fn to_raw(&self) -> RawAttribute {
+}
+impl From<UseCandidate> for RawAttribute {
+    fn from(value: UseCandidate) -> RawAttribute {
         let buf = [0; 0];
-        RawAttribute::new(self.get_type(), &buf)
+        RawAttribute::new(value.get_type(), &buf)
     }
+}
+impl TryFrom<&RawAttribute> for UseCandidate {
+    type Error = StunParseError;
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
+    fn try_from(raw: &RawAttribute) -> Result<Self, Self::Error> {
         if raw.header.atype != USE_CANDIDATE {
             return Err(StunParseError::WrongImplementation);
         }
@@ -1207,14 +1247,13 @@ impl UseCandidate {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let _use_candidate = UseCandidate::new();
     /// ```
     pub fn new() -> Self {
         Self {}
     }
 }
-attr_from!(UseCandidate);
 
 impl std::fmt::Display for UseCandidate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1223,7 +1262,7 @@ impl std::fmt::Display for UseCandidate {
 }
 
 /// The IceControlled [`Attribute`]
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IceControlled {
     tie_breaker: u64,
 }
@@ -1236,14 +1275,18 @@ impl Attribute for IceControlled {
     fn length(&self) -> u16 {
         8
     }
-
-    fn to_raw(&self) -> RawAttribute {
+}
+impl From<IceControlled> for RawAttribute {
+    fn from(value: IceControlled) -> RawAttribute {
         let mut buf = [0; 8];
-        BigEndian::write_u64(&mut buf[..8], self.tie_breaker);
-        RawAttribute::new(self.get_type(), &buf)
+        BigEndian::write_u64(&mut buf[..8], value.tie_breaker);
+        RawAttribute::new(value.get_type(), &buf)
     }
+}
+impl TryFrom<&RawAttribute> for IceControlled {
+    type Error = StunParseError;
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
+    fn try_from(raw: &RawAttribute) -> Result<Self, Self::Error> {
         if raw.header.atype != ICE_CONTROLLED {
             return Err(StunParseError::WrongImplementation);
         }
@@ -1265,7 +1308,7 @@ impl IceControlled {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let ice_controlled = IceControlled::new(1234);
     /// assert_eq!(ice_controlled.tie_breaker(), 1234);
     /// ```
@@ -1278,7 +1321,7 @@ impl IceControlled {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let ice_controlled = IceControlled::new(1234);
     /// assert_eq!(ice_controlled.tie_breaker(), 1234);
     /// ```
@@ -1286,7 +1329,6 @@ impl IceControlled {
         self.tie_breaker
     }
 }
-attr_from!(IceControlled);
 
 impl std::fmt::Display for IceControlled {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1295,7 +1337,7 @@ impl std::fmt::Display for IceControlled {
 }
 
 /// The IceControlling [`Attribute`]
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IceControlling {
     tie_breaker: u64,
 }
@@ -1308,14 +1350,19 @@ impl Attribute for IceControlling {
     fn length(&self) -> u16 {
         8
     }
-
-    fn to_raw(&self) -> RawAttribute {
+}
+impl From<IceControlling> for RawAttribute {
+    fn from(value: IceControlling) -> RawAttribute {
         let mut buf = [0; 8];
-        BigEndian::write_u64(&mut buf[..8], self.tie_breaker);
-        RawAttribute::new(self.get_type(), &buf)
-    }
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
+        BigEndian::write_u64(&mut buf[..8], value.tie_breaker);
+        RawAttribute::new(value.get_type(), &buf)
+    }
+}
+impl TryFrom<&RawAttribute> for IceControlling {
+    type Error = StunParseError;
+
+    fn try_from(raw: &RawAttribute) -> Result<Self, Self::Error> {
         if raw.header.atype != ICE_CONTROLLING {
             return Err(StunParseError::WrongImplementation);
         }
@@ -1337,7 +1384,7 @@ impl IceControlling {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let ice_controlling = IceControlling::new(1234);
     /// assert_eq!(ice_controlling.tie_breaker(), 1234);
     /// ```
@@ -1350,7 +1397,7 @@ impl IceControlling {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let ice_controlling = IceControlling::new(1234);
     /// assert_eq!(ice_controlling.tie_breaker(), 1234);
     /// ```
@@ -1358,7 +1405,6 @@ impl IceControlling {
         self.tie_breaker
     }
 }
-attr_from!(IceControlling);
 
 impl std::fmt::Display for IceControlling {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1367,7 +1413,7 @@ impl std::fmt::Display for IceControlling {
 }
 
 /// The MessageIntegrity [`Attribute`]
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageIntegrity {
     hmac: [u8; 20],
 }
@@ -1380,12 +1426,16 @@ impl Attribute for MessageIntegrity {
     fn length(&self) -> u16 {
         20
     }
-
-    fn to_raw(&self) -> RawAttribute {
-        RawAttribute::new(self.get_type(), &self.hmac)
+}
+impl From<MessageIntegrity> for RawAttribute {
+    fn from(value: MessageIntegrity) -> RawAttribute {
+        RawAttribute::new(value.get_type(), &value.hmac)
     }
+}
+impl TryFrom<&RawAttribute> for MessageIntegrity {
+    type Error = StunParseError;
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
+    fn try_from(raw: &RawAttribute) -> Result<Self, Self::Error> {
         if raw.header.atype != MESSAGE_INTEGRITY {
             return Err(StunParseError::WrongImplementation);
         }
@@ -1407,7 +1457,7 @@ impl MessageIntegrity {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let hmac = [0;20];
     /// let integrity = MessageIntegrity::new(hmac);
     /// assert_eq!(integrity.hmac(), &hmac);
@@ -1421,7 +1471,7 @@ impl MessageIntegrity {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let hmac = [0; 20];
     /// let integrity = MessageIntegrity::new(hmac);
     /// assert_eq!(integrity.hmac(), &hmac);
@@ -1437,7 +1487,7 @@ impl MessageIntegrity {
     ///
     /// # Examples
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let key = [40; 10];
     /// let data = [10; 30];
     /// let expected = [209, 217, 210, 15, 124, 78, 87, 181, 211, 233, 165, 180, 44, 142, 81, 233, 138, 186, 184, 97];
@@ -1465,7 +1515,7 @@ impl MessageIntegrity {
     ///
     /// # Examples
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let key = [40; 10];
     /// let data = [10; 30];
     /// let expected = [209, 217, 210, 15, 124, 78, 87, 181, 211, 233, 165, 180, 44, 142, 81, 233, 138, 186, 184, 97];
@@ -1489,7 +1539,6 @@ impl MessageIntegrity {
         })
     }
 }
-attr_from!(MessageIntegrity);
 
 impl std::fmt::Display for MessageIntegrity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1502,7 +1551,7 @@ impl std::fmt::Display for MessageIntegrity {
 }
 
 /// The Fingerprint [`Attribute`]
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fingerprint {
     fingerprint: [u8; 4],
 }
@@ -1515,13 +1564,17 @@ impl Attribute for Fingerprint {
     fn length(&self) -> u16 {
         4
     }
-
-    fn to_raw(&self) -> RawAttribute {
-        let buf = bytewise_xor!(4, self.fingerprint, Fingerprint::XOR_CONSTANT, 0);
-        RawAttribute::new(self.get_type(), &buf)
+}
+impl From<Fingerprint> for RawAttribute {
+    fn from(value: Fingerprint) -> RawAttribute {
+        let buf = bytewise_xor!(4, value.fingerprint, Fingerprint::XOR_CONSTANT, 0);
+        RawAttribute::new(value.get_type(), &buf)
     }
+}
+impl TryFrom<&RawAttribute> for Fingerprint {
+    type Error = StunParseError;
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
+    fn try_from(raw: &RawAttribute) -> Result<Self, Self::Error> {
         if raw.header.atype != FINGERPRINT {
             return Err(StunParseError::WrongImplementation);
         }
@@ -1546,7 +1599,7 @@ impl Fingerprint {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let value = [0;4];
     /// let fingerprint = Fingerprint::new(value);
     /// assert_eq!(fingerprint.fingerprint(), &value);
@@ -1560,7 +1613,7 @@ impl Fingerprint {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let value = [0;4];
     /// let fingerprint = Fingerprint::new(value);
     /// assert_eq!(fingerprint.fingerprint(), &value);
@@ -1573,7 +1626,7 @@ impl Fingerprint {
     ///
     /// # Examples
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let value = [99;4];
     /// assert_eq!(Fingerprint::compute(&value), [216, 45, 250, 14]);
     /// ```
@@ -1583,7 +1636,6 @@ impl Fingerprint {
         CRC_ALGO.checksum(data).to_be_bytes()
     }
 }
-attr_from!(Fingerprint);
 
 impl std::fmt::Display for Fingerprint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1596,7 +1648,7 @@ impl std::fmt::Display for Fingerprint {
 }
 
 /// The Userhash [`Attribute`]
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Userhash {
     hash: [u8; 32],
 }
@@ -1609,12 +1661,17 @@ impl Attribute for Userhash {
     fn length(&self) -> u16 {
         32
     }
-
-    fn to_raw(&self) -> RawAttribute {
-        RawAttribute::new(self.get_type(), &self.hash)
+}
+impl From<Userhash> for RawAttribute {
+    fn from(value: Userhash) -> RawAttribute {
+        RawAttribute::new(value.get_type(), &value.hash)
     }
+}
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
+impl TryFrom<&RawAttribute> for Userhash {
+    type Error = StunParseError;
+
+    fn try_from(raw: &RawAttribute) -> Result<Self, Self::Error> {
         if raw.header.atype != USERHASH {
             return Err(StunParseError::WrongImplementation);
         }
@@ -1636,7 +1693,7 @@ impl Userhash {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let value = [0;32];
     /// let user = Userhash::new(value);
     /// assert_eq!(user.hash(), &value);
@@ -1650,7 +1707,7 @@ impl Userhash {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let value = [0;32];
     /// let user = Userhash::new(value);
     /// assert_eq!(user.hash(), &value);
@@ -1663,7 +1720,7 @@ impl Userhash {
     ///
     /// # Examples
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// assert_eq!(Userhash::compute("user", "realm"), [106, 48, 41, 17, 107, 71, 170, 152, 188, 170, 50, 83, 153, 115, 61, 193, 162, 60, 213, 126, 38, 184, 27, 239, 63, 246, 83, 28, 230, 36, 226, 218]);
     /// ```
     pub fn compute(user: &str, realm: &str) -> [u8; 32] {
@@ -1673,7 +1730,6 @@ impl Userhash {
         ret.as_slice().try_into().unwrap()
     }
 }
-attr_from!(Userhash);
 
 impl std::fmt::Display for Userhash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1686,7 +1742,7 @@ impl std::fmt::Display for Userhash {
 }
 
 /// The MessageIntegritySha256 [`Attribute`]
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageIntegritySha256 {
     hmac: Vec<u8>,
 }
@@ -1699,12 +1755,16 @@ impl Attribute for MessageIntegritySha256 {
     fn length(&self) -> u16 {
         self.hmac.len() as u16
     }
-
-    fn to_raw(&self) -> RawAttribute {
-        RawAttribute::new(self.get_type(), &self.hmac)
+}
+impl From<MessageIntegritySha256> for RawAttribute {
+    fn from(value: MessageIntegritySha256) -> RawAttribute {
+        RawAttribute::new(value.get_type(), &value.hmac)
     }
+}
+impl TryFrom<&RawAttribute> for MessageIntegritySha256 {
+    type Error = StunParseError;
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
+    fn try_from(raw: &RawAttribute) -> Result<Self, Self::Error> {
         if raw.header.atype != MESSAGE_INTEGRITY_SHA256 {
             return Err(StunParseError::WrongImplementation);
         }
@@ -1729,7 +1789,7 @@ impl MessageIntegritySha256 {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let hmac = [0;20];
     /// let integrity = MessageIntegritySha256::new(&hmac).unwrap();
     /// assert_eq!(integrity.hmac(), &hmac);
@@ -1754,7 +1814,7 @@ impl MessageIntegritySha256 {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let hmac = [0; 20];
     /// let integrity = MessageIntegritySha256::new(&hmac).unwrap();
     /// assert_eq!(integrity.hmac(), &hmac);
@@ -1770,7 +1830,7 @@ impl MessageIntegritySha256 {
     ///
     /// # Examples
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let key = [40; 10];
     /// let data = [10; 30];
     /// let expected = [141, 112, 214, 41, 247, 110, 61, 95, 46, 245, 132, 79, 99, 16, 167, 95, 239, 168, 3, 63, 101, 78, 150, 24, 241, 139, 34, 229, 189, 37, 14, 113];
@@ -1798,7 +1858,7 @@ impl MessageIntegritySha256 {
     ///
     /// # Examples
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let key = [40; 10];
     /// let data = [10; 30];
     /// let expected = [141, 112, 214, 41, 247, 110, 61, 95, 46, 245, 132, 79, 99, 16, 167, 95, 239, 168, 3, 63, 101, 78, 150, 24, 241, 139, 34, 229, 189, 37, 14, 113];
@@ -1822,7 +1882,6 @@ impl MessageIntegritySha256 {
         })
     }
 }
-attr_from!(MessageIntegritySha256);
 
 impl std::fmt::Display for MessageIntegritySha256 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1835,7 +1894,7 @@ impl std::fmt::Display for MessageIntegritySha256 {
 }
 
 /// The Realm [`Attribute`]
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Realm {
     realm: String,
 }
@@ -1848,12 +1907,16 @@ impl Attribute for Realm {
     fn length(&self) -> u16 {
         self.realm.len() as u16
     }
-
-    fn to_raw(&self) -> RawAttribute {
-        RawAttribute::new(self.get_type(), self.realm.as_bytes())
+}
+impl From<Realm> for RawAttribute {
+    fn from(value: Realm) -> RawAttribute {
+        RawAttribute::new(value.get_type(), value.realm.as_bytes())
     }
+}
+impl TryFrom<&RawAttribute> for Realm {
+    type Error = StunParseError;
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
+    fn try_from(raw: &RawAttribute) -> Result<Self, Self::Error> {
         if raw.header.atype != REALM {
             return Err(StunParseError::WrongImplementation);
         }
@@ -1874,7 +1937,7 @@ impl Realm {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let realm = Realm::new("realm").unwrap();
     /// assert_eq!(realm.realm(), "realm");
     /// ```
@@ -1892,7 +1955,7 @@ impl Realm {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let realm = Realm::new("realm").unwrap();
     /// assert_eq!(realm.realm(), "realm");
     /// ```
@@ -1900,7 +1963,6 @@ impl Realm {
         &self.realm
     }
 }
-attr_from!(Realm);
 
 impl std::fmt::Display for Realm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1909,7 +1971,7 @@ impl std::fmt::Display for Realm {
 }
 
 /// The Nonce [`Attribute`]
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Nonce {
     nonce: String,
 }
@@ -1922,12 +1984,16 @@ impl Attribute for Nonce {
     fn length(&self) -> u16 {
         self.nonce.len() as u16
     }
-
-    fn to_raw(&self) -> RawAttribute {
-        RawAttribute::new(self.get_type(), self.nonce.as_bytes())
+}
+impl From<Nonce> for RawAttribute {
+    fn from(value: Nonce) -> RawAttribute {
+        RawAttribute::new(value.get_type(), value.nonce.as_bytes())
     }
+}
+impl TryFrom<&RawAttribute> for Nonce {
+    type Error = StunParseError;
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
+    fn try_from(raw: &RawAttribute) -> Result<Self, Self::Error> {
         if raw.header.atype != NONCE {
             return Err(StunParseError::WrongImplementation);
         }
@@ -1948,7 +2014,7 @@ impl Nonce {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let nonce = Nonce::new("nonce").unwrap();
     /// assert_eq!(nonce.nonce(), "nonce");
     /// ```
@@ -1966,7 +2032,7 @@ impl Nonce {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let nonce = Nonce::new("nonce").unwrap();
     /// assert_eq!(nonce.nonce(), "nonce");
     /// ```
@@ -1974,7 +2040,6 @@ impl Nonce {
         &self.nonce
     }
 }
-attr_from!(Nonce);
 
 impl std::fmt::Display for Nonce {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1982,6 +2047,7 @@ impl std::fmt::Display for Nonce {
     }
 }
 
+/// The hashing algorithm for the password
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasswordAlgorithmValue {
     MD5,
@@ -2027,7 +2093,7 @@ impl std::fmt::Display for PasswordAlgorithmValue {
 }
 
 /// The PasswordAlgorithms [`Attribute`]
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PasswordAlgorithms {
     algorithms: Vec<PasswordAlgorithmValue>,
 }
@@ -2044,20 +2110,23 @@ impl Attribute for PasswordAlgorithms {
         }
         len as u16
     }
-
-    fn to_raw(&self) -> RawAttribute {
-        let len = self.length() as usize;
-        let mut data = Vec::new();
-        data.resize(len, 0);
+}
+impl From<PasswordAlgorithms> for RawAttribute {
+    fn from(value: PasswordAlgorithms) -> RawAttribute {
+        let len = value.length() as usize;
+        let mut data = vec![0; len];
         let mut i = 0;
-        for algo in self.algorithms.iter() {
+        for algo in value.algorithms.iter() {
             algo.write(&mut data[i..]);
             i += 4 + padded_attr_len(algo.len() as usize);
         }
-        RawAttribute::new(self.get_type(), &data)
+        RawAttribute::new(value.get_type(), &data)
     }
+}
+impl TryFrom<&RawAttribute> for PasswordAlgorithms {
+    type Error = StunParseError;
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
+    fn try_from(raw: &RawAttribute) -> Result<Self, Self::Error> {
         if raw.header.atype != PASSWORD_ALGORITHMS {
             return Err(StunParseError::WrongImplementation);
         }
@@ -2084,7 +2153,7 @@ impl PasswordAlgorithms {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let algorithms = PasswordAlgorithms::new(&[PasswordAlgorithmValue::MD5]);
     /// assert_eq!(algorithms.algorithms(), &[PasswordAlgorithmValue::MD5]);
     /// ```
@@ -2099,7 +2168,7 @@ impl PasswordAlgorithms {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let algorithms = PasswordAlgorithms::new(&[PasswordAlgorithmValue::MD5]);
     /// assert_eq!(algorithms.algorithms(), &[PasswordAlgorithmValue::MD5]);
     /// ```
@@ -2107,7 +2176,6 @@ impl PasswordAlgorithms {
         &self.algorithms
     }
 }
-attr_from!(PasswordAlgorithms);
 
 impl std::fmt::Display for PasswordAlgorithms {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2124,7 +2192,7 @@ impl std::fmt::Display for PasswordAlgorithms {
 }
 
 /// The PasswordAlgorithm [`Attribute`]
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PasswordAlgorithm {
     algorithm: PasswordAlgorithmValue,
 }
@@ -2137,16 +2205,20 @@ impl Attribute for PasswordAlgorithm {
     fn length(&self) -> u16 {
         4 + padded_attr_len(self.algorithm.len() as usize) as u16
     }
+}
 
-    fn to_raw(&self) -> RawAttribute {
-        let len = self.length() as usize;
-        let mut data = Vec::new();
-        data.resize(len, 0);
-        self.algorithm.write(&mut data);
-        RawAttribute::new(self.get_type(), &data)
+impl From<PasswordAlgorithm> for RawAttribute {
+    fn from(value: PasswordAlgorithm) -> RawAttribute {
+        let len = value.length() as usize;
+        let mut data = vec![0; len];
+        value.algorithm.write(&mut data);
+        RawAttribute::new(value.get_type(), &data)
     }
+}
+impl TryFrom<&RawAttribute> for PasswordAlgorithm {
+    type Error = StunParseError;
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
+    fn try_from(raw: &RawAttribute) -> Result<Self, Self::Error> {
         if raw.header.atype != PASSWORD_ALGORITHM {
             return Err(StunParseError::WrongImplementation);
         }
@@ -2167,7 +2239,7 @@ impl PasswordAlgorithm {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let algorithm = PasswordAlgorithm::new(PasswordAlgorithmValue::MD5);
     /// assert_eq!(algorithm.algorithm(), PasswordAlgorithmValue::MD5);
     /// ```
@@ -2180,15 +2252,14 @@ impl PasswordAlgorithm {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let algorithm = PasswordAlgorithm::new(PasswordAlgorithmValue::MD5);
     /// assert_eq!(algorithm.algorithm(), PasswordAlgorithmValue::MD5);
     /// ```
     pub fn algorithm(&self) -> PasswordAlgorithmValue {
-        self.algorithm.clone()
+        self.algorithm
     }
 }
-attr_from!(PasswordAlgorithm);
 
 impl std::fmt::Display for PasswordAlgorithm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2196,6 +2267,7 @@ impl std::fmt::Display for PasswordAlgorithm {
     }
 }
 
+/// The address family of the socket
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddressFamily {
     IPV4,
@@ -2229,7 +2301,7 @@ impl std::fmt::Display for AddressFamily {
 }
 
 /// The AlternateServer [`Attribute`]
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlternateServer {
     addr: MappedSocketAddr,
 }
@@ -2242,16 +2314,22 @@ impl Attribute for AlternateServer {
     fn length(&self) -> u16 {
         self.addr.length()
     }
+}
 
-    fn to_raw(&self) -> RawAttribute {
-        self.addr.to_raw(self.get_type())
+impl From<AlternateServer> for RawAttribute {
+    fn from(value: AlternateServer) -> RawAttribute {
+        value.addr.to_raw(value.get_type())
     }
+}
 
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
+impl TryFrom<&RawAttribute> for AlternateServer {
+    type Error = StunParseError;
+
+    fn try_from(raw: &RawAttribute) -> Result<Self, Self::Error> {
         if raw.header.atype != ALTERNATE_SERVER {
             return Err(StunParseError::WrongImplementation);
         }
-        let addr = MappedSocketAddr::from_raw(raw)?;
+        let addr = MappedSocketAddr::from_raw(&raw)?;
         Ok(Self { addr })
     }
 }
@@ -2262,7 +2340,7 @@ impl AlternateServer {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let addr = "127.0.0.1:12345".parse().unwrap();
     /// let server = AlternateServer::new(addr);
     /// assert_eq!(server.server(), addr);
@@ -2278,7 +2356,7 @@ impl AlternateServer {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let addr = "127.0.0.1:12345".parse().unwrap();
     /// let server = AlternateServer::new(addr);
     /// assert_eq!(server.server(), addr);
@@ -2287,7 +2365,6 @@ impl AlternateServer {
         self.addr.addr
     }
 }
-attr_from!(AlternateServer);
 
 impl std::fmt::Display for AlternateServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2296,7 +2373,7 @@ impl std::fmt::Display for AlternateServer {
 }
 
 /// The AlternateDomain [`Attribute`]
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlternateDomain {
     domain: String,
 }
@@ -2309,12 +2386,11 @@ impl Attribute for AlternateDomain {
     fn length(&self) -> u16 {
         self.domain.len() as u16
     }
+}
+impl TryFrom<&RawAttribute> for AlternateDomain {
+    type Error = StunParseError;
 
-    fn to_raw(&self) -> RawAttribute {
-        RawAttribute::new(self.get_type(), self.domain.as_bytes())
-    }
-
-    fn from_raw(raw: &RawAttribute) -> Result<Self, StunParseError> {
+    fn try_from(raw: &RawAttribute) -> Result<Self, Self::Error> {
         if raw.header.atype != ALTERNATE_DOMAIN {
             return Err(StunParseError::WrongImplementation);
         }
@@ -2326,6 +2402,11 @@ impl Attribute for AlternateDomain {
         })
     }
 }
+impl From<AlternateDomain> for RawAttribute {
+    fn from(value: AlternateDomain) -> RawAttribute {
+        RawAttribute::new(value.get_type(), value.domain.as_bytes())
+    }
+}
 
 impl AlternateDomain {
     /// Create a new AlternateDomain [`Attribute`]
@@ -2333,7 +2414,7 @@ impl AlternateDomain {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let dns = "example.com";
     /// let domain = AlternateDomain::new(dns);
     /// assert_eq!(domain.domain(), dns);
@@ -2349,7 +2430,7 @@ impl AlternateDomain {
     /// # Examples
     ///
     /// ```
-    /// # use librice::stun::attribute::*;
+    /// # use librice_proto::stun::attribute::*;
     /// let dns = "example.com";
     /// let domain = AlternateDomain::new(dns);
     /// assert_eq!(domain.domain(), dns);
@@ -2358,7 +2439,6 @@ impl AlternateDomain {
         &self.domain
     }
 }
-attr_from!(AlternateDomain);
 
 impl std::fmt::Display for AlternateDomain {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2398,7 +2478,7 @@ mod tests {
         assert_eq!(a.get_type(), 1.into());
         let bytes: Vec<_> = a.into();
         assert_eq!(bytes, &[0, 1, 0, 2, 80, 160, 0, 0]);
-        let b = RawAttribute::try_from(bytes.as_ref()).unwrap();
+        let b = RawAttribute::from_bytes(bytes.as_ref()).unwrap();
         assert_eq!(b.get_type(), 1.into());
     }
 
@@ -2412,17 +2492,12 @@ mod tests {
         assert_eq!(orig.get_type(), raw.get_type());
         assert_eq!(orig.length(), raw.length());
         assert_eq!(orig.to_bytes(), raw.to_bytes());
-        let raw = RawAttribute::from_raw(&orig).unwrap();
-        assert_eq!(raw.get_type(), 1.into());
-        assert_eq!(orig.get_type(), raw.get_type());
-        assert_eq!(orig.length(), raw.length());
-        assert_eq!(orig.to_bytes(), raw.to_bytes());
         let mut data: Vec<_> = raw.into();
         let len = data.len();
         // one byte too big vs data size
         BigEndian::write_u16(&mut data[2..4], len as u16 - 4 + 1);
         assert!(matches!(
-            RawAttribute::try_from(data.as_ref()),
+            RawAttribute::from_bytes(data.as_ref()),
             Err(StunParseError::NotEnoughData)
         ));
     }
@@ -2444,7 +2519,7 @@ mod tests {
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
-            Username::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            Username::try_from(&RawAttribute::from_bytes(data.as_ref()).unwrap()),
             Err(StunParseError::WrongImplementation)
         ));
     }
@@ -2452,7 +2527,7 @@ mod tests {
     #[test]
     fn error_code() {
         init();
-        let codes = vec![300, 401, 699];
+        let codes = [300, 401, 699];
         for code in codes.iter().copied() {
             let reason = ErrorCode::default_reason_for_code(code);
             let err = ErrorCode::new(code, reason).unwrap();
@@ -2475,14 +2550,14 @@ mod tests {
         let len = 0;
         BigEndian::write_u16(&mut data[2..4], len as u16);
         assert!(matches!(
-            ErrorCode::try_from(&RawAttribute::try_from(data[..len + 4].as_ref()).unwrap()),
+            ErrorCode::try_from(&RawAttribute::from_bytes(data[..len + 4].as_ref()).unwrap()),
             Err(StunParseError::NotEnoughData)
         ));
         // provide incorrectly typed data
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
-            ErrorCode::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            ErrorCode::try_from(&RawAttribute::from_bytes(data.as_ref()).unwrap()),
             Err(StunParseError::WrongImplementation)
         ));
     }
@@ -2510,14 +2585,14 @@ mod tests {
         let len = data.len();
         BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
         assert!(matches!(
-            UnknownAttributes::try_from(&RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()),
+            UnknownAttributes::try_from(&RawAttribute::from_bytes(data[..len - 1].as_ref()).unwrap()),
             Err(StunParseError::InvalidData)
         ));
         // provide incorrectly typed data
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
-            UnknownAttributes::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            UnknownAttributes::try_from(&RawAttribute::from_bytes(data.as_ref()).unwrap()),
             Err(StunParseError::WrongImplementation)
         ));
     }
@@ -2537,7 +2612,7 @@ mod tests {
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
-            Software::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            Software::try_from(&RawAttribute::from_bytes(data.as_ref()).unwrap()),
             Err(StunParseError::WrongImplementation)
         ));
     }
@@ -2573,7 +2648,7 @@ mod tests {
             let mut data: Vec<_> = raw.into();
             BigEndian::write_u16(&mut data[0..2], 0);
             assert!(matches!(
-                XorMappedAddress::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+                XorMappedAddress::try_from(&RawAttribute::from_bytes(data.as_ref()).unwrap()),
                 Err(StunParseError::WrongImplementation)
             ));
         }
@@ -2596,14 +2671,14 @@ mod tests {
         let len = data.len();
         BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
         assert!(matches!(
-            Priority::try_from(&RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()),
+            Priority::try_from(&RawAttribute::from_bytes(data[..len - 1].as_ref()).unwrap()),
             Err(StunParseError::NotEnoughData)
         ));
         // provide incorrectly typed data
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
-            Priority::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            Priority::try_from(&RawAttribute::from_bytes(data.as_ref()).unwrap()),
             Err(StunParseError::WrongImplementation)
         ));
     }
@@ -2622,7 +2697,7 @@ mod tests {
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
-            UseCandidate::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            UseCandidate::try_from(&RawAttribute::from_bytes(data.as_ref()).unwrap()),
             Err(StunParseError::WrongImplementation)
         ));
     }
@@ -2644,14 +2719,14 @@ mod tests {
         let len = data.len();
         BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
         assert!(matches!(
-            IceControlling::try_from(&RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()),
+            IceControlling::try_from(&RawAttribute::from_bytes(data[..len - 1].as_ref()).unwrap()),
             Err(StunParseError::NotEnoughData)
         ));
         // provide incorrectly typed data
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
-            IceControlling::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            IceControlling::try_from(&RawAttribute::from_bytes(data.as_ref()).unwrap()),
             Err(StunParseError::WrongImplementation)
         ));
     }
@@ -2673,14 +2748,14 @@ mod tests {
         let len = data.len();
         BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
         assert!(matches!(
-            IceControlled::try_from(&RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()),
+            IceControlled::try_from(&RawAttribute::from_bytes(data[..len - 1].as_ref()).unwrap()),
             Err(StunParseError::NotEnoughData)
         ));
         // provide incorrectly typed data
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
-            IceControlled::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            IceControlled::try_from(&RawAttribute::from_bytes(data.as_ref()).unwrap()),
             Err(StunParseError::WrongImplementation)
         ));
     }
@@ -2702,14 +2777,14 @@ mod tests {
         let len = data.len();
         BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
         assert!(matches!(
-            Fingerprint::try_from(&RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()),
+            Fingerprint::try_from(&RawAttribute::from_bytes(data[..len - 1].as_ref()).unwrap()),
             Err(StunParseError::NotEnoughData)
         ));
         // provide incorrectly typed data
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
-            Fingerprint::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            Fingerprint::try_from(&RawAttribute::from_bytes(data.as_ref()).unwrap()),
             Err(StunParseError::WrongImplementation)
         ));
     }
@@ -2731,14 +2806,14 @@ mod tests {
         let len = data.len();
         BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
         assert!(matches!(
-            MessageIntegrity::try_from(&RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()),
+            MessageIntegrity::try_from(&RawAttribute::from_bytes(data[..len - 1].as_ref()).unwrap()),
             Err(StunParseError::NotEnoughData)
         ));
         // provide incorrectly typed data
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
-            MessageIntegrity::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            MessageIntegrity::try_from(&RawAttribute::from_bytes(data.as_ref()).unwrap()),
             Err(StunParseError::WrongImplementation)
         ));
     }
@@ -2760,14 +2835,14 @@ mod tests {
         let len = data.len();
         BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
         assert!(matches!(
-            Userhash::try_from(&RawAttribute::try_from(data[..len - 1].as_ref()).unwrap()),
+            Userhash::try_from(&RawAttribute::from_bytes(data[..len - 1].as_ref()).unwrap()),
             Err(StunParseError::NotEnoughData)
         ));
         // provide incorrectly typed data
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
-            Userhash::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            Userhash::try_from(&RawAttribute::from_bytes(data.as_ref()).unwrap()),
             Err(StunParseError::WrongImplementation)
         ));
     }
@@ -2798,7 +2873,7 @@ mod tests {
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
-            MessageIntegritySha256::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            MessageIntegritySha256::try_from(&RawAttribute::from_bytes(data.as_ref()).unwrap()),
             Err(StunParseError::WrongImplementation)
         ));
     }
@@ -2818,7 +2893,7 @@ mod tests {
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
-            Realm::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            Realm::try_from(&RawAttribute::from_bytes(data.as_ref()).unwrap()),
             Err(StunParseError::WrongImplementation)
         ));
     }
@@ -2838,7 +2913,7 @@ mod tests {
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
-            Nonce::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            Nonce::try_from(&RawAttribute::from_bytes(data.as_ref()).unwrap()),
             Err(StunParseError::WrongImplementation)
         ));
     }
@@ -2859,7 +2934,7 @@ mod tests {
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
-            PasswordAlgorithms::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            PasswordAlgorithms::try_from(&RawAttribute::from_bytes(data.as_ref()).unwrap()),
             Err(StunParseError::WrongImplementation)
         ));
     }
@@ -2868,7 +2943,7 @@ mod tests {
     fn password_algorithm() {
         init();
         let val = PasswordAlgorithmValue::SHA256;
-        let attr = PasswordAlgorithm::new(val.clone());
+        let attr = PasswordAlgorithm::new(val);
         assert_eq!(attr.get_type(), PASSWORD_ALGORITHM);
         assert_eq!(attr.algorithm(), val);
         let raw: RawAttribute = attr.into();
@@ -2880,7 +2955,7 @@ mod tests {
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
-            PasswordAlgorithm::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            PasswordAlgorithm::try_from(&RawAttribute::from_bytes(data.as_ref()).unwrap()),
             Err(StunParseError::WrongImplementation)
         ));
     }
@@ -2915,7 +2990,7 @@ mod tests {
             let mut data: Vec<_> = raw.into();
             BigEndian::write_u16(&mut data[0..2], 0);
             assert!(matches!(
-                AlternateServer::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+                AlternateServer::try_from(&RawAttribute::from_bytes(data.as_ref()).unwrap()),
                 Err(StunParseError::WrongImplementation)
             ));
         }
@@ -2937,7 +3012,7 @@ mod tests {
         let mut data: Vec<_> = raw.into();
         BigEndian::write_u16(&mut data[0..2], 0);
         assert!(matches!(
-            AlternateDomain::try_from(&RawAttribute::try_from(data.as_ref()).unwrap()),
+            AlternateDomain::try_from(&RawAttribute::from_bytes(data.as_ref()).unwrap()),
             Err(StunParseError::WrongImplementation)
         ));
     }

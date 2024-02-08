@@ -7,7 +7,7 @@ use once_cell::sync::Lazy;
 extern crate tracing;
 use tracing_subscriber::EnvFilter;
 
-use librice::candidate::*;
+use librice_proto::candidate::*;
 
 use std::str::FromStr;
 

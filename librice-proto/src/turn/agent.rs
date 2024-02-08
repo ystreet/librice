@@ -13,8 +13,6 @@ use crate::stun::agent::StunAgent;
 use crate::stun::agent::StunError;
 use crate::stun::attribute::*;
 use crate::stun::message::*;
-use crate::stun::socket::SocketAddresses;
-use crate::stun::socket::StunChannel;
 use crate::turn::attribute::*;
 use crate::turn::message::*;
 

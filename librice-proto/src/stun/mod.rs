@@ -6,23 +6,25 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+//! STUN
+
 use std::error::Error;
 use std::str::FromStr;
 
 pub mod agent;
 pub mod attribute;
 pub mod message;
-pub mod socket;
-//mod pacer;
 
+/// The transport family
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportType {
+    /// The UDP transport
     Udp,
+    /// The TCP transport
     Tcp,
-    #[cfg(test)]
-    AsyncChannel,
 }
 
+/// Errors when parsing a [`TransportType`]
 #[derive(Debug)]
 pub enum ParseTransportTypeError {
     UnknownTransport,
@@ -43,8 +45,6 @@ impl FromStr for TransportType {
         match s {
             "UDP" => Ok(TransportType::Udp),
             "TCP" => Ok(TransportType::Tcp),
-            #[cfg(test)]
-            "AsyncChannel" => Ok(TransportType::AsyncChannel),
             _ => Err(ParseTransportTypeError::UnknownTransport),
         }
     }
@@ -55,8 +55,6 @@ impl std::fmt::Display for TransportType {
         match &self {
             TransportType::Udp => f.pad("UDP"),
             TransportType::Tcp => f.pad("TCP"),
-            #[cfg(test)]
-            TransportType::AsyncChannel => f.pad("AsyncChannel"),
         }
     }
 }

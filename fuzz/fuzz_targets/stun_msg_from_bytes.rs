@@ -7,7 +7,7 @@ use once_cell::sync::Lazy;
 extern crate tracing;
 use tracing_subscriber::EnvFilter;
 
-use librice::stun::message::*;
+use librice_proto::stun::message::*;
 
 #[derive(arbitrary::Arbitrary, Debug)]
 struct DataAndCredentials<'data> {
