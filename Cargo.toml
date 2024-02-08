@@ -1,33 +1,4 @@
-[package]
-name = "librice"
-description = "ICE (RFC8445) implementation"
-version = "0.0.3"
-authors = ["Matthew Waters <matthew@centricular.com>"]
-license = "MIT OR Apache-2.0"
-edition = "2021"
-keywords = ["STUN", "ICE"]
-categories = ["network-programming", ]
-documentation = "https://docs.rs/librice"
-repository = "https://github.com/ystreet/librice"
-
-[dependencies]
-arbitrary = { version = "1", optional = true, features = ["derive"] }
-async-trait = "0.1"
-byteorder = "1"
-get_if_addrs = "0.5"
-async-std = "1"
-async-channel = "1"
-rand = "0.8"
-futures = "0.3"
-futures-timer = "3"
-crc = "3"
-sha-1 = "0.10"
-sha2 = "0.10"
-md-5 = "0.10"
-hmac = "0.12"
-derivative = "2"
-tracing = { version = "0.1", features = ["log"] }
-tracing-futures = { version = "0.2", default-features = false, features = ["std", "std-future", "futures-03"] }
-tracing-subscriber = { version = "0.3", features = ["std", "env-filter"] }
-once_cell = "1"
-nom = "7"
+[workspace]
+members = ["librice", "librice-proto", "fuzz"]
+default-members = ["librice", "librice-proto"]
+resolver = "2"

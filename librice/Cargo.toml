@@ -1,0 +1,30 @@
+[package]
+name = "librice"
+description = "ICE (RFC8445) implementation"
+version = "0.0.3"
+authors = ["Matthew Waters <matthew@centricular.com>"]
+license = "MIT OR Apache-2.0"
+edition = "2021"
+keywords = ["STUN", "ICE"]
+categories = ["network-programming", ]
+documentation = "https://docs.rs/librice"
+repository = "https://github.com/ystreet/librice"
+workspace = ".."
+
+[dependencies]
+librice-proto = { path = "../librice-proto" }
+async-std = "1"
+async-io = "1"
+arbitrary = { version = "1", optional = true, features = ["derive"] }
+async-trait = "0.1"
+byteorder = "1"
+derivative = "2"
+get_if_addrs = "0.5"
+rand = "0.8"
+futures = "0.3"
+futures-timer = "3"
+once_cell = "1"
+tracing = { version = "0.1", features = ["log"] }
+tracing-futures = { version = "0.2", default-features = false, features = ["std", "std-future", "futures-03"] }
+tracing-subscriber = { version = "0.3", features = ["std", "env-filter"] }
+

@@ -6,11 +6,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[macro_use]
-extern crate tracing;
-
-use librice::gathering::GatherSocket;
-use librice::stun::socket::StunChannel;
+use librice::agent::Agent;
 use tracing_subscriber::EnvFilter;
 
 use async_std::task;
@@ -19,8 +15,7 @@ use std::io;
 
 use futures::prelude::*;
 
-use librice::stun::agent::StunAgent;
-use librice::stun::TransportType;
+use librice::candidate::TransportType;
 
 fn main() -> io::Result<()> {
     if let Ok(filter) = EnvFilter::try_from_default_env() {
@@ -32,22 +27,14 @@ fn main() -> io::Result<()> {
         let stun_servers = [(TransportType::Udp, "127.0.0.1:3478".parse().unwrap())].to_vec();
         //let stun_servers = ["172.253.56.127:19302".parse().unwrap()].to_vec();
 
-        let sockets = librice::gathering::iface_sockets()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionAborted, e))?
-            .filter_map(|channel| async move { channel.ok() })
-            .collect::<Vec<_>>()
-            .await;
+        let agent = Agent::builder().build();
+        for (tt, ss) in stun_servers {
+            agent.add_stun_server(tt, ss);
+        }
+        let stream = agent.add_stream();
+        let _comp = stream.add_component();
 
-        info!("retreived sockets");
-        let gather_stream = librice::gathering::gather_component(1, &sockets, stun_servers, vec![])
-            .filter_map(|(candidate, socket)| async move {
-                match socket {
-                    GatherSocket::Udp(channel) => {
-                        Some((candidate, StunAgent::new(StunChannel::UdpAny(channel))))
-                    }
-                    GatherSocket::Tcp(_listener) => None,
-                }
-            });
+        let gather_stream = stream.gather_candidates().unwrap();
         futures::pin_mut!(gather_stream);
         while let Some(candidate) = gather_stream.next().await {
             println! {"{:?}", candidate};
