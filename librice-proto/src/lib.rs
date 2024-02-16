@@ -9,9 +9,6 @@
 #[macro_use]
 extern crate tracing;
 
-#[macro_use]
-extern crate derivative;
-
 pub mod candidate;
 pub mod conncheck;
 pub mod gathering;
@@ -20,16 +17,16 @@ mod utils;
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use once_cell::sync::Lazy;
+    use std::sync::Once;
     use tracing_subscriber::EnvFilter;
 
-    static TRACING: Lazy<()> = Lazy::new(|| {
+    static TRACING: Once = Once::new();
+
+    pub fn test_init_log() {
+        TRACING.call_once(|| {
         if let Ok(filter) = EnvFilter::try_from_default_env() {
             tracing_subscriber::fmt().with_env_filter(filter).init();
         }
-    });
-
-    pub fn test_init_log() {
-        Lazy::force(&TRACING);
+        });
     }
 }

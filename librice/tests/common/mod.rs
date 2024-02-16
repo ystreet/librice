@@ -10,10 +10,10 @@ use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use librice_proto::stun::agent::HandleStunReply;
 use librice_proto::stun::agent::StunAgent;
-use once_cell::sync::Lazy;
 
 use std::fmt::Display;
 use std::net::SocketAddr;
+use std::sync::Once;
 
 use tracing_subscriber::EnvFilter;
 
@@ -26,13 +26,12 @@ use librice::stun::attribute::*;
 use librice::stun::message::*;
 
 pub fn debug_init() {
-    static TRACING: Lazy<()> = Lazy::new(|| {
+    static TRACING: Once = Once::new();
+    TRACING.call_once(|| {
         if let Ok(filter) = EnvFilter::try_from_default_env() {
             tracing_subscriber::fmt().with_env_filter(filter).init();
         }
     });
-
-    Lazy::force(&TRACING);
 }
 
 fn warn_on_err<T, E>(res: Result<T, E>, default: T) -> T

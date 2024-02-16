@@ -168,16 +168,24 @@ enum ConnCheckVariant {
     Tcp(TcpConnCheck),
 }
 
-#[derive(Derivative)]
-#[derivative(Debug)]
 struct ConnCheck {
     conncheck_id: usize,
     checklist_id: usize,
     nominate: bool,
     pair: CandidatePair,
-    #[derivative(Debug = "ignore")]
     state: Arc<Mutex<ConnCheckState>>,
     variant: ConnCheckVariant,
+}
+
+impl std::fmt::Debug for ConnCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnCheck")
+            .field("conncheck_id", &self.conncheck_id)
+            .field("checklist_id", &self.checklist_id)
+            .field("nominate", &self.nominate)
+            .field("pair", &self.pair)
+            .finish()
+    }
 }
 
 #[derive(Debug)]

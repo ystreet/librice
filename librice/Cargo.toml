@@ -23,7 +23,6 @@ get_if_addrs = "0.5"
 rand = "0.8"
 futures = "0.3"
 futures-timer = "3"
-once_cell = "1"
 tracing = { version = "0.1", features = ["log"] }
 tracing-futures = { version = "0.2", default-features = false, features = ["std", "std-future", "futures-03"] }
 tracing-subscriber = { version = "0.3", features = ["std", "env-filter"] }
