@@ -1,0 +1,10 @@
+[wrap-file]
+directory = sha2-0.10.8
+source_url = https://crates.io/api/v1/crates/sha2/0.10.8/download
+source_filename = sha2-0.10.8.tar.gz
+source_hash = 793db75ad2bcafc3ffa7c68b215fee268f537982cd901d132f89c6343f3a3dc8
+diff_files = sha2.meson.patch
+
+[provide]
+dependency_names = sha2-rs
+

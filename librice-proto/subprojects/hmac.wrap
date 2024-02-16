@@ -1,0 +1,10 @@
+[wrap-file]
+directory = hmac-0.12.1
+source_url = https://crates.io/api/v1/crates/hmac/0.12.1/download
+source_filename = hmac-0.12.1.tar.gz
+source_hash = 6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e
+method=cargo
+
+[provide]
+dependency_names = hmac-rs
+

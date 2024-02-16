@@ -1,0 +1,9 @@
+[wrap-file]
+directory = byteorder-1.5.0
+source_url = https://crates.io/api/v1/crates/byteorder/1.5.0/download
+source_filename = byteorder-1.5.0.tar.gz
+source_hash = 1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b
+method=cargo
+
+[provide]
+dependency_names = byteorder-rs

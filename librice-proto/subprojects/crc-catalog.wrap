@@ -1,0 +1,10 @@
+[wrap-file]
+directory = crc-catalog-2.4.0
+source_url = https://crates.io/api/v1/crates/crc-catalog/2.4.0/download
+source_filename = crc-catalog-2.4.0.tar.gz
+source_hash = 19d374276b40fb8bbdee95aef7c7fa6b5316ec764510eb64b8dd0e2ed0d7e7f5
+method=cargo
+
+[provide]
+dependency_names = crc-catalog-rs
+

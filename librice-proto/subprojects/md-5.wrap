@@ -1,0 +1,9 @@
+[wrap-file]
+directory = md-5-0.10.6
+source_url = https://crates.io/api/v1/crates/md-5/0.10.6/download
+source_filename = md-5-0.10.6.tar.gz
+source_hash = d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf
+method=cargo
+
+[provide]
+dependency_names = md-5-rs

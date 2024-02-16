@@ -1,0 +1,10 @@
+[wrap-file]
+directory = generic-array-0.14.7
+source_url = https://crates.io/api/v1/crates/generic-array/0.14.7/download
+source_filename = generic-array-0.14.7.tar.gz
+source_hash = 85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a
+diff_files = generic-array.meson.patch
+
+[provide]
+dependency_names = generic-array-rs
+

@@ -1,0 +1,10 @@
+[wrap-file]
+directory = rand-0.8.5
+source_url = https://crates.io/api/v1/crates/rand/0.8.5/download
+source_filename = rand-0.8.5.tar.gz
+source_hash = 34af8d1a0e25924bc5b7c43c079c942339d8f0a8b57c39049bef581b46327404
+diff_files = rand.meson.patch
+
+[provide]
+dependency_names = rand-rs
+

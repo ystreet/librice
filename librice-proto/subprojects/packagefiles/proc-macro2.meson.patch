@@ -1,0 +1,29 @@
+--- /dev/null	2024-02-14 20:31:11.878000303 +1100
++++ proc-macro2-1.0.78/meson.build	2024-02-14 20:31:51.693790551 +1100
+@@ -0,0 +1,26 @@
++project('proc-macro2-rs', 'rust',
++  version : '1.0.78',
++  meson_version : '>= 1.3.1',
++  default_options : ['buildtype=debugoptimized',
++                     'rust_std=2021'
++                    ]
++)
++
++rustc = meson.get_compiler('rust')
++rust = import('rust')
++
++unicode_ident_dep = dependency(
++  'unicode-ident-rs',
++  version : ['>= 1.0.0', '< 2.0']
++)
++lib = static_library(
++  'proc_macro2',
++  'src/lib.rs',
++  dependencies: [unicode_ident_dep],
++  rust_args: ['--cfg', 'feature="proc-macro"', '--cfg', 'use_proc_macro', '--cfg', 'wrap_proc_macro'],
++  rust_dependency_map : {}
++)
++
++dep = declare_dependency(link_with : lib)
++meson.override_dependency('proc-macro2-rs', dep)
++

@@ -1,0 +1,37 @@
+--- /dev/null	2024-02-14 20:31:11.878000303 +1100
++++ sha2-0.10.8/meson.build	2024-02-14 20:31:51.693790551 +1100
+@@ -0,0 +1,34 @@
++project('sha2-rs', 'rust',
++  version : '0.10.8',
++  meson_version : '>= 1.3.1',
++  default_options : ['buildtype=debugoptimized',
++                     'rust_std=2018'
++                    ]
++)
++
++rustc = meson.get_compiler('rust')
++
++cfg_if_dep = dependency(
++  'cfg-if-rs',
++  version : ['>= 1.0', '< 2']
++)
++digest_dep = dependency(
++  'digest-rs',
++  version : ['>= 0.10.7', '< 0.11']
++)
++# FIXME: only applies on aarch64, x86 or x86-64
++cpufeatures_dep = dependency(
++  'cpufeatures-rs',
++  version : ['>= 0.2.0', '< 0.3']
++)
++lib = static_library(
++  'sha2',
++  'src/lib.rs',
++  rust_args: ['--cfg', 'feature="std"'],
++  dependencies: [cfg_if_dep, digest_dep, cpufeatures_dep],
++  rust_dependency_map : {}
++)
++
++dep = declare_dependency(link_with : lib)
++meson.override_dependency('sha2-rs', dep)
++

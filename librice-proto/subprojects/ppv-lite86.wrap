@@ -1,0 +1,10 @@
+[wrap-file]
+directory = ppv-lite86-0.2.17
+source_url = https://crates.io/api/v1/crates/ppv-lite86/0.2.17/download
+source_filename = ppv-lite86-0.2.17.tar.gz
+source_hash = 5b40af805b3121feab8a3c29f04d8ad262fa8e0561883e7653e024ae4479e6de
+method=cargo
+
+[provide]
+dependency_names = ppv-lite86-rs
+

@@ -1,0 +1,10 @@
+[wrap-file]
+directory = subtle-2.5.0
+source_url = https://crates.io/api/v1/crates/subtle/2.5.0/download
+source_filename = subtle-2.5.0.tar.gz
+source_hash = 81cdd64d312baedb58e21336b31bc043b77e01cc99033ce76ef539f78e965ebc
+method=cargo
+
+[provide]
+dependency_names = subtle-rs
+

@@ -1,0 +1,10 @@
+[wrap-file]
+directory = typenum-1.17.0
+source_url = https://crates.io/api/v1/crates/typenum/1.17.0/download
+source_filename = typenum-1.17.0.tar.gz
+source_hash = 42ff0bf0c66b8238c6f3b578df37d0b7848e55df8577b3f74f92a69acceeb825
+diff_files = typenum.meson.patch
+
+[provide]
+dependency_names = typenum-rs
+

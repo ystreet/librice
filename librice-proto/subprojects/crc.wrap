@@ -1,0 +1,9 @@
+[wrap-file]
+directory = crc-3.0.1
+source_url = https://crates.io/api/v1/crates/crc/3.0.1/download
+source_filename = crc-3.0.1.tar.gz
+source_hash = 86ec7a15cbe22e59248fc7eadb1907dab5ba09372595da4d73dd805ed4417dfe
+method=cargo
+
+[provide]
+dependency_names = crc-rs

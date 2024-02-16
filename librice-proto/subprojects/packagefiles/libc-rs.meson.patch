@@ -1,0 +1,40 @@
+--- /dev/null	2023-04-07 10:13:11.878000303 +0300
++++ libc-0.2.141/meson.build	2023-04-14 11:51:51.693790551 +0300
+@@ -0,0 +1,37 @@
++project('libc-rs', 'rust',
++  version : '0.2.141',
++  meson_version : '>= 1.0.0',
++  default_options : ['buildtype=debugoptimized',
++                     'rust_std=2015'
++                    ]
++)
++
++rustc = meson.get_compiler('rust')
++
++features = []
++features += ['--cfg', 'feature="std"']
++
++# FIXME: Needs rustc version checks
++features += ['--cfg', 'libc_priv_mod_use']
++features += ['--cfg', 'libc_union']
++features += ['--cfg', 'libc_const_size_of']
++features += ['--cfg', 'libc_align']
++features += ['--cfg', 'libc_int128']
++features += ['--cfg', 'libc_core_cvoid']
++features += ['--cfg', 'libc_packedN']
++features += ['--cfg', 'libc_cfg_target_vendor']
++features += ['--cfg', 'libc_non_exhaustive']
++features += ['--cfg', 'libc_long_array']
++features += ['--cfg', 'libc_ptr_addr_of']
++features += ['--cfg', 'libc_underscore_const_names']
++features += ['--cfg', 'libc_const_extern_fn']
++
++# FIXME: FreeBSD version checks
++
++lib = static_library('libc', 'src/lib.rs',
++  rust_args : features,
++)
++
++dep = declare_dependency(link_with : lib)
++meson.override_dependency('libc-rs', dep)
++

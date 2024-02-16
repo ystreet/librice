@@ -1,0 +1,10 @@
+[wrap-file]
+directory = cpufeatures-0.2.12
+source_url = https://crates.io/api/v1/crates/cpufeatures/0.2.12/download
+source_filename = cpufeatures-0.2.12.tar.gz
+source_hash = 53fe5e26ff1b7aef8bca9c6080520cfb8d9333c7568e1829cef191a9723e5504
+method=cargo
+
+[provide]
+dependency_names = cpufeatures-rs
+

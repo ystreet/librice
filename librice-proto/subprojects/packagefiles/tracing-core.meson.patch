@@ -1,0 +1,29 @@
+--- /dev/null	2024-02-14 20:31:11.878000303 +1100
++++ tracing-core-0.1.32/meson.build	2024-02-14 20:31:51.693790551 +1100
+@@ -0,0 +1,26 @@
++project('tracing-core-rs', 'rust',
++  version : '0.1.32',
++  meson_version : '>= 1.3.1',
++  default_options : ['buildtype=debugoptimized',
++                     'rust_std=2021'
++                    ]
++)
++
++rustc = meson.get_compiler('rust')
++rust = import('rust')
++
++once_cell_dep = dependency(
++  'once_cell-rs',
++  version : ['>= 1.0.0', '< 2.0']
++)
++lib = static_library(
++  'tracing_core',
++  'src/lib.rs',
++  rust_args: ['--cfg', 'feature="default"', '--cfg', 'feature="std"', '--cfg', 'feature="once_cell"'],
++  dependencies: [once_cell_dep],
++  rust_dependency_map : {}
++)
++
++dep = declare_dependency(link_with : lib)
++meson.override_dependency('tracing-core-rs', dep)
++

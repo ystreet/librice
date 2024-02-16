@@ -1,0 +1,10 @@
+[wrap-file]
+directory = block-buffer-0.10.4
+source_url = https://crates.io/api/v1/crates/block-buffer/0.10.4/download
+source_filename = block-buffer-0.10.4.tar.gz
+source_hash = 3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71
+method=cargo
+
+[provide]
+dependency_names = block-buffer-rs
+

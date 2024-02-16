@@ -1,0 +1,10 @@
+[wrap-file]
+directory = nom-7.1.3
+source_url = https://crates.io/api/v1/crates/nom/7.1.3/download
+source_filename = nom-7.1.3.tar.gz
+source_hash = d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a
+method=cargo
+
+[provide]
+dependency_names = nom-rs
+

@@ -1,0 +1,10 @@
+[wrap-file]
+directory = libc-0.2.153
+source_url = https://crates.io/api/v1/crates/libc/0.2.153/download
+source_filename = libc-0.2.153.tar.gz
+source_hash = 9c198f91728a82281a64e1f4f9eeb25d82cb32a5de251c6bd1b5154d63a8e7bd
+diff_files = libc-rs.meson.patch
+
+[provide]
+dependency_names = libc-rs
+

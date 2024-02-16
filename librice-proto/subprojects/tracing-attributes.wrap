@@ -1,0 +1,10 @@
+[wrap-file]
+directory = tracing-attributes-0.1.27
+source_url = https://crates.io/api/v1/crates/tracing-attributes/0.1.27/download
+source_filename = tracing-attributes-0.1.27.tar.gz
+source_hash = 34704c8d6ebcbc939824180af020566b01a7c01f80641264eba0999f6c2b6be7
+diff_files = tracing-attributes.meson.patch
+
+[provide]
+dependency_names = tracing-attributes-rs
+

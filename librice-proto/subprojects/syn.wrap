@@ -1,0 +1,10 @@
+[wrap-file]
+directory = syn-2.0.48
+source_url = https://crates.io/api/v1/crates/syn/2.0.48/download
+source_filename = syn-2.0.48.tar.gz
+source_hash = 0f3531638e407dfc0814761abb7c00a5b54992b849452a0646b7f65c9f770f3f
+diff_files = syn.meson.patch
+
+[provide]
+dependency_names = syn-rs
+

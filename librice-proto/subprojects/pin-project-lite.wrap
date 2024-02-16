@@ -1,0 +1,10 @@
+[wrap-file]
+directory = pin-project-lite-0.2.13
+source_url = https://crates.io/api/v1/crates/pin-project-lite/0.2.13/download
+source_filename = pin-project-lite-0.2.13.tar.gz
+source_hash = 8afb450f006bf6385ca15ef45d71d2288452bc3683ce2e2cacc0d18e4be60b58
+method=cargo
+
+[provide]
+dependency_names = pin-project-lite-rs
+
