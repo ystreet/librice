@@ -21,16 +21,16 @@ pub use librice_proto::candidate;
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use once_cell::sync::Lazy;
+    use std::sync::Once;
     use tracing_subscriber::EnvFilter;
 
-    static TRACING: Lazy<()> = Lazy::new(|| {
-        if let Ok(filter) = EnvFilter::try_from_default_env() {
-            tracing_subscriber::fmt().with_env_filter(filter).init();
-        }
-    });
+    static TRACING: Once = Once::new();
 
     pub fn test_init_log() {
-        Lazy::force(&TRACING);
+        TRACING.call_once(|| {
+            if let Ok(filter) = EnvFilter::try_from_default_env() {
+                tracing_subscriber::fmt().with_env_filter(filter).init();
+            }
+        });
     }
 }
