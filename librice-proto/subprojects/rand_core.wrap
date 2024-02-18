@@ -3,7 +3,7 @@ directory = rand_core-0.6.4
 source_url = https://crates.io/api/v1/crates/rand_core/0.6.4/download
 source_filename = rand_core-0.6.4.tar.gz
 source_hash = ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c
-diff_files = rand_core.meson.patch
+method=cargo
 
 [provide]
 dependency_names = rand_core-rs

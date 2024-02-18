@@ -11,6 +11,24 @@ sources = [
     'stun/message.rs',
 ]
 
+# need to ensure correct feature option available
+generic_array = dependency('generic-array-rs', default_options: {
+  'feature-default': 'true',
+  'feature-more_lengths': 'true',
+})
+digest = dependency('digest-rs', default_options: {
+  'feature-default': 'true',
+  'feature-std': 'true',
+  'feature-alloc': 'true',
+  'feature-core-api': 'true',
+  'feature-mac': 'true',
+})
+digest = dependency('rand_core-rs', default_options: {
+  'feature-std': 'true',
+  'feature-alloc': 'true',
+  'feature-default': 'true',
+})
+
 byteorder = dependency('byteorder-rs')
 crc = dependency('crc-rs')
 md5 = dependency('md-5-rs')

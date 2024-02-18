@@ -3,7 +3,7 @@ directory = rand_chacha-0.3.1
 source_url = https://crates.io/api/v1/crates/rand_chacha/0.3.1/download
 source_filename = rand_chacha-0.3.1.tar.gz
 source_hash = e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88
-diff_files = rand_chacha.meson.patch
+method=cargo
 
 [provide]
 dependency_names = rand_chacha-rs

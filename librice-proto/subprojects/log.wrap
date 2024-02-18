@@ -3,7 +3,7 @@ directory = log-0.4.20
 source_url = https://crates.io/api/v1/crates/log/0.4.20/download
 source_filename = log-0.4.20.tar.gz
 source_hash = b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f
-diff_files = log.meson.patch
+method=cargo
 
 [provide]
 dependency_names = log-rs

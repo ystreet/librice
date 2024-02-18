@@ -3,7 +3,7 @@ directory = digest-0.10.7
 source_url = https://crates.io/api/v1/crates/digest/0.10.7/download
 source_filename = digest-0.10.7.tar.gz
 source_hash = 9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292
-diff_files = digest.meson.patch
+method=cargo
 
 [provide]
 dependency_names = digest-rs

@@ -3,7 +3,7 @@ directory = cfg-if-1.0.0
 source_url = https://crates.io/api/v1/crates/cfg-if/1.0.0/download
 source_filename = cfg-if-1.0.0.tar.gz
 source_hash = baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd
-diff_files = cfg-if.meson.patch
+method=cargo
 
 [provide]
 dependency_names = cfg-if-rs

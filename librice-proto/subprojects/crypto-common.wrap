@@ -3,7 +3,7 @@ directory = crypto-common-0.1.6
 source_url = https://crates.io/api/v1/crates/crypto-common/0.1.6/download
 source_filename = crypto-common-0.1.6.tar.gz
 source_hash = 1bfb12502f3fc46cca1bb51ac28df9d618d813cdc3d2f25b9fe775a34af26bb3
-diff_files = crypto-common.meson.patch
+method=cargo
 
 [provide]
 dependency_names = crypto-common-rs

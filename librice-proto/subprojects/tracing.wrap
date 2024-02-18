@@ -3,7 +3,7 @@ directory = tracing-0.1.40
 source_url = https://crates.io/api/v1/crates/tracing/0.1.40/download
 source_filename = tracing-0.1.40.tar.gz
 source_hash = c3523ab5a71916ccf420eebdf5521fcef02141234bbc0b8a49f2fdc4544364ef
-diff_files = tracing.meson.patch
+method=cargo
 
 [provide]
 dependency_names = tracing-rs

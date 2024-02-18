@@ -3,7 +3,7 @@ directory = memchr-2.7.1
 source_url = https://crates.io/api/v1/crates/memchr/2.7.1/download
 source_filename = memchr-2.7.1.tar.gz
 source_hash = 523dc4f511e55ab87b694dc30d0f820d60906ef06413f93d4d7a1385599cc149
-diff_files = memchr.meson.patch
+method=cargo
 
 [provide]
 dependency_names = memchr-rs
