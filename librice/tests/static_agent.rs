@@ -27,6 +27,7 @@ mod common;
 struct AgentConfig {
     controlling: bool,
     trickle_ice: bool,
+    transports: Vec<TransportType>,
 }
 
 #[derive(Debug)]
@@ -55,8 +56,12 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
             .trickle_ice(config.local.trickle_ice)
             .build(),
     );
-    lagent.add_stun_server(TransportType::Udp, udp_stun_addr);
-    lagent.add_stun_server(TransportType::Tcp, tcp_stun_addr);
+    if config.local.transports.contains(&TransportType::Udp) {
+        lagent.add_stun_server(TransportType::Udp, udp_stun_addr);
+    }
+    if config.local.transports.contains(&TransportType::Tcp) {
+        lagent.add_stun_server(TransportType::Tcp, tcp_stun_addr);
+    }
 
     let ragent = Arc::new(
         Agent::builder()
@@ -64,8 +69,12 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
             .trickle_ice(config.remote.trickle_ice)
             .build(),
     );
-    ragent.add_stun_server(TransportType::Udp, udp_stun_addr);
-    ragent.add_stun_server(TransportType::Tcp, tcp_stun_addr);
+    if config.remote.transports.contains(&TransportType::Udp) {
+        ragent.add_stun_server(TransportType::Udp, udp_stun_addr);
+    }
+    if config.remote.transports.contains(&TransportType::Tcp) {
+        ragent.add_stun_server(TransportType::Tcp, tcp_stun_addr);
+    }
 
     let lcreds = Credentials::new("luser".into(), "lpass".into());
     let rcreds = Credentials::new("ruser".into(), "rpass".into());
@@ -85,14 +94,18 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
 
     let lgather = async_std::task::spawn(async move {
         while let Some(cand) = lgatherer.next().await {
-            rstream.add_remote_candidate(&cand).unwrap();
+            if config.remote.transports.contains(&cand.transport_type) {
+                rstream.add_remote_candidate(&cand).unwrap();
+            }
         }
         rstream.end_of_remote_candidates();
     });
 
     let rgather = async_std::task::spawn(async move {
         while let Some(cand) = rgatherer.next().await {
-            lstream.add_remote_candidate(&cand).unwrap();
+            if config.local.transports.contains(&cand.transport_type) {
+                lstream.add_remote_candidate(&cand).unwrap();
+            }
         }
         lstream.end_of_remote_candidates();
     });
@@ -153,76 +166,120 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
 }
 
 #[test]
-fn agent_static_connection_none_controlling() {
+fn agent_static_connection_none_controlling_udp() {
     common::debug_init();
     async_std::task::block_on(agent_static_connection_test(AgentStaticTestConfig {
         local: AgentConfig {
             controlling: false,
             trickle_ice: false,
+            transports: vec![TransportType::Udp],
         },
         remote: AgentConfig {
             controlling: false,
             trickle_ice: false,
+            transports: vec![TransportType::Udp],
         },
     }));
 }
 
 #[test]
-fn agent_static_connection_both_controlling() {
+fn agent_static_connection_both_controlling_udp() {
     common::debug_init();
     async_std::task::block_on(agent_static_connection_test(AgentStaticTestConfig {
         local: AgentConfig {
             controlling: true,
             trickle_ice: false,
+            transports: vec![TransportType::Udp],
         },
         remote: AgentConfig {
             controlling: true,
             trickle_ice: false,
+            transports: vec![TransportType::Udp],
         },
     }));
 }
 
 #[test]
-fn agent_static_connection_remote_controlling() {
+fn agent_static_connection_remote_controlling_udp() {
     common::debug_init();
     async_std::task::block_on(agent_static_connection_test(AgentStaticTestConfig {
         local: AgentConfig {
             controlling: false,
             trickle_ice: false,
+            transports: vec![TransportType::Udp],
         },
         remote: AgentConfig {
             controlling: true,
             trickle_ice: false,
+            transports: vec![TransportType::Udp],
         },
     }));
 }
 
 #[test]
-fn agent_static_connection_local_controlling() {
+fn agent_static_connection_local_controlling_udp() {
     common::debug_init();
     async_std::task::block_on(agent_static_connection_test(AgentStaticTestConfig {
         local: AgentConfig {
             controlling: true,
             trickle_ice: false,
+            transports: vec![TransportType::Udp],
         },
         remote: AgentConfig {
             controlling: false,
             trickle_ice: false,
+            transports: vec![TransportType::Udp],
         },
     }));
 }
 
 #[test]
-fn agent_static_connection_local_controlling_both_trickle() {
+fn agent_static_connection_local_controlling_udp_both_trickle() {
     common::debug_init();
     async_std::task::block_on(agent_static_connection_test(AgentStaticTestConfig {
         local: AgentConfig {
             controlling: true,
             trickle_ice: true,
+            transports: vec![TransportType::Udp],
         },
         remote: AgentConfig {
             controlling: false,
             trickle_ice: true,
+            transports: vec![TransportType::Udp],
+        },
+    }));
+}
+
+#[test]
+fn agent_static_connection_local_controlling_udp_local_trickle() {
+    common::debug_init();
+    async_std::task::block_on(agent_static_connection_test(AgentStaticTestConfig {
+        local: AgentConfig {
+            controlling: true,
+            trickle_ice: true,
+            transports: vec![TransportType::Udp],
+        },
+        remote: AgentConfig {
+            controlling: false,
+            trickle_ice: false,
+            transports: vec![TransportType::Udp],
+        },
+    }));
+}
+
+#[test]
+fn agent_static_connection_local_controlling_tcp() {
+    common::debug_init();
+    async_std::task::block_on(agent_static_connection_test(AgentStaticTestConfig {
+        local: AgentConfig {
+            controlling: true,
+            trickle_ice: false,
+            transports: vec![TransportType::Tcp],
+        },
+        remote: AgentConfig {
+            controlling: false,
+            trickle_ice: false,
+            transports: vec![TransportType::Tcp],
         },
     }));
 }

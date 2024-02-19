@@ -19,8 +19,8 @@ use futures::StreamExt;
 use get_if_addrs::get_if_addrs;
 
 use crate::agent::AgentError;
-use crate::socket::UdpSocketChannel;
 use crate::candidate::TransportType;
+use crate::socket::UdpSocketChannel;
 
 /// A gathered socket
 #[derive(Debug, Clone)]
@@ -79,11 +79,9 @@ pub fn iface_sockets(
                 UdpSocket::bind(SocketAddr::new(iface.clone().ip(), 0)).await?,
             )))
         })
-        .chain(
-            futures::stream::iter(ifaces).then(|iface| async move {
-                Ok(GatherSocket::Tcp(Arc::new(
-                    TcpListener::bind(SocketAddr::new(iface.clone().ip(), 0)).await?,
-                )))
-            }),
-        ))
+        .chain(futures::stream::iter(ifaces).then(|iface| async move {
+            Ok(GatherSocket::Tcp(Arc::new(
+                TcpListener::bind(SocketAddr::new(iface.clone().ip(), 0)).await?,
+            )))
+        })))
 }

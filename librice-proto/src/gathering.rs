@@ -12,7 +12,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use crate::candidate::{Candidate, TransportType};
-use crate::stun::agent::{HandleStunReply, StunAgent, StunError, StunRequest, StunRequestPollRet, Transmit};
+use crate::stun::agent::{
+    HandleStunReply, StunAgent, StunError, StunRequest, StunRequestPollRet, Transmit,
+};
 use crate::stun::attribute::{XorMappedAddress, XOR_MAPPED_ADDRESS};
 use crate::stun::message::{Message, BINDING};
 
@@ -274,14 +276,20 @@ impl StunGatherer {
             } else {
                 match request.protocol {
                     RequestProtocol::Udp(ref _udp) => unreachable!(),
-                    RequestProtocol::Tcp(ref mut tcp) => if !tcp.asked_for_agent {
-                        tcp.asked_for_agent = true;
-                        return Ok(GatherRet::NeedAgent(TransportType::Tcp, tcp.active_addr, request.server));
-                    } else {
-                        if lowest_wait.is_none() {
-                            lowest_wait = Some(now + Duration::from_secs(999999));
+                    RequestProtocol::Tcp(ref mut tcp) => {
+                        if !tcp.asked_for_agent {
+                            tcp.asked_for_agent = true;
+                            return Ok(GatherRet::NeedAgent(
+                                TransportType::Tcp,
+                                tcp.active_addr,
+                                request.server,
+                            ));
+                        } else {
+                            if lowest_wait.is_none() {
+                                lowest_wait = Some(now + Duration::from_secs(999999));
+                            }
+                            continue;
                         }
-                        continue;
                     }
                 }
             };
@@ -387,7 +395,12 @@ impl StunGatherer {
                                 let local_addr = agent.local_addr();
                                 let mut msg = Message::new_request(BINDING);
                                 msg.add_fingerprint().unwrap();
-                                tcp.request = Some(agent.stun_request_transaction(&msg, request.server).build().unwrap());
+                                tcp.request = Some(
+                                    agent
+                                        .stun_request_transaction(&msg, request.server)
+                                        .build()
+                                        .unwrap(),
+                                );
                                 tcp.agent = Some(agent);
                                 request.base_addr = local_addr;
                                 // XXX: wakeup?

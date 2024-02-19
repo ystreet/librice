@@ -221,16 +221,20 @@ pub trait Attribute: std::fmt::Debug {
 }
 
 pub trait AttributeToRaw: Attribute + Into<RawAttribute>
-where RawAttribute: for<'a> From<&'a Self> {
+where
+    RawAttribute: for<'a> From<&'a Self>,
+{
     /// Convert an `Attribute` to a `RawAttribute`
     fn to_raw(&self) -> RawAttribute;
-//    where RawAttribute: for<'a> From<&'a Self>;
+    //    where RawAttribute: for<'a> From<&'a Self>;
 }
-impl<T: Attribute + Into<RawAttribute>> AttributeToRaw
-for T
-    where RawAttribute: for<'a> From<&'a Self> {
+impl<T: Attribute + Into<RawAttribute>> AttributeToRaw for T
+where
+    RawAttribute: for<'a> From<&'a Self>,
+{
     fn to_raw(&self) -> RawAttribute
-    where RawAttribute: for<'a> From<&'a Self>
+    where
+        RawAttribute: for<'a> From<&'a Self>,
     {
         self.into()
     }
@@ -2585,7 +2589,9 @@ mod tests {
         let len = data.len();
         BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
         assert!(matches!(
-            UnknownAttributes::try_from(&RawAttribute::from_bytes(data[..len - 1].as_ref()).unwrap()),
+            UnknownAttributes::try_from(
+                &RawAttribute::from_bytes(data[..len - 1].as_ref()).unwrap()
+            ),
             Err(StunParseError::InvalidData)
         ));
         // provide incorrectly typed data
@@ -2806,7 +2812,9 @@ mod tests {
         let len = data.len();
         BigEndian::write_u16(&mut data[2..4], len as u16 - 4 - 1);
         assert!(matches!(
-            MessageIntegrity::try_from(&RawAttribute::from_bytes(data[..len - 1].as_ref()).unwrap()),
+            MessageIntegrity::try_from(
+                &RawAttribute::from_bytes(data[..len - 1].as_ref()).unwrap()
+            ),
             Err(StunParseError::NotEnoughData)
         ));
         // provide incorrectly typed data
