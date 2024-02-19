@@ -1086,7 +1086,7 @@ impl TryFrom<&RawAttribute> for XorMappedAddress {
             return Err(StunParseError::WrongImplementation);
         }
         Ok(Self {
-            addr: XorSocketAddr::from_raw(&raw)?,
+            addr: XorSocketAddr::from_raw(raw)?,
         })
     }
 }
@@ -2333,7 +2333,7 @@ impl TryFrom<&RawAttribute> for AlternateServer {
         if raw.header.atype != ALTERNATE_SERVER {
             return Err(StunParseError::WrongImplementation);
         }
-        let addr = MappedSocketAddr::from_raw(&raw)?;
+        let addr = MappedSocketAddr::from_raw(raw)?;
         Ok(Self { addr })
     }
 }
