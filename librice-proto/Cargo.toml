@@ -1,27 +1,28 @@
 [package]
 name = "librice-proto"
 description = "ICE (RFC8445) implementation protocol"
-version = "0.0.3"
+version.workspace = true
 authors = ["Matthew Waters <matthew@centricular.com>"]
 license = "MIT OR Apache-2.0"
-edition = "2021"
 keywords = ["STUN", "ICE"]
 categories = ["network-programming", ]
-documentation = "https://docs.rs/librice"
-repository = "https://github.com/ystreet/librice"
+documentation = "https://docs.rs/librice-proto"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 workspace = ".."
 
 [dependencies]
-arbitrary = { version = "1", optional = true, features = ["derive"] }
-byteorder = "1"
-rand = "0.8"
+arbitrary = { workspace = true, optional = true }
+byteorder.workspace = true
 crc = "3"
+hmac = "0.12"
+md-5 = "0.10"
+nom = "7"
+rand.workspace = true
 sha-1 = "0.10"
 sha2 = "0.10"
-md-5 = "0.10"
-hmac = "0.12"
-tracing = { version = "0.1", features = ["log"] }
-nom = "7"
+tracing.workspace = true
 
 [dev-dependencies]
-tracing-subscriber = { version = "0.3", features = ["std", "env-filter"] }
+tracing-subscriber.workspace = true
