@@ -156,9 +156,6 @@ impl StunAgent {
 
     /// Perform any operations needed to be able to send a [`Message`] to a peer
     pub fn send(&self, msg: Message, to: SocketAddr) -> Result<Transmit, StunError> {
-        if msg.has_class(MessageClass::Request) {
-            return Err(StunError::WrongImplementation);
-        }
         let data = msg.to_bytes();
         Ok(self.send_data(&data, to))
     }

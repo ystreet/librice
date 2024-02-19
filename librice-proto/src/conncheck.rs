@@ -1469,10 +1469,15 @@ impl ConnCheckList {
             .map(|c| c.candidate.clone())
             .or_else(|| {
                 if transport == TransportType::Tcp {
-                    self.triggered
+                    self.nominated
                         .iter()
                         .find(|&check| f(&check.pair.local))
-                        .or_else(|| self.pairs.iter().find(|&check| f(&check.pair.local)))
+                        .or_else(|| {
+                            self.triggered
+                                .iter()
+                                .find(|&check| f(&check.pair.local))
+                                .or_else(|| self.pairs.iter().find(|&check| f(&check.pair.local)))
+                        })
                         .map(|c| c.pair.local.clone())
                 } else {
                     None
@@ -1737,9 +1742,12 @@ impl ConnCheckListSet {
                     if stun.is_response() {
                         self.handle_stun_response(checklist_i, stun, from)?;
                     } else if stun.has_method(BINDING) {
-                        let local_cand = self.checklists[checklist_i]
+                        let Some(local_cand) = self.checklists[checklist_i]
                             .find_local_candidate(transmit.transport, transmit.to)
-                            .unwrap();
+                        else {
+                            warn!("Could not find local candidate for incoming data");
+                            return Err(StunError::ResourceNotFound);
+                        };
 
                         if let Some(response) = self.handle_binding_request(
                             checklist_i,
@@ -3519,6 +3527,167 @@ mod tests {
             unreachable!();
         };
         assert_eq!(selected_pair.candidate_pair, pair);
+    }
+
+    #[test]
+    fn conncheck_tcp_passive() {
+        init();
+        let mut state = FineControl::builder();
+        state.local_peer_builder = state
+            .local_peer_builder
+            .transport(TransportType::Tcp)
+            .local_addr("127.0.0.1:1000".parse().unwrap())
+            .tcp_type(TcpType::Passive);
+        state.remote_peer_builder = state
+            .remote_peer_builder
+            .transport(TransportType::Tcp)
+            .local_addr("127.0.0.1:9".parse().unwrap())
+            .tcp_type(TcpType::Active)
+            .priority(10);
+        let mut state = state.build();
+        state.local_list().generate_checks();
+        let remote_addr = SocketAddr::new(state.remote.candidate.base_address.ip(), 2000);
+        let mut remote_cand = state.remote.candidate.clone();
+        remote_cand.address = remote_addr;
+        remote_cand.base_address = remote_addr;
+
+        let pair = CandidatePair::new(state.local.peer.candidate.clone(), remote_cand.clone());
+
+        let local_agent =
+            StunAgent::builder(TransportType::Tcp, state.local.peer.candidate.base_address)
+                .remote_addr(remote_addr)
+                .build();
+        state.local.peer.configure_stun_agent(&local_agent);
+        let remote_agent = StunAgent::builder(TransportType::Tcp, remote_addr)
+            .remote_addr(state.local.peer.candidate.base_address)
+            .build();
+        state.remote.configure_stun_agent(&remote_agent);
+
+        let request = ConnCheck::generate_stun_request(
+            &remote_agent,
+            &pair,
+            false,
+            false,
+            100,
+            state.remote.local_credentials.clone().unwrap(),
+            state.remote.remote_credentials.clone().unwrap(),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            state
+                .local
+                .checklist_set
+                .incoming_data(
+                    state.local.checklist_id,
+                    &remote_agent
+                        .send(
+                            request.request().clone(),
+                            state.local.peer.candidate.base_address
+                        )
+                        .unwrap(),
+                )
+                .unwrap()[0],
+            HandleRecvReply::Handled
+        ));
+
+        let check = state
+            .local_list()
+            .matching_check(&pair, Nominate::False)
+            .unwrap();
+        assert_eq!(check.state(), CandidatePairState::Waiting);
+
+        // success response
+        let now = Instant::now();
+        let CheckListSetPollRet::Transmit(id, cid, transmit) = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(id, state.local.checklist_id);
+        assert_eq!(cid, state.local.peer.candidate.component_id);
+        assert_eq!(transmit.from, state.local.peer.candidate.base_address);
+        assert_eq!(transmit.to, remote_cand.address);
+
+        let response = Message::from_bytes(&transmit.data[2..]).unwrap();
+        assert!(response.has_class(MessageClass::Success));
+
+        // triggered check
+        let CheckListSetPollRet::Transmit(id, cid, transmit) = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(id, state.local.checklist_id);
+        assert_eq!(cid, state.local.peer.candidate.component_id);
+        assert_eq!(transmit.from, state.local.peer.candidate.base_address);
+        assert_eq!(transmit.to, remote_cand.address);
+
+        let Some(response) = reply_to_conncheck(
+            &remote_agent,
+            state.local.peer.remote_credentials.as_ref().unwrap(),
+            transmit,
+            None,
+            None,
+        ) else {
+            unreachable!();
+        };
+
+        let check = state
+            .local_list()
+            .matching_check(&pair, Nominate::DontCare)
+            .unwrap();
+        assert_eq!(check.state(), CandidatePairState::InProgress);
+
+        state
+            .local
+            .checklist_set
+            .incoming_data(state.local.checklist_id, &response)
+            .unwrap();
+        error!("tcp replied");
+
+        let CheckListSetPollRet::WaitUntil(now) = state.local.checklist_set.poll(now) else {
+            unreachable!();
+        };
+
+        // nominate triggered check
+        let CheckListSetPollRet::Transmit(_id, _cid, transmit) =
+            state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        let Some(response) = reply_to_conncheck(
+            &remote_agent,
+            state.local.peer.remote_credentials.as_ref().unwrap(),
+            transmit,
+            None,
+            None,
+        ) else {
+            unreachable!();
+        };
+        state
+            .local
+            .checklist_set
+            .incoming_data(state.local.checklist_id, &response)
+            .unwrap();
+
+        let CheckListSetPollRet::Event(
+            _checklist_id,
+            ConnCheckEvent::SelectedPair(_cid, selected_pair),
+        ) = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        let CheckListSetPollRet::Event(
+            _checklist_id,
+            ConnCheckEvent::ComponentState(_cid, ComponentState::Connected),
+        ) = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert!(candidate_pair_is_same_connection(
+            &selected_pair.candidate_pair,
+            &pair
+        ))
     }
 
     #[test]
