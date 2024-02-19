@@ -38,30 +38,30 @@ impl StunAgent {
             channel,
         })
     }
-/*
-    pub(crate) async fn stun_request_transaction(
-        &self,
-        msg: &Message,
-        to: SocketAddr,
-    ) -> Result<Message, AgentError> {
-        let request = self.agent.stun_request_transaction(msg, to)?.build()?;
-        let mut now = Instant::now();
-        loop {
-            match request.tick(now)? {
-                StunRequestPollRet::WaitUntil(new_time) => {
-                    // need external wakeup when message received
-                    async_std::task::sleep(new_time - now).await;
-                    now = Instant::now();
-                }
-                StunRequestPollRet::Cancelled => return Err(AgentError::ConnectionClosed),
-                StunRequestPollRet::Response(response) => return Ok(response),
-                StunRequestPollRet::SendData(transmit) => {
-                    self.channel.send_to(&transmit.data, transmit.to).await?;
+    /*
+        pub(crate) async fn stun_request_transaction(
+            &self,
+            msg: &Message,
+            to: SocketAddr,
+        ) -> Result<Message, AgentError> {
+            let request = self.agent.stun_request_transaction(msg, to)?.build()?;
+            let mut now = Instant::now();
+            loop {
+                match request.tick(now)? {
+                    StunRequestPollRet::WaitUntil(new_time) => {
+                        // need external wakeup when message received
+                        async_std::task::sleep(new_time - now).await;
+                        now = Instant::now();
+                    }
+                    StunRequestPollRet::Cancelled => return Err(AgentError::ConnectionClosed),
+                    StunRequestPollRet::Response(response) => return Ok(response),
+                    StunRequestPollRet::SendData(transmit) => {
+                        self.channel.send_to(&transmit.data, transmit.to).await?;
+                    }
                 }
             }
         }
-    }
-*/
+    */
     /// The [`TransportType`] of this agent
     pub fn transport(&self) -> TransportType {
         self.channel.transport()

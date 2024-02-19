@@ -154,8 +154,9 @@ impl futures::stream::Stream for Gather {
                         let weak_stream = weak_stream.clone();
                         async_std::task::spawn(async move {
                             let tcp_stream = TcpStream::connect(server_addr).await;
-                            let channel = tcp_stream.as_ref().ok().map(|tcp_stream|
-                                StunChannel::Tcp(TcpChannel::new(tcp_stream.clone())));
+                            let channel = tcp_stream.as_ref().ok().map(|tcp_stream| {
+                                StunChannel::Tcp(TcpChannel::new(tcp_stream.clone()))
+                            });
                             let agent = tcp_stream
                                 .map(|tcp_stream| {
                                     StunAgent::builder(transport, tcp_stream.local_addr().unwrap())
@@ -224,9 +225,8 @@ impl futures::stream::Stream for Gather {
                 checklist.end_of_local_candidates();
             }
             return Poll::Ready(None);
-        } else {
-            drop(stream);
         }
+        drop(stream);
 
         if let Some(pending_transmit) = pending_transmit_send {
             self.pending_transmit_send = Some(pending_transmit);
@@ -246,6 +246,7 @@ impl futures::stream::Stream for Gather {
             // timeout value passed, rerun our loop which will make more progress
             cx.waker().wake_by_ref();
         }
+
         Poll::Pending
     }
 }
@@ -316,6 +317,13 @@ impl Stream {
     /// let component = stream.add_component().unwrap();
     /// assert_eq!(component.id(), component::RTP);
     /// ```
+    #[tracing::instrument(
+        name = "stream_add_component",
+        skip(self),
+        fields(
+            stream.id = self.id
+        )
+    )]
     pub fn add_component(&self) -> Result<Component, AgentError> {
         let mut state = self.state.lock().unwrap();
         let index = state
@@ -325,7 +333,7 @@ impl Stream {
             .find(|c| c.1.is_none())
             .unwrap_or((state.components.len(), &None))
             .0;
-        info!("stream {} adding component {}", self.id, index + 1);
+        info!("adding component {}", index + 1);
         if state.components.get(index).is_some() {
             return Err(AgentError::AlreadyExists);
         }
@@ -390,7 +398,7 @@ impl Stream {
     }
 
     /// Retrieve a `Component` from this stream.  If the index doesn't exist or a component is not
-    /// available at that index, an error is returned
+    /// available at that index, `None` is returned
     ///
     /// # Examples
     ///
@@ -446,7 +454,7 @@ impl Stream {
     #[tracing::instrument(
         skip(self),
         fields(
-            stream_id = self.id
+            stream.id = self.id
         )
     )]
     pub fn set_local_credentials(&self, credentials: Credentials) {
@@ -492,7 +500,7 @@ impl Stream {
     #[tracing::instrument(
         skip(self),
         fields(
-            stream_id = self.id()
+            stream.id = self.id()
         )
     )]
     pub fn set_remote_credentials(&self, credentials: Credentials) {
@@ -546,7 +554,7 @@ impl Stream {
     #[tracing::instrument(
         skip(self, cand),
         fields(
-            stream_id = self.id()
+            stream.id = self.id()
         )
     )]
     pub fn add_remote_candidate(&self, cand: &Candidate) -> Result<(), AgentError> {
@@ -565,10 +573,19 @@ impl Stream {
         Ok(())
     }
 
-    async fn handle_incoming_data(
+    #[tracing::instrument(
+        name = "stream_handle_incoming_data",
+        skip(weak_state, weak_set, weak_agent, stream_id, checklist_id, component_id, transmit),
+        fields(
+            stream.id = stream_id,
+            component.id = component_id,
+        )
+    )]
+    fn handle_incoming_data(
         weak_state: Weak<Mutex<StreamState>>,
         weak_set: Weak<Mutex<ConnCheckListSet>>,
         weak_agent: Weak<Mutex<AgentInner>>,
+        stream_id: usize,
         checklist_id: usize,
         component_id: usize,
         transmit: Transmit,
@@ -577,6 +594,7 @@ impl Stream {
             return;
         };
         {
+            // first try to provide the incoming data to the gathering process if it exist
             let mut state = state.lock().unwrap();
             if state.gather_state == GatherProgress::InProgress {
                 if let Some(gather) = state
@@ -605,6 +623,7 @@ impl Stream {
         };
         let mut wake_agent = false;
         {
+            // or, provide the data to the connection check component for further processing
             let mut set_inner = set.lock().unwrap();
             if let Ok(replies) = set_inner.incoming_data(checklist_id, &transmit) {
                 for reply in replies {
@@ -704,6 +723,7 @@ impl Stream {
                     let checklist_id = self.checklist_id;
                     let local_addr = socket.local_addr();
                     let transport = socket.transport();
+                    let stream_id = self.id;
                     match socket {
                         GatherSocket::Udp(udp) => {
                             state.sockets.push(StunChannel::Udp(udp.clone()));
@@ -715,6 +735,7 @@ impl Stream {
                                         weak_state.clone(),
                                         weak_set.clone(),
                                         weak_agent.clone(),
+                                        stream_id,
                                         checklist_id,
                                         cid,
                                         Transmit {
@@ -724,7 +745,6 @@ impl Stream {
                                             to: local_addr,
                                         },
                                     )
-                                    .await
                                 }
                             });
                         }
@@ -755,6 +775,7 @@ impl Stream {
                                                 weak_state.clone(),
                                                 weak_set.clone(),
                                                 weak_agent.clone(),
+                                                stream_id,
                                                 checklist_id,
                                                 cid,
                                                 Transmit {
@@ -764,7 +785,6 @@ impl Stream {
                                                     to: local_addr,
                                                 },
                                             )
-                                            .await
                                         }
                                     });
                                 }
@@ -789,7 +809,7 @@ impl Stream {
             pending_transmit_send: None,
         })
     }
-/*
+    /*
     pub async fn add_local_candidate(&self, candidate: &Candidate) -> Result<(), AgentError> {
         let weak_set = Arc::downgrade(&self.set);
         let weak_state = Arc::downgrade(&self.state);
@@ -813,6 +833,7 @@ impl Stream {
                             weak_state.clone(),
                             weak_set.clone(),
                             weak_agent.clone(),
+                            stream_id,
                             checklist_id,
                             component_id,
                             Transmit {
@@ -822,7 +843,6 @@ impl Stream {
                                 to: local_addr,
                             },
                         )
-                        .await;
                     }
                 });
             }
@@ -832,7 +852,7 @@ impl Stream {
                          let stream = TcpListener::bind(candidate.base_address).await?;
                          async_std::task::spawn(async move {
                              while let Some(stream) =
-                             Self::handle_incoming_data(weak_state, weak_set, checklist_id, component_id, transmit)
+                             Self::handle_incoming_data(weak_state, weak_set, stream_id, checklist_id, component_id, transmit)
                          });
                      }
                      _ => return Err(AgentError::WrongImplementation);
@@ -917,9 +937,11 @@ impl Stream {
         to: SocketAddr,
         waker: Waker,
     ) {
+        let weak_agent = self.agent.clone();
         let weak_set = Arc::downgrade(&self.set);
         let weak_state = Arc::downgrade(&self.state);
         let checklist_id = self.checklist_id;
+        let stream_id = self.id;
         async_std::task::spawn(async move {
             let stream = TcpStream::connect(to).await;
             let channel = match stream {
@@ -937,16 +959,49 @@ impl Stream {
             let Some(set) = weak_set.upgrade() else {
                 return;
             };
-            let mut set = set.lock().unwrap();
-            let agent = channel.map(|channel| {
-                let local_addr = channel.local_addr().unwrap();
-                let remote_addr = channel.remote_addr().unwrap();
-                StunAgent::builder(TransportType::Tcp, local_addr)
-                    .remote_addr(remote_addr)
-                    .build()
-            });
-            set.tcp_connect_reply(checklist_id, component_id, from, to, agent);
+
+            let channel = {
+                let mut set = set.lock().unwrap();
+                let (agent, channel) = match channel {
+                    Ok(channel) => {
+                        let local_addr = channel.local_addr().unwrap();
+                        let remote_addr = channel.remote_addr().unwrap();
+                        (
+                            Ok(StunAgent::builder(TransportType::Tcp, local_addr)
+                                .remote_addr(remote_addr)
+                                .build()),
+                            Some(channel),
+                        )
+                    }
+                    Err(e) => (Err(e), None),
+                };
+
+                set.tcp_connect_reply(checklist_id, component_id, from, to, agent);
+                channel
+            };
             waker.wake();
+
+            if let Some(channel) = channel {
+                let recv = channel.recv();
+                let mut recv = core::pin::pin!(recv);
+                let local_addr = channel.local_addr().unwrap();
+                while let Some((data, from)) = recv.next().await {
+                    Self::handle_incoming_data(
+                        weak_state.clone(),
+                        weak_set.clone(),
+                        weak_agent.clone(),
+                        stream_id,
+                        checklist_id,
+                        component_id,
+                        Transmit {
+                            transport: TransportType::Tcp,
+                            data,
+                            from,
+                            to: local_addr,
+                        },
+                    )
+                }
+            }
         });
     }
 

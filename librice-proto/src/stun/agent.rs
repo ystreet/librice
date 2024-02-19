@@ -230,17 +230,8 @@ impl StunAgent {
 
     /// Create a new [`StunRequest`] for encapsulating the state required for handling a
     /// [`MessageClass::Request`]
-    pub fn stun_request_transaction(
-        &self,
-        msg: &Message,
-        addr: SocketAddr,
-    ) -> StunRequestBuilder {
-        StunRequestBuilder::new(
-            self.clone(),
-            msg.clone(),
-            self.transport,
-            addr,
-        )
+    pub fn stun_request_transaction(&self, msg: &Message, addr: SocketAddr) -> StunRequestBuilder {
+        StunRequestBuilder::new(self.clone(), msg.clone(), self.transport, addr)
     }
 }
 
@@ -253,12 +244,7 @@ pub struct StunRequestBuilder {
 }
 
 impl StunRequestBuilder {
-    fn new(
-        agent: StunAgent,
-        msg: Message,
-        transport: TransportType,
-        to: SocketAddr,
-    ) -> Self {
+    fn new(agent: StunAgent, msg: Message, transport: TransportType, to: SocketAddr) -> Self {
         Self {
             agent,
             msg,
@@ -667,7 +653,11 @@ pub(crate) mod tests {
             let resp_data = response.to_bytes();
             let ret = agent.handle_incoming_data(&resp_data, remote_addr).unwrap();
             assert!(matches!(ret[0], HandleStunReply::Stun(_, _)));
+        } else {
+            unreachable!();
         }
+        let ret = request.poll(now).unwrap();
+        assert!(matches!(ret, StunRequestPollRet::Response(_)));
     }
 
     #[test]
@@ -684,9 +674,8 @@ pub(crate) mod tests {
             .build()
             .unwrap();
         let mut now = Instant::now();
-        let mut ret = request.poll(now);
         loop {
-            match ret {
+            match request.poll(now) {
                 Ok(StunRequestPollRet::WaitUntil(new_now)) => {
                     now = new_now;
                 }
@@ -694,7 +683,47 @@ pub(crate) mod tests {
                 Err(StunError::TimedOut) => break,
                 _ => unreachable!(),
             }
-            ret = request.poll(now);
         }
+    }
+
+    #[test]
+    fn tcp_request() {
+        init();
+        let local_addr = "127.0.0.1:2000".parse().unwrap();
+        let remote_addr = "127.0.0.1:1000".parse().unwrap();
+        let agent = StunAgent::builder(TransportType::Tcp, local_addr)
+            .remote_addr(remote_addr)
+            .build();
+        let msg = Message::new_request(BINDING);
+        let request = agent
+            .stun_request_transaction(&msg, remote_addr)
+            .build()
+            .unwrap();
+        let now = Instant::now();
+        let ret = request.poll(now).unwrap();
+        if let StunRequestPollRet::SendData(Transmit {
+            data,
+            transport,
+            from,
+            to,
+        }) = ret
+        {
+            assert_eq!(transport, TransportType::Tcp);
+            assert_eq!(from, local_addr);
+            assert_eq!(to, remote_addr);
+            let request = Message::from_bytes(&data[2..]).unwrap();
+            let response = Message::new_error(&request);
+            let resp_data = response.to_bytes();
+            let mut data = Vec::with_capacity(resp_data.len() + 2);
+            data.resize(2, 0);
+            BigEndian::write_u16(&mut data[..2], resp_data.len() as u16);
+            data.extend(resp_data);
+            let ret = agent.handle_incoming_data(&data, remote_addr).unwrap();
+            assert!(matches!(ret[0], HandleStunReply::Stun(_, _)));
+        } else {
+            unreachable!();
+        }
+        let ret = request.poll(now).unwrap();
+        assert!(matches!(ret, StunRequestPollRet::Response(_)));
     }
 }

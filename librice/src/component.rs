@@ -212,7 +212,10 @@ impl SelectedPair {
 #[cfg(test)]
 mod tests {
     use async_std::net::UdpSocket;
-    use librice_proto::{candidate::{Candidate, CandidateType}, stun::{agent::StunAgent, TransportType}};
+    use librice_proto::{
+        candidate::{Candidate, CandidateType},
+        stun::{agent::StunAgent, TransportType},
+    };
 
     use super::*;
     use crate::{agent::Agent, socket::UdpSocketChannel};

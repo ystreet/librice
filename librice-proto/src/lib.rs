@@ -24,9 +24,9 @@ pub(crate) mod tests {
 
     pub fn test_init_log() {
         TRACING.call_once(|| {
-        if let Ok(filter) = EnvFilter::try_from_default_env() {
-            tracing_subscriber::fmt().with_env_filter(filter).init();
-        }
+            if let Ok(filter) = EnvFilter::try_from_default_env() {
+                tracing_subscriber::fmt().with_env_filter(filter).init();
+            }
         });
     }
 }

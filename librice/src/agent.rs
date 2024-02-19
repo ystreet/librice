@@ -214,6 +214,13 @@ impl Agent {
     /// let agent = Agent::default();
     /// let s = agent.add_stream();
     /// ```
+    #[tracing::instrument(
+        name = "ice_add_stream",
+        skip(self),
+        fields(
+            ice.id = self.id
+        )
+    )]
     pub fn add_stream(&self) -> Stream {
         let mut set = self.checklistset.lock().unwrap();
         let checklist_id = set.new_list();
@@ -233,7 +240,7 @@ impl Agent {
         name = "ice_close",
         skip(self),
         fields(
-            ice_id = self.id
+            ice.id = self.id
         )
     )]
     pub fn close(&self) -> Result<(), AgentError> {
@@ -254,17 +261,27 @@ impl Agent {
     }
 
     /// Add a STUN server by address and transport to use for gathering potential candidates
-    pub fn add_stun_server(&self, ttype: TransportType, addr: SocketAddr) {
+    #[tracing::instrument(
+        name = "ice_add_stun_server",
+        skip(self)
+        fields(ice.id = self.id)
+    )]
+    pub fn add_stun_server(&self, transport: TransportType, addr: SocketAddr) {
         let mut inner = self.inner.lock().unwrap();
-        info!("Adding stun server {addr} transport {ttype:?}");
-        inner.stun_servers.push((ttype, addr));
+        info!("Adding stun server");
+        inner.stun_servers.push((transport, addr));
         // TODO: propagate towards the gatherer as required
     }
     /*
-    pub fn add_turn_server(&self, ttype: TransportType, addr: SocketAddr, credentials: TurnCredentials) {
+    #[tracing::instrument(
+        name = "ice_add_turn_server",
+        skip(self)
+        fields(ice.id = self.id)
+    )]
+    pub fn add_turn_server(&self, transport: TransportType, addr: SocketAddr, credentials: TurnCredentials) {
         let mut inner = self.inner.lock().unwrap();
-        info!("Adding stun server {addr} transport {ttype:?}");
-        inner.turn_servers.push((ttype, addr, credentials));
+        info!("Adding stun server");
+        inner.turn_servers.push((transport, addr, credentials));
         */
     // TODO: propagate towards the gatherer as required
     //    }
@@ -332,6 +349,11 @@ impl futures::stream::Stream for AgentStream {
                         self.as_mut().pending_transmit = Some((checklist_id, transmit));
                         return Poll::Pending;
                     }
+                } else {
+                    warn!(
+                        "did not find stream for transmit {:?} -> {:?}",
+                        transmit.from, transmit.to
+                    );
                 }
                 cx.waker().wake_by_ref();
                 return Poll::Pending;
@@ -349,7 +371,10 @@ impl futures::stream::Stream for AgentStream {
                 cx.waker().wake_by_ref();
                 return Poll::Pending;
             }
-            CheckListSetPollRet::Event(checklist_id, ConnCheckEvent::ComponentState(cid, state)) => {
+            CheckListSetPollRet::Event(
+                checklist_id,
+                ConnCheckEvent::ComponentState(cid, state),
+            ) => {
                 drop(set);
                 let agent = self.agent.lock().unwrap();
                 if let Some(stream) = agent

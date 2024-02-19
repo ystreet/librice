@@ -950,9 +950,7 @@ impl Message {
         )
     )]
     pub fn raw_attribute(&self, atype: AttributeType) -> Option<&RawAttribute> {
-        self.attributes
-            .iter()
-            .find(|attr| attr.get_type() == atype)
+        self.attributes.iter().find(|attr| attr.get_type() == atype)
     }
 
     /// Retrieve an `Attribute` from this `Message`.
@@ -979,7 +977,10 @@ impl Message {
             attribute_type = %atype,
         )
     )]
-    pub fn attribute<A: AttributeFromRaw<StunParseError>>(&self, atype: AttributeType) -> Option<A> {
+    pub fn attribute<A: AttributeFromRaw<StunParseError>>(
+        &self,
+        atype: AttributeType,
+    ) -> Option<A> {
         self.attributes
             .iter()
             .find(|attr| attr.get_type() == atype)

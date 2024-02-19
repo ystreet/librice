@@ -28,7 +28,7 @@ pub struct Candidate {
     pub foundation: String,
     /// The priority
     pub priority: u32,
-    /// The address to send to 
+    /// The address to send to
     pub address: SocketAddr,
     /// The address to send from
     pub base_address: SocketAddr,
