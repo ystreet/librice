@@ -1,7 +1,7 @@
 #![no_main]
-use libfuzzer_sys::fuzz_target;
+use std::sync::Once;
 
-use once_cell::sync::Lazy;
+use libfuzzer_sys::fuzz_target;
 
 #[macro_use]
 extern crate tracing;
@@ -16,13 +16,13 @@ struct DataAndCredentials<'data> {
 }
 
 pub fn debug_init() {
-    static TRACING: Lazy<()> = Lazy::new(|| {
+    static TRACING: Once = Once::new();
+
+    TRACING.call_once(|| {
         if let Ok(filter) = EnvFilter::try_from_default_env() {
             tracing_subscriber::fmt().with_env_filter(filter).init();
         }
     });
-
-    Lazy::force(&TRACING);
 }
 
 fuzz_target!(|data_and_credentials: DataAndCredentials| {

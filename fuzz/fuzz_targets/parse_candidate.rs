@@ -1,15 +1,13 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 
-use once_cell::sync::Lazy;
-
 #[macro_use]
 extern crate tracing;
 use tracing_subscriber::EnvFilter;
 
 use librice_proto::candidate::*;
 
-use std::str::FromStr;
+use std::{str::FromStr, sync::Once};
 
 #[derive(arbitrary::Arbitrary, Debug)]
 struct Data<'data> {
@@ -17,13 +15,13 @@ struct Data<'data> {
 }
 
 pub fn debug_init() {
-    static TRACING: Lazy<()> = Lazy::new(|| {
+    static TRACING: Once = Once::new();
+
+    TRACING.call_once(|| {
         if let Ok(filter) = EnvFilter::try_from_default_env() {
             tracing_subscriber::fmt().with_env_filter(filter).init();
         }
     });
-
-    Lazy::force(&TRACING);
 }
 
 fuzz_target!(|data: Data| {
