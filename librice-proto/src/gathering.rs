@@ -94,11 +94,11 @@ pub struct StunGatherer {
 
 /// Return value for the gather state machine
 #[derive(Debug)]
-pub enum GatherRet {
+pub enum GatherPoll<'a> {
     /// Need an agent (and socket) for the specified 5-tuple network address
-    NeedAgent(TransportType, SocketAddr, SocketAddr),
+    NeedAgent(usize, TransportType, SocketAddr, SocketAddr),
     /// Send data from the specified address to the specified address
-    SendData(Transmit),
+    SendData(usize, Transmit<'a>),
     /// Wait until the specified Instant passes
     WaitUntil(Instant),
     /// A new local candidate was discovered
@@ -257,14 +257,14 @@ impl StunGatherer {
         self.component_id
     }
 
-    /// Poll the gatherer.  Should be called repeatedly until [`GatherRet::WaitUntil`]
-    /// or [`GatherRet::Complete`] is returned.
-    #[tracing::instrument(name = "gather_poll", level = "trace", ret, err, skip(self))]
-    pub fn poll(&mut self, now: Instant) -> Result<GatherRet, StunError> {
+    /// Poll the gatherer.  Should be called repeatedly until [`GatherPoll::WaitUntil`]
+    /// or [`GatherPoll::Complete`] is returned.
+    #[tracing::instrument(name = "poll_gather", level = "trace", ret, err, skip(self))]
+    pub fn poll(&mut self, now: Instant) -> Result<GatherPoll, StunError> {
         if self.produced_i < self.pending_candidates.len() {
             let cand = self.pending_candidates[self.produced_i].clone();
             self.produced_i += 1;
-            return Ok(GatherRet::NewCandidate(cand));
+            return Ok(GatherPoll::NewCandidate(cand));
         }
         let mut lowest_wait = None;
         'next_request: for request in self.requests.iter_mut() {
@@ -279,14 +279,15 @@ impl StunGatherer {
                     RequestProtocol::Tcp(ref mut tcp) => {
                         if !tcp.asked_for_agent {
                             tcp.asked_for_agent = true;
-                            return Ok(GatherRet::NeedAgent(
+                            return Ok(GatherPoll::NeedAgent(
+                                self.component_id,
                                 TransportType::Tcp,
                                 tcp.active_addr,
                                 request.server,
                             ));
                         } else {
                             if lowest_wait.is_none() {
-                                lowest_wait = Some(now + Duration::from_secs(999999));
+                                lowest_wait = Some(now + Duration::from_secs(600));
                             }
                             continue;
                         }
@@ -332,15 +333,13 @@ impl StunGatherer {
                         }
                         self.pending_candidates.push(cand.clone());
                         self.produced_i += 1;
-                        return Ok(GatherRet::NewCandidate(cand));
+                        return Ok(GatherPoll::NewCandidate(cand));
                     }
                 }
                 StunRequestPollRet::SendData(transmit) => {
-                    return Ok(GatherRet::SendData(
-                        request
-                            .agent()
-                            .unwrap()
-                            .send_data(&transmit.data, transmit.to),
+                    return Ok(GatherPoll::SendData(
+                        self.component_id,
+                        transmit.into_owned(),
                     ))
                 }
                 StunRequestPollRet::WaitUntil(new_time) => {
@@ -355,9 +354,9 @@ impl StunGatherer {
             }
         }
         if let Some(lowest_wait) = lowest_wait {
-            Ok(GatherRet::WaitUntil(lowest_wait))
+            Ok(GatherPoll::WaitUntil(lowest_wait))
         } else {
-            Ok(GatherRet::Complete)
+            Ok(GatherPoll::Complete)
         }
     }
 
@@ -367,9 +366,10 @@ impl StunGatherer {
         &self,
         data: &[u8],
         from: SocketAddr,
+        to: SocketAddr,
     ) -> Result<Vec<HandleStunReply>, StunError> {
         for request in self.requests.iter() {
-            if !request.completed && request.server == from {
+            if !request.completed && request.server == from && request.base_addr == to {
                 if let Some(agent) = request.agent() {
                     return agent.handle_incoming_data(data, from);
                 }
@@ -378,16 +378,20 @@ impl StunGatherer {
         Err(StunError::ResourceNotFound)
     }
 
-    /// Provide an agent as requested through [`GatherRet::NeedAgent`].  The transport and address
-    /// must match the value from the corresponding [`GatherRet::NeedAgent`].
+    /// Provide an agent as requested through [`GatherPoll::NeedAgent`].  The transport and address
+    /// must match the value from the corresponding [`GatherPoll::NeedAgent`].
     pub fn add_agent(
         &mut self,
         transport: TransportType,
-        addr: SocketAddr,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
         agent: Result<StunAgent, StunError>,
     ) {
         for request in self.requests.iter_mut() {
-            if transport == request.protocol.transport() && request.base_addr == addr {
+            if transport == request.protocol.transport()
+                && request.base_addr == local_addr
+                && request.server == remote_addr
+            {
                 if let RequestProtocol::Tcp(ref mut tcp) = request.protocol {
                     if tcp.agent.is_none() {
                         match agent {
@@ -403,7 +407,6 @@ impl StunGatherer {
                                 );
                                 tcp.agent = Some(agent);
                                 request.base_addr = local_addr;
-                                // XXX: wakeup?
                             }
                             Err(_e) => {
                                 request.completed = true;
@@ -437,7 +440,7 @@ mod tests {
         let mut gather = StunGatherer::new(1, vec![(TransportType::Udp, local_addr)], vec![]);
         let now = Instant::now();
         let ret = gather.poll(now);
-        if let Ok(GatherRet::NewCandidate(cand)) = ret {
+        if let Ok(GatherPoll::NewCandidate(cand)) = ret {
             assert_eq!(cand.component_id, 1);
             assert_eq!(cand.candidate_type, CandidateType::Host);
             assert_eq!(cand.transport_type, TransportType::Udp);
@@ -449,8 +452,8 @@ mod tests {
             error!("{ret:?}");
             unreachable!();
         }
-        assert!(matches!(gather.poll(now), Ok(GatherRet::Complete)));
-        assert!(matches!(gather.poll(now), Ok(GatherRet::Complete)));
+        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
+        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
     }
 
     #[test]
@@ -460,7 +463,7 @@ mod tests {
         let mut gather = StunGatherer::new(1, vec![(TransportType::Tcp, local_addr)], vec![]);
         let now = Instant::now();
         let ret = gather.poll(now);
-        if let Ok(GatherRet::NewCandidate(cand)) = ret {
+        if let Ok(GatherPoll::NewCandidate(cand)) = ret {
             let local_addr = SocketAddr::new(local_addr.ip(), 9);
             assert_eq!(cand.component_id, 1);
             assert_eq!(cand.candidate_type, CandidateType::Host);
@@ -474,7 +477,7 @@ mod tests {
             unreachable!();
         }
         let ret = gather.poll(now);
-        if let Ok(GatherRet::NewCandidate(cand)) = ret {
+        if let Ok(GatherPoll::NewCandidate(cand)) = ret {
             assert_eq!(cand.component_id, 1);
             assert_eq!(cand.candidate_type, CandidateType::Host);
             assert_eq!(cand.transport_type, TransportType::Tcp);
@@ -486,8 +489,8 @@ mod tests {
             error!("{ret:?}");
             unreachable!();
         }
-        assert!(matches!(gather.poll(now), Ok(GatherRet::Complete)));
-        assert!(matches!(gather.poll(now), Ok(GatherRet::Complete)));
+        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
+        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
     }
 
     #[test]
@@ -505,27 +508,29 @@ mod tests {
         /* host candidate contents checked in `host_udp()` */
         assert!(matches!(
             gather.poll(now),
-            Ok(GatherRet::NewCandidate(_cand))
+            Ok(GatherPoll::NewCandidate(_cand))
         ));
         let ret = gather.poll(now);
-        if let Ok(GatherRet::SendData(transmit)) = ret {
+        if let Ok(GatherPoll::SendData(_cid, transmit)) = ret {
             assert_eq!(transmit.from, local_addr);
             assert_eq!(transmit.to, stun_addr);
             let msg = Message::from_bytes(&transmit.data).unwrap();
             assert!(msg.has_method(BINDING));
             assert!(msg.has_class(MessageClass::Request));
-            assert!(matches!(gather.poll(now), Ok(GatherRet::WaitUntil(_))));
+            assert!(matches!(gather.poll(now), Ok(GatherPoll::WaitUntil(_))));
             let mut response = Message::new_success(&msg);
             response
                 .add_attribute(XorMappedAddress::new(public_ip, response.transaction_id()))
                 .unwrap();
-            gather.handle_data(&response.to_bytes(), stun_addr).unwrap();
+            gather
+                .handle_data(&response.to_bytes(), stun_addr, local_addr)
+                .unwrap();
         } else {
             error!("{ret:?}");
             unreachable!();
         }
         let ret = gather.poll(now);
-        if let Ok(GatherRet::NewCandidate(cand)) = ret {
+        if let Ok(GatherPoll::NewCandidate(cand)) = ret {
             assert_eq!(cand.component_id, 1);
             assert_eq!(cand.candidate_type, CandidateType::ServerReflexive);
             assert_eq!(cand.transport_type, TransportType::Udp);
@@ -537,7 +542,7 @@ mod tests {
             error!("{ret:?}");
             unreachable!();
         }
-        assert!(matches!(gather.poll(now), Ok(GatherRet::Complete)));
-        assert!(matches!(gather.poll(now), Ok(GatherRet::Complete)));
+        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
+        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
     }
 }

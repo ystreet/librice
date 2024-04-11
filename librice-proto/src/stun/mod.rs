@@ -17,6 +17,7 @@ pub mod message;
 
 /// The transport family
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
 pub enum TransportType {
     /// The UDP transport
     Udp,

@@ -34,7 +34,7 @@ fn main() -> io::Result<()> {
         let stream = agent.add_stream();
         let _comp = stream.add_component();
 
-        let gather_stream = stream.gather_candidates().unwrap();
+        let gather_stream = stream.gather_candidates().await.unwrap();
         futures::pin_mut!(gather_stream);
         while let Some(candidate) = gather_stream.next().await {
             println! {"{:?}", candidate};

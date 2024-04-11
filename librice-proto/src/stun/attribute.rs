@@ -54,8 +54,8 @@ pub const FINGERPRINT: AttributeType = AttributeType(0x8028);
 pub const PRIORITY: AttributeType = AttributeType(0x0024);
 pub const USE_CANDIDATE: AttributeType = AttributeType(0x0025);
 
-pub const ICE_CONTROLLED: AttributeType = AttributeType(0x0029);
-pub const ICE_CONTROLLING: AttributeType = AttributeType(0x002A);
+pub const ICE_CONTROLLED: AttributeType = AttributeType(0x8029);
+pub const ICE_CONTROLLING: AttributeType = AttributeType(0x802A);
 
 #[derive(Debug)]
 pub enum StunParseError {
@@ -1510,9 +1510,7 @@ impl MessageIntegrity {
         let mut hmac = Hmac::<sha1::Sha1>::new_from_slice(key)
             .map_err(|_| StunError::ParseError(StunParseError::InvalidData))?;
         hmac.update(data);
-        let ret = hmac.finalize().into_bytes();
-        ret.try_into()
-            .map_err(|_| StunError::ParseError(StunParseError::InvalidData))
+        Ok(hmac.finalize().into_bytes().into())
     }
 
     /// Compute the Message Integrity value of a chunk of data using a key

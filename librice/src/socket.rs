@@ -23,7 +23,7 @@ use librice_proto::candidate::TransportType;
 
 const MAX_STUN_MESSAGE_SIZE: usize = 1500 * 2;
 
-/// A combined socket for both UDP and TCP
+/// A combined socket interface for both UDP and TCP
 #[derive(Debug, Clone)]
 pub enum StunChannel {
     Udp(UdpSocketChannel),
@@ -32,7 +32,7 @@ pub enum StunChannel {
 
 /// Data and address
 #[derive(Debug, Clone)]
-pub struct DataAddress {
+struct DataAddress {
     /// The data
     pub data: Vec<u8>,
     /// An address

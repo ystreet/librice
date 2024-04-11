@@ -15,8 +15,8 @@ use futures::StreamExt;
 
 use librice::agent::{Agent, AgentMessage};
 use librice::candidate::TransportType;
-use librice::component::ComponentState;
 use librice::stream::Credentials;
+use librice_proto::component::ComponentConnectionState;
 
 #[macro_use]
 extern crate tracing;
@@ -89,13 +89,13 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     rstream.set_remote_credentials(lcreds);
     let rcomp = rstream.add_component().unwrap();
 
-    let mut lgatherer = lstream.gather_candidates().unwrap();
-    let mut rgatherer = rstream.gather_candidates().unwrap();
+    let mut lgatherer = lstream.gather_candidates().await.unwrap();
+    let mut rgatherer = rstream.gather_candidates().await.unwrap();
 
     let lgather = async_std::task::spawn(async move {
         while let Some(cand) = lgatherer.next().await {
             if config.remote.transports.contains(&cand.transport_type) {
-                rstream.add_remote_candidate(&cand).unwrap();
+                rstream.add_remote_candidate(cand).unwrap();
             }
         }
         rstream.end_of_remote_candidates();
@@ -104,7 +104,7 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     let rgather = async_std::task::spawn(async move {
         while let Some(cand) = rgatherer.next().await {
             if config.local.transports.contains(&cand.transport_type) {
-                lstream.add_remote_candidate(&cand).unwrap();
+                lstream.add_remote_candidate(cand).unwrap();
             }
         }
         lstream.end_of_remote_candidates();
@@ -125,7 +125,7 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     while let Some(msg) = s.next().await {
         if matches!(
             msg,
-            AgentMessage::ComponentStateChange(_, ComponentState::Connected)
+            AgentMessage::ComponentStateChange(_component, ComponentConnectionState::Connected)
         ) {
             n_completed += 1;
             if n_completed == 2 {

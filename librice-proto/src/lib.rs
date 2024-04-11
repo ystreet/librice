@@ -9,11 +9,17 @@
 #[macro_use]
 extern crate tracing;
 
+pub mod agent;
 pub mod candidate;
-pub mod conncheck;
+pub mod component;
+pub(crate) mod conncheck;
 pub mod gathering;
+pub mod stream;
 pub mod stun;
 mod utils;
+
+#[cfg(feature = "capi")]
+pub mod capi;
 
 #[cfg(test)]
 pub(crate) mod tests {

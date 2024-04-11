@@ -17,7 +17,7 @@ librice-proto = { path = "../librice-proto" }
 async-std = "1"
 async-io = "1"
 byteorder.workspace = true
-get_if_addrs = "0.5"
+get_if_addrs.workspace = true
 futures = "0.3"
 futures-timer = "3"
 rand.workspace = true

@@ -12,10 +12,14 @@ repository.workspace = true
 rust-version.workspace = true
 workspace = ".."
 
+[features]
+capi = ["libc", "socket2", "tracing-subscriber", "get_if_addrs"]
+
 [dependencies]
 arbitrary = { workspace = true, optional = true }
 byteorder.workspace = true
 crc = "3"
+get_if_addrs = { workspace = true, optional = true }
 hmac = "0.12"
 md-5 = "0.10"
 nom = "7"
@@ -23,6 +27,17 @@ rand.workspace = true
 sha-1 = "0.10"
 sha2 = "0.10"
 tracing.workspace = true
+libc = { version = "0.2", optional = true }
+socket2 = { version = "0.5", optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
+
+[package.metadata.capi]
+min_version = "0.9.21"
+
+[package.metadata.capi.library]
+name = "rice-proto"
+version_suffix_components = 1
+rustflags = "-Cpanic=abort"

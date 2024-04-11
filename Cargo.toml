@@ -1,5 +1,5 @@
 [workspace]
-members = ["librice", "librice-proto", "fuzz"]
+members = ["librice-proto", "librice", "fuzz"]
 default-members = ["librice", "librice-proto"]
 resolver = "2"
 
@@ -12,6 +12,7 @@ rust-version = "1.68.2"
 [workspace.dependencies]
 arbitrary = { version = "1", features = ["derive"] }
 byteorder = "1"
+get_if_addrs = "0.5"
 rand = "0.8"
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["std", "env-filter"] }

@@ -111,6 +111,7 @@ pub async fn stund_tcp(listener: TcpListener) -> std::io::Result<()> {
     let mut incoming = listener.incoming();
     let local_addr = listener.local_addr()?;
     while let Some(Ok(mut stream)) = incoming.next().await {
+        debug!("stund incoming tcp connection");
         async_std::task::spawn(async move {
             let remote_addr = stream.peer_addr().unwrap();
             let tcp_stun_agent =
@@ -125,6 +126,7 @@ pub async fn stund_tcp(listener: TcpListener) -> std::io::Result<()> {
                     break;
                 }
                 data.truncate(size);
+                debug!("stund tcp received {size} bytes");
                 let replies = tcp_stun_agent
                     .handle_incoming_data(&data, remote_addr)
                     .unwrap();
