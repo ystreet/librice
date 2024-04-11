@@ -42,10 +42,11 @@ pub struct Candidate {
 
 /// The type of the candidate
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
 pub enum CandidateType {
     /// The candidate is a local network interface
     Host,
-    /// The candidate was discovered from an incoming data
+    /// The candidate was discovered from incoming data
     PeerReflexive,
     /// The candidate was discovered by asking an external server (STUN/TURN)
     ServerReflexive,
@@ -166,7 +167,7 @@ impl CandidateBuilder {
     /// # use std::net::SocketAddr;
     /// let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
     /// let candidate = Candidate::builder(
-    ///     0,
+    ///     1,
     ///     CandidateType::Host,
     ///     TransportType::Udp,
     ///     "foundation",
@@ -174,7 +175,7 @@ impl CandidateBuilder {
     /// )
     /// .priority(1234)
     /// .build();
-    /// assert_eq!(candidate.to_sdp_string(), "candidate foundation 0 UDP 1234 127.0.0.1 2345 host")
+    /// assert_eq!(candidate.to_sdp_string(), "a=candidate:foundation 1 UDP 1234 127.0.0.1 2345 typ host")
     /// ```
     pub fn build(self) -> Candidate {
         let base_address = self.base_address.unwrap_or(self.address);
@@ -253,7 +254,7 @@ impl Candidate {
     /// # use std::net::SocketAddr;
     /// let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
     /// let candidate = Candidate::builder(
-    ///     0,
+    ///     1,
     ///     CandidateType::Host,
     ///     TransportType::Udp,
     ///     "foundation",
@@ -261,7 +262,7 @@ impl Candidate {
     /// )
     /// .priority(1234)
     /// .build();
-    /// assert_eq!(candidate.to_sdp_string(), "candidate foundation 0 UDP 1234 127.0.0.1 2345 host")
+    /// assert_eq!(candidate.to_sdp_string(), "a=candidate:foundation 1 UDP 1234 127.0.0.1 2345 typ host")
     /// ```
     pub fn builder(
         component_id: usize,
@@ -293,7 +294,7 @@ impl Candidate {
     /// # use std::net::SocketAddr;
     /// let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
     /// let candidate = Candidate::builder(
-    ///     0,
+    ///     1,
     ///     CandidateType::Host,
     ///     TransportType::Udp,
     ///     "foundation",
@@ -301,10 +302,10 @@ impl Candidate {
     /// )
     /// .priority(1234)
     /// .build();
-    /// assert_eq!(candidate.to_sdp_string(), "candidate foundation 0 UDP 1234 127.0.0.1 2345 host")
+    /// assert_eq!(candidate.to_sdp_string(), "a=candidate:foundation 1 UDP 1234 127.0.0.1 2345 typ host")
     /// ```
     pub fn to_sdp_string(&self) -> String {
-        let mut ret = String::from("candidate ")
+        let mut ret = String::from("a=candidate:")
             + &self.foundation
             + " "
             + &self.component_id.to_string()
@@ -316,7 +317,7 @@ impl Candidate {
             + &self.address.ip().to_string()
             + " "
             + &self.address.port().to_string()
-            + " "
+            + " typ "
             + &self.candidate_type.to_string();
 
         if let Some(related_address) = self.related_address {
@@ -502,9 +503,8 @@ mod parse {
 
     // https://datatracker.ietf.org/doc/html/rfc8839#section-5.1
     fn parse_candidate(s: &str) -> Result<Candidate, ParseCandidateError> {
-        let (s, _) = tag::<_, _, nom::error::Error<_>>("candidate")(s)
+        let (s, _) = tag::<_, _, nom::error::Error<_>>("a=candidate:")(s)
             .map_err(|_| ParseCandidateError::NotCandidate)?;
-        let s = skip_spaces(s)?;
         let (s, foundation) = take_while_m_n::<_, _, nom::error::Error<_>>(1, 32, is_ice_char)(s)
             .map_err(|_| ParseCandidateError::BadFoundation)?;
         let s = skip_spaces(s)?;
@@ -537,6 +537,9 @@ mod parse {
         )(s)
         .map_err(|_| ParseCandidateError::BadAddress)?;
         let address = SocketAddr::new(connection_address, port);
+        let s = skip_spaces(s)?;
+        let (s, _) = tag::<_, _, nom::error::Error<_>>("typ")(s)
+            .map_err(|_| ParseCandidateError::BadCandidateType)?;
         let s = skip_spaces(s)?;
         let (s, candidate_type) = map_res(
             take_while1::<_, _, nom::error::Error<_>>(is_alphabetic),
@@ -621,7 +624,7 @@ mod parse {
 pub struct CandidatePair {
     /// The local [`Candidate`]
     pub local: Candidate,
-    /// The remote ['Candidate']
+    /// The remote [`Candidate`]
     pub remote: Candidate,
 }
 
@@ -640,7 +643,7 @@ impl CandidatePair {
     /// # use std::net::SocketAddr;
     /// let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
     /// let candidate = Candidate::builder(
-    ///     0,
+    ///     1,
     ///     CandidateType::Host,
     ///     TransportType::Udp,
     ///     "foundation",
@@ -719,7 +722,7 @@ mod tests {
         let remote_addr: SocketAddr = "127.0.0.1:9100".parse().unwrap();
         let pair = CandidatePair::new(
             Candidate::builder(
-                0,
+                1,
                 CandidateType::Host,
                 TransportType::Udp,
                 "foundation",
@@ -727,7 +730,7 @@ mod tests {
             )
             .build(),
             Candidate::builder(
-                0,
+                1,
                 CandidateType::Host,
                 TransportType::Udp,
                 "foundation",
@@ -795,13 +798,13 @@ mod tests {
         #[test]
         fn udp_candidate() {
             init();
-            let s = "candidate 0 0 UDP 1234 127.0.0.1 2345 host";
+            let s = "a=candidate:0 1 UDP 1234 127.0.0.1 2345 typ host";
             let cand = Candidate::from_str(s).unwrap();
             debug!("cand {:?}", cand);
             let addr = "127.0.0.1:2345".parse().unwrap();
             assert_eq!(
                 cand,
-                Candidate::builder(0, CandidateType::Host, TransportType::Udp, "0", addr)
+                Candidate::builder(1, CandidateType::Host, TransportType::Udp, "0", addr)
                     .priority(1234)
                     .build()
             );
@@ -818,7 +821,7 @@ mod tests {
         fn candidate_missing_space() {
             init();
             assert!(matches!(
-                Candidate::from_str("candidate0 0 UDP 1234 127.0.0.1 2345 host"),
+                Candidate::from_str("a=candidate:0 1UDP 1234 127.0.0.1 2345 typ host"),
                 Err(ParseCandidateError::Malformed)
             ));
         }
@@ -826,7 +829,7 @@ mod tests {
         fn candidate_bad_foundation() {
             init();
             assert!(matches!(
-                Candidate::from_str("candidate = 0 UDP 1234 127.0.0.1 2345 host"),
+                Candidate::from_str("a=candidate:= 1 UDP 1234 127.0.0.1 2345 typ host"),
                 Err(ParseCandidateError::BadFoundation)
             ));
         }
@@ -834,7 +837,7 @@ mod tests {
         fn candidate_bad_component_id() {
             init();
             assert!(matches!(
-                Candidate::from_str("candidate 0 component-id UDP 1234 127.0.0.1 2345 host"),
+                Candidate::from_str("a=candidate:0 component-id UDP 1234 127.0.0.1 2345 type host"),
                 Err(ParseCandidateError::BadComponentId)
             ));
         }
@@ -842,7 +845,7 @@ mod tests {
         fn candidate_bad_transport_type() {
             init();
             assert!(matches!(
-                Candidate::from_str("candidate 0 0 transport 1234 127.0.0.1 2345 host"),
+                Candidate::from_str("a=candidate:0 1 transport 1234 127.0.0.1 2345 typ host"),
                 Err(ParseCandidateError::BadTransportType)
             ));
         }
@@ -850,7 +853,7 @@ mod tests {
         fn candidate_bad_priority() {
             init();
             assert!(matches!(
-                Candidate::from_str("candidate 0 0 UDP priority 127.0.0.1 2345 host"),
+                Candidate::from_str("a=candidate:0 1 UDP priority 127.0.0.1 2345 typ host"),
                 Err(ParseCandidateError::BadPriority)
             ));
         }
@@ -858,7 +861,7 @@ mod tests {
         fn candidate_bad_address() {
             init();
             assert!(matches!(
-                Candidate::from_str("candidate 0 0 UDP 1234 address 2345 host"),
+                Candidate::from_str("a=candidate:0 1 UDP 1234 address 2345 typ host"),
                 Err(ParseCandidateError::BadAddress)
             ));
         }
@@ -866,7 +869,7 @@ mod tests {
         fn candidate_bad_port() {
             init();
             assert!(matches!(
-                Candidate::from_str("candidate 0 0 UDP 1234 127.0.0.1 port host"),
+                Candidate::from_str("a=candidate:0 1 UDP 1234 127.0.0.1 port type host"),
                 Err(ParseCandidateError::BadAddress)
             ));
         }
@@ -874,7 +877,7 @@ mod tests {
         fn candidate_bad_candidate_type() {
             init();
             assert!(matches!(
-                Candidate::from_str("candidate 0 0 UDP 1234 127.0.0.1 2345 candidate-type"),
+                Candidate::from_str("a=candidate:0 1 UDP 1234 127.0.0.1 2345 candidate-type"),
                 Err(ParseCandidateError::BadCandidateType)
             ));
         }
@@ -882,9 +885,9 @@ mod tests {
         fn host_candidate_sdp_string() {
             init();
             let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
-            let cand_sdp_str = "candidate foundation 0 UDP 1234 127.0.0.1 9000 host";
+            let cand_sdp_str = "a=candidate:foundation 1 UDP 1234 127.0.0.1 9000 typ host";
             let cand = Candidate::builder(
-                0,
+                1,
                 CandidateType::Host,
                 TransportType::Udp,
                 "foundation",
@@ -901,7 +904,7 @@ mod tests {
             init();
             let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
             let cand = Candidate::builder(
-                0,
+                1,
                 CandidateType::Host,
                 TransportType::Tcp,
                 "foundation",
@@ -910,7 +913,8 @@ mod tests {
             .priority(1234)
             .tcp_type(TcpType::Active)
             .build();
-            let cand_str = "candidate foundation 0 TCP 1234 127.0.0.1 2345 host tcptype active";
+            let cand_str =
+                "a=candidate:foundation 1 TCP 1234 127.0.0.1 2345 typ host tcptype active";
             let parsed_cand = Candidate::from_str(cand_str).unwrap();
             assert_eq!(cand, parsed_cand);
             assert_eq!(cand_str, cand.to_sdp_string());
@@ -919,7 +923,7 @@ mod tests {
         fn tcp_candidate_without_tcp_type() {
             init();
             assert!(matches!(
-                Candidate::from_str("candidate foundation 0 TCP 1234 127.0.0.1 2345 host"),
+                Candidate::from_str("a=candidate:foundation 1 TCP 1234 127.0.0.1 2345 typ host"),
                 Err(ParseCandidateError::BadTransportType)
             ));
         }
@@ -929,7 +933,7 @@ mod tests {
             let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
             let related_addr: SocketAddr = "192.168.0.1:9876".parse().unwrap();
             let cand = Candidate::builder(
-                0,
+                1,
                 CandidateType::Host,
                 TransportType::Udp,
                 "foundation",
@@ -939,7 +943,7 @@ mod tests {
             .related_address(related_addr)
             .build();
             let cand_str =
-                "candidate foundation 0 UDP 1234 127.0.0.1 2345 host raddr 192.168.0.1 rport 9876";
+                "a=candidate:foundation 1 UDP 1234 127.0.0.1 2345 typ host raddr 192.168.0.1 rport 9876";
             let parsed_cand = Candidate::from_str(cand_str).unwrap();
             assert_eq!(cand, parsed_cand);
             assert_eq!(cand_str, cand.to_sdp_string());
@@ -949,7 +953,7 @@ mod tests {
             init();
             let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
             let cand = Candidate::builder(
-                0,
+                1,
                 CandidateType::Host,
                 TransportType::Udp,
                 "foundation",
@@ -960,7 +964,7 @@ mod tests {
             .extension("key2", "value2")
             .build();
             let cand_str =
-                "candidate foundation 0 UDP 1234 127.0.0.1 2345 host key1 value1 key2 value2";
+                "a=candidate:foundation 1 UDP 1234 127.0.0.1 2345 typ host key1 value1 key2 value2";
             let parsed_cand = Candidate::from_str(cand_str).unwrap();
             assert_eq!(cand, parsed_cand);
             assert_eq!(cand_str, cand.to_sdp_string());

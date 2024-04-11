@@ -9,14 +9,13 @@
 //! A [`Component`] in an ICE [`Stream`](crate::stream::Stream)
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
-use std::net::SocketAddr;
 use std::task::{Poll, Waker};
 
 use librice_proto::candidate::CandidatePair;
 
-pub use librice_proto::conncheck::ComponentState;
+pub use librice_proto::component::ComponentConnectionState;
 
 use crate::agent::AgentError;
 use crate::socket::StunChannel;
@@ -29,13 +28,21 @@ pub const RTCP: usize = 2;
 /// A [`Component`] within an ICE [`Stream`](crate::stream::Stream`)
 #[derive(Debug, Clone)]
 pub struct Component {
+    weak_agent: Weak<Mutex<librice_proto::agent::Agent>>,
+    stream_id: usize,
     pub(crate) id: usize,
-    inner: Arc<Mutex<ComponentInner>>,
+    pub(crate) inner: Arc<Mutex<ComponentInner>>,
 }
 
 impl Component {
-    pub(crate) fn new(id: usize) -> Self {
+    pub(crate) fn new(
+        weak_agent: Weak<Mutex<librice_proto::agent::Agent>>,
+        stream_id: usize,
+        id: usize,
+    ) -> Self {
         Self {
+            weak_agent,
+            stream_id,
             id,
             inner: Arc::new(Mutex::new(ComponentInner::new(id))),
         }
@@ -53,26 +60,31 @@ impl Component {
     /// The initial state is `ComponentState::New`
     ///
     /// ```
-    /// # use librice::component::{Component, ComponentState};
+    /// # use librice::component::{Component, ComponentConnectionState};
     /// # use librice::agent::Agent;
     /// # use librice::stream::Stream;
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
     /// let component = stream.add_component().unwrap();
-    /// assert_eq!(component.state(), ComponentState::New);
+    /// assert_eq!(component.state(), ComponentConnectionState::New);
     /// ```
-    pub fn state(&self) -> ComponentState {
-        let inner = self.inner.lock().unwrap();
-        inner.state
-    }
-
-    pub(crate) fn set_state(&self, state: ComponentState) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.set_state(state);
+    pub fn state(&self) -> ComponentConnectionState {
+        let Some(agent) = self.weak_agent.upgrade() else {
+            return ComponentConnectionState::Failed;
+        };
+        let agent = agent.lock().unwrap();
+        if let Some(stream) = agent.stream(self.stream_id) {
+            stream
+                .component(self.id)
+                .map(|component| component.state())
+                .unwrap_or(ComponentConnectionState::Failed)
+        } else {
+            ComponentConnectionState::Failed
+        }
     }
 
     /// Send data to the peer using the established communication channel.  This will not succeed
-    /// until the component is in the [`Connected`](ComponentState::Connected) state.
+    /// until the component is in the [`Connected`](ComponentConnectionState::Connected) state.
     pub async fn send(&self, data: &[u8]) -> Result<(), AgentError> {
         let (local_agent, channel, to) = {
             let inner = self.inner.lock().unwrap();
@@ -113,27 +125,11 @@ impl Component {
             .clone()
             .map(|selected| selected.proto.candidate_pair().clone())
     }
-
-    #[tracing::instrument(
-        name = "component_incoming_data"
-        skip(self, data)
-        fields(
-            data.len = data.len()
-        )
-    )]
-    pub(crate) fn handle_incoming_data(&self, data: Vec<u8>, _from: SocketAddr) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.received_data.push_back(data);
-        if let Some(waker) = inner.recv_waker.take() {
-            waker.wake();
-        }
-    }
 }
 
 #[derive(Debug)]
-struct ComponentInner {
+pub(crate) struct ComponentInner {
     id: usize,
-    state: ComponentState,
     selected_pair: Option<SelectedPair>,
     received_data: VecDeque<Vec<u8>>,
     recv_waker: Option<Waker>,
@@ -143,21 +139,9 @@ impl ComponentInner {
     fn new(id: usize) -> Self {
         Self {
             id,
-            state: ComponentState::New,
             selected_pair: None,
             received_data: VecDeque::default(),
             recv_waker: None,
-        }
-    }
-
-    #[tracing::instrument(name = "set_component_state", level = "debug", skip(self, state))]
-    fn set_state(&mut self, state: ComponentState) -> bool {
-        if self.state != state {
-            debug!(old_state = ?self.state, new_state = ?state, "setting");
-            self.state = state;
-            true
-        } else {
-            false
         }
     }
 
@@ -170,6 +154,20 @@ impl ComponentInner {
     fn set_selected_pair(&mut self, selected: SelectedPair) {
         debug!("setting");
         self.selected_pair = Some(selected);
+    }
+
+    #[tracing::instrument(
+        name = "component_incoming_data"
+        skip(self, data)
+        fields(
+            data.len = data.len()
+        )
+    )]
+    pub(crate) fn handle_incoming_data(&mut self, data: Vec<u8>) {
+        self.received_data.push_back(data);
+        if let Some(waker) = self.recv_waker.take() {
+            waker.wake();
+        }
     }
 }
 
@@ -196,12 +194,12 @@ impl futures::Stream for ComponentRecv {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SelectedPair {
-    proto: librice_proto::conncheck::SelectedPair,
+    proto: librice_proto::component::SelectedPair,
     socket: StunChannel,
 }
 
 impl SelectedPair {
-    pub(crate) fn new(pair: librice_proto::conncheck::SelectedPair, socket: StunChannel) -> Self {
+    pub(crate) fn new(pair: librice_proto::component::SelectedPair, socket: StunChannel) -> Self {
         Self {
             proto: pair,
             socket,
@@ -230,7 +228,7 @@ mod tests {
         let agent = Agent::builder().build();
         let s = agent.add_stream();
         let c = s.add_component().unwrap();
-        assert_eq!(c.state(), ComponentState::New);
+        assert_eq!(c.state(), ComponentConnectionState::New);
     }
 
     #[test]
@@ -256,7 +254,7 @@ mod tests {
                     .build();
             let candidate_pair = CandidatePair::new(local_cand, remote_cand);
             let selected_pair = SelectedPair {
-                proto: librice_proto::conncheck::SelectedPair::new(candidate_pair, local_agent),
+                proto: librice_proto::component::SelectedPair::new(candidate_pair, local_agent),
                 socket: local_channel,
             };
 

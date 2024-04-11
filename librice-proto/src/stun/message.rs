@@ -677,6 +677,7 @@ impl Message {
         orig_data: &[u8],
         credentials: &MessageIntegrityCredentials,
     ) -> Result<(), StunError> {
+        debug!("using credentials {credentials:?}");
         let raw_sha1 = self.raw_attribute(MESSAGE_INTEGRITY);
         let raw_sha256 = self.raw_attribute(MESSAGE_INTEGRITY_SHA256);
         let (algo, msg_hmac) = match (raw_sha1, raw_sha256) {
@@ -736,7 +737,10 @@ impl Message {
                 // but with a length field including the MESSAGE_INTEGRITY attribute...
                 let key = credentials.make_hmac_key();
                 let mut hmac_data = orig_data[..data_offset].to_vec();
-                BigEndian::write_u16(&mut hmac_data[2..4], data_offset as u16 + 24 - 20);
+                BigEndian::write_u16(
+                    &mut hmac_data[2..4],
+                    data_offset as u16 + attr.length() + 4 - 20,
+                );
                 return MessageIntegritySha256::verify(&hmac_data, &key, &msg_hmac);
             }
             let padded_len = padded_attr_size(&attr);
@@ -757,11 +761,11 @@ impl Message {
 
     // message-integrity is computed using all the data up to (exclusive of) the
     // MESSAGE-INTEGRITY but with a length field including the MESSAGE-INTEGRITY attribute...
-    fn integrity_bytes_from_message(&self) -> Vec<u8> {
+    fn integrity_bytes_from_message(&self, extra_len: u16) -> Vec<u8> {
         let mut bytes = self.to_bytes();
         // rewrite the length to include the message-integrity attribute
         let existing_len = BigEndian::read_u16(&bytes[2..4]);
-        BigEndian::write_u16(&mut bytes[2..4], existing_len + 24);
+        BigEndian::write_u16(&mut bytes[2..4], existing_len + extra_len);
         bytes
     }
 
@@ -812,15 +816,16 @@ impl Message {
             return Err(StunError::AlreadyExists);
         }
 
-        let bytes = self.integrity_bytes_from_message();
         let key = credentials.make_hmac_key();
         match algorithm {
             IntegrityAlgorithm::Sha1 => {
+                let bytes = self.integrity_bytes_from_message(24);
                 let integrity = MessageIntegrity::compute(&bytes, &key)?;
                 self.attributes
                     .push(MessageIntegrity::new(integrity).into());
             }
             IntegrityAlgorithm::Sha256 => {
+                let bytes = self.integrity_bytes_from_message(36);
                 let integrity = MessageIntegritySha256::compute(&bytes, &key)?;
                 self.attributes
                     .push(MessageIntegritySha256::new(integrity.as_slice())?.into());

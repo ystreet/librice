@@ -135,29 +135,23 @@ impl StunAgent {
     }
 
     /// Perform any operations needed to be able to send data to a peer
-    pub fn send_data(&self, bytes: &[u8], to: SocketAddr) -> Transmit {
-        let data = match self.transport {
-            TransportType::Udp => bytes.to_vec(),
+    pub fn send_data<'a>(&self, bytes: &'a [u8], to: SocketAddr) -> Transmit<'a> {
+        match self.transport {
+            TransportType::Udp => Transmit::new(bytes, self.transport, self.local_addr, to),
             TransportType::Tcp => {
                 let mut data = Vec::with_capacity(bytes.len() + 2);
                 data.resize(2, 0);
                 BigEndian::write_u16(&mut data, bytes.len() as u16);
                 data.extend(bytes);
-                data
+                Transmit::new_owned(data.into_boxed_slice(), self.transport, self.local_addr, to)
             }
-        };
-        Transmit {
-            data,
-            transport: self.transport,
-            from: self.local_addr,
-            to,
         }
     }
 
     /// Perform any operations needed to be able to send a [`Message`] to a peer
-    pub fn send(&self, msg: Message, to: SocketAddr) -> Result<Transmit, StunError> {
+    pub fn send(&self, msg: Message, to: SocketAddr) -> Result<Transmit<'_>, StunError> {
         let data = msg.to_bytes();
-        Ok(self.send_data(&data, to))
+        Ok(self.send_data(&data, to).into_owned())
     }
 
     fn parse_chunk(&self, data: &[u8], from: SocketAddr) -> Result<HandleStunReply, StunError> {
@@ -198,7 +192,10 @@ impl StunAgent {
         name = "stun_incoming_data"
         level = "info",
         skip(self, data),
-        fields(stun_id = self.id)
+        fields(
+            stun_id = self.id,
+            to = ?self.local_addr()
+        )
     )]
     pub fn handle_incoming_data(
         &self,
@@ -327,11 +324,110 @@ impl TcpBuffer {
     }
 }
 
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct DataSlice<'a>(&'a [u8]);
+
+impl<'a> DataSlice<'a> {
+    pub fn take(self) -> &'a [u8] {
+        self.0
+    }
+
+    pub fn to_owned(&self) -> DataOwned {
+        DataOwned(self.0.into())
+    }
+}
+
+impl<'a> std::ops::Deref for DataSlice<'a> {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
+impl<'a> From<DataSlice<'a>> for &'a [u8] {
+    fn from(value: DataSlice<'a>) -> Self {
+        value.0
+    }
+}
+
+impl<'a> From<&'a [u8]> for DataSlice<'a> {
+    fn from(value: &'a [u8]) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct DataOwned(Box<[u8]>);
+
+impl DataOwned {
+    pub fn take(self) -> Box<[u8]> {
+        self.0
+    }
+}
+
+impl std::ops::Deref for DataOwned {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<DataOwned> for Box<[u8]> {
+    fn from(value: DataOwned) -> Self {
+        value.0
+    }
+}
+
+impl From<Box<[u8]>> for DataOwned {
+    fn from(value: Box<[u8]>) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Debug)]
+pub enum Data<'a> {
+    Borrowed(DataSlice<'a>),
+    Owned(DataOwned),
+}
+
+impl<'a> std::ops::Deref for Data<'a> {
+    type Target = [u8];
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Borrowed(data) => data.0,
+            Self::Owned(data) => &data.0,
+        }
+    }
+}
+
+impl<'a> Data<'a> {
+    fn into_owned<'b>(self) -> Data<'b> {
+        match self {
+            Self::Borrowed(data) => Data::Owned(data.to_owned()),
+            Self::Owned(data) => Data::Owned(data),
+        }
+    }
+}
+
+impl<'a> From<&'a [u8]> for Data<'a> {
+    fn from(value: &'a [u8]) -> Self {
+        Self::Borrowed(value.into())
+    }
+}
+
+impl<'a> From<Box<[u8]>> for Data<'a> {
+    fn from(value: Box<[u8]>) -> Self {
+        Self::Owned(value.into())
+    }
+}
+
 /// A piece of data that needs to, or has been transmitted
 #[derive(Debug)]
-pub struct Transmit {
+pub struct Transmit<'a> {
     /// The data blob
-    pub data: Vec<u8>,
+    pub data: Data<'a>,
     /// The transport for the transmission
     pub transport: TransportType,
     /// The source address of the transmission
@@ -340,15 +436,54 @@ pub struct Transmit {
     pub to: SocketAddr,
 }
 
+impl<'a> Transmit<'a> {
+    pub fn new(
+        data: impl Into<Data<'a>>,
+        transport: TransportType,
+        from: SocketAddr,
+        to: SocketAddr,
+    ) -> Self {
+        Self {
+            data: data.into(),
+            transport,
+            from,
+            to,
+        }
+    }
+
+    pub fn new_owned(
+        data: impl Into<Data<'a>>,
+        transport: TransportType,
+        from: SocketAddr,
+        to: SocketAddr,
+    ) -> Transmit<'static> {
+        Transmit {
+            data: data.into().into_owned(),
+            transport,
+            from,
+            to,
+        }
+    }
+
+    pub fn into_owned<'b>(self) -> Transmit<'b> {
+        Transmit {
+            data: self.data.into_owned().into(),
+            transport: self.transport,
+            from: self.from,
+            to: self.to,
+        }
+    }
+}
+
 /// Return value for [`StunRequest::poll`]
 #[derive(Debug)]
-pub enum StunRequestPollRet {
+pub enum StunRequestPollRet<'a> {
     /// Wait until the specified time has passed
     WaitUntil(Instant),
     /// The request has been cancelled and will not make further progress
     Cancelled,
     /// Send data using the specified 5-tuple
-    SendData(Transmit),
+    SendData(Transmit<'a>),
     /// A response for this request has been received.  No further progress will be made.
     Response(Message),
 }
@@ -439,9 +574,8 @@ impl StunRequest {
             .outstanding_requests
             .insert(self.0.msg.transaction_id(), weak_inner);
         drop(agent_inner);
-        let data = self.0.msg.to_bytes();
         Ok(StunRequestPollRet::SendData(
-            self.0.agent.send_data(&data, self.0.to),
+            self.0.agent.send(self.0.msg.clone(), self.0.to)?,
         ))
     }
 

@@ -10,53 +10,45 @@
 
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::task::{Poll, Waker};
 use std::time::Instant;
 
 use async_std::net::TcpStream;
 use futures::StreamExt;
-use librice_proto::gathering::{GatherRet, StunGatherer};
-use librice_proto::stun::agent::{HandleStunReply, StunAgent, StunError, Transmit};
+use librice_proto::gathering::GatherPoll;
+use librice_proto::stun::agent::{StunAgent, StunError, Transmit};
 use librice_proto::stun::TransportType;
 
 use crate::agent::{AgentError, AgentInner};
-use crate::component::Component;
+use crate::component::{Component, ComponentInner};
 use crate::gathering::{iface_sockets, GatherSocket};
 use crate::socket::{StunChannel, TcpChannel};
-use librice_proto::conncheck::*;
 
 use librice_proto::candidate::{Candidate, CandidatePair};
 //use crate::turn::agent::TurnCredentials;
 
-pub use librice_proto::conncheck::Credentials;
-
-static STREAM_COUNT: AtomicUsize = AtomicUsize::new(0);
+pub use librice_proto::stream::Credentials;
 
 /// An ICE [`Stream`]
 #[derive(Debug, Clone)]
 pub struct Stream {
-    id: usize,
-    pub(crate) state: Arc<Mutex<StreamState>>,
-    set: Arc<Mutex<ConnCheckListSet>>,
-    pub(crate) checklist_id: usize,
-    agent: Weak<Mutex<AgentInner>>,
-    transmit_send: async_std::channel::Sender<Transmit>,
+    weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
+    pub(crate) id: usize,
+    weak_agent_inner: Weak<Mutex<AgentInner>>,
+    transmit_send: async_std::channel::Sender<Transmit<'static>>,
+    pub(crate) inner: Arc<Mutex<StreamInner>>,
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct StreamState {
-    components: Vec<Option<Component>>,
-    local_credentials: Option<Credentials>,
-    remote_credentials: Option<Credentials>,
-    gather_state: GatherProgress,
-    gatherers: Vec<Gatherer>,
+pub(crate) struct StreamInner {
     sockets: Vec<StunChannel>,
     transmit_waker: Vec<Waker>,
+    components: Vec<Option<Component>>,
+    gather_waker: Option<Waker>,
 }
 
-impl StreamState {
+impl StreamInner {
     fn socket_for_5tuple(
         &self,
         transport: TransportType,
@@ -87,31 +79,25 @@ impl StreamState {
             }
         })
     }
-}
 
-#[derive(Debug, Default, PartialEq, Eq)]
-enum GatherProgress {
-    #[default]
-    New,
-    InProgress,
-    Completed,
-}
-
-#[derive(Debug)]
-struct Gatherer {
-    gatherer: StunGatherer,
+    fn component(&self, component_id: usize) -> Option<&Component> {
+        self.components
+            .get(component_id - 1)
+            .and_then(|c| c.as_ref())
+    }
 }
 
 /// A Future that completes the candidate gathering process.
 #[derive(Debug)]
 #[must_use = "futures/streams/sinks do nothing unless you `.await` or poll them"]
 pub struct Gather {
-    stream: Arc<Mutex<StreamState>>,
+    weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
+    weak_agent_inner: Weak<Mutex<AgentInner>>,
+    stream_id: usize,
+    stream: Arc<Mutex<StreamInner>>,
     timer: Option<Pin<Box<async_io::Timer>>>,
-    weak_set: Weak<Mutex<ConnCheckListSet>>,
-    checklist_id: usize,
-    transmit_send: async_std::channel::Sender<Transmit>,
-    pending_transmit_send: Option<Transmit>,
+    transmit_send: async_std::channel::Sender<Transmit<'static>>,
+    pending_transmit_send: Option<Transmit<'static>>,
 }
 
 impl futures::stream::Stream for Gather {
@@ -122,11 +108,7 @@ impl futures::stream::Stream for Gather {
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         let now = Instant::now();
-        let mut all_complete = true;
         let mut lowest_wait = None;
-        let Some(set) = self.weak_set.clone().upgrade() else {
-            return Poll::Ready(None);
-        };
         let transmit_send = self.transmit_send.clone();
         if let Some(transmit) = self.pending_transmit_send.take() {
             // if we are still trying to send some data for this gather, ensure it is sent
@@ -137,72 +119,55 @@ impl futures::stream::Stream for Gather {
                 self.pending_transmit_send = Some(transmit);
                 let mut stream = self.stream.lock().unwrap();
                 stream.transmit_waker.push(cx.waker().clone());
+                error!("gather pending cause transmit queue full");
                 return Poll::Pending;
             }
         }
         let weak_stream = Arc::downgrade(&self.stream);
-        let mut stream = self.stream.lock().unwrap();
-        stream.transmit_waker.push(cx.waker().clone());
         let mut pending_transmit_send = None;
-        for gather in stream.gatherers.iter_mut() {
-            match gather.gatherer.poll(now) {
-                Ok(GatherRet::Complete) => (),
-                Ok(GatherRet::NeedAgent(transport, _local_addr, server_addr)) => {
+        let Some(proto_agent) = self.weak_proto_agent.upgrade() else {
+            return Poll::Ready(None);
+        };
+        let weak_proto_agent = Arc::downgrade(&proto_agent);
+        let mut proto_agent = proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(self.stream_id).unwrap();
+
+        loop {
+            match proto_stream.poll_gather(now) {
+                Ok(GatherPoll::Complete) => {
+                    proto_stream.end_of_local_candidates();
+                    return Poll::Ready(None);
+                }
+                Ok(GatherPoll::NeedAgent(component_id, transport, local_addr, server_addr)) => {
+                    error!("gather need agent {transport:?} {server_addr:?}");
                     if transport == TransportType::Tcp {
-                        let waker = cx.waker().clone();
-                        let cid = gather.gatherer.component_id();
-                        let weak_stream = weak_stream.clone();
-                        async_std::task::spawn(async move {
-                            let tcp_stream = TcpStream::connect(server_addr).await;
-                            let channel = tcp_stream.as_ref().ok().map(|tcp_stream| {
-                                StunChannel::Tcp(TcpChannel::new(tcp_stream.clone()))
-                            });
-                            let agent = tcp_stream
-                                .map(|tcp_stream| {
-                                    StunAgent::builder(transport, tcp_stream.local_addr().unwrap())
-                                        .remote_addr(server_addr)
-                                        .build()
-                                })
-                                .map_err(librice_proto::stun::agent::StunError::IoError);
-                            let Some(stream) = weak_stream.upgrade() else {
-                                return;
-                            };
-                            let mut stream = stream.lock().unwrap();
-                            let Some(gather) = stream
-                                .gatherers
-                                .iter_mut()
-                                .find(|gather| gather.gatherer.component_id() == cid)
-                            else {
-                                return;
-                            };
-                            gather.gatherer.add_agent(transport, server_addr, agent);
-                            if let Some(channel) = channel {
-                                stream.sockets.push(channel);
-                            }
-                            waker.wake_by_ref();
-                        });
+                        Stream::handle_gather_tcp_connect(
+                            weak_stream.clone(),
+                            weak_proto_agent.clone(),
+                            self.weak_agent_inner.clone(),
+                            self.stream_id,
+                            component_id,
+                            local_addr,
+                            server_addr,
+                            cx.waker().clone(),
+                        );
+                        continue;
                     }
                 }
-                Ok(GatherRet::NewCandidate(cand)) => {
-                    drop(stream);
-                    let mut set = set.lock().unwrap();
-                    let checklist = set.list_mut(self.checklist_id).unwrap();
-                    //let socket = self.socket_for_addr(cand.transport_type, cand.base_address).unwrap().clone();
-                    checklist.add_local_candidate(cand.clone(), false);
+                Ok(GatherPoll::NewCandidate(cand)) => {
+                    proto_stream.add_local_candidate(cand.clone());
                     return Poll::Ready(Some(cand));
                 }
-                Ok(GatherRet::SendData(transmit)) => {
-                    all_complete = false;
+                Ok(GatherPoll::SendData(_component_id, transmit)) => {
                     if let Err(async_std::channel::TrySendError::Full(transmit)) =
-                        transmit_send.try_send(transmit)
+                        transmit_send.try_send(transmit.into_owned())
                     {
                         pending_transmit_send = Some(transmit);
-                        all_complete = false;
+                        error!("gather pending cause transmit queue full (reply)");
                         break;
                     }
                 }
-                Ok(GatherRet::WaitUntil(wait_time)) => {
-                    all_complete = false;
+                Ok(GatherPoll::WaitUntil(wait_time)) => {
                     match lowest_wait {
                         Some(wait) => {
                             if wait_time < wait {
@@ -211,25 +176,20 @@ impl futures::stream::Stream for Gather {
                         }
                         None => lowest_wait = Some(wait_time),
                     }
+                    error!("gather pending cause timeout");
+                    break;
                 }
                 Err(e) => warn!("error produced while gathering: {e:?}"),
             }
         }
-
-        if all_complete {
-            stream.gather_state = GatherProgress::Completed;
-            drop(stream);
-            if let Some(set) = self.weak_set.upgrade() {
-                let mut set = set.lock().unwrap();
-                let checklist = set.list_mut(self.checklist_id).unwrap();
-                checklist.end_of_local_candidates();
-            }
-            return Poll::Ready(None);
-        }
-        drop(stream);
+        self.stream.lock().unwrap().gather_waker = Some(cx.waker().clone());
+        drop(proto_agent);
 
         if let Some(pending_transmit) = pending_transmit_send {
             self.pending_transmit_send = Some(pending_transmit);
+            let mut stream = self.stream.lock().unwrap();
+            stream.transmit_waker.push(cx.waker().clone());
+            error!("gather pending cause transmit queue full (handling)");
             return Poll::Pending;
         }
 
@@ -241,37 +201,38 @@ impl futures::stream::Stream for Gather {
             if core::future::Future::poll(self.as_mut().timer.as_mut().unwrap().as_mut(), cx)
                 .is_pending()
             {
+                error!("gather pending cause timeout pending");
                 return Poll::Pending;
             }
             // timeout value passed, rerun our loop which will make more progress
             cx.waker().wake_by_ref();
+        } else {
+            error!("gather pending cause unknown");
         }
-
         Poll::Pending
     }
 }
 
 impl Stream {
     pub(crate) fn new(
-        agent: Weak<Mutex<AgentInner>>,
-        set: Arc<Mutex<ConnCheckListSet>>,
-        checklist_id: usize,
+        weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
+        weak_agent_inner: Weak<Mutex<AgentInner>>,
+        id: usize,
     ) -> Self {
-        let id = STREAM_COUNT.fetch_add(1, Ordering::SeqCst);
-        let state = Arc::new(Mutex::new(StreamState::default()));
+        let inner = Arc::new(Mutex::new(StreamInner::default()));
         let (transmit_send, mut transmit_recv) = async_std::channel::bounded::<Transmit>(16);
-        let weak_state = Arc::downgrade(&state);
+        let weak_inner = Arc::downgrade(&inner);
         async_std::task::spawn(async move {
             while let Some(transmit) = transmit_recv.next().await {
-                let Some(stream) = weak_state.upgrade() else {
+                let Some(inner) = weak_inner.upgrade() else {
                     break;
                 };
                 let socket = {
-                    let mut stream = stream.lock().unwrap();
-                    while let Some(waker) = stream.transmit_waker.pop() {
+                    let mut inner = inner.lock().unwrap();
+                    while let Some(waker) = inner.transmit_waker.pop() {
                         waker.wake_by_ref();
                     }
-                    stream
+                    inner
                         .socket_for_5tuple(transmit.transport, transmit.from, transmit.to)
                         .cloned()
                 };
@@ -288,12 +249,11 @@ impl Stream {
             }
         });
         Self {
+            weak_proto_agent,
             id,
-            set,
-            checklist_id,
-            state,
-            agent,
+            weak_agent_inner,
             transmit_send,
+            inner,
         }
     }
 
@@ -317,84 +277,22 @@ impl Stream {
     /// let component = stream.add_component().unwrap();
     /// assert_eq!(component.id(), component::RTP);
     /// ```
-    #[tracing::instrument(
-        name = "stream_add_component",
-        skip(self),
-        fields(
-            stream.id = self.id
-        )
-    )]
     pub fn add_component(&self) -> Result<Component, AgentError> {
-        let mut state = self.state.lock().unwrap();
-        let index = state
-            .components
-            .iter()
-            .enumerate()
-            .find(|c| c.1.is_none())
-            .unwrap_or((state.components.len(), &None))
-            .0;
-        info!("adding component {}", index + 1);
-        if state.components.get(index).is_some() {
-            return Err(AgentError::AlreadyExists);
-        }
-        while state.components.len() <= index {
-            state.components.push(None);
-        }
-        let component = Component::new(index + 1);
-        state.components[index] = Some(component.clone());
-        let mut set = self.set.lock().unwrap();
-        let checklist = set.list_mut(self.checklist_id).unwrap();
-        checklist.add_component(component.id());
-        info!("Added component at index {}", index);
-        Ok(component)
-    }
-
-    /// Remove a `Component` from this stream.  If the index doesn't exist or a component is not
-    /// available at that index, an error is returned
-    ///
-    /// # Examples
-    ///
-    /// Remove a `Component`
-    ///
-    /// ```
-    /// # use librice::agent::Agent;
-    /// # use librice::component;
-    /// # use librice::component::Component;
-    /// let agent = Agent::default();
-    /// let stream = agent.add_stream();
-    /// let component = stream.add_component().unwrap();
-    /// assert_eq!(component.id(), component::RTP);
-    /// assert!(stream.remove_component(component::RTP).is_ok());
-    /// ```
-    ///
-    /// Removing a `Component` that was never added will return an error
-    ///
-    /// ```
-    /// # use librice::agent::{Agent, AgentError};
-    /// # use librice::component;
-    /// # use librice::component::Component;
-    /// let agent = Agent::default();
-    /// let stream = agent.add_stream();
-    /// assert!(matches!(stream.remove_component(component::RTP), Err(AgentError::ResourceNotFound)));
-    /// ```
-    // Should this really be public API?
-    pub fn remove_component(&self, component_id: usize) -> Result<(), AgentError> {
-        let mut state = self.state.lock().unwrap();
-        if component_id < 1 {
-            return Err(AgentError::ResourceNotFound);
-        }
-        let index = component_id - 1;
-        let component = state
-            .components
-            .get(index)
-            .ok_or(AgentError::ResourceNotFound)?
-            .as_ref()
+        let proto_agent = self
+            .weak_proto_agent
+            .upgrade()
             .ok_or(AgentError::ResourceNotFound)?;
-        let mut set = self.set.lock().unwrap();
-        let checklist = set.list_mut(self.checklist_id).unwrap();
-        checklist.remove_component(component.id());
-        state.components[index] = None;
-        Ok(())
+        let mut proto_agent = proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(self.id).unwrap();
+        let index = proto_stream.add_component()? - 1;
+
+        let mut inner = self.inner.lock().unwrap();
+        while inner.components.len() <= index {
+            inner.components.push(None);
+        }
+        let component = Component::new(self.weak_proto_agent.clone(), self.id, index + 1);
+        inner.components[index] = Some(component.clone());
+        Ok(component)
     }
 
     /// Retrieve a `Component` from this stream.  If the index doesn't exist or a component is not
@@ -426,11 +324,11 @@ impl Stream {
     /// assert!(stream.component(component::RTP).is_none());
     /// ```
     pub fn component(&self, index: usize) -> Option<Component> {
-        let state = self.state.lock().unwrap();
         if index < 1 {
             return None;
         }
-        state
+        let inner = self.inner.lock().unwrap();
+        inner
             .components
             .get(index - 1)
             .unwrap_or(&None)
@@ -451,19 +349,13 @@ impl Stream {
     /// let credentials = Credentials {ufrag: "1".to_owned(), passwd: "2".to_owned()};
     /// stream.set_local_credentials(credentials);
     /// ```
-    #[tracing::instrument(
-        skip(self),
-        fields(
-            stream.id = self.id
-        )
-    )]
     pub fn set_local_credentials(&self, credentials: Credentials) {
-        info!("setting");
-        let mut state = self.state.lock().unwrap();
-        state.local_credentials = Some(credentials.clone());
-        let mut set = self.set.lock().unwrap();
-        let checklist = set.list_mut(self.checklist_id).unwrap();
-        checklist.set_local_credentials(credentials);
+        let Some(proto_agent) = self.weak_proto_agent.upgrade() else {
+            return;
+        };
+        let mut proto_agent = proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(self.id).unwrap();
+        proto_stream.set_local_credentials(credentials)
     }
 
     /// Retreive the previouly set local ICE credentials for this `Stream`.
@@ -480,8 +372,10 @@ impl Stream {
     /// assert_eq!(stream.local_credentials(), Some(credentials));
     /// ```
     pub fn local_credentials(&self) -> Option<Credentials> {
-        let state = self.state.lock().unwrap();
-        state.local_credentials.clone()
+        let proto_agent = self.weak_proto_agent.upgrade()?;
+        let proto_agent = proto_agent.lock().unwrap();
+        let proto_stream = proto_agent.stream(self.id)?;
+        proto_stream.local_credentials()
     }
 
     /// Set remote ICE credentials for this `Stream`.
@@ -497,19 +391,13 @@ impl Stream {
     /// let credentials = Credentials {ufrag: "1".to_owned(), passwd: "2".to_owned()};
     /// stream.set_remote_credentials(credentials);
     /// ```
-    #[tracing::instrument(
-        skip(self),
-        fields(
-            stream.id = self.id()
-        )
-    )]
     pub fn set_remote_credentials(&self, credentials: Credentials) {
-        info!("setting");
-        let mut state = self.state.lock().unwrap();
-        state.remote_credentials = Some(credentials.clone());
-        let mut set = self.set.lock().unwrap();
-        let checklist = set.list_mut(self.checklist_id).unwrap();
-        checklist.set_remote_credentials(credentials)
+        let Some(proto_agent) = self.weak_proto_agent.upgrade() else {
+            return;
+        };
+        let mut proto_agent = proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(self.id).unwrap();
+        proto_stream.set_remote_credentials(credentials)
     }
 
     /// Retreive the previouly set remote ICE credentials for this `Stream`.
@@ -526,8 +414,10 @@ impl Stream {
     /// assert_eq!(stream.remote_credentials(), Some(credentials));
     /// ```
     pub fn remote_credentials(&self) -> Option<Credentials> {
-        let state = self.state.lock().unwrap();
-        state.remote_credentials.clone()
+        let proto_agent = self.weak_proto_agent.upgrade()?;
+        let proto_agent = proto_agent.lock().unwrap();
+        let proto_stream = proto_agent.stream(self.id)?;
+        proto_stream.remote_credentials()
     }
 
     /// Add a remote candidate for connection checks for use with this stream
@@ -549,112 +439,74 @@ impl Stream {
     ///     addr
     /// )
     /// .build();
-    /// stream.add_remote_candidate(&candidate).unwrap();
+    /// stream.add_remote_candidate(candidate).unwrap();
     /// ```
-    #[tracing::instrument(
-        skip(self, cand),
-        fields(
-            stream.id = self.id()
-        )
-    )]
-    pub fn add_remote_candidate(&self, cand: &Candidate) -> Result<(), AgentError> {
-        info!("adding remote candidate {:?}", cand);
-        // TODO: error if component doesn't exist
-        let mut set = self.set.lock().unwrap();
-        let checklist = set.list_mut(self.checklist_id).unwrap();
-        checklist.add_remote_candidate(cand.clone());
-        drop(set);
-        if let Some(agent) = self.agent.upgrade() {
+    pub fn add_remote_candidate(&self, cand: Candidate) -> Result<(), AgentError> {
+        let ret = {
+            let proto_agent = self
+                .weak_proto_agent
+                .upgrade()
+                .ok_or(AgentError::ResourceNotFound)?;
+            let mut proto_agent = proto_agent.lock().unwrap();
+            let mut proto_stream = proto_agent.mut_stream(self.id).unwrap();
+            proto_stream.add_remote_candidate(cand)
+        };
+
+        if let Some(agent) = self.weak_agent_inner.upgrade() {
             let mut agent = agent.lock().unwrap();
             if let Some(waker) = agent.waker.take() {
                 waker.wake();
             }
         }
-        Ok(())
+        ret
     }
 
     #[tracing::instrument(
         name = "stream_handle_incoming_data",
-        skip(weak_state, weak_set, weak_agent, stream_id, checklist_id, component_id, transmit),
+        skip(weak_inner, weak_proto_agent, weak_agent_inner, weak_component, stream_id, component_id, transmit),
         fields(
             stream.id = stream_id,
             component.id = component_id,
         )
     )]
     fn handle_incoming_data(
-        weak_state: Weak<Mutex<StreamState>>,
-        weak_set: Weak<Mutex<ConnCheckListSet>>,
-        weak_agent: Weak<Mutex<AgentInner>>,
+        weak_inner: Weak<Mutex<StreamInner>>,
+        weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
+        weak_agent_inner: Weak<Mutex<AgentInner>>,
+        weak_component: Weak<Mutex<ComponentInner>>,
         stream_id: usize,
-        checklist_id: usize,
         component_id: usize,
         transmit: Transmit,
     ) {
-        let Some(state) = weak_state.upgrade() else {
+        error!("librice::stream incoming data");
+        let Some(proto_agent) = weak_proto_agent.upgrade() else {
             return;
         };
-        {
-            // first try to provide the incoming data to the gathering process if it exist
-            let mut state = state.lock().unwrap();
-            if state.gather_state == GatherProgress::InProgress {
-                if let Some(gather) = state
-                    .gatherers
-                    .iter()
-                    .find(|gather| gather.gatherer.component_id() == component_id)
-                {
-                    if let Ok(replies) = gather.gatherer.handle_data(&transmit.data, transmit.from)
-                    {
-                        for reply in replies {
-                            // XXX: is this enough to successfully route to the gatherer over the
-                            // connection check or component received handling?
-                            if let HandleStunReply::Stun(_msg, _from) = reply {
-                                while let Some(waker) = state.transmit_waker.pop() {
-                                    waker.wake_by_ref();
-                                }
-                            }
-                        }
-                        return;
-                    }
-                }
-            }
-        }
-        let Some(set) = weak_set.upgrade() else {
+        let mut proto_agent = proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(stream_id).unwrap();
+
+        let reply = proto_stream.handle_incoming_data(component_id, transmit);
+
+        let Some(component) = weak_component.upgrade() else {
             return;
         };
-        let mut wake_agent = false;
-        {
-            // or, provide the data to the connection check component for further processing
-            let mut set_inner = set.lock().unwrap();
-            if let Ok(replies) = set_inner.incoming_data(checklist_id, &transmit) {
-                for reply in replies {
-                    match reply {
-                        HandleRecvReply::Data(data, from) => {
-                            drop(set_inner);
-                            let Some(state) = weak_state.upgrade() else {
-                                return;
-                            };
-                            let state = state.lock().unwrap();
-                            let Some(Some(component)) = state
-                                .components
-                                .iter()
-                                .find(|comp| comp.as_ref().map(|c| c.id) == Some(component_id))
-                            else {
-                                return;
-                            };
-                            component.handle_incoming_data(data, from);
-                            set_inner = set.lock().unwrap();
-                        }
-                        HandleRecvReply::Handled => {
-                            wake_agent = true;
-                        }
-                        HandleRecvReply::Ignored => (),
-                    }
-                }
-            }
+        let mut component = component.lock().unwrap();
+        for data in reply.data {
+            component.handle_incoming_data(data);
         }
 
-        if wake_agent {
-            if let Some(agent) = weak_agent.upgrade() {
+        if reply.gather_handled {
+            error!("gather handled");
+            if let Some(stream) = weak_inner.upgrade() {
+                let mut stream = stream.lock().unwrap();
+                if let Some(waker) = stream.gather_waker.take() {
+                    error!("gather handled woken");
+                    waker.wake()
+                }
+            }
+        }
+        if reply.conncheck_handled {
+            if let Some(agent) = weak_agent_inner.upgrade() {
                 let mut agent = agent.lock().unwrap();
                 if let Some(waker) = agent.waker.take() {
                     waker.wake();
@@ -678,134 +530,132 @@ impl Stream {
     /// let remote_credentials = Credentials {ufrag: "ruser".to_owned(), passwd: "rpass".to_owned()};
     /// stream.set_remote_credentials(remote_credentials);
     /// let component = stream.add_component().unwrap();
-    /// stream.gather_candidates().unwrap();
+    /// async_std::task::block_on(async move {
+    ///     stream.gather_candidates().await.unwrap();
+    /// });
     /// ```
-    pub fn gather_candidates(&self) -> Result<Gather, AgentError> {
-        let stun_servers = {
-            let agent = self.agent.upgrade().ok_or(AgentError::ResourceNotFound)?;
-            let agent = agent.lock().unwrap();
-            agent.stun_servers.clone()
+    pub async fn gather_candidates(&self) -> Result<Gather, AgentError> {
+        let proto_agent = self
+            .weak_proto_agent
+            .upgrade()
+            .ok_or(AgentError::ResourceNotFound)?;
+        let (stun_servers, component_ids) = {
+            let proto_agent = proto_agent.lock().unwrap();
+            let proto_stream = proto_agent.stream(self.id).unwrap();
+            let component_ids = proto_stream.component_ids_iter().collect::<Vec<_>>();
+            (proto_agent.stun_servers().clone(), component_ids)
         };
+        let weak_inner = Arc::downgrade(&self.inner);
 
-        let weak_state = Arc::downgrade(&self.state);
-        let mut state = self.state.lock().unwrap();
-        if state.gather_state != GatherProgress::New {
-            return Err(AgentError::AlreadyInProgress);
-        }
-        let component_ids = state
-            .components
-            .iter()
-            .filter_map(|c| c.clone())
-            .map(|c| {
-                c.set_state(ComponentState::Connecting);
-                c.id
-            })
-            .collect::<Vec<_>>();
-        let gatherers = component_ids
-            .iter()
-            .map(|&cid| {
-                // FIXME: remove block_on()
-                let sockets = async_std::task::block_on(async move {
-                    iface_sockets()
-                        .unwrap()
-                        .filter_map(|s| async move { s.ok() })
-                        .collect::<Vec<_>>()
-                        .await
-                });
-                let proto_sockets = sockets
-                    .iter()
-                    .map(|s| (s.transport(), s.local_addr()))
-                    .collect::<Vec<_>>();
-                for socket in sockets {
-                    let weak_state = weak_state.clone();
-                    let weak_set = Arc::downgrade(&self.set);
-                    let weak_agent = self.agent.clone();
-                    let checklist_id = self.checklist_id;
-                    let local_addr = socket.local_addr();
-                    let transport = socket.transport();
-                    let stream_id = self.id;
-                    match socket {
-                        GatherSocket::Udp(udp) => {
-                            state.sockets.push(StunChannel::Udp(udp.clone()));
-                            async_std::task::spawn(async move {
-                                let recv = udp.recv();
-                                let mut recv = core::pin::pin!(recv);
-                                while let Some((data, from)) = recv.next().await {
-                                    Self::handle_incoming_data(
-                                        weak_state.clone(),
-                                        weak_set.clone(),
-                                        weak_agent.clone(),
-                                        stream_id,
-                                        checklist_id,
-                                        cid,
-                                        Transmit {
-                                            transport,
-                                            data,
-                                            from,
-                                            to: local_addr,
-                                        },
-                                    )
-                                }
-                            });
-                        }
-                        GatherSocket::Tcp(tcp) => {
-                            async_std::task::spawn(async move {
-                                while let Some(stream) = tcp.incoming().next().await {
-                                    let Ok(stream) = stream else {
-                                        continue;
+        for component_id in component_ids {
+            let weak_component = Arc::downgrade(&self.component(component_id).unwrap().inner);
+            let sockets = iface_sockets()
+                .unwrap()
+                .filter_map(|s| async move { s.ok() })
+                .collect::<Vec<_>>()
+                .await;
+            let proto_sockets = sockets
+                .iter()
+                .map(|s| (s.transport(), s.local_addr()))
+                .collect::<Vec<_>>();
+
+            for socket in sockets {
+                let weak_inner = weak_inner.clone();
+                let weak_agent_inner = self.weak_agent_inner.clone();
+                let weak_proto_agent = self.weak_proto_agent.clone();
+                let weak_component = weak_component.clone();
+                let local_addr = socket.local_addr();
+                let transport = socket.transport();
+                let stream_id = self.id;
+                match socket {
+                    GatherSocket::Udp(udp) => {
+                        let mut inner = self.inner.lock().unwrap();
+                        inner.sockets.push(StunChannel::Udp(udp.clone()));
+                        async_std::task::spawn(async move {
+                            let recv = udp.recv();
+                            let mut recv = core::pin::pin!(recv);
+                            while let Some((data, from)) = recv.next().await {
+                                Self::handle_incoming_data(
+                                    weak_inner.clone(),
+                                    weak_proto_agent.clone(),
+                                    weak_agent_inner.clone(),
+                                    weak_component.clone(),
+                                    stream_id,
+                                    component_id,
+                                    Transmit::new(
+                                        data.into_boxed_slice(),
+                                        transport,
+                                        from,
+                                        local_addr,
+                                    ),
+                                )
+                            }
+                        });
+                    }
+                    GatherSocket::Tcp(tcp) => {
+                        let weak_inner = weak_inner.clone();
+                        async_std::task::spawn(async move {
+                            while let Some(stream) = tcp.incoming().next().await {
+                                let Ok(stream) = stream else {
+                                    continue;
+                                };
+                                error!("incoming tcp connection");
+                                let weak_proto_agent = weak_proto_agent.clone();
+                                let weak_agent_inner = weak_agent_inner.clone();
+                                let weak_component = weak_component.clone();
+                                let weak_inner = weak_inner.clone();
+                                async_std::task::spawn(async move {
+                                    let Some(inner) = weak_inner.upgrade() else {
+                                        return;
                                     };
-                                    let weak_set = weak_set.clone();
-                                    let weak_state = weak_state.clone();
-                                    let weak_agent = weak_agent.clone();
-                                    async_std::task::spawn(async move {
-                                        let Some(state) = weak_state.upgrade() else {
-                                            return;
-                                        };
-                                        let channel = {
-                                            let mut state = state.lock().unwrap();
-                                            let channel = TcpChannel::new(stream);
-                                            state.sockets.push(StunChannel::Tcp(channel.clone()));
-                                            channel
-                                        };
+                                    let channel = {
+                                        let mut inner = inner.lock().unwrap();
+                                        let channel = TcpChannel::new(stream);
+                                        inner.sockets.push(StunChannel::Tcp(channel.clone()));
+                                        channel
+                                    };
 
-                                        let recv = channel.recv();
-                                        let mut recv = core::pin::pin!(recv);
-                                        while let Some((data, from)) = recv.next().await {
-                                            Self::handle_incoming_data(
-                                                weak_state.clone(),
-                                                weak_set.clone(),
-                                                weak_agent.clone(),
-                                                stream_id,
-                                                checklist_id,
-                                                cid,
-                                                Transmit {
-                                                    transport,
-                                                    data,
-                                                    from,
-                                                    to: local_addr,
-                                                },
-                                            )
-                                        }
-                                    });
-                                }
-                            });
-                        }
+                                    let recv = channel.recv();
+                                    let mut recv = core::pin::pin!(recv);
+                                    while let Some((data, from)) = recv.next().await {
+                                        Self::handle_incoming_data(
+                                            weak_inner.clone(),
+                                            weak_proto_agent.clone(),
+                                            weak_agent_inner.clone(),
+                                            weak_component.clone(),
+                                            stream_id,
+                                            component_id,
+                                            Transmit::new(
+                                                data.into_boxed_slice(),
+                                                transport,
+                                                from,
+                                                local_addr,
+                                            ),
+                                        )
+                                    }
+                                });
+                            }
+                        });
                     }
                 }
-                Gatherer {
-                    gatherer: StunGatherer::new(cid, proto_sockets, stun_servers.clone()),
-                }
-            })
-            .collect::<Vec<_>>();
+            }
+            {
+                let mut proto_agent = proto_agent.lock().unwrap();
+                let mut proto_stream = proto_agent.mut_stream(self.id).unwrap();
+                let mut component = proto_stream.mut_component(component_id).unwrap();
+                component.gather_candidates(proto_sockets, stun_servers.clone())?;
+            }
+        }
 
-        state.gather_state = GatherProgress::InProgress;
-        state.gatherers = gatherers;
+        let stream_id = self.id;
+        let transmit_send = self.transmit_send.clone();
         Ok(Gather {
-            stream: self.state.clone(),
+            weak_proto_agent: self.weak_proto_agent.clone(),
+            weak_agent_inner: self.weak_agent_inner.clone(),
+            stream_id,
+            stream: self.inner.clone(),
             timer: None,
-            weak_set: Arc::downgrade(&self.set),
-            checklist_id: self.checklist_id,
-            transmit_send: self.transmit_send.clone(),
+            transmit_send,
             pending_transmit_send: None,
         })
     }
@@ -869,9 +719,12 @@ impl Stream {
 
     /// Retrieve previously gathered local candidates
     pub fn local_candidates(&self) -> Vec<Candidate> {
-        let mut set = self.set.lock().unwrap();
-        let checklist = set.list_mut(self.checklist_id).unwrap();
-        checklist.local_candidates()
+        let Some(proto_agent) = self.weak_proto_agent.upgrade() else {
+            return vec![];
+        };
+        let proto_agent = proto_agent.lock().unwrap();
+        let proto_stream = proto_agent.stream(self.id).unwrap();
+        proto_stream.local_candidates()
     }
 
     /// Retrieve previously set remote candidates for connection checks from this stream
@@ -893,15 +746,18 @@ impl Stream {
     ///     addr
     /// )
     /// .build();
-    /// stream.add_remote_candidate(&candidate).unwrap();
+    /// stream.add_remote_candidate(candidate.clone()).unwrap();
     /// let remote_cands = stream.remote_candidates();
     /// assert_eq!(remote_cands.len(), 1);
     /// assert_eq!(remote_cands[0], candidate);
     /// ```
     pub fn remote_candidates(&self) -> Vec<Candidate> {
-        let mut set = self.set.lock().unwrap();
-        let checklist = set.list_mut(self.checklist_id).unwrap();
-        checklist.remote_candidates()
+        let Some(proto_agent) = self.weak_proto_agent.upgrade() else {
+            return vec![];
+        };
+        let proto_agent = proto_agent.lock().unwrap();
+        let proto_stream = proto_agent.stream(self.id).unwrap();
+        proto_stream.remote_candidates()
     }
 
     /// Indicate that no more candidates are expected from the peer.  This may allow the ICE
@@ -914,54 +770,65 @@ impl Stream {
     )]
     pub fn end_of_remote_candidates(&self) {
         // FIXME: how to deal with ice restarts?
-        let mut set = self.set.lock().unwrap();
-        let checklist = set.list_mut(self.checklist_id).unwrap();
-        checklist.end_of_remote_candidates();
+        let Some(proto_agent) = self.weak_proto_agent.upgrade() else {
+            return;
+        };
+        let mut proto_agent = proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(self.id).unwrap();
+        proto_stream.end_of_remote_candidates()
     }
 
-    pub(crate) fn handle_transmit(&self, transmit: Transmit, waker: Waker) -> Option<Transmit> {
+    pub(crate) fn handle_transmit<'a>(
+        &self,
+        transmit: Transmit<'a>,
+        waker: Waker,
+    ) -> Option<Transmit<'a>> {
         if let Err(async_std::channel::TrySendError::Full(transmit)) =
-            self.transmit_send.try_send(transmit)
+            self.transmit_send.try_send(transmit.into_owned())
         {
-            let mut state = self.state.lock().unwrap();
-            state.transmit_waker.push(waker);
+            let mut inner = self.inner.lock().unwrap();
+            inner.transmit_waker.push(waker);
             return Some(transmit);
         }
         None
     }
 
     pub(crate) fn handle_tcp_connect(
-        &self,
+        weak_inner: Weak<Mutex<StreamInner>>,
+        weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
+        weak_agent_inner: Weak<Mutex<AgentInner>>,
+        stream_id: usize,
         component_id: usize,
         from: SocketAddr,
         to: SocketAddr,
         waker: Waker,
     ) {
-        let weak_agent = self.agent.clone();
-        let weak_set = Arc::downgrade(&self.set);
-        let weak_state = Arc::downgrade(&self.state);
-        let checklist_id = self.checklist_id;
-        let stream_id = self.id;
+        error!("making outbound tcp connection");
         async_std::task::spawn(async move {
             let stream = TcpStream::connect(to).await;
+            error!("made outbound tcp connection");
+            let mut weak_component = None;
             let channel = match stream {
                 Ok(stream) => {
-                    let Some(state) = weak_state.upgrade() else {
+                    let Some(inner) = weak_inner.upgrade() else {
                         return;
                     };
-                    let mut state = state.lock().unwrap();
+                    let mut inner = inner.lock().unwrap();
                     let channel = StunChannel::Tcp(TcpChannel::new(stream.clone()));
-                    state.sockets.push(channel.clone());
+                    inner.sockets.push(channel.clone());
+                    weak_component = Some(Arc::downgrade(
+                        &inner.component(component_id).unwrap().inner,
+                    ));
                     Ok(channel)
                 }
                 Err(e) => Err(StunError::IoError(e)),
             };
-            let Some(set) = weak_set.upgrade() else {
+            let Some(proto_agent) = weak_proto_agent.upgrade() else {
                 return;
             };
 
             let channel = {
-                let mut set = set.lock().unwrap();
+                let mut proto_agent = proto_agent.lock().unwrap();
                 let (agent, channel) = match channel {
                     Ok(channel) => {
                         let local_addr = channel.local_addr().unwrap();
@@ -976,9 +843,12 @@ impl Stream {
                     Err(e) => (Err(e), None),
                 };
 
-                set.tcp_connect_reply(checklist_id, component_id, from, to, agent);
+                let mut proto_stream = proto_agent.mut_stream(stream_id).unwrap();
+                error!("handle_tcp_connect");
+                proto_stream.handle_tcp_connect(component_id, from, to, agent);
                 channel
             };
+
             waker.wake();
 
             if let Some(channel) = channel {
@@ -987,18 +857,110 @@ impl Stream {
                 let local_addr = channel.local_addr().unwrap();
                 while let Some((data, from)) = recv.next().await {
                     Self::handle_incoming_data(
-                        weak_state.clone(),
-                        weak_set.clone(),
-                        weak_agent.clone(),
+                        weak_inner.clone(),
+                        weak_proto_agent.clone(),
+                        weak_agent_inner.clone(),
+                        weak_component.clone().unwrap(),
                         stream_id,
-                        checklist_id,
                         component_id,
-                        Transmit {
-                            transport: TransportType::Tcp,
-                            data,
+                        Transmit::new(
+                            data.into_boxed_slice(),
+                            TransportType::Tcp,
                             from,
-                            to: local_addr,
-                        },
+                            local_addr,
+                        ),
+                    )
+                }
+            }
+        });
+    }
+
+    pub(crate) fn handle_gather_tcp_connect(
+        weak_inner: Weak<Mutex<StreamInner>>,
+        weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
+        weak_agent_inner: Weak<Mutex<AgentInner>>,
+        stream_id: usize,
+        component_id: usize,
+        from: SocketAddr,
+        to: SocketAddr,
+        waker: Waker,
+    ) {
+        error!("making outbound tcp connection");
+        async_std::task::spawn(async move {
+            let stream = TcpStream::connect(to).await;
+            error!("made outbound tcp connection");
+            let mut weak_component = None;
+            let channel = match stream {
+                Ok(stream) => {
+                    let Some(inner) = weak_inner.upgrade() else {
+                        return;
+                    };
+                    let mut inner = inner.lock().unwrap();
+                    let channel = StunChannel::Tcp(TcpChannel::new(stream.clone()));
+                    inner.sockets.push(channel.clone());
+                    weak_component = Some(Arc::downgrade(
+                        &inner.component(component_id).unwrap().inner,
+                    ));
+                    Ok(channel)
+                }
+                Err(e) => Err(StunError::IoError(e)),
+            };
+            let Some(proto_agent) = weak_proto_agent.upgrade() else {
+                return;
+            };
+
+            let channel = {
+                let mut proto_agent = proto_agent.lock().unwrap();
+                let (agent, channel) = match channel {
+                    Ok(channel) => {
+                        let local_addr = channel.local_addr().unwrap();
+                        let remote_addr = channel.remote_addr().unwrap();
+                        (
+                            Ok(StunAgent::builder(TransportType::Tcp, local_addr)
+                                .remote_addr(remote_addr)
+                                .build()),
+                            Some(channel),
+                        )
+                    }
+                    Err(e) => (Err(e), None),
+                };
+
+                let mut proto_stream = proto_agent.mut_stream(stream_id).unwrap();
+                error!("handle_gather_tcp_connect");
+                proto_stream.handle_gather_tcp_connect(component_id, from, to, agent);
+                channel
+            };
+            if let Some(waker) = weak_inner
+                .upgrade()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .gather_waker
+                .take()
+            {
+                waker.wake();
+            }
+            waker.wake();
+
+            if let Some(channel) = channel {
+                let recv = channel.recv();
+                let mut recv = core::pin::pin!(recv);
+                let local_addr = channel.local_addr().unwrap();
+                error!("channel recv loop start");
+                while let Some((data, from)) = recv.next().await {
+                    Self::handle_incoming_data(
+                        weak_inner.clone(),
+                        weak_proto_agent.clone(),
+                        weak_agent_inner.clone(),
+                        weak_component.clone().unwrap(),
+                        stream_id,
+                        component_id,
+                        Transmit::new(
+                            data.into_boxed_slice(),
+                            TransportType::Tcp,
+                            from,
+                            local_addr,
+                        ),
                     )
                 }
             }
@@ -1006,8 +968,8 @@ impl Stream {
     }
 
     pub(crate) fn socket_for_pair(&self, pair: &CandidatePair) -> Option<StunChannel> {
-        let state = self.state.lock().unwrap();
-        state
+        let inner = self.inner.lock().unwrap();
+        inner
             .socket_for_5tuple(
                 pair.local.transport_type,
                 pair.local.base_address,
@@ -1035,13 +997,13 @@ mod tests {
         s.set_remote_credentials(Credentials::new("ruser".into(), "rpass".into()));
         let _c = s.add_component().unwrap();
         async_std::task::block_on(async move {
-            let mut gather = s.gather_candidates().unwrap();
+            let mut gather = s.gather_candidates().await.unwrap();
             while let Some(_cand) = gather.next().await {}
             let local_cands = s.local_candidates();
             info!("gathered local candidates {:?}", local_cands);
             assert!(!local_cands.is_empty());
             assert!(matches!(
-                s.gather_candidates(),
+                s.gather_candidates().await,
                 Err(AgentError::AlreadyInProgress)
             ));
         });
@@ -1056,6 +1018,7 @@ mod tests {
         let agent = Agent::default();
         let stream = agent.add_stream();
         assert!(stream.component(0).is_none());
+        assert!(stream.component(1).is_none());
         let comp = stream.add_component().unwrap();
         assert_eq!(comp.id(), stream.component(comp.id()).unwrap().id());
 

@@ -11,7 +11,7 @@ extern crate tracing;
 
 pub mod agent;
 pub mod component;
-pub mod gathering;
+mod gathering;
 pub mod socket;
 pub mod stream;
 pub mod stun;
