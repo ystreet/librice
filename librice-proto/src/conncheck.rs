@@ -1959,6 +1959,7 @@ impl ConnCheckListSet {
                 CandidatePairState::Succeeded => {
                     if peer_nominating && !check.nominate() {
                         debug!("existing pair succeeded -> nominate");
+                        checklist.add_check(check.clone());
                         check = ConnCheck::clone_with_pair_nominate(
                             &check,
                             checklist.checklist_id,
@@ -1989,6 +1990,7 @@ impl ConnCheckListSet {
                     check.cancel_retransmissions();
                     // TODO: ignore response timeouts
 
+                    checklist.add_check(check.clone());
                     check = ConnCheck::clone_with_pair_nominate(
                         &check,
                         checklist.checklist_id,
