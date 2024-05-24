@@ -1039,7 +1039,7 @@ impl ConnCheckList {
                         LocalCandidateVariant::TcpActive => (),
                     }
                 } else {
-                    self.add_check(check);
+                    self.add_check_if_not_duplicate(check);
                 }
             }
         }*/
@@ -1067,7 +1067,7 @@ impl ConnCheckList {
                     check.set_state(CandidatePairState::Waiting);
                 }
             }
-            self.add_check(check)
+            self.add_check_if_not_duplicate(check)
         }
     }
 
@@ -1107,8 +1107,7 @@ impl ConnCheckList {
             .cloned()
     }
 
-    fn add_check(&mut self, check: Arc<ConnCheck>) {
-        trace!("adding check {:?}", check);
+    fn add_check_if_not_duplicate(&mut self, check: Arc<ConnCheck>) {
         if let Some(idx) = self
             .pairs
             .iter()
@@ -1127,6 +1126,12 @@ impl ConnCheckList {
                 return;
             }
         }
+
+        self.add_check(check);
+    }
+
+    fn add_check(&mut self, check: Arc<ConnCheck>) {
+        trace!("adding check {:?}", check);
 
         let idx = self
             .pairs
@@ -1404,7 +1409,7 @@ impl ConnCheckList {
 
     fn dump_check_state(&self) {
         let mut s = format!("checklist {}", self.checklist_id);
-        for pair in self.pairs.iter() {
+        for pair in self.triggered.iter().chain(self.pairs.iter()) {
             use std::fmt::Write as _;
             let _ = write!(&mut s,
                 "\nID:{id} foundation:{foundation} state:{state} nom:{nominate} priority:{local_pri},{remote_pri} trans:{transport} local:{local_cand_type} {local_addr} remote:{remote_cand_type} {remote_addr}",
@@ -2137,7 +2142,7 @@ impl ConnCheckListSet {
                 false,
             );
             ok_check.set_state(CandidatePairState::Succeeded);
-            checklist.add_check(ok_check.clone());
+            checklist.add_check_if_not_duplicate(ok_check.clone());
             checklist.add_valid(ok_check);
             checklist.add_valid(conncheck.clone());
 
@@ -2851,7 +2856,7 @@ mod tests {
         match Message::from_bytes(&transmit.data[offset..]) {
             Err(e) => error!("error parsing STUN message {e:?}"),
             Ok(msg) => {
-                debug!("received from {}: {:?}", transmit.to, msg);
+                debug!("received from {}: {}", transmit.to, msg);
                 if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
                     let transmit = agent
                         .send(
@@ -4092,5 +4097,145 @@ mod tests {
         let CheckListSetPollRet::WaitUntil(_now) = set.poll(now) else {
             unreachable!();
         };
+    }
+
+    #[test]
+    fn conncheck_incoming_request_while_local_in_progress() {
+        init();
+        let mut state = FineControl::builder().build();
+
+        // generate existing checks
+        state.local_list().generate_checks();
+
+        let pair = CandidatePair::new(
+            state.local.peer.candidate.clone(),
+            state.remote.candidate.clone(),
+        );
+        let initial_check = state
+            .local_list()
+            .matching_check(&pair, Nominate::False)
+            .unwrap();
+        assert_eq!(initial_check.state(), CandidatePairState::Frozen);
+
+        let mut thawn = vec![];
+        // thaw the first checklist with only a single pair will unfreeze that pair
+        state.local_list().initial_thaw(&mut thawn);
+        assert_eq!(initial_check.state(), CandidatePairState::Waiting);
+
+        // Don't generate any initial checks as they should be done as candidates are added to
+        // the checklist
+        let now = Instant::now();
+
+        // send the conncheck (unanswered)
+        let _transmit = match state.local.checklist_set.poll(now) {
+            CheckListSetPollRet::Transmit(_sid, _cid, transmit) => transmit,
+            ret => {
+                error!("{ret:?}");
+                unreachable!()
+            }
+        };
+        assert_eq!(initial_check.state(), CandidatePairState::InProgress);
+        let set_ret = state.local.checklist_set.poll(now);
+        assert!(matches!(set_ret, CheckListSetPollRet::WaitUntil(_)));
+
+        let remote_agent = state.remote.stun_agent();
+        let mut request = Message::new_request(BINDING);
+        request
+            .add_attribute(Priority::new(state.remote.candidate.priority))
+            .unwrap();
+        request.add_attribute(IceControlled::new(200)).unwrap();
+        request
+            .add_attribute(
+                Username::new(
+                    &(state.local.peer.local_credentials.clone().unwrap().ufrag
+                        + ":"
+                        + &state.remote.local_credentials.clone().unwrap().ufrag),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        request
+            .add_message_integrity(
+                &remote_agent.local_credentials().unwrap(),
+                IntegrityAlgorithm::Sha1,
+            )
+            .unwrap();
+        request.add_fingerprint().unwrap();
+
+        let local_addr = state.local.peer.stun_agent().local_addr();
+        let stun_request = remote_agent
+            .stun_request_transaction(&request, local_addr)
+            .build()
+            .unwrap();
+
+        info!("sending request");
+        let StunRequestPollRet::SendData(transmit) = stun_request.poll(now).unwrap() else {
+            unreachable!();
+        };
+        let reply = state
+            .local
+            .checklist_set
+            .incoming_data(state.local.checklist_id, &transmit)
+            .unwrap();
+        assert!(matches!(reply[0], HandleRecvReply::Handled));
+        // eat the success response
+        let CheckListSetPollRet::Transmit(_sid, _cid, _response) =
+            state.local.checklist_set.poll(now)
+        else {
+            unreachable!()
+        };
+        let CheckListSetPollRet::WaitUntil(now) = state.local.checklist_set.poll(now) else {
+            unreachable!();
+        };
+
+        // after the remote has sent the check, the previous check should still be in the same
+        // state
+        assert_eq!(initial_check.state(), CandidatePairState::InProgress);
+        // TODO: check for retransmit cancellation
+
+        // a new triggered check should have been created
+        let triggered_check = state
+            .local_list()
+            .matching_check(&pair, Nominate::False)
+            .unwrap();
+        assert_ne!(initial_check.conncheck_id, triggered_check.conncheck_id);
+        info!("perform triggered check");
+        send_next_check_and_response(&state.local.peer, &state.remote)
+            .perform(&mut state.local.checklist_set, now);
+        assert_eq!(triggered_check.state(), CandidatePairState::Succeeded);
+
+        let nominated_check = state
+            .local_list()
+            .matching_check(&pair, Nominate::True)
+            .unwrap();
+        assert_eq!(nominated_check.state(), CandidatePairState::Waiting);
+        info!("perform nominated check");
+        let CheckListSetPollRet::WaitUntil(now) = state.local.checklist_set.poll(now) else {
+            unreachable!();
+        };
+        send_next_check_and_response(&state.local.peer, &state.remote)
+            .perform(&mut state.local.checklist_set, now);
+
+        let set_ret = state.local.checklist_set.poll(now);
+        let CheckListSetPollRet::Event(
+            _checklist_id,
+            ConnCheckEvent::SelectedPair(_comp, selected_pair),
+        ) = set_ret
+        else {
+            unreachable!();
+        };
+        assert_eq!(selected_pair.candidate_pair, pair);
+        let set_ret = state.local.checklist_set.poll(now);
+        let CheckListSetPollRet::Event(
+            _checklist_id,
+            ConnCheckEvent::ComponentState(_comp, ComponentConnectionState::Connected),
+        ) = set_ret
+        else {
+            unreachable!();
+        };
+        let set_ret = state.local.checklist_set.poll(now);
+        assert!(matches!(set_ret, CheckListSetPollRet::Completed));
+        // a checklist with only a local candidates but no more possible candidates will error
+        assert_eq!(state.local_list().state(), CheckListState::Completed);
     }
 }
