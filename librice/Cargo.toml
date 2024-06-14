@@ -13,7 +13,7 @@ rust-version.workspace = true
 workspace = ".."
 
 [dependencies]
-librice-proto = { path = "../librice-proto" }
+librice-proto = { version = "0.0.4", path = "../librice-proto" }
 async-std = "1"
 async-io = "1"
 byteorder.workspace = true
