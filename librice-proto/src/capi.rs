@@ -28,8 +28,8 @@ use crate::candidate::{Candidate, CandidateType};
 pub use crate::component::ComponentConnectionState;
 use crate::gathering::GatherPoll;
 use crate::stream::Credentials;
-use crate::stun::agent::{Data, DataOwned, DataSlice, StunAgent, StunError, Transmit};
-use crate::stun::TransportType;
+use stun_proto::agent::{Data, DataOwned, DataSlice, StunAgent, StunError, Transmit};
+use stun_proto::types::TransportType;
 
 static TRACING: Once = Once::new();
 

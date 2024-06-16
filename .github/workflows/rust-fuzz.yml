@@ -30,11 +30,5 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: 'fuzz'
-          args: 'run stun_msg_from_bytes -- -max_total_time=20'
-
-      - name: Run cargo-fuzz
-        uses: actions-rs/cargo@v1
-        with:
-          command: 'fuzz'
           args: 'run parse_candidate -- -max_total_time=20'
 

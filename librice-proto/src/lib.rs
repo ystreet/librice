@@ -15,8 +15,6 @@ pub mod component;
 pub(crate) mod conncheck;
 pub mod gathering;
 pub mod stream;
-pub mod stun;
-mod utils;
 
 #[cfg(feature = "capi")]
 pub mod capi;

@@ -8,8 +8,8 @@
 
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
-use librice_proto::stun::agent::HandleStunReply;
-use librice_proto::stun::agent::StunAgent;
+use stun_proto::agent::HandleStunReply;
+use stun_proto::agent::StunAgent;
 
 use std::fmt::Display;
 use std::net::SocketAddr;
@@ -48,19 +48,20 @@ where
 }
 
 fn handle_binding_request(msg: &Message, from: SocketAddr) -> Result<Message, AgentError> {
-    if let Some(error_msg) = Message::check_attribute_types(msg, &[FINGERPRINT], &[]) {
+    if let Some(error_msg) = Message::check_attribute_types(msg, &[Fingerprint::TYPE], &[]) {
         return Ok(error_msg);
     }
 
     let mut response = Message::new_success(msg);
-    response.add_attribute(XorMappedAddress::new(from, msg.transaction_id()))?;
-    response.add_fingerprint()?;
+    response
+        .add_attribute(XorMappedAddress::new(from, msg.transaction_id()))
+        .unwrap();
+    response.add_fingerprint().unwrap();
     Ok(response)
 }
 
 fn handle_stun_or_data(stun_or_data: HandleStunReply) -> Option<(Message, SocketAddr)> {
     match stun_or_data {
-        HandleStunReply::Ignore => None,
         HandleStunReply::Data(data, from) => {
             info!("received from {} data: {:?}", from, data);
             None
@@ -91,7 +92,7 @@ fn handle_stun_or_data(stun_or_data: HandleStunReply) -> Option<(Message, Socket
 pub async fn stund_udp(udp_socket: UdpSocket) -> std::io::Result<()> {
     let local_addr = udp_socket.local_addr()?;
     let udp_stun_agent =
-        StunAgent::builder(librice_proto::stun::TransportType::Udp, local_addr).build();
+        StunAgent::builder(stun_proto::types::TransportType::Udp, local_addr).build();
 
     loop {
         let mut data = vec![0; 1500];
@@ -115,7 +116,7 @@ pub async fn stund_tcp(listener: TcpListener) -> std::io::Result<()> {
         async_std::task::spawn(async move {
             let remote_addr = stream.peer_addr().unwrap();
             let tcp_stun_agent =
-                StunAgent::builder(librice_proto::stun::TransportType::Tcp, local_addr)
+                StunAgent::builder(stun_proto::types::TransportType::Tcp, local_addr)
                     .remote_addr(remote_addr)
                     .build();
             loop {

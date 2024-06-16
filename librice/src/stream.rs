@@ -17,14 +17,15 @@ use std::time::Instant;
 use async_std::net::TcpStream;
 use futures::StreamExt;
 use librice_proto::gathering::GatherPoll;
-use librice_proto::stun::agent::{StunAgent, StunError, Transmit};
-use librice_proto::stun::TransportType;
+use stun_proto::agent::{StunAgent, Transmit};
+use stun_proto::types::TransportType;
 
 use crate::agent::{AgentError, AgentInner};
 use crate::component::{Component, ComponentInner};
 use crate::gathering::{iface_sockets, GatherSocket};
 use crate::socket::{StunChannel, TcpChannel};
 
+use librice_proto::agent::AgentError as ProtoAgentError;
 use librice_proto::candidate::{Candidate, CandidatePair};
 //use crate::turn::agent::TurnCredentials;
 
@@ -281,7 +282,7 @@ impl Stream {
         let proto_agent = self
             .weak_proto_agent
             .upgrade()
-            .ok_or(AgentError::ResourceNotFound)?;
+            .ok_or(AgentError::Proto(ProtoAgentError::ResourceNotFound))?;
         let mut proto_agent = proto_agent.lock().unwrap();
         let mut proto_stream = proto_agent.mut_stream(self.id).unwrap();
         let index = proto_stream.add_component()? - 1;
@@ -446,7 +447,7 @@ impl Stream {
             let proto_agent = self
                 .weak_proto_agent
                 .upgrade()
-                .ok_or(AgentError::ResourceNotFound)?;
+                .ok_or(AgentError::Proto(ProtoAgentError::ResourceNotFound))?;
             let mut proto_agent = proto_agent.lock().unwrap();
             let mut proto_stream = proto_agent.mut_stream(self.id).unwrap();
             proto_stream.add_remote_candidate(cand)
@@ -458,7 +459,7 @@ impl Stream {
                 waker.wake();
             }
         }
-        ret
+        ret.map_err(AgentError::Proto)
     }
 
     #[tracing::instrument(
@@ -538,7 +539,7 @@ impl Stream {
         let proto_agent = self
             .weak_proto_agent
             .upgrade()
-            .ok_or(AgentError::ResourceNotFound)?;
+            .ok_or(AgentError::Proto(ProtoAgentError::ResourceNotFound))?;
         let (stun_servers, component_ids) = {
             let proto_agent = proto_agent.lock().unwrap();
             let proto_stream = proto_agent.stream(self.id).unwrap();
@@ -821,7 +822,7 @@ impl Stream {
                     ));
                     Ok(channel)
                 }
-                Err(e) => Err(StunError::IoError(e)),
+                Err(_e) => Err(stun_proto::agent::StunError::ResourceNotFound),
             };
             let Some(proto_agent) = weak_proto_agent.upgrade() else {
                 return;
@@ -903,7 +904,7 @@ impl Stream {
                     ));
                     Ok(channel)
                 }
-                Err(e) => Err(StunError::IoError(e)),
+                Err(_e) => Err(stun_proto::agent::StunError::ResourceNotFound),
             };
             let Some(proto_agent) = weak_proto_agent.upgrade() else {
                 return;
@@ -1004,7 +1005,7 @@ mod tests {
             assert!(!local_cands.is_empty());
             assert!(matches!(
                 s.gather_candidates().await,
-                Err(AgentError::AlreadyInProgress)
+                Err(AgentError::Proto(ProtoAgentError::AlreadyInProgress))
             ));
         });
     }

@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::Instant;
 
-use librice_proto::agent::{AgentPoll, AgentTransmit};
+use librice_proto::agent::{AgentError as ProtoAgentError, AgentPoll, AgentTransmit};
 use librice_proto::component::ComponentConnectionState;
 
 use crate::component::{Component, SelectedPair};
@@ -22,7 +22,30 @@ use crate::stream::Stream;
 use librice_proto::candidate::TransportType;
 //use crate::turn::agent::TurnCredentials;
 
-pub use librice_proto::agent::AgentError;
+/// Errors that can be returned as a result of agent operations.
+#[derive(Debug)]
+pub enum AgentError {
+    Proto(ProtoAgentError),
+    IoError(std::io::Error),
+}
+
+impl From<ProtoAgentError> for AgentError {
+    fn from(value: ProtoAgentError) -> Self {
+        Self::Proto(value)
+    }
+}
+
+impl From<std::io::Error> for AgentError {
+    fn from(value: std::io::Error) -> Self {
+        Self::IoError(value)
+    }
+}
+
+impl std::fmt::Display for AgentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
 
 /// An ICE agent as specified in RFC 8445
 #[derive(Debug)]
@@ -135,7 +158,7 @@ impl Agent {
             waker.wake();
         }
         // TODO: TURN close things
-        ret
+        ret.map_err(AgentError::Proto)
     }
 
     /// The controlling state of this ICE agent.  This value may change throughout the ICE
