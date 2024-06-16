@@ -12,11 +12,11 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use crate::candidate::{Candidate, TransportType};
-use crate::stun::agent::{
+use stun_proto::agent::{
     HandleStunReply, StunAgent, StunError, StunRequest, StunRequestPollRet, Transmit,
 };
-use crate::stun::attribute::{XorMappedAddress, XOR_MAPPED_ADDRESS};
-use crate::stun::message::{Message, BINDING};
+use stun_proto::types::attribute::XorMappedAddress;
+use stun_proto::types::message::{Message, BINDING};
 
 fn address_is_ignorable(ip: IpAddr) -> bool {
     // TODO: add is_benchmarking() and is_documentation() when they become stable
@@ -206,10 +206,7 @@ impl StunGatherer {
                                 .remote_addr(*stun_addr)
                                 .build();
                             trace!("adding gather request {socket_transport} from {socket_addr} to {stun_addr}");
-                            let request = agent
-                                .stun_request_transaction(&msg, *stun_addr)
-                                .build()
-                                .unwrap();
+                            let request = agent.stun_request_transaction(&msg, *stun_addr).unwrap();
                             (
                                 RequestProtocol::Udp(RequestUdp {
                                     agent: agent.clone(),
@@ -297,9 +294,7 @@ impl StunGatherer {
             match stun_request.poll(now)? {
                 StunRequestPollRet::Cancelled => return Err(StunError::Aborted),
                 StunRequestPollRet::Response(response) => {
-                    if let Some(xor_addr) =
-                        response.attribute::<XorMappedAddress>(XOR_MAPPED_ADDRESS)
-                    {
+                    if let Some(xor_addr) = response.attribute::<XorMappedAddress>() {
                         request.completed = true;
                         let stun_addr = xor_addr.addr(response.transaction_id());
                         if address_is_ignorable(stun_addr.ip()) {
@@ -402,7 +397,6 @@ impl StunGatherer {
                                 tcp.request = Some(
                                     agent
                                         .stun_request_transaction(&msg, request.server)
-                                        .build()
                                         .unwrap(),
                                 );
                                 tcp.agent = Some(agent);
@@ -422,10 +416,8 @@ impl StunGatherer {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        candidate::{CandidateType, TcpType},
-        stun::message::MessageClass,
-    };
+    use crate::candidate::{CandidateType, TcpType};
+    use stun_proto::types::message::MessageClass;
 
     use super::*;
 

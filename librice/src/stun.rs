@@ -12,27 +12,25 @@ use std::net::SocketAddr;
 
 use crate::socket::StunChannel;
 
-use librice_proto::stun::TransportType;
+use stun_proto::types::TransportType;
 
-pub use librice_proto::stun::agent::StunError;
-pub use librice_proto::stun::attribute;
-pub use librice_proto::stun::message;
+pub use stun_proto::agent::StunError;
+pub use stun_proto::types::attribute;
+pub use stun_proto::types::message;
 
 /// A STUN Agent
 #[derive(Debug)]
 pub struct StunAgent {
-    agent: librice_proto::stun::agent::StunAgent,
+    agent: stun_proto::agent::StunAgent,
     channel: StunChannel,
 }
 
 impl StunAgent {
     /// Create a new STUN Agent from an existing socket
     pub fn new(channel: StunChannel) -> Result<Self, std::io::Error> {
-        let internal = librice_proto::stun::agent::StunAgent::builder(
-            channel.transport(),
-            channel.local_addr()?,
-        )
-        .build();
+        let internal =
+            stun_proto::agent::StunAgent::builder(channel.transport(), channel.local_addr()?)
+                .build();
         Ok(Self {
             agent: internal,
             channel,
@@ -73,8 +71,8 @@ impl StunAgent {
     }
 
     /// Send data to the specified peer
-    pub async fn send_data(&self, data: &[u8], to: SocketAddr) -> Result<(), StunError> {
+    pub async fn send_data(&self, data: &[u8], to: SocketAddr) -> Result<(), std::io::Error> {
         let transmit = self.agent.send_data(data, to);
-        Ok(self.channel.send_to(&transmit.data, transmit.to).await?)
+        self.channel.send_to(&transmit.data, transmit.to).await
     }
 }

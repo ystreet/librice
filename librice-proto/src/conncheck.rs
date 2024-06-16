@@ -17,11 +17,11 @@ use std::time::{Duration, Instant};
 
 use crate::candidate::{Candidate, CandidatePair, CandidateType, TcpType, TransportType};
 use crate::component::ComponentConnectionState;
-use crate::stun::agent::{
+use stun_proto::agent::{
     HandleStunReply, StunAgent, StunError, StunRequest, StunRequestPollRet, Transmit,
 };
-use crate::stun::attribute::*;
-use crate::stun::message::*;
+use stun_proto::types::attribute::*;
+use stun_proto::types::message::*;
 
 /// ICE Credentials
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,7 +70,7 @@ impl SelectedPair {
     ///
     /// ```
     /// # use librice_proto::candidate::*;
-    /// # use librice_proto::stun::agent::StunAgent;
+    /// # use stun_proto::agent::StunAgent;
     /// # use librice_proto::component::SelectedPair;
     /// # use std::net::SocketAddr;
     /// let local_addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
@@ -111,8 +111,6 @@ impl SelectedPair {
 /// Return values when handling received data
 #[derive(Debug)]
 pub enum HandleRecvReply {
-    /// The data has been and should be ignored
-    Ignored,
     /// The data has been handled internally
     Handled,
     /// User data has been provided and should be handled further
@@ -341,7 +339,7 @@ impl ConnCheck {
             IntegrityAlgorithm::Sha1,
         )?;
         msg.add_fingerprint()?;
-        agent.stun_request_transaction(&msg, to).build()
+        agent.stun_request_transaction(&msg, to)
     }
 }
 
@@ -1347,7 +1345,7 @@ impl ConnCheckList {
             .component_ids
             .iter()
             .map(|&component_id| {
-                let nominated = self.pairs.iter().cloned().find(|check| check.nominate());
+                let nominated = self.pairs.iter().find(|check| check.nominate()).cloned();
                 nominated.or({
                     let mut valid: Vec<_> = self
                         .valid
@@ -1750,7 +1748,6 @@ impl ConnCheckListSet {
             });
         for reply in agent.handle_incoming_data(&transmit.data, transmit.from)? {
             match reply {
-                HandleStunReply::Ignore => ret.push(HandleRecvReply::Ignored),
                 HandleStunReply::Data(data, from) => ret.push(HandleRecvReply::Data(data, from)),
                 HandleStunReply::Stun(stun, from) => {
                     if stun.is_response() {
@@ -1804,40 +1801,46 @@ impl ConnCheckListSet {
         if let Some(error_msg) = Message::check_attribute_types(
             msg,
             &[
-                USERNAME,
-                FINGERPRINT,
-                MESSAGE_INTEGRITY,
-                ICE_CONTROLLED,
-                ICE_CONTROLLING,
-                PRIORITY,
-                USE_CANDIDATE,
+                Username::TYPE,
+                Fingerprint::TYPE,
+                MessageIntegrity::TYPE,
+                IceControlled::TYPE,
+                IceControlling::TYPE,
+                Priority::TYPE,
+                UseCandidate::TYPE,
             ],
-            &[USERNAME, FINGERPRINT, MESSAGE_INTEGRITY, PRIORITY],
+            &[
+                Username::TYPE,
+                Fingerprint::TYPE,
+                MessageIntegrity::TYPE,
+                Priority::TYPE,
+            ],
         ) {
             // failure -> send error response
             return Ok(Some(error_msg));
         }
-        let peer_nominating = if let Some(use_candidate_raw) = msg.raw_attribute(USE_CANDIDATE) {
+        let peer_nominating = if let Some(use_candidate_raw) = msg.raw_attribute(UseCandidate::TYPE)
+        {
             if UseCandidate::from_raw(use_candidate_raw).is_ok() {
                 true
             } else {
-                let response = Message::bad_request(msg)?;
+                let response = Message::bad_request(msg);
                 return Ok(Some(response));
             }
         } else {
             false
         };
 
-        let priority = match msg.attribute::<Priority>(PRIORITY) {
+        let priority = match msg.attribute::<Priority>() {
             Some(p) => p.priority(),
             None => {
-                let response = Message::bad_request(msg)?;
+                let response = Message::bad_request(msg);
                 return Ok(Some(response));
             }
         };
 
-        let ice_controlling = msg.attribute::<IceControlling>(ICE_CONTROLLING);
-        let ice_controlled = msg.attribute::<IceControlled>(ICE_CONTROLLED);
+        let ice_controlling = msg.attribute::<IceControlling>();
+        let ice_controlled = msg.attribute::<IceControlled>();
 
         /*
         if checklist.state == CheckListState::Completed && !peer_nominating {
@@ -1847,7 +1850,7 @@ impl ConnCheckListSet {
         }*/
 
         // validate username
-        if let Some(username) = msg.attribute::<Username>(USERNAME) {
+        if let Some(username) = msg.attribute::<Username>() {
             if !validate_username(username, &checklist.local_credentials) {
                 warn!("binding request failed username validation -> UNAUTHORIZED");
                 let mut response = Message::new_error(msg);
@@ -1856,7 +1859,7 @@ impl ConnCheckListSet {
             }
         } else {
             // existence is checked above so can only fail when the username is invalid
-            let response = Message::bad_request(msg)?;
+            let response = Message::bad_request(msg);
             return Ok(Some(response));
         }
 
@@ -2205,10 +2208,10 @@ impl ConnCheckListSet {
         // if response error -> fail TODO: might be a recoverable error!
         if response.has_class(MessageClass::Error) {
             warn!("error response {}", response);
-            if let Some(err) = response.attribute::<ErrorCode>(ERROR_CODE) {
+            if let Some(err) = response.attribute::<ErrorCode>() {
                 if err.code() == ErrorCode::ROLE_CONFLICT {
                     info!("Role conflict received {}", response);
-                    let new_role = stun_request.request().has_attribute(ICE_CONTROLLED);
+                    let new_role = stun_request.request().has_attribute(IceControlled::TYPE);
                     info!(
                         old_role = self.controlling,
                         new_role, "Role Conflict changing controlling from"
@@ -2234,7 +2237,7 @@ impl ConnCheckListSet {
             checklist.check_response_failure(conncheck.clone());
         }
 
-        if let Some(xor) = response.attribute::<XorMappedAddress>(XOR_MAPPED_ADDRESS) {
+        if let Some(xor) = response.attribute::<XorMappedAddress>() {
             let xor_addr = xor.addr(response.transaction_id());
             return self.check_success(checklist_i, conncheck, xor_addr, self.controlling);
         }
@@ -2571,7 +2574,6 @@ fn validate_username(username: Username, local_credentials: &Credentials) -> boo
 mod tests {
     use super::*;
     use crate::candidate::*;
-    use crate::stun::agent::*;
 
     fn init() {
         crate::tests::test_init_log();
@@ -2793,23 +2795,28 @@ mod tests {
         if let Some(error_msg) = Message::check_attribute_types(
             msg,
             &[
-                USERNAME,
-                FINGERPRINT,
-                MESSAGE_INTEGRITY,
-                ICE_CONTROLLED,
-                ICE_CONTROLLING,
-                PRIORITY,
-                USE_CANDIDATE,
+                Username::TYPE,
+                Fingerprint::TYPE,
+                MessageIntegrity::TYPE,
+                IceControlled::TYPE,
+                IceControlling::TYPE,
+                Priority::TYPE,
+                UseCandidate::TYPE,
             ],
-            &[USERNAME, FINGERPRINT, MESSAGE_INTEGRITY, PRIORITY],
+            &[
+                Username::TYPE,
+                Fingerprint::TYPE,
+                MessageIntegrity::TYPE,
+                Priority::TYPE,
+            ],
         ) {
             // failure -> send error response
             return Ok(error_msg);
         }
 
-        let ice_controlling = msg.attribute::<IceControlling>(ICE_CONTROLLING);
-        let ice_controlled = msg.attribute::<IceControlled>(ICE_CONTROLLED);
-        let username = msg.attribute::<Username>(USERNAME);
+        let ice_controlling = msg.attribute::<IceControlling>();
+        let ice_controlled = msg.attribute::<IceControlled>();
+        let username = msg.attribute::<Username>();
         let valid_username = username
             .map(|username| validate_username(username, local_credentials))
             .unwrap_or(false);
@@ -3202,10 +3209,9 @@ mod tests {
             for checklist_id in checklist_ids.into_iter() {
                 let reply = set.incoming_data(checklist_id, &reply).unwrap();
                 trace!("reply: {reply:?}");
-                assert!(matches!(
-                    reply[0],
-                    HandleRecvReply::Ignored | HandleRecvReply::Handled
-                ));
+                if !reply.is_empty() {
+                    assert!(matches!(reply[0], HandleRecvReply::Handled));
+                }
             }
         }
     }
@@ -3790,7 +3796,6 @@ mod tests {
         let local_addr = state.local.peer.stun_agent().local_addr();
         let stun_request = remote_agent
             .stun_request_transaction(&request, local_addr)
-            .build()
             .unwrap();
 
         info!("sending prflx request");
@@ -4165,7 +4170,6 @@ mod tests {
         let local_addr = state.local.peer.stun_agent().local_addr();
         let stun_request = remote_agent
             .stun_request_transaction(&request, local_addr)
-            .build()
             .unwrap();
 
         info!("sending request");

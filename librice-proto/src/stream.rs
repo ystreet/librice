@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::time::Instant;
 
 use crate::gathering::GatherPoll;
-use crate::stun::agent::{HandleStunReply, StunAgent, StunError, Transmit};
+use stun_proto::agent::{HandleStunReply, StunAgent, StunError, Transmit};
 
 use crate::agent::{Agent, AgentError};
 use crate::component::{Component, ComponentMut, ComponentState, GatherProgress};
@@ -360,7 +360,6 @@ impl<'a> StreamMut<'a> {
                     HandleRecvReply::Handled => {
                         ret.conncheck_handled = true;
                     }
-                    HandleRecvReply::Ignored => (),
                 }
             }
         }

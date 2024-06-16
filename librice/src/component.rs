@@ -88,10 +88,10 @@ impl Component {
     pub async fn send(&self, data: &[u8]) -> Result<(), AgentError> {
         let (local_agent, channel, to) = {
             let inner = self.inner.lock().unwrap();
-            let selected_pair = inner
-                .selected_pair
-                .as_ref()
-                .ok_or(AgentError::ResourceNotFound)?;
+            let selected_pair = inner.selected_pair.as_ref().ok_or(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "No selected pair",
+            ))?;
             let local_agent = selected_pair.proto.stun_agent().clone();
             let to = selected_pair.proto.candidate_pair().remote.address;
             trace!("sending {} bytes to {}", data.len(), to);
@@ -210,10 +210,9 @@ impl SelectedPair {
 #[cfg(test)]
 mod tests {
     use async_std::net::UdpSocket;
-    use librice_proto::{
-        candidate::{Candidate, CandidateType},
-        stun::{agent::StunAgent, TransportType},
-    };
+    use librice_proto::candidate::{Candidate, CandidateType};
+    use stun_proto::agent::StunAgent;
+    use stun_proto::types::TransportType;
 
     use super::*;
     use crate::{agent::Agent, socket::UdpSocketChannel};

@@ -13,17 +13,11 @@ cargo-fuzz = true
 arbitrary.workspace = true
 libfuzzer-sys = "0.4"
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dependencies.librice-proto]
 path = "../librice-proto"
 features = ["arbitrary"]
-
-[[bin]]
-name = "stun_msg_from_bytes"
-path = "fuzz_targets/stun_msg_from_bytes.rs"
-test = false
-doc = false
 
 [[bin]]
 name = "parse_candidate"

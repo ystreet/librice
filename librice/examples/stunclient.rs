@@ -33,8 +33,8 @@ fn usage() {
 fn parse_response(response: Message) -> Result<(), std::io::Error> {
     if Message::check_attribute_types(
         &response,
-        &[XOR_MAPPED_ADDRESS, FINGERPRINT],
-        &[XOR_MAPPED_ADDRESS],
+        &[XorMappedAddress::TYPE, Fingerprint::TYPE],
+        &[XorMappedAddress::TYPE],
     )
     .is_some()
     {
@@ -45,9 +45,7 @@ fn parse_response(response: Message) -> Result<(), std::io::Error> {
     }
     if response.has_class(MessageClass::Success) {
         // presence checked by check_attribute_types() above
-        let mapped_address = response
-            .attribute::<XorMappedAddress>(XOR_MAPPED_ADDRESS)
-            .unwrap();
+        let mapped_address = response.attribute::<XorMappedAddress>().unwrap();
         let visible_addr = mapped_address.addr(response.transaction_id());
         println!("found visible address {:?}", visible_addr);
         Ok(())

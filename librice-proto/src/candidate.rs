@@ -8,8 +8,8 @@
 
 //! ICE Candidates
 
-pub use crate::stun::TransportType;
 pub use parse::ParseCandidateError;
+pub use stun_proto::types::TransportType;
 
 use std::error::Error;
 use std::net::SocketAddr;
@@ -442,7 +442,7 @@ mod parse {
 
     use super::{Candidate, CandidateType, ParseCandidateTypeError};
     use super::{ParseTcpTypeError, TcpType};
-    use crate::stun::{ParseTransportTypeError, TransportType};
+    use stun_proto::types::{ParseTransportTypeError, TransportType};
 
     /// Errors produced when parsing a candidate
     #[derive(Debug)]

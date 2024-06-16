@@ -21,8 +21,8 @@ use crate::component::ComponentConnectionState;
 use crate::candidate::{ParseCandidateError, TransportType};
 use crate::conncheck::{CheckListSetPollRet, ConnCheckEvent, ConnCheckListSet, SelectedPair};
 use crate::stream::{Stream, StreamMut, StreamState};
-use crate::stun::agent::{StunError, Transmit};
-use crate::stun::attribute::StunParseError;
+use stun_proto::agent::{StunError, Transmit};
+use stun_proto::types::message::StunParseError;
 //use crate::turn::agent::TurnCredentials;
 
 /// Errors that can be returned as a result of agent operations.
@@ -49,10 +49,9 @@ pub enum AgentError {
     Aborted,
     TimedOut,
     StunParse,
+    StunWrite,
     /// Parsing the candidate failed.
     CandidateParse(ParseCandidateError),
-    /// An I/O error occurred.
-    IoError(std::io::Error),
     /// Data was received that does not match the protocol specifications.
     ProtocolViolation,
 }
@@ -62,12 +61,6 @@ impl Error for AgentError {}
 impl Display for AgentError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "{:?}", self)
-    }
-}
-
-impl From<std::io::Error> for AgentError {
-    fn from(e: std::io::Error) -> Self {
-        Self::IoError(e)
     }
 }
 
@@ -88,7 +81,7 @@ impl From<StunError> for AgentError {
             StunError::IntegrityCheckFailed => AgentError::IntegrityCheckFailed,
             StunError::ProtocolViolation => AgentError::ProtocolViolation,
             StunError::ParseError(_) => AgentError::StunParse,
-            StunError::IoError(e) => AgentError::IoError(e),
+            StunError::WriteError(_) => AgentError::StunWrite,
             StunError::Aborted => AgentError::Aborted,
             StunError::AlreadyInProgress => AgentError::AlreadyInProgress,
         }
