@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::time::Instant;
 
 use crate::gathering::GatherPoll;
-use stun_proto::agent::{HandleStunReply, StunAgent, StunError, Transmit};
+use stun_proto::agent::{StunAgent, StunError, Transmit};
 
 use crate::agent::{Agent, AgentError};
 use crate::component::{Component, ComponentMut, ComponentState, GatherProgress};
@@ -584,17 +584,16 @@ impl StreamState {
         let Some(gather) = component.gatherer.as_mut() else {
             return StreamIncomingDataReply::default();
         };
-        let Ok(replies) = gather.handle_data(&transmit.data, transmit.from, transmit.to) else {
+        // XXX: is this enough to successfully route to the gatherer over the
+        // connection check or component received handling?
+        let Ok(wake) = gather.handle_data(
+            &transmit.data,
+            transmit.transport,
+            transmit.from,
+            transmit.to,
+        ) else {
             return StreamIncomingDataReply::default();
         };
-        let mut wake = false;
-        for reply in replies {
-            // XXX: is this enough to successfully route to the gatherer over the
-            // connection check or component received handling?
-            if let HandleStunReply::Stun(_msg, _from) = reply {
-                wake = true;
-            }
-        }
         if wake {
             return StreamIncomingDataReply {
                 gather_handled: true,

@@ -73,12 +73,8 @@ impl From<ParseCandidateError> for AgentError {
 impl From<StunError> for AgentError {
     fn from(e: StunError) -> Self {
         match e {
-            StunError::Failed => AgentError::Failed,
-            StunError::WrongImplementation => AgentError::WrongImplementation,
-            StunError::AlreadyExists => AgentError::AlreadyExists,
             StunError::ResourceNotFound => AgentError::ResourceNotFound,
             StunError::TimedOut => AgentError::TimedOut,
-            StunError::IntegrityCheckFailed => AgentError::IntegrityCheckFailed,
             StunError::ProtocolViolation => AgentError::ProtocolViolation,
             StunError::ParseError(_) => AgentError::StunParse,
             StunError::WriteError(_) => AgentError::StunWrite,

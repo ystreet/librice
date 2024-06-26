@@ -28,7 +28,8 @@ use crate::candidate::{Candidate, CandidateType};
 pub use crate::component::ComponentConnectionState;
 use crate::gathering::GatherPoll;
 use crate::stream::Credentials;
-use stun_proto::agent::{Data, DataOwned, DataSlice, StunAgent, StunError, Transmit};
+use stun_proto::agent::{StunAgent, StunError, Transmit};
+use stun_proto::types::data::{Data, DataOwned, DataSlice};
 use stun_proto::types::TransportType;
 
 static TRACING: Once = Once::new();
@@ -903,7 +904,7 @@ pub unsafe extern "C" fn rice_stream_handle_gather_tcp_connect(
     let to = RiceAddress::from_c(to);
 
     let stun_agent = if stun_agent.is_null() {
-        Err(StunError::Failed)
+        Err(StunError::ResourceNotFound)
     } else {
         Ok(Box::from_raw(stun_agent).0)
     };

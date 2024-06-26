@@ -64,11 +64,11 @@ fn parse_response(response: Message) -> Result<(), std::io::Error> {
     }
 }
 
-fn tcp_message(out: Message, to: SocketAddr) -> Result<(), std::io::Error> {
+fn tcp_message(out: MessageBuilder<'_>, to: SocketAddr) -> Result<(), std::io::Error> {
     let mut socket = TcpStream::connect(to).unwrap();
 
-    info!("generated to {}", out);
-    let buf = out.to_bytes();
+    info!("generated to {:?}", out);
+    let buf = out.build();
     trace!("generated to {:?}", buf);
     socket.write_all(&buf)?;
     let mut buf = [0; 1500];
@@ -87,11 +87,11 @@ fn tcp_message(out: Message, to: SocketAddr) -> Result<(), std::io::Error> {
     parse_response(msg)
 }
 
-fn udp_message(out: Message, to: SocketAddr) -> Result<(), std::io::Error> {
+fn udp_message(out: MessageBuilder<'_>, to: SocketAddr) -> Result<(), std::io::Error> {
     let socket = UdpSocket::bind("0.0.0.0:0")?;
 
-    info!("generated to {}", out);
-    let buf = out.to_bytes();
+    info!("generated to {:?}", out);
+    let buf = out.build();
     trace!("generated to {:?}", buf);
     socket.send_to(&buf, to)?;
     let mut buf = [0; 1500];
@@ -137,7 +137,7 @@ fn main() -> std::io::Result<()> {
     .unwrap();
 
     println!("sending STUN message over {:?} to {}", proto, to);
-    let mut msg = Message::new_request(BINDING);
+    let mut msg = Message::builder_request(BINDING);
     msg.add_fingerprint().unwrap();
 
     match proto {
