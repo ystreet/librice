@@ -15,7 +15,7 @@ workspace = ".."
 [dependencies]
 librice-proto = { version = "0.0.4", path = "../librice-proto" }
 async-std = "1"
-async-io = "1"
+async-io = "2"
 byteorder.workspace = true
 get_if_addrs.workspace = true
 futures = "0.3"
