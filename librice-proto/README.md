@@ -1,14 +1,13 @@
 [![Build status](https://github.com/ystreet/librice/workflows/Build/badge.svg?branch=main)](https://github.com/ystreet/librice/actions)
 [![codecov](https://codecov.io/gh/ystreet/librice/branch/main/graph/badge.svg)](https://codecov.io/gh/ystreet/librice)
 [![Dependencies](https://deps.rs/repo/github/ystreet/librice/status.svg)](https://deps.rs/repo/github/ystreet/librice)
-[![crates.io](https://img.shields.io/crates/v/librice.svg)](https://crates.io/crates/librice)
-[![docs.rs](https://docs.rs/librice/badge.svg)](https://docs.rs/librice)
+[![crates.io](https://img.shields.io/crates/v/librice-proto.svg)](https://crates.io/crates/librice-proto)
+[![docs.rs](https://docs.rs/librice-proto/badge.svg)](https://docs.rs/librice-proto)
 
-# librice
+# librice-proto
 
 Repository containing an (sans-IO) implementation of ICE (RFC8445) protocol written in
-the [Rust programming language](https://www.rust-lang.org/). A C interface is
-currently also provided.
+the [Rust programming language](https://www.rust-lang.org/).
 
 ## Warning
 
@@ -17,7 +16,7 @@ This still very much WIP code and everything is still subject to change.
 ## Current status
 
 The current status is that there is enough of the implementation to sucessfully
-communicate with STUN servers or a browser (Chrome or Firefox) in a WebRTC
+transfer data with an external browser (Chrome and Firefox) in a WebRTC
 scenario.  The STUN implementation is relatively mature at this stage. More work
 is needed on the ICE layer for efficiency and API experience. TURN support is
 still currently a work in progress. Supporting more scenarios and is certainly
@@ -72,6 +71,18 @@ For other examples of sans-IO implementations, take a look at:
  - [RFC8838](https://tools.ietf.org/html/rfc8838):
    Trickle ICE: Incremental Provisioning of Candidates for the Interactive
    Connectivity Establishment (ICE) Protocol
+
+## Structure
+
+### [librice-proto](https://github.com/ystreet/librice/tree/main/librice-proto)
+
+The sans-IO implementation of the ICE (RFC8445) protocol. Contains no IO code
+whatsover.
+
+### [librice](https://github.com/ystreet/librice/tree/main/librice)
+
+An async implementation of ICE (RFC8445) built using `librice-proto`. Currently
+uses async-std however a tokio (or mio) implementation is planned.
 
 ## TODO
 
