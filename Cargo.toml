@@ -4,7 +4,7 @@ default-members = ["librice", "librice-proto"]
 resolver = "2"
 
 [workspace.package]
-version = "0.0.4"
+version = "0.0.5"
 repository = "https://github.com/ystreet/librice"
 edition = "2021"
 rust-version = "1.68.2"
