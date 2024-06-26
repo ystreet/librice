@@ -32,9 +32,9 @@ fn udp_stund() {
         let stun_server = async_std::task::spawn(stun_server);
 
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let msg = Message::new_request(BINDING);
-        socket.send_to(&msg.to_bytes(), stun_addr).await.unwrap();
-        debug!("sent to {:?}, {}", stun_addr, msg);
+        let msg = Message::builder_request(BINDING);
+        socket.send_to(&msg.build(), stun_addr).await.unwrap();
+        debug!("sent to {:?}, {:?}", stun_addr, msg);
 
         let mut buf = [0; 1500];
         let size = socket.recv(&mut buf).await.unwrap();
@@ -58,14 +58,14 @@ fn tcp_stund() {
         let stun_server = async_std::task::spawn(stun_server);
 
         let mut socket = TcpStream::connect(stun_addr).await.unwrap();
-        let msg = Message::new_request(BINDING);
-        let msg_bytes = msg.to_bytes();
+        let msg = Message::builder_request(BINDING);
+        let msg_bytes = msg.build();
         let msg_bytes_len = msg_bytes.len() as u16;
         let mut data = vec![0; 2];
         data.extend(msg_bytes);
         BigEndian::write_u16(&mut data, msg_bytes_len);
         socket.write_all(&data).await.unwrap();
-        debug!("sent to {:?}, {}", stun_addr, msg);
+        debug!("sent to {:?}, {:?}", stun_addr, msg);
 
         let mut buf = [0; 1500];
         let mut read_position = 0;

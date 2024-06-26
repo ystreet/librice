@@ -8,15 +8,17 @@
 
 //! Helpers for retrieving a list of local candidates
 
+use std::collections::VecDeque;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::candidate::{Candidate, TransportType};
 use stun_proto::agent::{
-    HandleStunReply, StunAgent, StunError, StunRequest, StunRequestPollRet, Transmit,
+    HandleStunReply, StunAgent, StunAgentPollRet, StunError, TcpBuffer, Transmit,
 };
 use stun_proto::types::attribute::XorMappedAddress;
-use stun_proto::types::message::{Message, BINDING};
+use stun_proto::types::message::{Message, TransactionId, BINDING};
 
 fn address_is_ignorable(ip: IpAddr) -> bool {
     // TODO: add is_benchmarking() and is_documentation() when they become stable
@@ -46,16 +48,19 @@ impl RequestProtocol {
 
 #[derive(Debug)]
 struct RequestUdp {
-    agent: StunAgent,
-    request: StunRequest,
+    // TODO: remove this Arc<Mutex<>>,
+    agent: Arc<Mutex<StunAgent>>,
+    request: TransactionId,
 }
 
 #[derive(Debug)]
 struct RequestTcp {
-    agent: Option<StunAgent>,
-    request: Option<StunRequest>,
+    // TODO: remove this Arc<Mutex<>>,
+    agent: Option<Arc<Mutex<StunAgent>>>,
+    request: Option<TransactionId>,
     active_addr: SocketAddr,
     asked_for_agent: bool,
+    tcp_buffer: TcpBuffer,
 }
 
 #[derive(Debug)]
@@ -64,21 +69,22 @@ struct Request {
     base_addr: SocketAddr,
     server: SocketAddr,
     other_preference: u32,
+    component_id: usize,
     completed: bool,
 }
 
 impl Request {
-    fn agent(&self) -> Option<&StunAgent> {
+    fn agent(&self) -> Option<Arc<Mutex<StunAgent>>> {
         match &self.protocol {
-            RequestProtocol::Udp(udp) => Some(&udp.agent),
-            RequestProtocol::Tcp(tcp) => tcp.agent.as_ref(),
+            RequestProtocol::Udp(udp) => Some(udp.agent.clone()),
+            RequestProtocol::Tcp(tcp) => tcp.agent.clone(),
         }
     }
 
-    fn request(&self) -> Option<&StunRequest> {
+    fn request(&self) -> Option<TransactionId> {
         match &self.protocol {
-            RequestProtocol::Udp(udp) => Some(&udp.request),
-            RequestProtocol::Tcp(tcp) => tcp.request.as_ref(),
+            RequestProtocol::Udp(udp) => Some(udp.request),
+            RequestProtocol::Tcp(tcp) => tcp.request,
         }
     }
 }
@@ -88,8 +94,9 @@ impl Request {
 pub struct StunGatherer {
     component_id: usize,
     requests: Vec<Request>,
-    pending_candidates: Vec<Candidate>,
+    pending_candidates: VecDeque<Candidate>,
     produced_i: usize,
+    pending_transmits: VecDeque<(usize, Transmit<'static>)>,
 }
 
 /// Return value for the gather state machine
@@ -115,137 +122,144 @@ impl StunGatherer {
         stun_servers: Vec<(TransportType, SocketAddr)>,
     ) -> Self {
         // TODO: what to do on duplicate socket or stun_server addresses?
-        let (requests, pending_candidates) = {
-            let mut requests = vec![];
-            let mut pending_candidates = vec![];
-            for (i, (socket_transport, socket_addr)) in sockets.iter().enumerate() {
-                if address_is_ignorable(socket_addr.ip()) {
-                    continue;
-                }
-                let other_preference = (sockets.len() - i) as u32 * 2;
-                match socket_transport {
-                    TransportType::Udp => {
-                        let priority = Candidate::calculate_priority(
-                            crate::candidate::CandidateType::Host,
-                            *socket_transport,
-                            None,
-                            other_preference,
-                            component_id,
-                        );
-                        pending_candidates.push(
-                            Candidate::builder(
-                                component_id,
-                                crate::candidate::CandidateType::Host,
-                                *socket_transport,
-                                &pending_candidates.len().to_string(),
-                                *socket_addr,
-                            )
-                            .priority(priority)
-                            .base_address(*socket_addr)
-                            .build(),
-                        );
-                    }
-                    TransportType::Tcp => {
-                        let priority = Candidate::calculate_priority(
-                            crate::candidate::CandidateType::Host,
-                            *socket_transport,
-                            Some(crate::candidate::TcpType::Active),
-                            other_preference,
-                            component_id,
-                        );
-                        let active_addr = SocketAddr::new(socket_addr.ip(), 9);
-                        pending_candidates.push(
-                            Candidate::builder(
-                                component_id,
-                                crate::candidate::CandidateType::Host,
-                                *socket_transport,
-                                &pending_candidates.len().to_string(),
-                                active_addr,
-                            )
-                            .priority(priority)
-                            .tcp_type(crate::candidate::TcpType::Active)
-                            .build(),
-                        );
-                        let priority = Candidate::calculate_priority(
-                            crate::candidate::CandidateType::Host,
-                            *socket_transport,
-                            Some(crate::candidate::TcpType::Passive),
-                            other_preference + 1,
-                            component_id,
-                        );
-                        pending_candidates.push(
-                            Candidate::builder(
-                                component_id,
-                                crate::candidate::CandidateType::Host,
-                                *socket_transport,
-                                &pending_candidates.len().to_string(),
-                                *socket_addr,
-                            )
-                            .priority(priority)
-                            .tcp_type(crate::candidate::TcpType::Passive)
-                            .base_address(*socket_addr)
-                            .build(),
-                        );
-                    }
-                }
-                for (stun_transport, stun_addr) in stun_servers.iter() {
-                    if socket_transport != stun_transport {
-                        continue;
-                    }
-                    if socket_addr.is_ipv4() && !stun_addr.is_ipv4() {
-                        continue;
-                    }
-                    if socket_addr.is_ipv6() && !stun_addr.is_ipv6() {
-                        continue;
-                    }
-                    let mut msg = Message::new_request(BINDING);
-                    msg.add_fingerprint().unwrap();
-                    let (protocol, base_addr) = match socket_transport {
-                        TransportType::Udp => {
-                            let agent = StunAgent::builder(*socket_transport, *socket_addr)
-                                .remote_addr(*stun_addr)
-                                .build();
-                            trace!("adding gather request {socket_transport} from {socket_addr} to {stun_addr}");
-                            let request = agent.stun_request_transaction(&msg, *stun_addr).unwrap();
-                            (
-                                RequestProtocol::Udp(RequestUdp {
-                                    agent: agent.clone(),
-                                    request,
-                                }),
-                                *socket_addr,
-                            )
-                        }
-                        TransportType::Tcp => {
-                            let active_addr = SocketAddr::new(socket_addr.ip(), 9);
-                            trace!("adding gather request {active_addr} from {socket_addr} to {stun_addr}");
-                            (
-                                RequestProtocol::Tcp(RequestTcp {
-                                    agent: None,
-                                    active_addr,
-                                    request: None,
-                                    asked_for_agent: false,
-                                }),
-                                active_addr,
-                            )
-                        }
-                    };
-                    requests.push(Request {
-                        protocol,
-                        base_addr,
-                        server: *stun_addr,
+        let mut requests = vec![];
+        let mut pending_candidates = VecDeque::new();
+        let mut pending_transmits = VecDeque::new();
+        for (i, (socket_transport, socket_addr)) in sockets.iter().enumerate() {
+            if address_is_ignorable(socket_addr.ip()) {
+                continue;
+            }
+            let other_preference = (sockets.len() - i) as u32 * 2;
+            match socket_transport {
+                TransportType::Udp => {
+                    let priority = Candidate::calculate_priority(
+                        crate::candidate::CandidateType::Host,
+                        *socket_transport,
+                        None,
                         other_preference,
-                        completed: false,
-                    });
+                        component_id,
+                    );
+                    pending_candidates.push_front(
+                        Candidate::builder(
+                            component_id,
+                            crate::candidate::CandidateType::Host,
+                            *socket_transport,
+                            &pending_candidates.len().to_string(),
+                            *socket_addr,
+                        )
+                        .priority(priority)
+                        .base_address(*socket_addr)
+                        .build(),
+                    );
+                }
+                TransportType::Tcp => {
+                    let priority = Candidate::calculate_priority(
+                        crate::candidate::CandidateType::Host,
+                        *socket_transport,
+                        Some(crate::candidate::TcpType::Active),
+                        other_preference,
+                        component_id,
+                    );
+                    let active_addr = SocketAddr::new(socket_addr.ip(), 9);
+                    pending_candidates.push_front(
+                        Candidate::builder(
+                            component_id,
+                            crate::candidate::CandidateType::Host,
+                            *socket_transport,
+                            &pending_candidates.len().to_string(),
+                            active_addr,
+                        )
+                        .priority(priority)
+                        .tcp_type(crate::candidate::TcpType::Active)
+                        .build(),
+                    );
+                    let priority = Candidate::calculate_priority(
+                        crate::candidate::CandidateType::Host,
+                        *socket_transport,
+                        Some(crate::candidate::TcpType::Passive),
+                        other_preference + 1,
+                        component_id,
+                    );
+                    pending_candidates.push_front(
+                        Candidate::builder(
+                            component_id,
+                            crate::candidate::CandidateType::Host,
+                            *socket_transport,
+                            &pending_candidates.len().to_string(),
+                            *socket_addr,
+                        )
+                        .priority(priority)
+                        .tcp_type(crate::candidate::TcpType::Passive)
+                        .base_address(*socket_addr)
+                        .build(),
+                    );
                 }
             }
-            (requests, pending_candidates)
-        };
+            for (stun_transport, stun_addr) in stun_servers.iter() {
+                if socket_transport != stun_transport {
+                    continue;
+                }
+                if socket_addr.is_ipv4() && !stun_addr.is_ipv4() {
+                    continue;
+                }
+                if socket_addr.is_ipv6() && !stun_addr.is_ipv6() {
+                    continue;
+                }
+                let mut msg = Message::builder_request(BINDING);
+                msg.add_fingerprint().unwrap();
+                let (protocol, base_addr) = match socket_transport {
+                    TransportType::Udp => {
+                        let transaction_id = msg.transaction_id();
+                        let mut agent = StunAgent::builder(*socket_transport, *socket_addr)
+                            .remote_addr(*stun_addr)
+                            .build();
+                        trace!("adding gather request {socket_transport} from {socket_addr} to {stun_addr}");
+                        pending_transmits.push_front((
+                            component_id,
+                            agent.send(msg, *stun_addr).unwrap().into_owned(),
+                        ));
+                        (
+                            RequestProtocol::Udp(RequestUdp {
+                                agent: Arc::new(Mutex::new(agent)),
+                                request: transaction_id,
+                            }),
+                            *socket_addr,
+                        )
+                    }
+                    TransportType::Tcp => {
+                        let active_addr = SocketAddr::new(socket_addr.ip(), 9);
+                        trace!(
+                            "adding gather request {active_addr} from {socket_addr} to {stun_addr}"
+                        );
+                        (
+                            RequestProtocol::Tcp(RequestTcp {
+                                agent: None,
+                                active_addr,
+                                request: None,
+                                asked_for_agent: false,
+                                tcp_buffer: Default::default(),
+                            }),
+                            active_addr,
+                        )
+                    }
+                };
+                requests.push(Request {
+                    protocol,
+                    base_addr,
+                    server: *stun_addr,
+                    other_preference,
+                    component_id,
+                    completed: false,
+                });
+            }
+        }
 
         Self {
             component_id,
             requests,
             pending_candidates,
             produced_i: 0,
+            pending_transmits,
         }
     }
 
@@ -258,17 +272,18 @@ impl StunGatherer {
     /// or [`GatherPoll::Complete`] is returned.
     #[tracing::instrument(name = "poll_gather", level = "trace", ret, err, skip(self))]
     pub fn poll(&mut self, now: Instant) -> Result<GatherPoll, StunError> {
-        if self.produced_i < self.pending_candidates.len() {
-            let cand = self.pending_candidates[self.produced_i].clone();
-            self.produced_i += 1;
+        if let Some(cand) = self.pending_candidates.pop_back() {
             return Ok(GatherPoll::NewCandidate(cand));
         }
+        if let Some((component_id, transmit)) = self.pending_transmits.pop_back() {
+            return Ok(GatherPoll::SendData(component_id, transmit));
+        }
         let mut lowest_wait = None;
-        'next_request: for request in self.requests.iter_mut() {
+        for request in self.requests.iter_mut() {
             if request.completed {
                 continue;
             }
-            let stun_request = if let Some(request) = request.request() {
+            let _stun_request = if let Some(request) = request.request() {
                 request
             } else {
                 match request.protocol {
@@ -291,53 +306,24 @@ impl StunGatherer {
                     }
                 }
             };
-            match stun_request.poll(now)? {
-                StunRequestPollRet::Cancelled => return Err(StunError::Aborted),
-                StunRequestPollRet::Response(response) => {
-                    if let Some(xor_addr) = response.attribute::<XorMappedAddress>() {
-                        request.completed = true;
-                        let stun_addr = xor_addr.addr(response.transaction_id());
-                        if address_is_ignorable(stun_addr.ip()) {
-                            continue;
-                        }
-                        let foundation = self.produced_i.to_string();
-                        self.produced_i += 1;
-                        let priority = Candidate::calculate_priority(
-                            crate::candidate::CandidateType::Host,
-                            request.protocol.transport(),
-                            None,
-                            request.other_preference,
-                            self.component_id,
-                        );
-                        let builder = Candidate::builder(
-                            self.component_id,
-                            crate::candidate::CandidateType::ServerReflexive,
-                            request.protocol.transport(),
-                            &foundation,
-                            stun_addr,
-                        )
-                        .priority(priority)
-                        .base_address(request.base_addr)
-                        .related_address(request.server);
-                        let cand = builder.build();
-                        for c in self.pending_candidates.iter() {
-                            if cand.redundant_with(c) {
-                                trace!("redundant {cand:?}");
-                                continue 'next_request;
-                            }
-                        }
-                        self.pending_candidates.push(cand.clone());
-                        self.produced_i += 1;
-                        return Ok(GatherPoll::NewCandidate(cand));
-                    }
+            let Some(agent) = request.agent() else {
+                continue;
+            };
+            let mut agent = agent.lock().unwrap();
+            match agent.poll(now) {
+                StunAgentPollRet::TransactionCancelled(_msg) => {
+                    request.completed = true;
                 }
-                StunRequestPollRet::SendData(transmit) => {
+                StunAgentPollRet::TransactionTimedOut(_msg) => {
+                    request.completed = true;
+                }
+                StunAgentPollRet::SendData(transmit) => {
                     return Ok(GatherPoll::SendData(
                         self.component_id,
                         transmit.into_owned(),
                     ))
                 }
-                StunRequestPollRet::WaitUntil(new_time) => {
+                StunAgentPollRet::WaitUntil(new_time) => {
                     if let Some(time) = lowest_wait {
                         if new_time < time {
                             lowest_wait = Some(new_time);
@@ -355,18 +341,138 @@ impl StunGatherer {
         }
     }
 
-    /// Provide the gatherer with data received from a socket.  If [`HandleStunReply::Stun`] is
+    fn handle_stun_response(
+        response: Message<'_>,
+        transport: TransportType,
+        other_preference: u32,
+        component_id: usize,
+        foundation: String,
+        base_addr: SocketAddr,
+        server: SocketAddr,
+    ) -> Option<(Candidate, Message<'_>)> {
+        if let Ok(xor_addr) = response.attribute::<XorMappedAddress>() {
+            let stun_addr = xor_addr.addr(response.transaction_id());
+            if !address_is_ignorable(stun_addr.ip()) {
+                let priority = Candidate::calculate_priority(
+                    crate::candidate::CandidateType::Host,
+                    transport,
+                    None,
+                    other_preference,
+                    component_id,
+                );
+                let builder = Candidate::builder(
+                    component_id,
+                    crate::candidate::CandidateType::ServerReflexive,
+                    transport,
+                    &foundation,
+                    stun_addr,
+                )
+                .priority(priority)
+                .base_address(base_addr)
+                .related_address(server);
+                let cand = builder.build();
+                return Some((cand, response));
+            }
+        }
+        None
+    }
+
+    /// Provide the gatherer with data received from a socket.  If [`HandleStunReply::StunResponse`] is
     /// returned, then `poll()` should to be called at the next earliest opportunity.
-    pub fn handle_data(
-        &self,
-        data: &[u8],
+    pub fn handle_data<'a>(
+        &'a mut self,
+        data: &'a [u8],
+        transport: TransportType,
         from: SocketAddr,
         to: SocketAddr,
-    ) -> Result<Vec<HandleStunReply>, StunError> {
-        for request in self.requests.iter() {
-            if !request.completed && request.server == from && request.base_addr == to {
+    ) -> Result<bool, StunError> {
+        for request in self.requests.iter_mut() {
+            if !request.completed
+                && request.protocol.transport() == transport
+                && request.server == from
+                && request.base_addr == to
+            {
                 if let Some(agent) = request.agent() {
-                    return agent.handle_incoming_data(data, from);
+                    let mut agent_inner = agent.lock().unwrap();
+                    let mut handled = false;
+                    match &mut request.protocol {
+                        RequestProtocol::Tcp(ref mut tcp) => {
+                            tcp.tcp_buffer.push_data(data);
+                            while let Some(data) = tcp.tcp_buffer.pull_data() {
+                                // TODO: need to handle heteregoneous TCP data
+                                match Message::from_bytes(&data) {
+                                    Ok(msg) => {
+                                        if let HandleStunReply::StunResponse(response) =
+                                            agent_inner.handle_stun(msg, from)
+                                        {
+                                            if let Ok(_xor_addr) =
+                                                response.attribute::<XorMappedAddress>()
+                                            {
+                                                request.completed = true;
+                                            }
+                                            let foundation = self.produced_i.to_string();
+                                            if let Some((cand, _response)) =
+                                                Self::handle_stun_response(
+                                                    response,
+                                                    TransportType::Tcp,
+                                                    request.other_preference,
+                                                    request.component_id,
+                                                    foundation,
+                                                    request.base_addr,
+                                                    request.server,
+                                                )
+                                            {
+                                                self.produced_i += 1;
+                                                for c in self.pending_candidates.iter() {
+                                                    if cand.redundant_with(c) {
+                                                        trace!("redundant {cand:?}");
+                                                        continue;
+                                                    }
+                                                }
+                                                self.pending_candidates.push_front(cand.clone());
+                                            }
+                                            handled = true;
+                                        }
+                                    }
+                                    Err(_e) => request.completed = true,
+                                }
+                            }
+                        }
+                        RequestProtocol::Udp(_udp) => match Message::from_bytes(data) {
+                            Ok(msg) => {
+                                if let HandleStunReply::StunResponse(response) =
+                                    agent_inner.handle_stun(msg, from)
+                                {
+                                    if let Ok(_xor_addr) = response.attribute::<XorMappedAddress>()
+                                    {
+                                        request.completed = true;
+                                    }
+                                    let foundation = self.produced_i.to_string();
+                                    if let Some((cand, _response)) = Self::handle_stun_response(
+                                        response,
+                                        TransportType::Udp,
+                                        request.other_preference,
+                                        request.component_id,
+                                        foundation,
+                                        request.base_addr,
+                                        request.server,
+                                    ) {
+                                        self.produced_i += 1;
+                                        for c in self.pending_candidates.iter() {
+                                            if cand.redundant_with(c) {
+                                                trace!("redundant {cand:?}");
+                                                continue;
+                                            }
+                                        }
+                                        self.pending_candidates.push_front(cand.clone());
+                                    }
+                                    handled = true;
+                                }
+                            }
+                            Err(_e) => (),
+                        },
+                    }
+                    return Ok(handled);
                 }
             }
         }
@@ -390,16 +496,17 @@ impl StunGatherer {
                 if let RequestProtocol::Tcp(ref mut tcp) = request.protocol {
                     if tcp.agent.is_none() {
                         match agent {
-                            Ok(agent) => {
+                            Ok(mut agent) => {
                                 let local_addr = agent.local_addr();
-                                let mut msg = Message::new_request(BINDING);
+                                let mut msg = Message::builder_request(BINDING);
                                 msg.add_fingerprint().unwrap();
-                                tcp.request = Some(
-                                    agent
-                                        .stun_request_transaction(&msg, request.server)
-                                        .unwrap(),
-                                );
-                                tcp.agent = Some(agent);
+                                let transaction_id = msg.transaction_id();
+                                self.pending_transmits.push_front((
+                                    self.component_id,
+                                    agent.send(msg, request.server).unwrap().into_owned(),
+                                ));
+                                tcp.request = Some(transaction_id);
+                                tcp.agent = Some(Arc::new(Mutex::new(agent)));
                                 request.base_addr = local_addr;
                             }
                             Err(_e) => {
@@ -509,13 +616,13 @@ mod tests {
             let msg = Message::from_bytes(&transmit.data).unwrap();
             assert!(msg.has_method(BINDING));
             assert!(msg.has_class(MessageClass::Request));
-            assert!(matches!(gather.poll(now), Ok(GatherPoll::WaitUntil(_))));
-            let mut response = Message::new_success(&msg);
+            let mut response = Message::builder_success(&msg);
             response
-                .add_attribute(XorMappedAddress::new(public_ip, response.transaction_id()))
+                .add_attribute(&XorMappedAddress::new(public_ip, response.transaction_id()))
                 .unwrap();
+            assert!(matches!(gather.poll(now), Ok(GatherPoll::WaitUntil(_))));
             gather
-                .handle_data(&response.to_bytes(), stun_addr, local_addr)
+                .handle_data(&response.build(), TransportType::Udp, stun_addr, local_addr)
                 .unwrap();
         } else {
             error!("{ret:?}");

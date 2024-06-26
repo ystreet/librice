@@ -506,14 +506,14 @@ impl Stream {
                 }
             }
         }
-        if reply.conncheck_handled {
-            if let Some(agent) = weak_agent_inner.upgrade() {
-                let mut agent = agent.lock().unwrap();
-                if let Some(waker) = agent.waker.take() {
-                    waker.wake();
-                }
+        //        if reply.conncheck_handled {
+        if let Some(agent) = weak_agent_inner.upgrade() {
+            let mut agent = agent.lock().unwrap();
+            if let Some(waker) = agent.waker.take() {
+                waker.wake();
             }
         }
+        //        }
     }
 
     /// Start gathering local candidates.  Credentials must have been set before this function can

@@ -97,7 +97,12 @@ impl Component {
             trace!("sending {} bytes to {}", data.len(), to);
             (local_agent, selected_pair.socket.clone(), to)
         };
-        let transmit = local_agent.send_data(data, to);
+
+        let transmit;
+        {
+            let local_agent = local_agent.lock().unwrap();
+            transmit = local_agent.send_data(data, to);
+        }
 
         channel.send_to(&transmit.data, transmit.to).await?;
 
@@ -252,6 +257,7 @@ mod tests {
                 Candidate::builder(0, CandidateType::Host, TransportType::Udp, "0", remote_addr)
                     .build();
             let candidate_pair = CandidatePair::new(local_cand, remote_cand);
+            let local_agent = Arc::new(Mutex::new(local_agent));
             let selected_pair = SelectedPair {
                 proto: librice_proto::component::SelectedPair::new(candidate_pair, local_agent),
                 socket: local_channel,
