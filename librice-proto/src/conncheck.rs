@@ -153,14 +153,38 @@ enum ConnCheckVariant {
     Tcp(TcpConnCheck),
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
+struct ConnCheckId(usize);
+
+impl std::ops::Deref for ConnCheckId {
+    type Target = usize;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl ConnCheckId {
+    fn generate() -> Self {
+        let conncheck_id = CONN_CHECK_COUNT.fetch_add(1, Ordering::SeqCst);
+        Self(conncheck_id)
+    }
+}
+
+impl std::fmt::Display for ConnCheckId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 struct ConnCheck {
-    conncheck_id: usize,
+    conncheck_id: ConnCheckId,
     checklist_id: usize,
     nominate: bool,
     pair: CandidatePair,
-    state: Arc<Mutex<ConnCheckState>>,
     variant: ConnCheckVariant,
     controlling: bool,
+    state: CandidatePairState,
+    stun_request: Option<TransactionId>,
 }
 
 impl std::fmt::Debug for ConnCheck {
@@ -174,37 +198,6 @@ impl std::fmt::Debug for ConnCheck {
     }
 }
 
-#[derive(Debug)]
-struct ConnCheckState {
-    conncheck_id: usize,
-    state: CandidatePairState,
-    stun_request: Option<TransactionId>,
-}
-
-impl ConnCheckState {
-    #[tracing::instrument(
-        name = "set_check_state",
-        level = "debug",
-        skip(self, state),
-        fields(
-            ?self.conncheck_id,
-        )
-    )]
-    fn set_state(&mut self, state: CandidatePairState) {
-        if self.state != state {
-            debug!(old_state = ?self.state, new_state = ?state, "updating state");
-            if state == CandidatePairState::Succeeded || state == CandidatePairState::Failed {
-                trace!("aborting recv");
-                if let Some(ref _stun_request) = self.stun_request {
-                    // FIXME
-                    // stun_request.cancel_retransmissions();
-                }
-            }
-            self.state = state;
-        }
-    }
-}
-
 impl ConnCheck {
     fn new(
         checklist_id: usize,
@@ -213,17 +206,12 @@ impl ConnCheck {
         nominate: bool,
         controlling: bool,
     ) -> Self {
-        let conncheck_id = CONN_CHECK_COUNT.fetch_add(1, Ordering::SeqCst);
-        let inner = Arc::new(Mutex::new(ConnCheckState {
-            conncheck_id,
-            state: CandidatePairState::Frozen,
-            stun_request: None,
-        }));
         Self {
-            conncheck_id,
+            conncheck_id: ConnCheckId::generate(),
             checklist_id,
             pair,
-            state: inner,
+            state: CandidatePairState::Frozen,
+            stun_request: None,
             variant: ConnCheckVariant::Agent(agent),
             nominate,
             controlling,
@@ -236,16 +224,12 @@ impl ConnCheck {
         nominate: bool,
         controlling: bool,
     ) -> Self {
-        let conncheck_id = CONN_CHECK_COUNT.fetch_add(1, Ordering::SeqCst);
         Self {
-            conncheck_id,
+            conncheck_id: ConnCheckId::generate(),
             checklist_id,
             pair,
-            state: Arc::new(Mutex::new(ConnCheckState {
-                conncheck_id,
-                state: CandidatePairState::Frozen,
-                stun_request: None,
-            })),
+            state: CandidatePairState::Frozen,
+            stun_request: None,
             variant: ConnCheckVariant::Tcp(TcpConnCheck { agent: None }),
             nominate,
             controlling,
@@ -253,19 +237,19 @@ impl ConnCheck {
     }
 
     fn clone_with_pair_nominate(
-        conncheck: &Arc<ConnCheck>,
+        conncheck: &ConnCheck,
         checklist_id: usize,
         pair: CandidatePair,
         new_nominate: bool,
-    ) -> Arc<ConnCheck> {
+    ) -> ConnCheck {
         match &conncheck.variant {
-            ConnCheckVariant::Agent(agent) => Arc::new(ConnCheck::new(
+            ConnCheckVariant::Agent(agent) => ConnCheck::new(
                 checklist_id,
                 pair,
                 agent.clone(),
                 new_nominate,
                 conncheck.controlling,
-            )),
+            ),
             _ => unreachable!(),
         }
     }
@@ -278,13 +262,30 @@ impl ConnCheck {
     }
 
     fn state(&self) -> CandidatePairState {
-        self.state.lock().unwrap().state
+        self.state
     }
 
-    fn set_state(&self, state: CandidatePairState) {
-        let mut inner = self.state.lock().unwrap();
+    #[tracing::instrument(
+        name = "set_check_state",
+        level = "debug",
+        skip(self, state),
+        fields(
+            ?self.conncheck_id,
+        )
+    )]
+    fn set_state(&mut self, state: CandidatePairState) {
         // TODO: validate state change
-        inner.set_state(state)
+        if self.state != state {
+            debug!(old_state = ?self.state, new_state = ?state, "updating state");
+            if state == CandidatePairState::Succeeded || state == CandidatePairState::Failed {
+                trace!("aborting recv");
+                if let Some(ref _stun_request) = self.stun_request {
+                    // FIXME
+                    // stun_request.cancel_retransmissions();
+                }
+            }
+            self.state = state;
+        }
     }
 
     fn nominate(&self) -> bool {
@@ -298,11 +299,10 @@ impl ConnCheck {
             self.state
         )
     )]
-    fn cancel(&self) {
-        let mut inner = self.state.lock().unwrap();
-        inner.set_state(CandidatePairState::Failed);
-        if let Some(_stun_request) = inner.stun_request.take() {
-            debug!(conncheck.id = self.conncheck_id, "cancelling conncheck");
+    fn cancel(&mut self) {
+        self.set_state(CandidatePairState::Failed);
+        if let Some(_stun_request) = self.stun_request.take() {
+            debug!(conncheck.id = *self.conncheck_id, "cancelling conncheck");
             // FIXME
             // stun_request.cancel();
         }
@@ -316,10 +316,9 @@ impl ConnCheck {
         )
     )]
     fn cancel_retransmissions(&self) {
-        let inner = self.state.lock().unwrap();
-        if let Some(_stun_request) = inner.stun_request.as_ref() {
+        if let Some(_stun_request) = self.stun_request.as_ref() {
             debug!(
-                conncheck.id = self.conncheck_id,
+                conncheck.id = *self.conncheck_id,
                 "cancelling conncheck retransmissions"
             );
             // FIXME
@@ -386,10 +385,10 @@ pub struct ConnCheckList {
     local_candidates: Vec<ConnCheckLocalCandidate>,
     remote_candidates: Vec<Candidate>,
     // TODO: move to BinaryHeap or similar
-    triggered: VecDeque<Arc<ConnCheck>>,
-    pairs: VecDeque<Arc<ConnCheck>>,
-    valid: Vec<Arc<ConnCheck>>,
-    nominated: Vec<Arc<ConnCheck>>,
+    triggered: VecDeque<ConnCheckId>,
+    pairs: VecDeque<ConnCheck>,
+    valid: Vec<ConnCheckId>,
+    nominated: Vec<ConnCheckId>,
     controlling: bool,
     trickle_ice: bool,
     local_end_of_candidates: bool,
@@ -785,17 +784,22 @@ impl ConnCheckList {
         thawn_foundations.extend(seen_foundations);
     }
 
-    fn next_triggered(&mut self) -> Option<Arc<ConnCheck>> {
-        self.triggered.pop_back().map(|check| {
-            check.set_state(CandidatePairState::InProgress);
-            check
+    fn next_triggered(&mut self) -> Option<&mut ConnCheck> {
+        self.triggered.pop_back().and_then(|check_id| {
+            self.mut_check_by_id(check_id).map(|check| {
+                check.set_state(CandidatePairState::InProgress);
+                check
+            })
         })
     }
 
     #[cfg(test)]
-    fn is_triggered(&self, needle: &Arc<ConnCheck>) -> bool {
+    fn is_triggered(&self, needle: &CandidatePair) -> bool {
         trace!("triggered {:?}", self.triggered);
-        self.triggered.iter().any(|check| needle.pair == check.pair)
+        self.triggered.iter().any(|&check_id| {
+            self.check_by_id(check_id)
+                .map_or(false, |check| needle == &check.pair)
+        })
     }
 
     // note this will change the state of the returned check to InProgress to avoid a race
@@ -806,22 +810,21 @@ impl ConnCheckList {
             checklist_id = self.checklist_id
         )
     )]
-    fn next_waiting(&self) -> Option<Arc<ConnCheck>> {
+    fn next_waiting(&mut self) -> Option<&mut ConnCheck> {
         self.pairs
-            .iter()
+            .iter_mut()
             // first look for any that are waiting
             // FIXME: should be highest priority pair: make the data structure give us that by
             // default
-            .find(|check| {
-                let mut state = check.state.lock().unwrap();
-                if state.state == CandidatePairState::Waiting {
-                    state.set_state(CandidatePairState::InProgress);
-                    true
+            .filter_map(|check| {
+                if check.state == CandidatePairState::Waiting {
+                    check.set_state(CandidatePairState::InProgress);
+                    Some(check)
                 } else {
-                    false
+                    None
                 }
             })
-            .cloned()
+            .next()
     }
 
     // note this will change the returned check state to waiting to avoid a race
@@ -832,9 +835,9 @@ impl ConnCheckList {
             checklist_id = self.checklist_id
         )
     )]
-    fn next_frozen(&self, from_foundations: &[String]) -> Option<Arc<ConnCheck>> {
+    fn next_frozen(&mut self, from_foundations: &[String]) -> Option<&mut ConnCheck> {
         self.pairs
-            .iter()
+            .iter_mut()
             .filter_map(|check| {
                 if check.state() == CandidatePairState::Frozen {
                     from_foundations
@@ -845,8 +848,10 @@ impl ConnCheckList {
                     None
                 }
             })
-            .cloned()
-            .inspect(|check| check.set_state(CandidatePairState::Waiting))
+            .map(|check| {
+                check.set_state(CandidatePairState::Waiting);
+                check
+            })
             .next()
     }
 
@@ -855,7 +860,6 @@ impl ConnCheckList {
         let _: Vec<_> = self
             .pairs
             .iter()
-            .cloned()
             .inspect(|check| {
                 foundations.insert(check.pair.foundation());
             })
@@ -927,6 +931,14 @@ impl ConnCheckList {
             .cloned()
     }
 
+    fn check_by_id(&self, id: ConnCheckId) -> Option<&ConnCheck> {
+        self.pairs.iter().find(|check| check.conncheck_id == id)
+    }
+
+    fn mut_check_by_id(&mut self, id: ConnCheckId) -> Option<&mut ConnCheck> {
+        self.pairs.iter_mut().find(|check| check.conncheck_id == id)
+    }
+
     #[tracing::instrument(
         level = "debug",
         skip(self, check),
@@ -935,17 +947,18 @@ impl ConnCheckList {
             check.conncheck_id
         )
     )]
-    fn add_triggered(&mut self, check: Arc<ConnCheck>) {
-        if let Some(idx) = self
-            .triggered
-            .iter()
-            .position(|existing| candidate_pair_is_same_connection(&existing.pair, &check.pair))
-        {
+    fn add_triggered(&mut self, check: &ConnCheck) {
+        if let Some(idx) = self.triggered.iter().position(|&existing| {
+            self.check_by_id(existing).map_or(false, |existing| {
+                candidate_pair_is_same_connection(&existing.pair, &check.pair)
+            })
+        }) {
+            let triggered = self.check_by_id(self.triggered[idx]).unwrap();
             // a nominating check trumps not nominating.  Otherwise, if the peers are delay sync,
             // then the non-nominating trigerred check may override the nomination process for a
             // long time and delay the connection process
-            if check.nominate() && !self.triggered[idx].nominate()
-                || self.triggered[idx].state() == CandidatePairState::Failed
+            if check.nominate() && !triggered.nominate()
+                || triggered.state() == CandidatePairState::Failed
             {
                 let existing = self.triggered.remove(idx).unwrap();
                 debug!("removing existing triggered {:?}", existing);
@@ -955,7 +968,7 @@ impl ConnCheckList {
             }
         }
         debug!("adding triggered check {:?}", check);
-        self.triggered.push_front(check)
+        self.triggered.push_front(check.conncheck_id)
     }
 
     fn foundation_has_check_state(&self, foundation: &str, state: CandidatePairState) -> bool {
@@ -1042,21 +1055,21 @@ impl ConnCheckList {
                         pairs.push(pair.clone());
                         match local.variant {
                             LocalCandidateVariant::Agent(ref agent) => {
-                                checks.push(Arc::new(ConnCheck::new(
+                                checks.push(ConnCheck::new(
                                     self.checklist_id,
                                     pair.clone(),
                                     agent.clone(),
                                     false,
                                     self.controlling,
-                                )));
+                                ));
                             }
                             LocalCandidateVariant::TcpActive => {
-                                checks.push(Arc::new(ConnCheck::new_tcp(
+                                checks.push(ConnCheck::new_tcp(
                                     self.checklist_id,
                                     pair.clone(),
                                     false,
                                     self.controlling,
-                                )));
+                                ));
                             }
                             LocalCandidateVariant::TcpListener => (), // FIXME need something here?
                         }
@@ -1087,7 +1100,7 @@ impl ConnCheckList {
         } else {
             vec![]
         };
-        for check in checks {
+        for mut check in checks {
             if self.trickle_ice {
                 // for the trickle-ICE case, if the foundation does not already have a waiting check,
                 // then we use this check as the first waiting check
@@ -1109,7 +1122,7 @@ impl ConnCheckList {
         }
     }
 
-    fn check_is_equal(check: &Arc<ConnCheck>, pair: &CandidatePair, nominate: Nominate) -> bool {
+    fn check_is_equal(check: &ConnCheck, pair: &CandidatePair, nominate: Nominate) -> bool {
         candidate_is_same_connection(&check.pair.local, &pair.local)
             && candidate_is_same_connection(&check.pair.remote, &pair.remote)
             && nominate.eq(&check.nominate)
@@ -1120,7 +1133,7 @@ impl ConnCheckList {
         &mut self,
         pair: &CandidatePair,
         nominate: Nominate,
-    ) -> Option<Arc<ConnCheck>> {
+    ) -> Option<ConnCheck> {
         if let Some(position) = self
             .pairs
             .iter()
@@ -1133,19 +1146,13 @@ impl ConnCheckList {
     }
 
     #[tracing::instrument(level = "trace", ret, skip(self, pair))]
-    fn matching_check(&self, pair: &CandidatePair, nominate: Nominate) -> Option<Arc<ConnCheck>> {
-        self.triggered
+    fn matching_check(&self, pair: &CandidatePair, nominate: Nominate) -> Option<&ConnCheck> {
+        self.pairs
             .iter()
             .find(|&check| Self::check_is_equal(check, pair, nominate))
-            .or_else(|| {
-                self.pairs
-                    .iter()
-                    .find(|&check| Self::check_is_equal(check, pair, nominate))
-            })
-            .cloned()
     }
 
-    fn add_check_if_not_duplicate(&mut self, check: Arc<ConnCheck>) {
+    fn add_check_if_not_duplicate(&mut self, check: ConnCheck) {
         if let Some(idx) = self
             .pairs
             .iter()
@@ -1168,7 +1175,7 @@ impl ConnCheckList {
         self.add_check(check);
     }
 
-    fn add_check(&mut self, check: Arc<ConnCheck>) {
+    fn add_check(&mut self, check: ConnCheck) {
         trace!("adding check {:?}", check);
 
         let idx = self
@@ -1197,21 +1204,21 @@ impl ConnCheckList {
 
     #[tracing::instrument(
         level = "debug",
-        skip(self, check),
+        skip(self),
         fields(
             checklist_id = self.checklist_id,
-            pair = ?check.pair,
+            pair = ?pair,
         )
     )]
-    fn add_valid(&mut self, check: Arc<ConnCheck>) {
-        if check.pair.local.transport_type == TransportType::Tcp
-            && check.pair.local.tcp_type == Some(TcpType::Passive)
-            && check.pair.local.address.port() == 9
+    fn add_valid(&mut self, conncheck_id: ConnCheckId, pair: &CandidatePair) {
+        if pair.local.transport_type == TransportType::Tcp
+            && pair.local.tcp_type == Some(TcpType::Passive)
+            && pair.local.address.port() == 9
         {
-            trace!("no adding local passive tcp candidate without a valid port");
+            trace!("not adding local passive tcp candidate without a valid port");
         }
-        trace!("adding {:?}", check.pair);
-        self.valid.push(check);
+        trace!("adding {:?}", pair);
+        self.valid.push(conncheck_id);
     }
 
     #[tracing::instrument(
@@ -1222,14 +1229,19 @@ impl ConnCheckList {
         )
     )]
     fn remove_valid(&mut self, pair: &CandidatePair) {
-        self.valid.retain(|check| {
-            if !candidate_pair_is_same_connection(&check.pair, pair) {
-                debug!("removing");
-                false
-            } else {
-                true
-            }
-        });
+        let valid_to_remove = self
+            .valid
+            .iter()
+            .filter(|&check_id| {
+                let Some(check) = self.check_by_id(*check_id) else {
+                    return true;
+                };
+                candidate_pair_is_same_connection(&check.pair, pair)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        self.valid
+            .retain(|check_id| !valid_to_remove.contains(check_id));
     }
 
     #[tracing::instrument(
@@ -1281,11 +1293,11 @@ impl ConnCheckList {
             return;
         }
         self.dump_check_state();
-        if let Some(idx) = self
-            .valid
-            .iter()
-            .position(|check| candidate_pair_is_same_connection(&check.pair, pair))
-        {
+        if let Some(idx) = self.valid.iter().position(|&check_id| {
+            self.check_by_id(check_id).map_or(false, |check| {
+                candidate_pair_is_same_connection(&check.pair, pair) && check.nominate
+            })
+        }) {
             info!(
                 ttype = ?pair.local.transport_type,
                 local.address = ?pair.local.address,
@@ -1311,16 +1323,25 @@ impl ConnCheckList {
             //   connectivity-check transaction, will not treat the lack of
             //   response to be a failure, but will wait the duration of the
             //   transaction timeout for a response.
-            self.triggered.retain(|check| {
-                if check.pair.local.component_id == pair.local.component_id {
-                    check.cancel_retransmissions();
-                    false
-                } else {
-                    true
-                }
-            });
+            let triggered_to_remove = self
+                .triggered
+                .iter()
+                .filter(|&check_id| {
+                    let Some(check) = self.check_by_id(*check_id) else {
+                        return true;
+                    };
+                    check.pair.local.component_id == pair.local.component_id
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            self.triggered
+                .retain(|check_id| !triggered_to_remove.contains(check_id));
+            let nominated_ids = self.nominated.clone();
+            error!("nominated ids {nominated_ids:?}");
             self.pairs.retain(|check| {
-                if check.pair.local.component_id == pair.local.component_id {
+                if nominated_ids.contains(&check.conncheck_id) {
+                    true
+                } else if check.pair.local.component_id == pair.local.component_id {
                     check.cancel_retransmissions();
                     false
                 } else {
@@ -1335,6 +1356,7 @@ impl ConnCheckList {
             let all_nominated = self.component_ids.iter().all(|&component_id| {
                 self.nominated
                     .iter()
+                    .filter_map(|&check_id| self.check_by_id(check_id))
                     .any(|check| check.pair.local.component_id == component_id)
             });
             if all_nominated {
@@ -1347,32 +1369,36 @@ impl ConnCheckList {
                     "all {} component/s nominated, setting selected pair/s",
                     self.component_ids.len()
                 );
-                self.nominated
-                    .iter()
-                    .fold(vec![], |mut component_ids_selected, check| {
+                self.nominated.clone().iter().fold(
+                    vec![],
+                    |mut component_ids_selected, &check_id| {
+                        let Some(check) = self.check_by_id(check_id) else {
+                            return component_ids_selected;
+                        };
+                        let check_component_id = check.pair.local.component_id;
                         // Only nominate one valid candidatePair
-                        if !component_ids_selected
+                        if component_ids_selected
                             .iter()
-                            .any(|&comp_id| comp_id == check.pair.local.component_id)
+                            .any(|&comp_id| comp_id == check_component_id)
                         {
-                            if let Some(component_id) = component_id {
-                                self.events.push_front(ConnCheckEvent::SelectedPair(
-                                    component_id,
-                                    Box::new(SelectedPair::new(
-                                        pair.clone(),
-                                        check.agent().unwrap().clone(),
-                                    )),
-                                ));
-                                debug!("trying to signal component {:?}", component_id);
-                                self.events.push_front(ConnCheckEvent::ComponentState(
-                                    component_id,
-                                    ComponentConnectionState::Connected,
-                                ));
-                            }
-                            component_ids_selected.push(check.pair.local.component_id);
+                            return component_ids_selected;
                         }
+                        if let Some(component_id) = component_id {
+                            let agent = check.agent().unwrap().clone();
+                            self.events.push_front(ConnCheckEvent::SelectedPair(
+                                component_id,
+                                Box::new(SelectedPair::new(pair.clone(), agent)),
+                            ));
+                            debug!("trying to signal component {:?}", component_id);
+                            self.events.push_front(ConnCheckEvent::ComponentState(
+                                component_id,
+                                ComponentConnectionState::Connected,
+                            ));
+                        }
+                        component_ids_selected.push(check_component_id);
                         component_ids_selected
-                    });
+                    },
+                );
                 self.set_state(CheckListState::Completed);
             }
         } else {
@@ -1381,21 +1407,21 @@ impl ConnCheckList {
     }
 
     fn try_nominate(&mut self) {
-        let retrigerred: Vec<_> = self
+        let retriggered: Vec<_> = self
             .component_ids
             .iter()
             .map(|&component_id| {
-                let nominated = self.pairs.iter().find(|check| check.nominate()).cloned();
+                let nominated = self.pairs.iter().find(|check| check.nominate());
                 nominated.or({
                     let mut valid: Vec<_> = self
                         .valid
                         .iter()
+                        .filter_map(|&check_id| self.check_by_id(check_id))
                         .filter(|check| {
                             check.pair.local.component_id == component_id
                                 && (check.pair.local.transport_type != TransportType::Tcp
                                     || check.pair.local.address.port() != 9)
                         })
-                        .cloned()
                         .collect();
                     valid.sort_by(|check1, check2| {
                         check1
@@ -1406,21 +1432,21 @@ impl ConnCheckList {
                     // FIXME: Nominate when there are two valid candidates
                     // what if there is only ever one valid?
                     if !valid.is_empty() {
-                        valid.first().cloned()
+                        Some(valid[0])
                     } else {
                         None
                     }
                 })
             })
             .collect();
-        trace!("retriggered {:?}", retrigerred);
+        trace!("retriggered {:?}", retriggered);
         // need to wait until all component have a valid pair before we send nominations
-        if retrigerred.iter().all(|pair| pair.is_some()) {
+        if retriggered.iter().all(|pair| pair.is_some()) {
             self.dump_check_state();
             info!("all components have successful connchecks");
-            let _: Vec<_> = retrigerred
+            let new_checks = retriggered
                 .iter()
-                .map(|check| {
+                .filter_map(|check| {
                     let check = check.as_ref().unwrap(); // checked earlier
                                                          // find the local stun agent for this pair
                     if check.nominate() {
@@ -1428,8 +1454,9 @@ impl ConnCheckList {
                             "already have nominate check for component {}",
                             check.pair.local.component_id
                         );
+                        None
                     } else {
-                        let check = ConnCheck::clone_with_pair_nominate(
+                        let mut check = ConnCheck::clone_with_pair_nominate(
                             check,
                             self.checklist_id,
                             check.pair.clone(),
@@ -1437,17 +1464,20 @@ impl ConnCheckList {
                         );
                         check.set_state(CandidatePairState::Waiting);
                         debug!("attempting nomination with check {:?}", check);
-                        self.add_check(check.clone());
-                        self.add_triggered(check);
+                        Some(check)
                     }
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            for check in new_checks {
+                self.add_triggered(&check);
+                self.add_check(check);
+            }
         }
     }
 
     fn dump_check_state(&self) {
         let mut s = format!("checklist {}", self.checklist_id);
-        for pair in self.triggered.iter().chain(self.pairs.iter()) {
+        for pair in self.pairs.iter() {
             use std::fmt::Write as _;
             let _ = write!(&mut s,
                 "\nID:{id} foundation:{foundation} state:{state} nom:{nominate} con:{controlling} priority:{local_pri},{remote_pri} trans:{transport} local:{local_cand_type} {local_addr} remote:{remote_cand_type} {remote_addr}",
@@ -1468,34 +1498,31 @@ impl ConnCheckList {
         debug!("{}", s);
     }
 
-    fn check_response_failure(&mut self, conncheck: Arc<ConnCheck>) {
+    fn check_response_failure(&mut self, conncheck_id: ConnCheckId) {
+        let conncheck = self.mut_check_by_id(conncheck_id).unwrap();
         warn!("conncheck failure: {:?}", conncheck);
         conncheck.set_state(CandidatePairState::Failed);
-        self.remove_valid(&conncheck.pair);
+        let pair = conncheck.pair.clone();
         if conncheck.nominate() {
             self.set_state(CheckListState::Failed);
         }
+        self.remove_valid(&pair);
         if self.local_end_of_candidates && self.remote_end_of_candidates {
             self.check_for_failure();
         }
     }
 
-    fn find_check_from_stun_response(
-        &self,
+    fn mut_check_from_stun_response(
+        &mut self,
         transaction: TransactionId,
         _from: SocketAddr,
-    ) -> Option<Arc<ConnCheck>> {
-        let f = |check: &Arc<ConnCheck>| {
-            let state = check.state.lock().unwrap();
-            state
+    ) -> Option<&mut ConnCheck> {
+        self.pairs.iter_mut().find_map(|check| {
+            check
                 .stun_request
                 .filter(|&request| request == transaction)
-                .map(|_request| check.clone())
-        };
-        self.triggered
-            .iter()
-            .find_map(f)
-            .or(self.pairs.iter().find_map(f))
+                .map(|_request| check)
+        })
     }
 
     fn find_local_candidate(
@@ -1512,15 +1539,9 @@ impl ConnCheckList {
             .map(|c| c.candidate.clone())
             .or_else(|| {
                 if transport == TransportType::Tcp {
-                    self.nominated
+                    self.pairs
                         .iter()
                         .find(|&check| f(&check.pair.local))
-                        .or_else(|| {
-                            self.triggered
-                                .iter()
-                                .find(|&check| f(&check.pair.local))
-                                .or_else(|| self.pairs.iter().find(|&check| f(&check.pair.local)))
-                        })
                         .map(|c| c.pair.local.clone())
                 } else {
                     None
@@ -1964,15 +1985,16 @@ impl ConnCheckListSet {
                 CandidatePairState::Succeeded => {
                     if peer_nominating && !check.nominate() {
                         debug!("existing pair succeeded -> nominate");
-                        checklist.add_check(check.clone());
-                        check = ConnCheck::clone_with_pair_nominate(
+                        let pair = check.pair.clone();
+                        let mut new_check = ConnCheck::clone_with_pair_nominate(
                             &check,
                             checklist.checklist_id,
-                            check.pair.clone(),
+                            pair.clone(),
                             true,
                         );
-                        check.set_state(CandidatePairState::Waiting);
                         checklist.add_check(check);
+                        new_check.set_state(CandidatePairState::Waiting);
+                        checklist.add_check(new_check);
                         checklist.nominated_pair(&pair);
                     } else {
                         checklist.add_check(check);
@@ -1993,18 +2015,19 @@ impl ConnCheckListSet {
                 // original connectivity-check transaction.
                 CandidatePairState::InProgress => {
                     check.cancel_retransmissions();
+                    let pair = check.pair.clone();
                     // TODO: ignore response timeouts
 
-                    checklist.add_check(check.clone());
-                    check = ConnCheck::clone_with_pair_nominate(
+                    let mut new_check = ConnCheck::clone_with_pair_nominate(
                         &check,
                         checklist.checklist_id,
-                        check.pair.clone(),
+                        pair,
                         peer_nominating,
                     );
-                    check.set_state(CandidatePairState::Waiting);
-                    checklist.add_check(check.clone());
-                    checklist.add_triggered(check);
+                    checklist.add_check(check);
+                    new_check.set_state(CandidatePairState::Waiting);
+                    checklist.add_triggered(&new_check);
+                    checklist.add_check(new_check);
                 }
                 // If the state of that pair is Waiting, Frozen, or Failed, the
                 // agent MUST enqueue the pair in the triggered checklist
@@ -2024,26 +2047,24 @@ impl ConnCheckListSet {
                             check.pair.clone(),
                             peer_nominating,
                         );
-                        checklist.add_check(check.clone());
-                    } else {
-                        checklist.add_check(check.clone());
                     }
                     check.set_state(CandidatePairState::Waiting);
-                    checklist.add_triggered(check);
+                    checklist.add_triggered(&check);
+                    checklist.add_check(check);
                 }
             }
         } else {
             debug!("creating new check for pair {:?}", pair);
-            let check = Arc::new(ConnCheck::new(
+            let mut check = ConnCheck::new(
                 checklist.checklist_id,
                 pair,
                 agent,
                 peer_nominating,
                 self.controlling,
-            ));
+            );
             check.set_state(CandidatePairState::Waiting);
-            checklist.add_check(check.clone());
-            checklist.add_triggered(check);
+            checklist.add_triggered(&check);
+            checklist.add_check(check);
         }
 
         Ok(Some(binding_success_response(
@@ -2056,11 +2077,15 @@ impl ConnCheckListSet {
     fn check_success(
         &mut self,
         checklist_i: usize,
-        conncheck: Arc<ConnCheck>,
+        conncheck_id: ConnCheckId,
         addr: SocketAddr,
         controlling: bool,
     ) -> Result<(), StunError> {
         let checklist = &mut self.checklists[checklist_i];
+        let checklist_id = checklist.checklist_id;
+        let conncheck = checklist.mut_check_by_id(conncheck_id).unwrap();
+        let conncheck_id = conncheck.conncheck_id;
+        let nominate = conncheck.nominate();
         info!(
             component.id = conncheck.pair.local.component_id,
             nominate = conncheck.nominate,
@@ -2074,6 +2099,10 @@ impl ConnCheckListSet {
             "succeeded in finding a connection"
         );
         conncheck.set_state(CandidatePairState::Succeeded);
+        let pair = conncheck.pair.clone();
+        let ok_pair = pair.construct_valid(addr);
+        let mut ok_check =
+            ConnCheck::clone_with_pair_nominate(conncheck, checklist_id, ok_pair.clone(), false);
 
         if checklist.state != CheckListState::Running {
             debug!("checklist is not running, ignoring check response");
@@ -2081,16 +2110,16 @@ impl ConnCheckListSet {
         }
 
         let mut pair_dealt_with = false;
-        let ok_pair = conncheck.pair.construct_valid(addr);
         // 1.
         // If the valid pair equals the pair that generated the check, the
         // pair is added to the valid list associated with the checklist to
         // which the pair belongs; or
         if let Some(check) = checklist.matching_check(&ok_pair, Nominate::DontCare) {
-            debug!(existing.id = check.conncheck_id, "found existing check");
-            checklist.add_valid(conncheck.clone());
-            if conncheck.nominate() {
-                checklist.nominated_pair(&conncheck.pair);
+            debug!(existing.id = *check.conncheck_id, "found existing check");
+            let checklist = &mut self.checklists[checklist_i];
+            checklist.add_valid(conncheck_id, &pair);
+            if nominate {
+                checklist.nominated_pair(&pair);
                 return Ok(());
             }
             pair_dealt_with = true;
@@ -2103,12 +2132,12 @@ impl ConnCheckListSet {
             for checklist in self.checklists.iter_mut() {
                 if let Some(check) = checklist.matching_check(&ok_pair, Nominate::DontCare) {
                     debug!(
-                        existing.id = check.conncheck_id,
+                        existing.id = *check.conncheck_id,
                         "found existing check in checklist {}", checklist.checklist_id
                     );
-                    checklist.add_valid(check.clone());
-                    if conncheck.nominate() {
-                        checklist.nominated_pair(&conncheck.pair);
+                    checklist.add_valid(conncheck_id, &pair);
+                    if nominate {
+                        checklist.nominated_pair(&pair);
                         return Ok(());
                     }
                     pair_dealt_with = true;
@@ -2136,19 +2165,13 @@ impl ConnCheckListSet {
             debug!("no existing check");
             // TODO: need to construct correct pair priorities and foundations,
             // just use whatever the conncheck produced for now
-            let ok_check = ConnCheck::clone_with_pair_nominate(
-                &conncheck,
-                checklist.checklist_id,
-                ok_pair.clone(),
-                false,
-            );
             ok_check.set_state(CandidatePairState::Succeeded);
-            checklist.add_check_if_not_duplicate(ok_check.clone());
-            checklist.add_valid(ok_check);
-            checklist.add_valid(conncheck.clone());
+            checklist.add_valid(ok_check.conncheck_id, &ok_check.pair);
+            checklist.add_check_if_not_duplicate(ok_check);
+            checklist.add_valid(conncheck_id, &pair);
 
-            if conncheck.nominate() {
-                checklist.nominated_pair(&conncheck.pair);
+            if nominate {
+                checklist.nominated_pair(&pair);
                 return Ok(());
             }
         }
@@ -2173,8 +2196,9 @@ impl ConnCheckListSet {
         from: SocketAddr,
     ) -> Result<(), StunError> {
         let checklist = &mut self.checklists[checklist_i];
+        let checklist_id = checklist.checklist_id;
         // find conncheck
-        let conncheck = checklist.find_check_from_stun_response(response.transaction_id(), from);
+        let conncheck = checklist.mut_check_from_stun_response(response.transaction_id(), from);
         let conncheck = match conncheck {
             Some(conncheck) => conncheck,
             None => {
@@ -2183,6 +2207,7 @@ impl ConnCheckListSet {
                 return Ok(());
             }
         };
+        let conncheck_id = conncheck.conncheck_id;
 
         // if response success:
         // if mismatched address -> fail
@@ -2208,54 +2233,60 @@ impl ConnCheckListSet {
                         new_role, "Role Conflict changing controlling from"
                     );
                     if self.controlling != new_role {
+                        let old_pair = conncheck.pair.clone();
                         self.controlling = new_role;
-                        checklist.remove_valid(&conncheck.pair);
                         conncheck.cancel();
-                        let conncheck = ConnCheck::clone_with_pair_nominate(
-                            &conncheck,
-                            checklist.checklist_id,
+                        let mut conncheck = ConnCheck::clone_with_pair_nominate(
+                            conncheck,
+                            checklist_id,
                             conncheck.pair.clone(),
                             false,
                         );
                         conncheck.set_state(CandidatePairState::Waiting);
-                        checklist.add_check(conncheck.clone());
-                        checklist.add_triggered(conncheck);
+                        checklist.add_triggered(&conncheck);
+                        checklist.add_check(conncheck);
+                        self.checklists[checklist_i].remove_valid(&old_pair);
                     }
                     return Ok(());
                 }
             }
             // FIXME: some failures are recoverable
-            checklist.check_response_failure(conncheck.clone());
+            self.checklists[checklist_i].check_response_failure(conncheck_id);
         }
 
         if let Ok(xor) = response.attribute::<XorMappedAddress>() {
             let xor_addr = xor.addr(response.transaction_id());
-            return self.check_success(checklist_i, conncheck, xor_addr, self.controlling);
+            return self.check_success(checklist_i, conncheck_id, xor_addr, self.controlling);
         }
 
-        checklist.check_response_failure(conncheck);
+        self.checklists[checklist_i].check_response_failure(conncheck_id);
         Ok(())
     }
 
     fn perform_conncheck(
         &mut self,
-        conncheck: Arc<ConnCheck>,
+        checklist_i: usize,
+        conncheck_id: ConnCheckId,
         now: Instant,
     ) -> Result<CheckListSetPollRet, StunError> {
-        trace!("performing connectivity {:?}", &conncheck);
+        let checklist_id = self.checklists[self.checklist_i].checklist_id;
+        let checklist = &mut self.checklists[checklist_i];
+        let local_credentials = checklist.local_credentials.clone();
+        let remote_credentials = checklist.remote_credentials.clone();
 
-        let mut inner = conncheck.state.lock().unwrap();
-        if inner.stun_request.is_some() {
+        let conncheck = checklist.mut_check_by_id(conncheck_id).unwrap();
+
+        trace!("performing connectivity {:?}", &conncheck);
+        if conncheck.stun_request.is_some() {
             // FIXME
             return Ok(CheckListSetPollRet::WaitUntil(
                 now + Duration::from_secs(100),
             ));
         }
 
-        let checklist = &self.checklists[self.checklist_i];
         if let ConnCheckVariant::Tcp(_tcp) = &conncheck.variant {
             return Ok(CheckListSetPollRet::TcpConnect(
-                checklist.checklist_id,
+                checklist_id,
                 conncheck.pair.local.component_id,
                 conncheck.pair.local.base_address,
                 conncheck.pair.remote.address,
@@ -2271,20 +2302,19 @@ impl ConnCheckListSet {
             conncheck.nominate,
             self.controlling,
             self.tie_breaker,
-            checklist.local_credentials.clone(),
-            checklist.remote_credentials.clone(),
+            local_credentials,
+            remote_credentials,
         )
         .unwrap();
-        inner.stun_request = Some(stun_request.transaction_id());
+        conncheck.stun_request = Some(stun_request.transaction_id());
 
-        drop(inner);
         let mut agent = agent.lock().unwrap();
 
         let transmit = agent
             .send(stun_request, conncheck.pair.remote.address)
             .unwrap();
         Ok(CheckListSetPollRet::Transmit(
-            conncheck.checklist_id,
+            checklist_id,
             conncheck.pair.local.component_id,
             transmit.into_owned(),
         ))
@@ -2299,7 +2329,7 @@ impl ConnCheckListSet {
         ),
     )]
     // RFC8445: 6.1.4.2. Performing Connectivity Checks
-    fn next_check(&mut self) -> Option<Arc<ConnCheck>> {
+    fn next_check(&mut self) -> Option<ConnCheckId> {
         let checklist = &mut self.checklists[self.checklist_i];
         {
             if checklist.state != CheckListState::Running {
@@ -2316,7 +2346,7 @@ impl ConnCheckListSet {
         //     subsequent steps.
         if let Some(check) = checklist.next_triggered() {
             trace!("next check was a triggered check {:?}", check);
-            Some(check)
+            Some(check.conncheck_id)
         // 3.  If there are one or more candidate pairs in the Waiting state,
         //     the agent picks the highest-priority candidate pair (if there are
         //     multiple pairs with the same priority, the pair with the lowest
@@ -2325,7 +2355,7 @@ impl ConnCheckListSet {
         //     In-Progress, and aborts the subsequent steps.
         } else if let Some(check) = checklist.next_waiting() {
             trace!("next check was a waiting check {:?}", check);
-            Some(check)
+            Some(check.conncheck_id)
         } else {
             // TODO: cache this locally somewhere
             // TODO: iter()ize this
@@ -2348,7 +2378,7 @@ impl ConnCheckListSet {
                 .map(|f| {
                     if self
                         .checklists
-                        .iter_mut()
+                        .iter()
                         .all(|checklist| checklist.foundation_not_waiting_in_progress(&f))
                     {
                         foundations_not_waiting_in_progress.insert(f);
@@ -2358,11 +2388,11 @@ impl ConnCheckListSet {
             let next: Vec<_> = foundations_not_waiting_in_progress.into_iter().collect();
             trace!("current foundations not waiting or in progress: {:?}", next);
 
-            let checklist = &self.checklists[self.checklist_i];
+            let checklist = &mut self.checklists[self.checklist_i];
             if let Some(check) = checklist.next_frozen(&next) {
                 trace!("next check was a frozen check {:?}", check);
                 check.set_state(CandidatePairState::InProgress);
-                Some(check)
+                Some(check.conncheck_id)
             } else {
                 trace!("no next check for stream");
                 None
@@ -2412,9 +2442,8 @@ impl ConnCheckListSet {
                     }
                     any_running = true;
                     all_failed = false;
-                    for check in checklist.pairs.iter() {
-                        let mut state = check.state.lock().unwrap();
-                        if state.state != CandidatePairState::InProgress {
+                    for check in checklist.pairs.iter_mut() {
+                        if check.state != CandidatePairState::InProgress {
                             continue;
                         }
                         if let Some(agent) = check.agent() {
@@ -2425,10 +2454,10 @@ impl ConnCheckListSet {
                             let mut agent = agent.lock().unwrap();
                             match agent.poll(now) {
                                 StunAgentPollRet::TransactionTimedOut(_request) => {
-                                    state.set_state(CandidatePairState::Failed);
+                                    check.set_state(CandidatePairState::Failed);
                                 }
                                 StunAgentPollRet::TransactionCancelled(_request) => {
-                                    state.set_state(CandidatePairState::Failed);
+                                    check.set_state(CandidatePairState::Failed);
                                 }
                                 StunAgentPollRet::WaitUntil(wait) => {
                                     if wait < lowest_wait {
@@ -2455,7 +2484,7 @@ impl ConnCheckListSet {
                 CheckListState::Failed => (),
             }
 
-            let conncheck = match self.next_check() {
+            let conncheck_id = match self.next_check() {
                 Some(c) => c,
                 None => {
                     if start_idx == self.checklist_i {
@@ -2473,7 +2502,7 @@ impl ConnCheckListSet {
             };
 
             trace!("starting conncheck");
-            match self.perform_conncheck(conncheck, now) {
+            match self.perform_conncheck(self.checklist_i, conncheck_id, now) {
                 Ok(ret) => {
                     let ret = ret.into_owned();
                     self.last_send_time = now;
@@ -2521,14 +2550,7 @@ impl ConnCheckListSet {
             panic!("Adding an agent with the same 5-tuple multiple times is not supported");
         }
 
-        let mut new_connchecks = vec![];
-        let mut new_transmits = vec![];
-        for (check, is_triggered) in checklist
-            .triggered
-            .iter()
-            .map(|c| (c, true))
-            .chain(checklist.pairs.iter().map(|c| (c, false)))
-        {
+        for check in checklist.pairs.iter_mut() {
             if check.pair.local.transport_type != TransportType::Tcp {
                 continue;
             }
@@ -2538,8 +2560,7 @@ impl ConnCheckListSet {
             if from != check.pair.local.base_address {
                 continue;
             }
-            let state = check.state.lock().unwrap();
-            if state.stun_request.is_some() {
+            if check.stun_request.is_some() {
                 continue;
             }
             trace!("found check with id {} to set agent", check.conncheck_id);
@@ -2567,7 +2588,8 @@ impl ConnCheckListSet {
                         checklist.remote_credentials.clone().into(),
                     ));
                     let transaction_id = stun_request.transaction_id();
-                    new_transmits.push((
+
+                    self.pending_transmits.push_front((
                         checklist_id,
                         check.pair.local.component_id,
                         agent
@@ -2578,20 +2600,34 @@ impl ConnCheckListSet {
                     let agent = Arc::new(Mutex::new(agent));
                     checklist.agents.push(agent.clone());
 
-                    let new_check = Arc::new(ConnCheck::new(
+                    let mut new_check = ConnCheck::new(
                         check.checklist_id,
                         new_pair.clone(),
                         agent.clone(),
                         check.nominate,
                         check.controlling,
-                    ));
-                    let old_state = state.state;
-                    drop(state);
-                    let mut state = new_check.state.lock().unwrap();
-                    state.set_state(old_state);
-                    state.stun_request = Some(transaction_id);
-                    drop(state);
-                    new_connchecks.push((check.conncheck_id, is_triggered, new_check));
+                    );
+                    let is_triggered = checklist
+                        .triggered
+                        .iter()
+                        .any(|&check_id| check.conncheck_id == check_id);
+                    new_check.set_state(check.state);
+                    new_check.stun_request = Some(transaction_id);
+
+                    let old_conncheck_id = check.conncheck_id;
+                    checklist
+                        .pairs
+                        .retain(|check| check.conncheck_id != old_conncheck_id);
+                    checklist
+                        .triggered
+                        .retain(|&check_id| check_id != old_conncheck_id);
+                    checklist
+                        .valid
+                        .retain(|&check_id| check_id != old_conncheck_id);
+                    if is_triggered {
+                        checklist.add_triggered(&new_check);
+                    }
+                    checklist.add_check(new_check);
                 }
                 Err(_e) => {
                     check.set_state(CandidatePairState::Failed);
@@ -2599,33 +2635,6 @@ impl ConnCheckListSet {
             }
             break;
         }
-
-        // remove the old checks
-        checklist.triggered.retain(|c| {
-            new_connchecks
-                .iter()
-                .any(|(old_id, is_triggered, _new_check)| {
-                    c.conncheck_id != *old_id || !*is_triggered
-                })
-        });
-        checklist.pairs.retain(|c| {
-            new_connchecks
-                .iter()
-                .any(|(old_id, is_triggered, _new_check)| {
-                    c.conncheck_id != *old_id || *is_triggered
-                })
-        });
-
-        // add the replacement checks
-        for (_old_id, is_triggered, new_check) in new_connchecks {
-            if is_triggered {
-                checklist.add_triggered(new_check);
-            } else {
-                checklist.add_check(new_check);
-            }
-        }
-
-        self.pending_transmits.extend(new_transmits);
     }
 }
 
@@ -3363,15 +3372,18 @@ mod tests {
             .matching_check(&pair, Nominate::False)
             .unwrap();
         assert_eq!(check.state(), CandidatePairState::Frozen);
+        let check_id = check.conncheck_id;
 
         let mut thawn = vec![];
         // thaw the first checklist with only a single pair will unfreeze that pair
         state.local_list().initial_thaw(&mut thawn);
+        let check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(check.state(), CandidatePairState::Waiting);
 
         // perform one tick which will start a connectivity check with the peer
         send_next_check_and_response(&state.local.peer, &state.remote)
             .perform(&mut state.local.checklist_set, now);
+        let check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(check.state(), CandidatePairState::Succeeded);
         match state.local.checklist_set.poll(now) {
             CheckListSetPollRet::WaitUntil(new_now) => {
@@ -3389,12 +3401,16 @@ mod tests {
             .local_list()
             .matching_check(&pair, Nominate::True)
             .unwrap();
-        assert!(state.local_list().is_triggered(&nominate_check));
+        let pair = nominate_check.pair.clone();
+        let check_id = nominate_check.conncheck_id;
+        assert!(state.local_list().is_triggered(&pair));
 
         // perform one tick which will perform the nomination check
         send_next_check_and_response(&state.local.peer, &state.remote)
             .perform(&mut state.local.checklist_set, now);
 
+        error!("nominated id {check_id:?}");
+        let nominate_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(nominate_check.state(), CandidatePairState::Succeeded);
 
         // check list is done
@@ -3441,10 +3457,12 @@ mod tests {
             .matching_check(&pair, Nominate::False)
             .unwrap();
         assert_eq!(check.state(), CandidatePairState::Frozen);
+        let check_id = check.conncheck_id;
 
         let mut thawn = vec![];
         // thaw the first checklist with only a single pair will unfreeze that pair
         state.local_list().initial_thaw(&mut thawn);
+        let check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(check.state(), CandidatePairState::Waiting);
 
         // perform one tick which will start a connectivity check with the peer
@@ -3452,6 +3470,7 @@ mod tests {
             .error_response(ErrorCode::ROLE_CONFLICT)
             .perform(&mut state.local.checklist_set, now);
         state.local_list().dump_check_state();
+        let check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(check.state(), CandidatePairState::Failed);
         match state.local.checklist_set.poll(now) {
             CheckListSetPollRet::WaitUntil(new_now) => {
@@ -3469,11 +3488,14 @@ mod tests {
             .local_list()
             .matching_check(&pair, Nominate::False)
             .unwrap();
-        assert!(state.local_list().is_triggered(&triggered_check));
+        let check_id = triggered_check.conncheck_id;
+        let pair = triggered_check.pair.clone();
+        assert!(state.local_list().is_triggered(&pair));
 
         // perform the next tick which will have a different ice controlling/ed attribute
         send_next_check_and_response(&state.local.peer, &state.remote)
             .perform(&mut state.local.checklist_set, now);
+        let triggered_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(triggered_check.state(), CandidatePairState::Succeeded);
         match state.local.checklist_set.poll(now) {
             CheckListSetPollRet::WaitUntil(new_now) => {
@@ -3491,7 +3513,8 @@ mod tests {
             .local_list()
             .matching_check(&pair, Nominate::True)
             .unwrap();
-        assert!(state.local_list().is_triggered(&nominate_check));
+        let pair = nominate_check.pair.clone();
+        assert!(state.local_list().is_triggered(&pair));
 
         // perform one tick which will perform the nomination check
         send_next_check_and_response(&state.local.peer, &state.remote)
@@ -3544,17 +3567,20 @@ mod tests {
             state.remote.candidate.clone(),
         );
         let check = local_list.matching_check(&pair, Nominate::False).unwrap();
+        let check_id = check.conncheck_id;
         assert_eq!(check.state(), CandidatePairState::Frozen);
 
         let mut thawn = vec![];
         // thaw the first checklist with only a single pair will unfreeze that pair
         local_list.initial_thaw(&mut thawn);
+        let check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(check.state(), CandidatePairState::Waiting);
 
         // perform one tick which will start a connectivity check with the peer
         send_next_check_and_response(&state.local.peer, &state.remote)
             .error_response(ErrorCode::UNAUTHORIZED)
             .perform(&mut state.local.checklist_set, now);
+        let check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(check.state(), CandidatePairState::Failed);
 
         // TODO: properly failing the checklist on all checks failing
@@ -3787,6 +3813,7 @@ mod tests {
         ) else {
             unreachable!();
         };
+        state.local_list().dump_check_state();
 
         let check = state
             .local_list()
@@ -3821,6 +3848,7 @@ mod tests {
         ) else {
             unreachable!();
         };
+
         state
             .local
             .checklist_set
@@ -3865,10 +3893,12 @@ mod tests {
             .matching_check(&pair, Nominate::False)
             .unwrap();
         assert_eq!(initial_check.state(), CandidatePairState::Frozen);
+        let check_id = initial_check.conncheck_id;
 
         let mut thawn = vec![];
         // thaw the first checklist with only a single pair will unfreeze that pair
         state.local_list().initial_thaw(&mut thawn);
+        let initial_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(initial_check.state(), CandidatePairState::Waiting);
 
         let unknown_remote_peer = Peer::builder()
@@ -3938,6 +3968,7 @@ mod tests {
             .matching_check(&pair, Nominate::False)
             .unwrap();
         assert_eq!(triggered_check.state(), CandidatePairState::Waiting);
+        let check_id = triggered_check.conncheck_id;
 
         // perform one tick which will start a connectivity check with the peer
         info!("perform triggered check");
@@ -3948,17 +3979,20 @@ mod tests {
         };
 
         info!("have reply to triggered check");
+        let triggered_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(triggered_check.state(), CandidatePairState::Succeeded);
         let nominated_check = state
             .local_list()
             .matching_check(&pair, Nominate::True)
             .unwrap();
         assert_eq!(nominated_check.state(), CandidatePairState::Waiting);
+        let check_id = nominated_check.conncheck_id;
         info!("perform nominated check");
         send_next_check_and_response(&state.local.peer, &unknown_remote_peer)
             .perform(&mut state.local.checklist_set, now);
 
         info!("have reply to nominated check");
+        let nominated_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(nominated_check.state(), CandidatePairState::Succeeded);
 
         let CheckListSetPollRet::Event(
@@ -4000,10 +4034,12 @@ mod tests {
             .matching_check(&pair, Nominate::False)
             .unwrap();
         assert_eq!(initial_check.state(), CandidatePairState::Frozen);
+        let check_id = initial_check.conncheck_id;
 
         let mut thawn = vec![];
         // thaw the first checklist with only a single pair will unfreeze that pair
         state.local_list().initial_thaw(&mut thawn);
+        let initial_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(initial_check.state(), CandidatePairState::Waiting);
 
         let unknown_remote_peer = Peer::builder()
@@ -4021,6 +4057,7 @@ mod tests {
         let CheckListSetPollRet::WaitUntil(now) = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
+        let initial_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(initial_check.state(), CandidatePairState::Succeeded);
 
         // construct the peer reflexive pair
@@ -4040,13 +4077,15 @@ mod tests {
             .local_list()
             .matching_check(&pair, Nominate::True)
             .unwrap();
+        assert_eq!(nominated_check.state(), CandidatePairState::Waiting);
+        let check_id = nominated_check.conncheck_id;
 
         state.local_list().dump_check_state();
-        assert_eq!(nominated_check.state(), CandidatePairState::Waiting);
 
         send_next_check_and_response(&state.local.peer, &state.remote)
             .response_address(unknown_remote_peer.candidate.address)
             .perform(&mut state.local.checklist_set, now);
+        let nominated_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(nominated_check.state(), CandidatePairState::Succeeded);
 
         let CheckListSetPollRet::Event(
@@ -4105,10 +4144,12 @@ mod tests {
             .matching_check(&pair, Nominate::False)
             .unwrap();
         assert_eq!(check.state(), CandidatePairState::Waiting);
+        let check_id = check.conncheck_id;
 
         // perform one tick which will start a connectivity check with the peer
         send_next_check_and_response(&state.local.peer, &state.remote)
             .perform(&mut state.local.checklist_set, now);
+        let check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(check.state(), CandidatePairState::Succeeded);
 
         state.local_list().dump_check_state();
@@ -4128,12 +4169,15 @@ mod tests {
             .local_list()
             .matching_check(&pair, Nominate::True)
             .unwrap();
-        assert!(state.local_list().is_triggered(&nominate_check));
+        let check_id = nominate_check.conncheck_id;
+        let pair = nominate_check.pair.clone();
+        assert!(state.local_list().is_triggered(&pair));
 
         // perform one tick which will perform the nomination check
         send_next_check_and_response(&state.local.peer, &state.remote)
             .perform(&mut state.local.checklist_set, now);
 
+        let nominate_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(nominate_check.state(), CandidatePairState::Succeeded);
 
         // check list is done
@@ -4223,10 +4267,12 @@ mod tests {
             .matching_check(&pair, Nominate::False)
             .unwrap();
         assert_eq!(initial_check.state(), CandidatePairState::Frozen);
+        let check_id = initial_check.conncheck_id;
 
         let mut thawn = vec![];
         // thaw the first checklist with only a single pair will unfreeze that pair
         state.local_list().initial_thaw(&mut thawn);
+        let initial_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(initial_check.state(), CandidatePairState::Waiting);
 
         // Don't generate any initial checks as they should be done as candidates are added to
@@ -4241,6 +4287,7 @@ mod tests {
                 unreachable!()
             }
         };
+        let initial_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(initial_check.state(), CandidatePairState::InProgress);
         let set_ret = state.local.checklist_set.poll(now);
         assert!(matches!(set_ret, CheckListSetPollRet::WaitUntil(_)));
@@ -4288,6 +4335,7 @@ mod tests {
 
         // after the remote has sent the check, the previous check should still be in the same
         // state
+        let initial_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(initial_check.state(), CandidatePairState::InProgress);
         // TODO: check for retransmit cancellation
 
@@ -4296,10 +4344,12 @@ mod tests {
             .local_list()
             .matching_check(&pair, Nominate::False)
             .unwrap();
-        assert_ne!(initial_check.conncheck_id, triggered_check.conncheck_id);
+        assert_ne!(check_id, triggered_check.conncheck_id);
+        let check_id = triggered_check.conncheck_id;
         info!("perform triggered check");
         send_next_check_and_response(&state.local.peer, &state.remote)
             .perform(&mut state.local.checklist_set, now);
+        let triggered_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(triggered_check.state(), CandidatePairState::Succeeded);
 
         let nominated_check = state
