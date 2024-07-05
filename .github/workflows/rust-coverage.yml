@@ -16,20 +16,20 @@ jobs:
       - name: Install stable toolchain
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
+          toolchain: nightly
           override: true
 
       - name: Install cargo-tarpaulin
         uses: actions-rs/cargo@v1
         with:
           command: install
-          args: '--version 0.23.1 cargo-tarpaulin'
+          args: '--version 0.30.0 cargo-tarpaulin'
 
       - name: Run cargo-tarpaulin
         uses: actions-rs/cargo@v1
         with:
           command: 'tarpaulin'
-          args: '--out Xml -- --test-threads 1'
+          args: '--out Xml --lib --tests --doc -- --test-threads 1'
 
       - name: Upload to codecov.io
         uses: codecov/codecov-action@v3.1.1
