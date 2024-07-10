@@ -14,10 +14,11 @@ pub mod component;
 mod gathering;
 pub mod socket;
 pub mod stream;
-pub mod stun;
 mod utils;
 
 pub use librice_proto::candidate;
+
+pub use stun_proto::types as stun;
 
 #[cfg(test)]
 pub(crate) mod tests {
