@@ -120,7 +120,6 @@ impl futures::stream::Stream for Gather {
                 self.pending_transmit_send = Some(transmit);
                 let mut stream = self.stream.lock().unwrap();
                 stream.transmit_waker.push(cx.waker().clone());
-                error!("gather pending cause transmit queue full");
                 return Poll::Pending;
             }
         }
@@ -140,7 +139,6 @@ impl futures::stream::Stream for Gather {
                     return Poll::Ready(None);
                 }
                 Ok(GatherPoll::NeedAgent(component_id, transport, local_addr, server_addr)) => {
-                    error!("gather need agent {transport:?} {server_addr:?}");
                     if transport == TransportType::Tcp {
                         Stream::handle_gather_tcp_connect(
                             weak_stream.clone(),
@@ -164,7 +162,6 @@ impl futures::stream::Stream for Gather {
                         transmit_send.try_send(transmit.into_owned())
                     {
                         pending_transmit_send = Some(transmit);
-                        error!("gather pending cause transmit queue full (reply)");
                         break;
                     }
                 }
@@ -177,7 +174,6 @@ impl futures::stream::Stream for Gather {
                         }
                         None => lowest_wait = Some(wait_time),
                     }
-                    error!("gather pending cause timeout");
                     break;
                 }
                 Err(e) => warn!("error produced while gathering: {e:?}"),
@@ -190,7 +186,6 @@ impl futures::stream::Stream for Gather {
             self.pending_transmit_send = Some(pending_transmit);
             let mut stream = self.stream.lock().unwrap();
             stream.transmit_waker.push(cx.waker().clone());
-            error!("gather pending cause transmit queue full (handling)");
             return Poll::Pending;
         }
 
@@ -202,13 +197,10 @@ impl futures::stream::Stream for Gather {
             if core::future::Future::poll(self.as_mut().timer.as_mut().unwrap().as_mut(), cx)
                 .is_pending()
             {
-                error!("gather pending cause timeout pending");
                 return Poll::Pending;
             }
             // timeout value passed, rerun our loop which will make more progress
             cx.waker().wake_by_ref();
-        } else {
-            error!("gather pending cause unknown");
         }
         Poll::Pending
     }
@@ -479,7 +471,13 @@ impl Stream {
         component_id: usize,
         transmit: Transmit,
     ) {
-        error!("librice::stream incoming data");
+        trace!(
+            "incoming data of {} bytes from {} to {} via {}",
+            transmit.data.len(),
+            transmit.from,
+            transmit.to,
+            transmit.transport
+        );
         let Some(proto_agent) = weak_proto_agent.upgrade() else {
             return;
         };
@@ -497,11 +495,9 @@ impl Stream {
         }
 
         if reply.gather_handled {
-            error!("gather handled");
             if let Some(stream) = weak_inner.upgrade() {
                 let mut stream = stream.lock().unwrap();
                 if let Some(waker) = stream.gather_waker.take() {
-                    error!("gather handled woken");
                     waker.wake()
                 }
             }
@@ -600,7 +596,6 @@ impl Stream {
                                 let Ok(stream) = stream else {
                                     continue;
                                 };
-                                error!("incoming tcp connection");
                                 let weak_proto_agent = weak_proto_agent.clone();
                                 let weak_agent_inner = weak_agent_inner.clone();
                                 let weak_component = weak_component.clone();
@@ -804,10 +799,8 @@ impl Stream {
         to: SocketAddr,
         waker: Waker,
     ) {
-        error!("making outbound tcp connection");
         async_std::task::spawn(async move {
             let stream = TcpStream::connect(to).await;
-            error!("made outbound tcp connection");
             let mut weak_component = None;
             let channel = match stream {
                 Ok(stream) => {
@@ -845,7 +838,6 @@ impl Stream {
                 };
 
                 let mut proto_stream = proto_agent.mut_stream(stream_id).unwrap();
-                error!("handle_tcp_connect");
                 proto_stream.handle_tcp_connect(component_id, from, to, agent);
                 channel
             };
@@ -886,10 +878,8 @@ impl Stream {
         to: SocketAddr,
         waker: Waker,
     ) {
-        error!("making outbound tcp connection");
         async_std::task::spawn(async move {
             let stream = TcpStream::connect(to).await;
-            error!("made outbound tcp connection");
             let mut weak_component = None;
             let channel = match stream {
                 Ok(stream) => {
@@ -927,7 +917,6 @@ impl Stream {
                 };
 
                 let mut proto_stream = proto_agent.mut_stream(stream_id).unwrap();
-                error!("handle_gather_tcp_connect");
                 proto_stream.handle_gather_tcp_connect(component_id, from, to, agent);
                 channel
             };
@@ -947,7 +936,6 @@ impl Stream {
                 let recv = channel.recv();
                 let mut recv = core::pin::pin!(recv);
                 let local_addr = channel.local_addr().unwrap();
-                error!("channel recv loop start");
                 while let Some((data, from)) = recv.next().await {
                     Self::handle_incoming_data(
                         weak_inner.clone(),

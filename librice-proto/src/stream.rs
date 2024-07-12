@@ -536,7 +536,7 @@ impl StreamState {
         }
         let component = ComponentState::new(index + 1);
         self.components[index] = Some(component);
-        info!("Added component at index {}", index);
+        trace!("Added component at index {}", index);
         Ok(index + 1)
     }
 
@@ -603,20 +603,17 @@ impl StreamState {
         StreamIncomingDataReply::default()
     }
 
-    #[tracing::instrument(ret, skip(self))]
+    #[tracing::instrument(ret, level = "trace", skip(self))]
     pub(crate) fn poll_gather(&mut self, now: Instant) -> Result<GatherPoll, StunError> {
         let mut lowest_wait = None;
         for component in self.components.iter_mut() {
             let Some(component) = component else {
-                error!("no component");
                 continue;
             };
             let Some(gatherer) = component.gatherer.as_mut() else {
-                error!("no gatherer");
                 continue;
             };
             if component.gather_state != GatherProgress::InProgress {
-                error!("wrong gather state {:?}", component.gather_state);
                 continue;
             }
 
