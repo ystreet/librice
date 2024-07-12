@@ -270,7 +270,7 @@ impl StunGatherer {
 
     /// Poll the gatherer.  Should be called repeatedly until [`GatherPoll::WaitUntil`]
     /// or [`GatherPoll::Complete`] is returned.
-    #[tracing::instrument(name = "poll_gather", level = "trace", ret, err, skip(self))]
+    #[tracing::instrument(name = "gatherer_poll", level = "trace", ret, err, skip(self))]
     pub fn poll(&mut self, now: Instant) -> Result<GatherPoll, StunError> {
         if let Some(cand) = self.pending_candidates.pop_back() {
             return Ok(GatherPoll::NewCandidate(cand));
@@ -379,6 +379,13 @@ impl StunGatherer {
 
     /// Provide the gatherer with data received from a socket.  If [`HandleStunReply::StunResponse`] is
     /// returned, then `poll()` should to be called at the next earliest opportunity.
+    #[tracing::instrument(
+        name = "gatherer_handle_data",
+        level = "trace",
+        ret,
+        err,
+        skip(self, data)
+    )]
     pub fn handle_data<'a>(
         &'a mut self,
         data: &'a [u8],
@@ -386,6 +393,7 @@ impl StunGatherer {
         from: SocketAddr,
         to: SocketAddr,
     ) -> Result<bool, StunError> {
+        trace!("received {} bytes", data.len());
         for request in self.requests.iter_mut() {
             if !request.completed
                 && request.protocol.transport() == transport
