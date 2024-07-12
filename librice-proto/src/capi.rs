@@ -49,6 +49,34 @@ pub enum RiceError {
     NotFound = -2,
 }
 
+/// The transport family
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum RiceTransportType {
+    /// The UDP transport
+    Udp,
+    /// The TCP transport
+    Tcp,
+}
+
+impl From<TransportType> for RiceTransportType {
+    fn from(value: TransportType) -> Self {
+        match value {
+            TransportType::Udp => Self::Udp,
+            TransportType::Tcp => Self::Tcp,
+        }
+    }
+}
+
+impl From<RiceTransportType> for TransportType {
+    fn from(value: RiceTransportType) -> Self {
+        match value {
+            RiceTransportType::Udp => Self::Udp,
+            RiceTransportType::Tcp => Self::Tcp,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct RiceAgentInner {
     stun_servers: Vec<(TransportType, SocketAddr)>,
@@ -213,7 +241,7 @@ impl<'a> From<RiceData> for Data<'a> {
 pub struct RiceAgentTransmit {
     stream_id: usize,
     component_id: usize,
-    transport: TransportType,
+    transport: RiceTransportType,
     from: *const RiceAddress,
     to: *const RiceAddress,
     data: RiceData,
@@ -241,7 +269,7 @@ impl RiceAgentTransmit {
         let ret = Self {
             stream_id,
             component_id,
-            transport: transmit.transport,
+            transport: transmit.transport.into(),
             from: Box::into_raw(from),
             to: Box::into_raw(to),
             data: transmit.data.into(),
@@ -297,7 +325,7 @@ impl From<RiceAgentTcpConnect> for crate::agent::AgentTcpConnect {
 pub struct RiceAgentSelectedPair {
     stream_id: usize,
     component_id: usize,
-    transport: TransportType,
+    transport: RiceTransportType,
     from: *const RiceAddress,
     to: *const RiceAddress,
 }
@@ -307,7 +335,7 @@ impl From<crate::agent::AgentSelectedPair> for RiceAgentSelectedPair {
         Self {
             stream_id: value.stream_id,
             component_id: value.component_id,
-            transport: value.selected.candidate_pair().local.transport_type,
+            transport: value.selected.candidate_pair().local.transport_type.into(),
             from: RiceAddress(value.selected.candidate_pair().local.base_address).to_c(),
             to: RiceAddress(value.selected.candidate_pair().remote.address).to_c(),
         }
@@ -395,7 +423,7 @@ pub unsafe extern "C" fn rice_agent_poll(
 #[no_mangle]
 pub unsafe extern "C" fn rice_agent_add_stun_server(
     agent: *mut RiceAgent,
-    transport: TransportType,
+    transport: RiceTransportType,
     addr: *const RiceAddress,
 ) {
     let agent = Arc::from_raw(agent);
@@ -637,7 +665,7 @@ impl From<RiceTcpType> for Option<crate::candidate::TcpType> {
 pub struct RiceCandidate {
     component_id: usize,
     candidate_type: CandidateType,
-    transport_type: TransportType,
+    transport_type: RiceTransportType,
     foundation: *const c_char,
     priority: u32,
     address: *const RiceAddress,
@@ -821,7 +849,7 @@ pub unsafe extern "C" fn rice_gather_poll_free(poll: *mut RiceGatherPoll) {
 #[repr(C)]
 pub struct RiceGatherPollNeedAgent {
     component_id: usize,
-    transport: TransportType,
+    transport: RiceTransportType,
     from: *const RiceAddress,
     to: *const RiceAddress,
 }
@@ -835,7 +863,7 @@ impl RiceGatherPollNeedAgent {
     ) -> Self {
         Self {
             component_id,
-            transport,
+            transport: transport.into(),
             from: Box::into_raw(Box::new(RiceAddress(from))),
             to: Box::into_raw(Box::new(RiceAddress(to))),
         }
@@ -948,7 +976,7 @@ pub unsafe extern "C" fn rice_stream_incoming_data_free(incoming: *mut RiceStrea
 pub unsafe extern "C" fn rice_stream_handle_incoming_data(
     stream: *mut RiceStream,
     component_id: usize,
-    transport: TransportType,
+    transport: RiceTransportType,
     from: *const RiceAddress,
     to: *const RiceAddress,
     data: *const u8,
@@ -961,7 +989,7 @@ pub unsafe extern "C" fn rice_stream_handle_incoming_data(
     let to = Box::from_raw(mut_override(to));
 
     let transmit = Transmit {
-        transport,
+        transport: transport.into(),
         from: from.0,
         to: to.0,
         data: Data::Borrowed(DataSlice::from(std::slice::from_raw_parts(data, data_len))),
@@ -1069,7 +1097,7 @@ pub unsafe extern "C" fn rice_component_gather_candidates(
     component: *mut RiceComponent,
     sockets_len: usize,
     sockets_addr: *const *mut RiceAddress,
-    sockets_transports: *const TransportType,
+    sockets_transports: *const RiceTransportType,
 ) {
     let component = Arc::from_raw(component);
     let stun_servers = {
@@ -1094,7 +1122,7 @@ pub unsafe extern "C" fn rice_component_gather_candidates(
             let addr = RiceAddress::from_c(*addr);
             let socket_addr = addr.0;
             core::mem::forget(addr);
-            (transport, socket_addr)
+            (transport.into(), socket_addr)
         })
         .collect::<Vec<_>>();
 
@@ -1249,12 +1277,12 @@ pub struct RiceStunAgent(StunAgent);
 
 #[no_mangle]
 pub unsafe extern "C" fn rice_stun_agent_new(
-    transport: TransportType,
+    transport: RiceTransportType,
     local_addr: *const RiceAddress,
     remote_addr: *const RiceAddress,
 ) -> *mut RiceStunAgent {
     let local_addr = RiceAddress::from_c(local_addr);
-    let mut builder = StunAgent::builder(transport, local_addr.0);
+    let mut builder = StunAgent::builder(transport.into(), local_addr.0);
     core::mem::forget(local_addr);
 
     if !remote_addr.is_null() {
@@ -1390,7 +1418,7 @@ pub unsafe extern "C" fn rice_addresses_free(addresses: *mut *mut RiceAddress, l
 #[no_mangle]
 pub unsafe extern "C" fn rice_sockets_send(
     sockets: *mut RiceSockets,
-    transport: TransportType,
+    transport: RiceTransportType,
     from: *const RiceAddress,
     to: *const RiceAddress,
     data: *mut u8,
@@ -1402,7 +1430,7 @@ pub unsafe extern "C" fn rice_sockets_send(
     let data = core::slice::from_raw_parts_mut(data, len);
     let inner = sockets.inner.lock().unwrap();
     let ret = match transport {
-        TransportType::Udp => {
+        RiceTransportType::Udp => {
             if let Some(socket) = inner.udp_sockets.get(&from.0) {
                 if socket.socket.send_to(data, to.0).is_err() {
                     RiceError::Failed
@@ -1413,7 +1441,7 @@ pub unsafe extern "C" fn rice_sockets_send(
                 RiceError::NotFound
             }
         }
-        TransportType::Tcp => RiceError::NotFound, // FIXME
+        RiceTransportType::Tcp => RiceError::NotFound, // FIXME
     };
 
     drop(inner);
@@ -1426,7 +1454,7 @@ pub unsafe extern "C" fn rice_sockets_send(
 #[no_mangle]
 pub unsafe extern "C" fn rice_sockets_recv(
     sockets: *mut RiceSockets,
-    transport: TransportType,
+    transport: RiceTransportType,
     from: *const RiceAddress,
     to: *const RiceAddress,
     data: *mut u8,
@@ -1437,7 +1465,7 @@ pub unsafe extern "C" fn rice_sockets_recv(
     let to = RiceAddress::from_c(mut_override(to));
     let mut inner = sockets.inner.lock().unwrap();
     let ret = match transport {
-        TransportType::Udp => {
+        RiceTransportType::Udp => {
             if let Some(socket) = inner.udp_sockets.get_mut(&from.0) {
                 if socket.in_recv {
                     0
@@ -1463,7 +1491,7 @@ pub unsafe extern "C" fn rice_sockets_recv(
                 0
             }
         }
-        TransportType::Tcp => 0, // FIXME
+        RiceTransportType::Tcp => 0, // FIXME
     };
 
     drop(inner);
