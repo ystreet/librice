@@ -14,7 +14,6 @@ item_types = ["enums", "structs", "opaque", "functions"]
 #"sockaddr" = "struct sockaddr"
 #"sockaddr_storage" = "struct sockaddr_storage"
 "CandidateType" = "RiceCandidateType"
-"TransportType" = "RiceTransportType"
 "ComponentConnectionState" = "RiceComponentConnectionState"
 
 [fn]
