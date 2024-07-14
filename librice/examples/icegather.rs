@@ -24,12 +24,13 @@ fn main() -> io::Result<()> {
     task::block_on(async move {
         // non-existent
         //let stun_servers = ["192.168.1.200:3000".parse().unwrap()].to_vec();
-        let stun_servers = [(TransportType::Udp, "127.0.0.1:3478".parse().unwrap())].to_vec();
+        let stun_servers = ["192.168.20.28:3478".parse().unwrap()];
         //let stun_servers = ["172.253.56.127:19302".parse().unwrap()].to_vec();
 
         let agent = Agent::builder().build();
-        for (tt, ss) in stun_servers {
-            agent.add_stun_server(tt, ss);
+        for ss in stun_servers {
+            agent.add_stun_server(TransportType::Udp, ss);
+            agent.add_stun_server(TransportType::Tcp, ss);
         }
         let stream = agent.add_stream();
         let _comp = stream.add_component();
