@@ -9,7 +9,6 @@
 use async_std::net::UdpSocket;
 use async_std::net::{TcpListener, TcpStream};
 
-use byteorder::{BigEndian, ByteOrder};
 use futures::future::{AbortHandle, Abortable, Aborted};
 use futures::{AsyncReadExt, AsyncWriteExt};
 
@@ -60,11 +59,7 @@ fn tcp_stund() {
         let mut socket = TcpStream::connect(stun_addr).await.unwrap();
         let msg = Message::builder_request(BINDING);
         let msg_bytes = msg.build();
-        let msg_bytes_len = msg_bytes.len() as u16;
-        let mut data = vec![0; 2];
-        data.extend(msg_bytes);
-        BigEndian::write_u16(&mut data, msg_bytes_len);
-        socket.write_all(&data).await.unwrap();
+        socket.write_all(&msg_bytes).await.unwrap();
         debug!("sent to {:?}, {:?}", stun_addr, msg);
 
         let mut buf = [0; 1500];
@@ -76,10 +71,10 @@ fn tcp_stund() {
                 "got {} bytes, buffer contains {} bytes",
                 read_amount, read_position
             );
-            if read_position < 2 {
+            if read_position < 20 {
                 continue;
             }
-            match Message::from_bytes(&buf[2..read_position]) {
+            match Message::from_bytes(&buf[..read_position]) {
                 Ok(msg) => {
                     debug!("received response {}", msg);
                     break;

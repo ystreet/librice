@@ -14,6 +14,7 @@ use stun_proto::agent::StunAgent;
 use std::fmt::Display;
 use std::net::SocketAddr;
 use std::sync::Once;
+use std::time::Instant;
 
 use tracing_subscriber::EnvFilter;
 
@@ -121,33 +122,27 @@ pub async fn stund_tcp(listener: TcpListener) -> std::io::Result<()> {
     while let Some(Ok(mut stream)) = incoming.next().await {
         debug!("stund incoming tcp connection");
         async_std::task::spawn(async move {
-            let mut tcp_buffer = stun_proto::agent::TcpBuffer::default();
             let remote_addr = stream.peer_addr().unwrap();
             let mut tcp_stun_agent =
                 StunAgent::builder(stun_proto::types::TransportType::Tcp, local_addr)
                     .remote_addr(remote_addr)
                     .build();
-            loop {
-                let mut data = vec![0; 1500];
-                let size = warn_on_err(stream.read(&mut data).await, 0);
-                if size == 0 {
-                    debug!("TCP connection with {remote_addr} closed");
-                    break;
-                }
-                debug!("stund tcp received {size} bytes");
-                tcp_buffer.push_data(&data[..size]);
-                while let Some(data) = tcp_buffer.pull_data() {
-                    if let Some((response, to)) =
-                        handle_incoming_data(&data, remote_addr, &mut tcp_stun_agent)
-                    {
-                        if let Ok(data) = tcp_stun_agent.send(response, to) {
-                            warn_on_err(stream.write_all(&data.data).await, ());
-                        }
-                    }
-                }
-                // XXX: Assumes that the stun packet arrives in a single packet
-                stream.shutdown(std::net::Shutdown::Read).unwrap();
+            let mut data = vec![0; 1500];
+            let size = warn_on_err(stream.read(&mut data).await, 0);
+            if size == 0 {
+                debug!("TCP connection with {remote_addr} closed");
+                return;
             }
+            debug!("stund tcp received {size} bytes");
+            if let Some((response, to)) =
+                handle_incoming_data(&data[..size], remote_addr, &mut tcp_stun_agent)
+            {
+                if let Ok(data) = tcp_stun_agent.send(response, to, Instant::now()) {
+                    warn_on_err(stream.write_all(&data.data).await, ());
+                }
+            }
+            // XXX: Assumes that the stun packet arrives in a single packet
+            stream.shutdown(std::net::Shutdown::Read).unwrap();
         });
     }
     Ok(())

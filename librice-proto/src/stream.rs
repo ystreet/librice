@@ -586,12 +586,7 @@ impl StreamState {
         };
         // XXX: is this enough to successfully route to the gatherer over the
         // connection check or component received handling?
-        let Ok(wake) = gather.handle_data(
-            &transmit.data,
-            transmit.transport,
-            transmit.from,
-            transmit.to,
-        ) else {
+        let Ok(wake) = gather.handle_data(transmit) else {
             return StreamIncomingDataReply::default();
         };
         if wake {

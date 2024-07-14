@@ -13,9 +13,12 @@ use std::sync::{Arc, Mutex, Weak};
 
 use std::task::{Poll, Waker};
 
+use byteorder::{BigEndian, ByteOrder};
 use librice_proto::candidate::CandidatePair;
 
 pub use librice_proto::component::ComponentConnectionState;
+use stun_proto::agent::Transmit;
+use stun_proto::types::TransportType;
 
 use crate::agent::AgentError;
 use crate::socket::StunChannel;
@@ -101,7 +104,22 @@ impl Component {
         let transmit;
         {
             let local_agent = local_agent.lock().unwrap();
-            transmit = local_agent.send_data(data, to);
+            let stun_transmit = local_agent.send_data(data, to);
+            transmit = match stun_transmit.transport {
+                TransportType::Udp => stun_transmit,
+                TransportType::Tcp => {
+                    let mut data = Vec::with_capacity(stun_transmit.data.len());
+                    data.resize(2, 0);
+                    BigEndian::write_u16(&mut data, stun_transmit.data.len() as u16);
+                    data.extend_from_slice(&stun_transmit.data);
+                    Transmit::new_owned(
+                        data.into_boxed_slice(),
+                        stun_transmit.transport,
+                        stun_transmit.from,
+                        stun_transmit.to,
+                    )
+                }
+            }
         }
 
         channel.send_to(&transmit.data, transmit.to).await?;
