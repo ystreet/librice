@@ -1604,13 +1604,13 @@ mod tests {
             let remote_credentials =
                 credentials_to_c(Credentials::new("ruser".to_string(), "rpass".to_string()));
 
-            rice_agent_add_stun_server(agent, transport, stun_addr);
+            rice_agent_add_stun_server(agent, transport.into(), stun_addr);
             rice_address_free(mut_override(stun_addr));
             rice_stream_set_local_credentials(stream, local_credentials);
             rice_credentials_free(local_credentials);
             rice_stream_set_remote_credentials(stream, remote_credentials);
             rice_credentials_free(remote_credentials);
-            rice_component_gather_candidates(component, 1, &mut_override(addr), &transport);
+            rice_component_gather_candidates(component, 1, &mut_override(addr), &transport.into());
             rice_address_free(mut_override(addr));
 
             let ret = rice_stream_poll_gather(stream, 0);
@@ -1637,7 +1637,8 @@ mod tests {
 
             let tcp_from_addr = "192.168.200.4:3000".parse().unwrap();
             let tcp_from_addr = RiceAddress(tcp_from_addr).to_c();
-            let stun_agent = rice_stun_agent_new(TransportType::Tcp, tcp_from_addr, need_agent.to);
+            let stun_agent =
+                rice_stun_agent_new(TransportType::Tcp.into(), tcp_from_addr, need_agent.to);
             let _tcp_from_addr = RiceAddress::from_c(tcp_from_addr);
             rice_stream_handle_gather_tcp_connect(
                 stream,
