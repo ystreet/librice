@@ -187,13 +187,9 @@ mod tests {
     use super::*;
     use crate::agent::Agent;
 
-    fn init() {
-        crate::tests::test_init_log();
-    }
-
     #[test]
     fn initial_state_new() {
-        init();
+        let _log = crate::tests::test_init_log();
         let mut agent = Agent::builder().build();
         let sid = agent.add_stream();
         let mut s = agent.mut_stream(sid).unwrap();

@@ -18,7 +18,6 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, UdpSocket};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, Once, Weak};
 use std::time::{Duration, Instant};
-use tracing_subscriber::EnvFilter;
 
 use get_if_addrs::get_if_addrs;
 
@@ -32,13 +31,29 @@ use stun_proto::agent::{StunAgent, StunError, Transmit};
 use stun_proto::types::data::{Data, DataOwned, DataSlice};
 use stun_proto::types::TransportType;
 
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::Layer;
+
 static TRACING: Once = Once::new();
 
 fn init_logs() {
     TRACING.call_once(|| {
-        if let Ok(filter) = EnvFilter::try_from_default_env() {
-            tracing_subscriber::fmt().with_env_filter(filter).init();
-        }
+        let level_filter = std::env::var("RICE_LOG")
+            .ok()
+            .and_then(|var| var.parse::<tracing_subscriber::filter::Targets>().ok())
+            .unwrap_or(
+                tracing_subscriber::filter::Targets::new().with_default(tracing::Level::TRACE),
+            );
+        let registry = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .with_file(true)
+                .with_line_number(true)
+                .with_level(true)
+                .with_target(false)
+                .with_test_writer()
+                .with_filter(level_filter),
+        );
+        tracing::subscriber::set_global_default(registry).unwrap();
     });
 }
 

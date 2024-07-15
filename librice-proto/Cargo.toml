@@ -13,7 +13,7 @@ rust-version.workspace = true
 workspace = ".."
 
 [features]
-capi = ["libc", "socket2", "tracing-subscriber/env-filter", "get_if_addrs"]
+capi = ["libc", "tracing-subscriber", "get_if_addrs"]
 
 [dependencies]
 arbitrary = { workspace = true, optional = true }
@@ -28,7 +28,7 @@ stun-proto.workspace = true
 tracing-subscriber = { workspace = true, optional = true }
 
 [dev-dependencies]
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing-subscriber.workspace = true
 
 [package.metadata.capi]
 min_version = "0.9.21"

@@ -2740,13 +2740,9 @@ mod tests {
     use super::*;
     use crate::candidate::*;
 
-    fn init() {
-        crate::tests::test_init_log();
-    }
-
     #[test]
     fn nominate_eq_bool() {
-        init();
+        let _log = crate::tests::test_init_log();
         assert!(Nominate::DontCare.eq(&true));
         assert!(Nominate::DontCare.eq(&false));
         assert!(Nominate::True.eq(&true));
@@ -2757,7 +2753,7 @@ mod tests {
 
     #[test]
     fn nominate_eq_nominate() {
-        init();
+        let _log = crate::tests::test_init_log();
         assert!(Nominate::DontCare.eq(&Nominate::DontCare));
         assert!(Nominate::DontCare.eq(&Nominate::True));
         assert!(Nominate::DontCare.eq(&Nominate::False));
@@ -2923,7 +2919,7 @@ mod tests {
 
     #[test]
     fn get_candidates() {
-        init();
+        let _log = crate::tests::test_init_log();
         let mut set = ConnCheckListSet::builder(0, true).build();
         let list = set.new_list();
         let list = set.mut_list(list).unwrap();
@@ -3055,7 +3051,7 @@ mod tests {
 
     #[test]
     fn conncheck_list_transmit() {
-        init();
+        let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder().build();
         let now = Instant::now();
 
@@ -3088,7 +3084,7 @@ mod tests {
 
     #[test]
     fn checklist_generate_checks() {
-        init();
+        let _log = crate::tests::test_init_log();
         let mut set = ConnCheckListSet::builder(0, true).build();
         let list = set.new_list();
         let list = set.mut_list(list).unwrap();
@@ -3139,7 +3135,7 @@ mod tests {
 
     #[test]
     fn checklists_initial_thaw() {
-        init();
+        let _log = crate::tests::test_init_log();
         let mut thawn = vec![];
         let mut set = ConnCheckListSet::builder(0, true).build();
         let list1_id = set.new_list();
@@ -3405,7 +3401,7 @@ mod tests {
 
     #[test]
     fn very_fine_control1() {
-        init();
+        let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder().build();
         let mut now = Instant::now();
         assert_eq!(state.local.component_id, 1);
@@ -3489,7 +3485,7 @@ mod tests {
 
     #[test]
     fn role_conflict_response() {
-        init();
+        let _log = crate::tests::test_init_log();
         // start off in the controlled mode, otherwise, the test needs to do the nomination
         // check
         let mut state = FineControl::builder().controlling(false).build();
@@ -3596,7 +3592,7 @@ mod tests {
 
     #[test]
     fn bad_username_conncheck() {
-        init();
+        let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder().build();
         let now = Instant::now();
         let local_list = state
@@ -3644,7 +3640,7 @@ mod tests {
 
     #[test]
     fn conncheck_tcp_active() {
-        init();
+        let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder();
         state.local_peer_builder = state
             .local_peer_builder
@@ -3769,7 +3765,7 @@ mod tests {
 
     #[test]
     fn conncheck_tcp_passive() {
-        init();
+        let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder();
         state.local_peer_builder = state
             .local_peer_builder
@@ -3933,7 +3929,7 @@ mod tests {
 
     #[test]
     fn conncheck_incoming_prflx() {
-        init();
+        let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder().build();
         let now = Instant::now();
 
@@ -4074,7 +4070,7 @@ mod tests {
 
     #[test]
     fn conncheck_response_prflx() {
-        init();
+        let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder().build();
         let now = Instant::now();
 
@@ -4167,7 +4163,7 @@ mod tests {
 
     #[test]
     fn conncheck_trickle_ice() {
-        init();
+        let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder().trickle_ice(true).build();
         let mut now = Instant::now();
         assert_eq!(state.local.component_id, 1);
@@ -4265,7 +4261,7 @@ mod tests {
 
     #[test]
     fn conncheck_trickle_ice_no_remote_candidates_fail() {
-        init();
+        let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder().trickle_ice(true).build();
         let local_candidate = state.local.peer.candidate.clone();
 
@@ -4293,6 +4289,7 @@ mod tests {
 
     #[test]
     fn conncheck_set_trickle_no_checks() {
+        let _log = crate::tests::test_init_log();
         // ensure that a set of empty lists does not busyloop
         let mut set = ConnCheckListSet::builder(0, false)
             .trickle_ice(true)
@@ -4308,7 +4305,7 @@ mod tests {
 
     #[test]
     fn conncheck_incoming_request_while_local_in_progress() {
-        init();
+        let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder().build();
 
         // generate existing checks

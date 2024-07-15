@@ -711,13 +711,9 @@ impl CandidatePair {
 mod tests {
     use super::*;
 
-    fn init() {
-        crate::tests::test_init_log();
-    }
-
     #[test]
     fn candidate_pair_redundant_with_itself() {
-        init();
+        let _log = crate::tests::test_init_log();
         let local_addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
         let remote_addr: SocketAddr = "127.0.0.1:9100".parse().unwrap();
         let pair = CandidatePair::new(
@@ -744,7 +740,7 @@ mod tests {
 
     #[test]
     fn candidate_priority() {
-        init();
+        let _log = crate::tests::test_init_log();
         let ctypes = [
             CandidateType::Host,
             CandidateType::ServerReflexive,
@@ -797,7 +793,7 @@ mod tests {
 
         #[test]
         fn udp_candidate() {
-            init();
+            let _log = crate::tests::test_init_log();
             let s = "a=candidate:0 1 UDP 1234 127.0.0.1 2345 typ host";
             let cand = Candidate::from_str(s).unwrap();
             debug!("cand {:?}", cand);
@@ -811,7 +807,7 @@ mod tests {
         }
         #[test]
         fn candidate_not_candidate() {
-            init();
+            let _log = crate::tests::test_init_log();
             assert!(matches!(
                 Candidate::from_str("a"),
                 Err(ParseCandidateError::NotCandidate)
@@ -819,7 +815,7 @@ mod tests {
         }
         #[test]
         fn candidate_missing_space() {
-            init();
+            let _log = crate::tests::test_init_log();
             assert!(matches!(
                 Candidate::from_str("a=candidate:0 1UDP 1234 127.0.0.1 2345 typ host"),
                 Err(ParseCandidateError::Malformed)
@@ -827,7 +823,7 @@ mod tests {
         }
         #[test]
         fn candidate_bad_foundation() {
-            init();
+            let _log = crate::tests::test_init_log();
             assert!(matches!(
                 Candidate::from_str("a=candidate:= 1 UDP 1234 127.0.0.1 2345 typ host"),
                 Err(ParseCandidateError::BadFoundation)
@@ -835,7 +831,7 @@ mod tests {
         }
         #[test]
         fn candidate_bad_component_id() {
-            init();
+            let _log = crate::tests::test_init_log();
             assert!(matches!(
                 Candidate::from_str("a=candidate:0 component-id UDP 1234 127.0.0.1 2345 type host"),
                 Err(ParseCandidateError::BadComponentId)
@@ -843,7 +839,7 @@ mod tests {
         }
         #[test]
         fn candidate_bad_transport_type() {
-            init();
+            let _log = crate::tests::test_init_log();
             assert!(matches!(
                 Candidate::from_str("a=candidate:0 1 transport 1234 127.0.0.1 2345 typ host"),
                 Err(ParseCandidateError::BadTransportType)
@@ -851,7 +847,7 @@ mod tests {
         }
         #[test]
         fn candidate_bad_priority() {
-            init();
+            let _log = crate::tests::test_init_log();
             assert!(matches!(
                 Candidate::from_str("a=candidate:0 1 UDP priority 127.0.0.1 2345 typ host"),
                 Err(ParseCandidateError::BadPriority)
@@ -859,7 +855,7 @@ mod tests {
         }
         #[test]
         fn candidate_bad_address() {
-            init();
+            let _log = crate::tests::test_init_log();
             assert!(matches!(
                 Candidate::from_str("a=candidate:0 1 UDP 1234 address 2345 typ host"),
                 Err(ParseCandidateError::BadAddress)
@@ -867,7 +863,7 @@ mod tests {
         }
         #[test]
         fn candidate_bad_port() {
-            init();
+            let _log = crate::tests::test_init_log();
             assert!(matches!(
                 Candidate::from_str("a=candidate:0 1 UDP 1234 127.0.0.1 port type host"),
                 Err(ParseCandidateError::BadAddress)
@@ -875,7 +871,7 @@ mod tests {
         }
         #[test]
         fn candidate_bad_candidate_type() {
-            init();
+            let _log = crate::tests::test_init_log();
             assert!(matches!(
                 Candidate::from_str("a=candidate:0 1 UDP 1234 127.0.0.1 2345 candidate-type"),
                 Err(ParseCandidateError::BadCandidateType)
@@ -883,7 +879,7 @@ mod tests {
         }
         #[test]
         fn host_candidate_sdp_string() {
-            init();
+            let _log = crate::tests::test_init_log();
             let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
             let cand_sdp_str = "a=candidate:foundation 1 UDP 1234 127.0.0.1 9000 typ host";
             let cand = Candidate::builder(
@@ -901,7 +897,7 @@ mod tests {
         }
         #[test]
         fn tcp_candidate() {
-            init();
+            let _log = crate::tests::test_init_log();
             let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
             let cand = Candidate::builder(
                 1,
@@ -921,7 +917,7 @@ mod tests {
         }
         #[test]
         fn tcp_candidate_without_tcp_type() {
-            init();
+            let _log = crate::tests::test_init_log();
             assert!(matches!(
                 Candidate::from_str("a=candidate:foundation 1 TCP 1234 127.0.0.1 2345 typ host"),
                 Err(ParseCandidateError::BadTransportType)
@@ -929,7 +925,7 @@ mod tests {
         }
         #[test]
         fn related_address() {
-            init();
+            let _log = crate::tests::test_init_log();
             let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
             let related_addr: SocketAddr = "192.168.0.1:9876".parse().unwrap();
             let cand = Candidate::builder(
@@ -950,7 +946,7 @@ mod tests {
         }
         #[test]
         fn extension_attributes() {
-            init();
+            let _log = crate::tests::test_init_log();
             let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
             let cand = Candidate::builder(
                 1,
