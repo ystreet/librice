@@ -646,13 +646,9 @@ impl StreamState {
 mod tests {
     use super::*;
 
-    fn init() {
-        crate::tests::test_init_log();
-    }
-
     #[test]
     fn getters_setters() {
-        init();
+        let _log = crate::tests::test_init_log();
         let lcreds = Credentials::new("luser".into(), "lpass".into());
         let rcreds = Credentials::new("ruser".into(), "rpass".into());
 

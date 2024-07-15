@@ -595,13 +595,9 @@ mod tests {
 
     use super::*;
 
-    fn init() {
-        crate::tests::test_init_log();
-    }
-
     #[test]
     fn host_udp() {
-        init();
+        let _log = crate::tests::test_init_log();
         let local_addr = "192.168.1.1:1000".parse().unwrap();
         let mut gather = StunGatherer::new(1, vec![(TransportType::Udp, local_addr)], vec![]);
         let now = Instant::now();
@@ -624,7 +620,7 @@ mod tests {
 
     #[test]
     fn host_tcp() {
-        init();
+        let _log = crate::tests::test_init_log();
         let local_addr = "192.168.1.1:1000".parse().unwrap();
         let mut gather = StunGatherer::new(1, vec![(TransportType::Tcp, local_addr)], vec![]);
         let now = Instant::now();
@@ -661,7 +657,7 @@ mod tests {
 
     #[test]
     fn stun_udp() {
-        init();
+        let _log = crate::tests::test_init_log();
         let local_addr = "192.168.1.1:1000".parse().unwrap();
         let stun_addr = "192.168.1.2:2000".parse().unwrap();
         let public_ip = "192.168.1.3:3000".parse().unwrap();
@@ -720,7 +716,7 @@ mod tests {
 
     #[test]
     fn stun_tcp() {
-        init();
+        let _log = crate::tests::test_init_log();
         let local_addr = "192.168.1.1:1000".parse().unwrap();
         let stun_addr = "192.168.1.2:2000".parse().unwrap();
         let public_ip = "192.168.1.3:3000".parse().unwrap();

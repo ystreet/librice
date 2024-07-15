@@ -429,13 +429,9 @@ pub struct AgentComponentStateChange {
 mod tests {
     use super::*;
 
-    fn init() {
-        crate::tests::test_init_log();
-    }
-
     #[test]
     fn controlling() {
-        init();
+        let _log = crate::tests::test_init_log();
         let agent = Agent::builder().controlling(true).build();
         assert!(agent.controlling());
         let agent = Agent::builder().controlling(false).build();

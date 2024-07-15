@@ -7,7 +7,6 @@
 // except according to those terms.
 
 use librice::agent::Agent;
-use tracing_subscriber::EnvFilter;
 
 use async_std::task;
 
@@ -17,10 +16,28 @@ use futures::prelude::*;
 
 use librice::candidate::TransportType;
 
+fn init_logs() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::Layer;
+
+    let level_filter = std::env::var("RICE_LOG")
+        .ok()
+        .and_then(|var| var.parse::<tracing_subscriber::filter::Targets>().ok())
+        .unwrap_or(tracing_subscriber::filter::Targets::new().with_default(tracing::Level::ERROR));
+    let registry = tracing_subscriber::registry().with(
+        tracing_subscriber::fmt::layer()
+            .with_file(true)
+            .with_line_number(true)
+            .with_level(true)
+            .with_target(false)
+            .with_test_writer()
+            .with_filter(level_filter),
+    );
+    tracing::subscriber::set_global_default(registry).unwrap();
+}
+
 fn main() -> io::Result<()> {
-    if let Ok(filter) = EnvFilter::try_from_default_env() {
-        tracing_subscriber::fmt().with_env_filter(filter).init();
-    }
+    init_logs();
     task::block_on(async move {
         // non-existent
         //let stun_servers = ["192.168.1.200:3000".parse().unwrap()].to_vec();

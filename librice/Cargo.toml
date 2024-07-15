@@ -25,6 +25,3 @@ tracing.workspace = true
 tracing-futures = { version = "0.2", default-features = false, features = ["std", "std-future", "futures-03"] }
 tracing-subscriber.workspace = true
 stun-proto.workspace = true
-
-[dev-dependencies]
-tracing-subscriber = { workspace = true, features = ["env-filter"]}
