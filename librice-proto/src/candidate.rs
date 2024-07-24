@@ -337,34 +337,6 @@ impl Candidate {
         ret
     }
 
-    pub(crate) fn pair_tcp_type(local: TcpType) -> TcpType {
-        match local {
-            TcpType::Active => TcpType::Passive,
-            TcpType::Passive => TcpType::Active,
-            TcpType::So => TcpType::So,
-        }
-    }
-
-    // can this candidate pair with 'remote' in any way
-    pub(crate) fn can_pair_with(&self, remote: &Candidate) -> bool {
-        let address = match self.candidate_type {
-            CandidateType::Host => self.address,
-            _ => self.base_address,
-        };
-        if self.transport_type == TransportType::Tcp
-            && remote.transport_type == TransportType::Tcp
-            && (self.tcp_type.is_none()
-                || remote.tcp_type.is_none()
-                || Candidate::pair_tcp_type(self.tcp_type.unwrap()) != remote.tcp_type.unwrap())
-        {
-            return false;
-        }
-        self.transport_type == remote.transport_type
-            && self.component_id == remote.component_id
-            && address.is_ipv4() == remote.address.is_ipv4()
-            && address.is_ipv6() == remote.address.is_ipv6()
-    }
-
     fn priority_type_preference(ctype: CandidateType) -> u32 {
         match ctype {
             CandidateType::Host => 126,
@@ -664,11 +636,11 @@ impl CandidatePair {
         Self { local, remote }
     }
 
-    pub(crate) fn foundation(&self) -> String {
+    pub fn foundation(&self) -> String {
         self.local.foundation.to_string() + ":" + &self.remote.foundation
     }
 
-    pub(crate) fn priority(&self, are_controlling: bool) -> u64 {
+    pub fn priority(&self, are_controlling: bool) -> u64 {
         let (controlling_priority, controlled_priority) = if are_controlling {
             (self.local.priority as u64, self.remote.priority as u64)
         } else {
@@ -682,15 +654,6 @@ impl CandidatePair {
         (1 << 32) * controlling_priority.min(controlled_priority)
             + 2 * controlling_priority.max(controlled_priority)
             + extra
-    }
-
-    pub(crate) fn construct_valid(&self, mapped_address: SocketAddr) -> Self {
-        let mut local = self.local.clone();
-        local.address = mapped_address;
-        Self {
-            local,
-            remote: self.remote.clone(),
-        }
     }
 
     /// Whether the pair is redundant when combined with the provided list.  Returns the existing
@@ -710,6 +673,7 @@ impl CandidatePair {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tracing::debug;
 
     #[test]
     fn candidate_pair_redundant_with_itself() {

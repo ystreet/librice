@@ -1,5 +1,5 @@
 [workspace]
-members = ["librice-proto", "librice", "fuzz"]
+members = ["librice-proto", "librice", "librice-io", "fuzz"]
 default-members = ["librice", "librice-proto"]
 resolver = "2"
 
@@ -17,4 +17,5 @@ get_if_addrs = "0.5"
 rand = "0.8"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+librice-proto = { version = "0.0.5", path = "librice-proto" }
 

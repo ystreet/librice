@@ -1052,7 +1052,7 @@ impl ConnCheckList {
 
         for local in self.local_candidates.iter() {
             for remote in self.remote_candidates.iter() {
-                if local.candidate.can_pair_with(remote) {
+                if candidate_can_pair_with(&local.candidate, remote) {
                     let pair = CandidatePair::new(local.candidate.clone(), remote.clone());
                     let component_id = self
                         .component_ids
@@ -2004,7 +2004,7 @@ impl ConnCheckListSet {
                 )
                 .priority(priority);
                 if local.transport_type == TransportType::Tcp {
-                    builder = builder.tcp_type(Candidate::pair_tcp_type(local.tcp_type.unwrap()))
+                    builder = builder.tcp_type(pair_tcp_type(local.tcp_type.unwrap()))
                 }
                 let cand = builder.build();
                 debug!("new reflexive remote {:?}", cand);
@@ -2138,7 +2138,7 @@ impl ConnCheckListSet {
         );
         conncheck.set_state(CandidatePairState::Succeeded);
         let pair = conncheck.pair.clone();
-        let ok_pair = pair.construct_valid(addr);
+        let ok_pair = pair_construct_valid(&pair, addr);
         let mut ok_check =
             ConnCheck::clone_with_pair_nominate(conncheck, checklist_id, ok_pair.clone(), false);
 
@@ -2737,6 +2737,43 @@ impl<'a> CheckListSetPollRet<'a> {
             }
         }
     }
+}
+
+fn pair_tcp_type(local: TcpType) -> TcpType {
+    match local {
+        TcpType::Active => TcpType::Passive,
+        TcpType::Passive => TcpType::Active,
+        TcpType::So => TcpType::So,
+    }
+}
+
+fn pair_construct_valid(pair: &CandidatePair, mapped_address: SocketAddr) -> CandidatePair {
+    let mut local = pair.local.clone();
+    local.address = mapped_address;
+    CandidatePair {
+        local,
+        remote: pair.remote.clone(),
+    }
+}
+
+// can the local candidate pair with 'remote' in any way
+fn candidate_can_pair_with(local: &Candidate, remote: &Candidate) -> bool {
+    let address = match local.candidate_type {
+        CandidateType::Host => local.address,
+        _ => local.base_address,
+    };
+    if local.transport_type == TransportType::Tcp
+        && remote.transport_type == TransportType::Tcp
+        && (local.tcp_type.is_none()
+            || remote.tcp_type.is_none()
+            || pair_tcp_type(local.tcp_type.unwrap()) != remote.tcp_type.unwrap())
+    {
+        return false;
+    }
+    local.transport_type == remote.transport_type
+        && local.component_id == remote.component_id
+        && address.is_ipv4() == remote.address.is_ipv4()
+        && address.is_ipv6() == remote.address.is_ipv6()
 }
 
 fn validate_username(username: Username, local_credentials: &Credentials) -> bool {

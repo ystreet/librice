@@ -1,45 +1,51 @@
 [package]
-name = "librice-proto"
+name = "librice-io"
 description = "ICE (RFC8445) implementation protocol"
 version.workspace = true
 authors = ["Matthew Waters <matthew@centricular.com>"]
 license = "MIT OR Apache-2.0"
 keywords = ["STUN", "ICE"]
 categories = ["network-programming", ]
-documentation = "https://docs.rs/librice-proto"
+#documentation = "https://docs.rs/librice-proto"
 edition.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 workspace = ".."
 
 [features]
-capi = ["libc", "tracing-subscriber"]
+capi = ["get_if_addrs", "libc", "librice-proto/capi", "tracing-subscriber", "async-lock", "async-io", "async-task", "flume", "futures-lite"]
 
 [dependencies]
 arbitrary = { workspace = true, optional = true }
+async-io = {version = "2", optional = true }
+async-lock = {version = "3", optional = true }
+async-task = {version = "4", optional = true }
 byteorder.workspace = true
+flume = { version = "0.11", optional = true }
+futures-lite = {version = "2", optional = true }
+get_if_addrs = { workspace = true, optional = true }
 libc = { version = "0.2", optional = true }
-nom = "7"
-rand.workspace = true
+librice-proto.workspace = true
 stun-proto.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, optional = true }
 
 [dev-dependencies]
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [package.metadata.capi]
 min_version = "0.9.21"
 
 [package.metadata.capi.header]
-name = "rice-proto"
 subdirectory = "rice"
+name = "rice-io"
 
 [package.metadata.capi.library]
-name = "rice-proto"
+name = "rice-io"
 version_suffix_components = 1
 rustflags = "-Cpanic=abort"
 
 [package.metadata.capi.pkg_config]
-name = "librice-proto"
-filename = "rice-proto"
+name = "librice-io"
+filename = "rice-io"
+requires = "rice-proto"
