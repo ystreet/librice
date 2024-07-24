@@ -1,6 +1,6 @@
 header = "// SPDX-License-Identifier: MIT OR Apache-2.0"
-includes = []
-include_guard = "LIBRICE_PROTO_H"
+includes = ["rice-proto.h"]
+include_guard = "LIBRICE_IO_H"
 tab_width = 4
 language = "C"
 cpp_compat = true
@@ -8,11 +8,9 @@ usize_is_size_t = true
 
 [export]
 exclude = ["MAGIC_COOKIE", "BINDING", "RTP", "RTCP"]
-item_types = ["enums", "structs", "opaque", "functions"]
+item_types = ["enums", "structs", "opaque", "functions", "typedefs"]
 
 [export.rename]
-#"sockaddr" = "struct sockaddr"
-#"sockaddr_storage" = "struct sockaddr_storage"
 "CandidateType" = "RiceCandidateType"
 "ComponentConnectionState" = "RiceComponentConnectionState"
 
