@@ -1126,7 +1126,7 @@ impl ConnCheckList {
                     check.set_state(CandidatePairState::Waiting);
                 }
             }
-            self.add_check_if_not_duplicate(check)
+            self.add_check_if_not_duplicate(check);
         }
     }
 
@@ -1160,7 +1160,7 @@ impl ConnCheckList {
             .find(|&check| Self::check_is_equal(check, pair, nominate))
     }
 
-    fn add_check_if_not_duplicate(&mut self, check: ConnCheck) {
+    fn add_check_if_not_duplicate(&mut self, check: ConnCheck) -> bool {
         if let Some(idx) = self
             .pairs
             .iter()
@@ -1176,11 +1176,12 @@ impl ConnCheckList {
                 debug!("removing existing check {:?}", existing);
             } else {
                 debug!("not adding duplicate check");
-                return;
+                return false;
             }
         }
 
         self.add_check(check);
+        true
     }
 
     fn add_check(&mut self, check: ConnCheck) {
@@ -2181,8 +2182,10 @@ impl ConnCheckListSet {
             // TODO: need to construct correct pair priorities and foundations,
             // just use whatever the conncheck produced for now
             ok_check.set_state(CandidatePairState::Succeeded);
-            checklist.add_valid(ok_check.conncheck_id, &ok_check.pair);
-            checklist.add_check_if_not_duplicate(ok_check);
+            let ok_id = ok_check.conncheck_id;
+            if checklist.add_check_if_not_duplicate(ok_check) {
+                checklist.add_valid(ok_id, &ok_pair);
+            }
             checklist.add_valid(conncheck_id, &pair);
 
             if nominate {
