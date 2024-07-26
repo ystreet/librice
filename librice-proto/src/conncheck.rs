@@ -786,12 +786,21 @@ impl ConnCheckList {
     }
 
     fn next_triggered(&mut self) -> Option<&mut ConnCheck> {
-        self.triggered.pop_back().and_then(|check_id| {
-            self.mut_check_by_id(check_id).map(|check| {
+        // triggered checks referenced by these ids may be removed before the check has a chance to
+        // start.  Simply remove them and continue processing.
+        while let Some(check_id) = self.triggered.pop_back() {
+            if let Some(check) = self.mut_check_by_id(check_id) {
+                // Don't trigger this check if there is already a STUN request in progress.
+                // Can happen on remote input if the same check is triggered while the check is
+                // sent to the peer.
+                if check.stun_request.is_some() {
+                    continue;
+                }
                 check.set_state(CandidatePairState::InProgress);
-                check
-            })
-        })
+                return self.mut_check_by_id(check_id);
+            }
+        }
+        None
     }
 
     #[cfg(test)]
@@ -803,7 +812,6 @@ impl ConnCheckList {
         })
     }
 
-    // note this will change the state of the returned check to InProgress to avoid a race
     #[tracing::instrument(
         level = "debug",
         skip(self),
@@ -828,7 +836,6 @@ impl ConnCheckList {
             .next()
     }
 
-    // note this will change the returned check state to waiting to avoid a race
     #[tracing::instrument(
         level = "debug",
         skip(self),
@@ -2286,10 +2293,7 @@ impl ConnCheckListSet {
 
         trace!("performing connectivity {:?}", &conncheck);
         if conncheck.stun_request.is_some() {
-            // FIXME
-            return Ok(CheckListSetPollRet::WaitUntil(
-                now + Duration::from_secs(100),
-            ));
+            panic!("Attempt was made to start an already started check");
         }
 
         if let ConnCheckVariant::Tcp(_tcp) = &conncheck.variant {
@@ -4400,6 +4404,164 @@ mod tests {
             .perform(&mut state.local.checklist_set, now);
         let triggered_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(triggered_check.state(), CandidatePairState::Succeeded);
+
+        let nominated_check = state
+            .local_list()
+            .matching_check(&pair, Nominate::True)
+            .unwrap();
+        assert_eq!(nominated_check.state(), CandidatePairState::Waiting);
+        info!("perform nominated check");
+        let CheckListSetPollRet::WaitUntil(now) = state.local.checklist_set.poll(now) else {
+            unreachable!();
+        };
+        send_next_check_and_response(&state.local.peer, &state.remote)
+            .perform(&mut state.local.checklist_set, now);
+
+        let set_ret = state.local.checklist_set.poll(now);
+        let CheckListSetPollRet::Event(
+            _checklist_id,
+            ConnCheckEvent::SelectedPair(_comp, selected_pair),
+        ) = set_ret
+        else {
+            unreachable!();
+        };
+        assert_eq!(selected_pair.candidate_pair, pair);
+        let set_ret = state.local.checklist_set.poll(now);
+        let CheckListSetPollRet::Event(
+            _checklist_id,
+            ConnCheckEvent::ComponentState(_comp, ComponentConnectionState::Connected),
+        ) = set_ret
+        else {
+            unreachable!();
+        };
+        let set_ret = state.local.checklist_set.poll(now);
+        assert!(matches!(set_ret, CheckListSetPollRet::Completed));
+        // a checklist with only a local candidates but no more possible candidates will error
+        assert_eq!(state.local_list().state(), CheckListState::Completed);
+    }
+
+    #[test]
+    fn conncheck_check_double_triggered() {
+        let _log = crate::tests::test_init_log();
+        let mut state = FineControl::builder().controlling(false).build();
+
+        // generate existing checks
+        state.local_list().generate_checks();
+
+        let pair = CandidatePair::new(
+            state.local.peer.candidate.clone(),
+            state.remote.candidate.clone(),
+        );
+        let initial_check = state
+            .local_list()
+            .matching_check(&pair, Nominate::False)
+            .unwrap();
+        assert_eq!(initial_check.state(), CandidatePairState::Frozen);
+        let check_id = initial_check.conncheck_id;
+
+        let mut thawn = vec![];
+        // thaw the first checklist with only a single pair will unfreeze that pair
+        state.local_list().initial_thaw(&mut thawn);
+        let initial_check = state.local_list().check_by_id(check_id).unwrap();
+        assert_eq!(initial_check.state(), CandidatePairState::Waiting);
+
+        // Don't generate any initial checks as they should be done as candidates are added to
+        // the checklist
+        let now = Instant::now();
+
+        // send the conncheck, reply with ROLE_CONFLICT
+        // perform one tick which will start a connectivity check with the peer
+        send_next_check_and_response(&state.local.peer, &state.remote)
+            .error_response(ErrorCode::ROLE_CONFLICT)
+            .perform(&mut state.local.checklist_set, now);
+        let initial_check = state.local_list().check_by_id(check_id).unwrap();
+        assert_eq!(initial_check.state(), CandidatePairState::Failed);
+
+        // then hold onto the triggered transmit which removes the check from the triggered queue
+        let triggered_check = state
+            .local_list()
+            .matching_check(&pair, Nominate::False)
+            .unwrap();
+        let check_id = triggered_check.conncheck_id;
+        let pair = triggered_check.pair.clone();
+        assert!(state.local_list().is_triggered(&pair));
+        let CheckListSetPollRet::WaitUntil(now) = state.local.checklist_set.poll(now) else {
+            unreachable!();
+        };
+        let _transmit = match state.local.checklist_set.poll(now) {
+            CheckListSetPollRet::Transmit(_sid, _cid, transmit) => transmit,
+            ret => {
+                error!("{ret:?}");
+                unreachable!()
+            }
+        };
+        let set_ret = state.local.checklist_set.poll(now);
+        assert!(matches!(set_ret, CheckListSetPollRet::WaitUntil(_)));
+
+        // receive a normal request as if the remote is doing its own possibly triggered check.
+        // The handling of this will add another triggered check entry.
+        let mut remote_agent = state.remote.stun_agent();
+        let mut request = Message::builder_request(BINDING);
+        request
+            .add_attribute(&Priority::new(state.remote.candidate.priority))
+            .unwrap();
+        request.add_attribute(&IceControlled::new(200)).unwrap();
+        let username = Username::new(
+            &(state.local.peer.local_credentials.clone().unwrap().ufrag
+                + ":"
+                + &state.remote.local_credentials.clone().unwrap().ufrag),
+        )
+        .unwrap();
+        request.add_attribute(&username).unwrap();
+        request
+            .add_message_integrity(
+                &remote_agent.local_credentials().unwrap(),
+                IntegrityAlgorithm::Sha1,
+            )
+            .unwrap();
+        request.add_fingerprint().unwrap();
+
+        let local_addr = state.local.peer.stun_agent().local_addr();
+        let transmit = remote_agent.send(request, local_addr, now).unwrap();
+
+        info!("sending request");
+        let reply = state
+            .local
+            .checklist_set
+            .incoming_data(state.local.checklist_id, &transmit)
+            .unwrap();
+        assert!(matches!(reply[0], HandleRecvReply::Handled));
+        // eat the success response
+        let CheckListSetPollRet::Transmit(_sid, _cid, _response) =
+            state.local.checklist_set.poll(now)
+        else {
+            unreachable!()
+        };
+        let CheckListSetPollRet::WaitUntil(now) = state.local.checklist_set.poll(now) else {
+            unreachable!();
+        };
+
+        // after the remote has sent the check, the previous check should still be in the same
+        // state
+        let triggered_check = state.local_list().check_by_id(check_id).unwrap();
+        assert_eq!(triggered_check.state(), CandidatePairState::InProgress);
+
+        // a new triggered check should not have been created
+        let triggered_check = state
+            .local_list()
+            .matching_check(&pair, Nominate::False)
+            .unwrap();
+        assert_eq!(check_id, triggered_check.conncheck_id);
+
+        // handling of this second triggered check used to produce a large wait that was exposed to
+        // outside and could cause a visible stall.  Now that path panics if a check is attempted
+        // to be started twice.
+        info!("perform triggered check 2");
+        send_next_check_and_response(&state.local.peer, &state.remote)
+            .perform(&mut state.local.checklist_set, now);
+        // we still haven't replied to the original triggered check
+        let triggered_check = state.local_list().check_by_id(check_id).unwrap();
+        assert_eq!(triggered_check.state(), CandidatePairState::InProgress);
 
         let nominated_check = state
             .local_list()
