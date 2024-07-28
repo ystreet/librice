@@ -13,6 +13,8 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 
+use core::mem::MaybeUninit;
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, Once, Weak};
@@ -293,12 +295,37 @@ impl<'a> From<crate::agent::AgentTransmit<'a>> for RiceTransmit {
     }
 }
 
-impl RiceTransmit {
-    unsafe fn clear_c(self) {
-        let _from = RiceAddress::from_c(self.from);
-        let _to = RiceAddress::from_c(self.to);
-        let _data = Data::from(self.data);
+#[no_mangle]
+pub unsafe extern "C" fn rice_transmit_clear(transmit: *mut RiceTransmit) {
+    if !(*transmit).from.is_null() {
+        let _from = RiceAddress::from_c((*transmit).from);
+        (*transmit).from = core::ptr::null_mut();
     }
+    if !(*transmit).to.is_null() {
+        let _to = RiceAddress::from_c((*transmit).to);
+        (*transmit).to = core::ptr::null_mut();
+    }
+    let mut data = RiceData::Borrowed(RiceDataImpl {
+        ptr: core::ptr::null_mut(),
+        size: 0,
+    });
+    core::mem::swap(&mut data, &mut (*transmit).data);
+    let _data = Data::from(data);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rice_transmit_init(transmit: *mut MaybeUninit<RiceTransmit>) {
+    (*transmit).write(RiceTransmit {
+        stream_id: 0,
+        component_id: 0,
+        transport: RiceTransportType::Udp,
+        from: core::ptr::null(),
+        to: core::ptr::null(),
+        data: RiceData::Borrowed(RiceDataImpl {
+            ptr: core::ptr::null_mut(),
+            size: 0,
+        }),
+    });
 }
 
 fn transmit_from_rust_gather(
@@ -420,8 +447,8 @@ pub unsafe extern "C" fn rice_agent_poll_free(poll: *mut RiceAgentPoll) {
     match *Box::from_raw(poll) {
         RiceAgentPoll::Closed => (),
         RiceAgentPoll::WaitUntilMicros(_instant) => (),
-        RiceAgentPoll::Transmit(transmit) => {
-            transmit.clear_c();
+        RiceAgentPoll::Transmit(mut transmit) => {
+            rice_transmit_clear(&mut transmit);
         }
         RiceAgentPoll::TcpConnect(connect) => {
             let _connect = AgentPoll::TcpConnect(connect.into());
@@ -908,8 +935,8 @@ pub unsafe extern "C" fn rice_gather_poll_free(poll: *mut RiceGatherPoll) {
         RiceGatherPoll::Complete => (),
         RiceGatherPoll::WaitUntilMicros(_instant) => (),
         RiceGatherPoll::NeedAgent(need_agent) => need_agent.clear_c(),
-        RiceGatherPoll::SendData(transmit) => {
-            transmit.clear_c();
+        RiceGatherPoll::SendData(mut transmit) => {
+            rice_transmit_clear(&mut transmit);
         }
         RiceGatherPoll::NewCandidate(candidate) => {
             rice_candidate_free(candidate);
@@ -1205,6 +1232,36 @@ pub unsafe extern "C" fn rice_component_gather_candidates(
         .unwrap();
     drop(proto_agent);
     core::mem::forget(component);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rice_component_send(
+    component: *mut RiceComponent,
+    data: *mut u8,
+    len: usize,
+    transmit: *mut RiceTransmit,
+) -> RiceError {
+    let component = Arc::from_raw(component);
+
+    let proto_agent = component.proto_agent.lock().unwrap();
+    let proto_stream = proto_agent.stream(component.stream_id).unwrap();
+    let proto_component = proto_stream.component(component.component_id).unwrap();
+
+    let bytes = core::slice::from_raw_parts(data, len);
+    match proto_component.send(bytes) {
+        Ok(stun_transmit) => {
+            *transmit = RiceTransmit {
+                stream_id: component.stream_id,
+                component_id: component.component_id,
+                transport: stun_transmit.transport.into(),
+                from: Box::into_raw(Box::new(RiceAddress::new(stun_transmit.from))),
+                to: Box::into_raw(Box::new(RiceAddress::new(stun_transmit.to))),
+                data: stun_transmit.data.into(),
+            };
+            RiceError::Success
+        }
+        Err(_e) => RiceError::Failed,
+    }
 }
 
 // TODO:
@@ -1527,10 +1584,10 @@ mod tests {
             );
             need_agent.clear_c();
             let ret = rice_stream_poll_gather(stream, 0);
-            let RiceGatherPoll::SendData(send) = *Box::from_raw(ret) else {
+            let RiceGatherPoll::SendData(mut send) = *Box::from_raw(ret) else {
                 unreachable!()
             };
-            send.clear_c();
+            rice_transmit_clear(&mut send);
 
             //rice_gather_poll_free(rice_stream_poll_gather(stream, now));
 
