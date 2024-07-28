@@ -12,7 +12,6 @@
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::candidate::{Candidate, CandidatePair, CandidateType, TcpType, TransportType};
@@ -23,6 +22,31 @@ use stun_proto::agent::{
 };
 use stun_proto::types::attribute::*;
 use stun_proto::types::message::*;
+
+static STUN_AGENT_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct StunAgentId(usize);
+
+impl std::ops::Deref for StunAgentId {
+    type Target = usize;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl StunAgentId {
+    fn generate() -> Self {
+        let stun_agent_id = STUN_AGENT_COUNT.fetch_add(1, Ordering::SeqCst);
+        Self(stun_agent_id)
+    }
+}
+
+impl std::fmt::Display for StunAgentId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 /// ICE Credentials
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,11 +76,11 @@ impl Credentials {
 #[derive(Debug, Clone)]
 pub struct SelectedPair {
     candidate_pair: CandidatePair,
-    local_stun_agent: Arc<Mutex<StunAgent>>,
+    local_stun_agent: StunAgentId,
 }
 impl SelectedPair {
     /// Create a new [`SelectedPair`].  The pair and stun agent must be compatible.
-    pub fn new(candidate_pair: CandidatePair, local_stun_agent: Arc<Mutex<StunAgent>>) -> Self {
+    pub(crate) fn new(candidate_pair: CandidatePair, local_stun_agent: StunAgentId) -> Self {
         Self {
             candidate_pair,
             local_stun_agent,
@@ -64,47 +88,13 @@ impl SelectedPair {
     }
 
     /// The pair for this [`SelectedPair`]
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use librice_proto::candidate::*;
-    /// # use stun_proto::agent::StunAgent;
-    /// # use librice_proto::component::SelectedPair;
-    /// # use std::net::SocketAddr;
-    /// # use std::sync::{Arc, Mutex};
-    /// let local_addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
-    /// let remote_addr: SocketAddr = "127.0.0.1:5432".parse().unwrap();
-    /// let local = Candidate::builder(
-    ///     0,
-    ///     CandidateType::Host,
-    ///     TransportType::Udp,
-    ///     "local",
-    ///     local_addr,
-    /// )
-    /// .priority(1234)
-    /// .build();
-    /// let remote = Candidate::builder(
-    ///     0,
-    ///     CandidateType::Host,
-    ///     TransportType::Udp,
-    ///     "remote",
-    ///     remote_addr,
-    /// )
-    /// .priority(4321)
-    /// .build();
-    /// let pair = CandidatePair::new(local, remote);
-    /// let agent = StunAgent::builder(TransportType::Udp, local_addr).build();
-    /// let selected = SelectedPair::new(pair.clone(), Arc::new(Mutex::new(agent)));
-    /// assert_eq!(selected.candidate_pair(), &pair);
-    /// ```
     pub fn candidate_pair(&self) -> &CandidatePair {
         &self.candidate_pair
     }
 
     /// The local STUN agent for this [`SelectedPair`]
-    pub fn stun_agent(&self) -> Arc<Mutex<StunAgent>> {
-        self.local_stun_agent.clone()
+    pub(crate) fn stun_agent_id(&self) -> StunAgentId {
+        self.local_stun_agent
     }
 }
 
@@ -145,12 +135,12 @@ static CONN_CHECK_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone)]
 struct TcpConnCheck {
-    agent: Option<Arc<Mutex<StunAgent>>>,
+    agent: Option<StunAgentId>,
 }
 
 #[derive(Debug, Clone)]
 enum ConnCheckVariant {
-    Agent(Arc<Mutex<StunAgent>>),
+    Agent(StunAgentId),
     Tcp(TcpConnCheck),
 }
 
@@ -203,7 +193,7 @@ impl ConnCheck {
     fn new(
         checklist_id: usize,
         pair: CandidatePair,
-        agent: Arc<Mutex<StunAgent>>,
+        agent: StunAgentId,
         nominate: bool,
         controlling: bool,
     ) -> Self {
@@ -255,10 +245,10 @@ impl ConnCheck {
         }
     }
 
-    fn agent(&self) -> Option<Arc<Mutex<StunAgent>>> {
+    fn agent_id(&self) -> Option<StunAgentId> {
         match &self.variant {
-            ConnCheckVariant::Agent(agent) => Some(agent.clone()),
-            ConnCheckVariant::Tcp(tcp) => tcp.agent.clone(),
+            ConnCheckVariant::Agent(agent) => Some(*agent),
+            ConnCheckVariant::Tcp(tcp) => tcp.agent,
         }
     }
 
@@ -327,14 +317,14 @@ impl ConnCheck {
         }
     }
 
-    fn generate_stun_request(
+    fn generate_stun_request<'a>(
         pair: &CandidatePair,
         nominate: bool,
         controlling: bool,
         tie_breaker: u64,
         local_credentials: Credentials,
         remote_credentials: Credentials,
-    ) -> Result<MessageBuilder<'_>, StunError> {
+    ) -> Result<MessageBuilder<'a>, StunError> {
         let username = remote_credentials.ufrag.clone() + ":" + &local_credentials.ufrag;
 
         // XXX: this needs to be the priority as if the candidate was peer-reflexive
@@ -395,7 +385,7 @@ pub struct ConnCheckList {
     local_end_of_candidates: bool,
     remote_end_of_candidates: bool,
     events: VecDeque<ConnCheckEvent>,
-    agents: Vec<Arc<Mutex<StunAgent>>>,
+    agents: Vec<(StunAgentId, StunAgent)>,
     tcp_buffers: Vec<CheckTcpBuffer>,
 }
 
@@ -435,7 +425,7 @@ struct TcpListenCandidate {}
 
 #[derive(Debug)]
 enum LocalCandidateVariant {
-    Agent(Arc<Mutex<StunAgent>>),
+    Agent(StunAgentId),
     TcpListener,
     TcpActive,
 }
@@ -559,59 +549,92 @@ impl ConnCheckList {
         self.events.pop_back()
     }
 
-    fn find_agent_for_5tuple(
+    pub(crate) fn add_agent_for_5tuple(
+        &mut self,
+        transport: TransportType,
+        local: SocketAddr,
+        remote: SocketAddr,
+    ) -> (StunAgentId, usize) {
+        let mut agent = StunAgent::builder(transport, local);
+        if transport == TransportType::Tcp {
+            agent = agent.remote_addr(remote);
+        }
+        let agent = agent.build();
+        self.add_agent(agent)
+    }
+
+    fn add_agent(&mut self, agent: StunAgent) -> (StunAgentId, usize) {
+        let agent_id = StunAgentId::generate();
+        self.agents.push((agent_id, agent));
+        (agent_id, self.agents.len() - 1)
+    }
+
+    pub(crate) fn find_agent_for_5tuple(
         &self,
         transport: TransportType,
         local: SocketAddr,
         remote: SocketAddr,
-    ) -> Option<Arc<Mutex<StunAgent>>> {
-        self.agents
-            .iter()
-            .find(|a| {
-                let a = a.lock().unwrap();
-                match transport {
-                    TransportType::Udp => {
-                        a.local_addr() == local && a.transport() == TransportType::Udp
-                    }
-                    TransportType::Tcp => {
-                        a.local_addr() == local
-                            && a.transport() == TransportType::Tcp
-                            && a.remote_addr().unwrap() == remote
-                    }
+    ) -> Option<&(StunAgentId, StunAgent)> {
+        self.agents.iter().find(|a| {
+            let a = &a.1;
+            match transport {
+                TransportType::Udp => {
+                    a.local_addr() == local && a.transport() == TransportType::Udp
                 }
-            })
-            .cloned()
+                TransportType::Tcp => {
+                    a.local_addr() == local
+                        && a.transport() == TransportType::Tcp
+                        && a.remote_addr().unwrap() == remote
+                }
+            }
+        })
     }
 
-    fn find_or_create_udp_agent(
+    pub(crate) fn agent_by_id(&self, id: StunAgentId) -> Option<&StunAgent> {
+        self.agents
+            .iter()
+            .find_map(|(needle, agent)| if id == *needle { Some(agent) } else { None })
+    }
+
+    fn mut_agent_by_id(&mut self, id: StunAgentId) -> Option<&mut StunAgent> {
+        self.agents
+            .iter_mut()
+            .find_map(|(needle, agent)| if id == *needle { Some(agent) } else { None })
+    }
+
+    pub(crate) fn find_or_create_udp_agent(
         &mut self,
         candidate: &Candidate,
         local_credentials: &Credentials,
         remote_credentials: &Credentials,
-    ) -> Arc<Mutex<StunAgent>> {
-        if let Some(agent) = self.agents.iter().find(|a| {
-            let a = a.lock().unwrap();
-            match candidate.transport_type {
-                TransportType::Udp => {
-                    a.local_addr() == candidate.base_address && a.transport() == TransportType::Udp
+    ) -> (StunAgentId, &StunAgent) {
+        if let Some(agent_id) = self
+            .agents
+            .iter()
+            .find(|a| {
+                let a = &a.1;
+                match candidate.transport_type {
+                    TransportType::Udp => {
+                        a.local_addr() == candidate.base_address
+                            && a.transport() == TransportType::Udp
+                    }
+                    _ => false,
                 }
-                _ => unreachable!(),
-            }
-        }) {
-            agent.clone()
-        } else {
-            let mut agent =
-                StunAgent::builder(candidate.transport_type, candidate.base_address).build();
-            agent.set_local_credentials(MessageIntegrityCredentials::ShortTerm(
-                local_credentials.clone().into(),
-            ));
-            agent.set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
-                remote_credentials.clone().into(),
-            ));
-            let agent = Arc::new(Mutex::new(agent));
-            self.agents.push(agent.clone());
-            agent
+            })
+            .map(|a| a.0)
+        {
+            return (agent_id, self.agent_by_id(agent_id).unwrap());
         }
+        let mut agent =
+            StunAgent::builder(candidate.transport_type, candidate.base_address).build();
+        agent.set_local_credentials(MessageIntegrityCredentials::ShortTerm(
+            local_credentials.clone().into(),
+        ));
+        agent.set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
+            remote_credentials.clone().into(),
+        ));
+        let (agent_id, agent_idx) = self.add_agent(agent);
+        (agent_id, &self.agents[agent_idx].1)
     }
 
     /// Add a local candidate to this checklist.
@@ -652,11 +675,11 @@ impl ConnCheckList {
 
         match local.transport_type {
             TransportType::Udp => {
-                let agent =
+                let (agent_id, _) =
                     self.find_or_create_udp_agent(&local, &local_credentials, &remote_credentials);
                 self.local_candidates.push(ConnCheckLocalCandidate {
                     candidate: local,
-                    variant: LocalCandidateVariant::Agent(agent),
+                    variant: LocalCandidateVariant::Agent(agent_id),
                 });
             }
             TransportType::Tcp => {
@@ -1045,11 +1068,11 @@ impl ConnCheckList {
                     if let Some(redundant_pair) = pair.redundant_with(pairs.iter()) {
                         if redundant_pair.remote.candidate_type == CandidateType::PeerReflexive {
                             match local.variant {
-                                LocalCandidateVariant::Agent(ref agent) => {
+                                LocalCandidateVariant::Agent(ref agent_id) => {
                                     redundant_pairs.push((
                                         redundant_pair.clone(),
                                         pair,
-                                        agent.clone(),
+                                        *agent_id,
                                         component_id,
                                     ));
                                 }
@@ -1062,11 +1085,11 @@ impl ConnCheckList {
                     } else {
                         pairs.push(pair.clone());
                         match local.variant {
-                            LocalCandidateVariant::Agent(ref agent) => {
+                            LocalCandidateVariant::Agent(ref agent_id) => {
                                 checks.push(ConnCheck::new(
                                     self.checklist_id,
                                     pair.clone(),
-                                    agent.clone(),
+                                    *agent_id,
                                     false,
                                     self.controlling,
                                 ));
@@ -1093,7 +1116,7 @@ impl ConnCheckList {
                 if !matches!(check.state(), CandidatePairState::InProgress) {
                     check.cancel();
                     match local {
-                        LocalCandidateVariant::StunAgent(agent) => checks.push(Arc::new(ConnCheck::new(pair, agent.stun_agent.clone(), false))),
+                        LocalCandidateVariant::StunAgent(agent) => checks.push(Arc::new(ConnCheck::new(pair, agent.stun_agent, false))),
                         LocalCandidateVariant::TcpListen(_tcp) => checks.push(Arc::new(ConnCheck::new_tcp(pair, false, weak_inner.clone(), component))),
                         LocalCandidateVariant::TcpActive => (),
                     }
@@ -1392,10 +1415,10 @@ impl ConnCheckList {
                             return component_ids_selected;
                         }
                         if let Some(component_id) = component_id {
-                            let agent = check.agent().unwrap().clone();
+                            let agent_id = check.agent_id().unwrap();
                             self.events.push_front(ConnCheckEvent::SelectedPair(
                                 component_id,
-                                Box::new(SelectedPair::new(pair.clone(), agent)),
+                                Box::new(SelectedPair::new(pair.clone(), agent_id)),
                             ));
                             debug!("trying to signal component {:?}", component_id);
                             self.events.push_front(ConnCheckEvent::ComponentState(
@@ -1608,7 +1631,7 @@ pub struct ConnCheckListSet {
     pending_messages: VecDeque<(
         usize,
         usize,
-        Arc<Mutex<StunAgent>>,
+        StunAgentId,
         MessageBuilder<'static>,
         SocketAddr,
     )>,
@@ -1651,17 +1674,18 @@ impl ConnCheckListSet {
         checklist_i: usize,
         msg: Message<'_>,
         transmit: &Transmit,
-        agent: Arc<Mutex<StunAgent>>,
+        agent_id: StunAgentId,
     ) -> Result<Option<HandleRecvReply>, StunError> {
-        let mut agent_inner = agent.lock().unwrap();
-        match agent_inner.handle_stun(msg, transmit.from) {
+        let Some(agent) = self.checklists[checklist_i].mut_agent_by_id(agent_id) else {
+            return Ok(None);
+        };
+        let local_credentials = agent.local_credentials();
+        match agent.handle_stun(msg, transmit.from) {
             HandleStunReply::Drop => (),
             HandleStunReply::StunResponse(response) => {
-                drop(agent_inner);
                 self.handle_stun_response(checklist_i, response, transmit.from)?;
             }
             HandleStunReply::IncomingStun(request) => {
-                drop(agent_inner);
                 if request.has_method(BINDING) {
                     let Some(local_cand) = self.checklists[checklist_i]
                         .find_local_candidate(transmit.transport, transmit.to)
@@ -1674,14 +1698,15 @@ impl ConnCheckListSet {
                     if let Some(response) = self.handle_binding_request(
                         checklist_i,
                         &local_cand,
-                        agent.clone(),
+                        agent_id,
                         &request,
                         transmit.from,
+                        local_credentials.ok_or(StunError::ResourceNotFound)?,
                     )? {
                         self.pending_messages.push_back((
                             checklist_id,
                             local_cand.component_id,
-                            agent.clone(),
+                            agent_id,
                             response.into_owned(),
                             transmit.from,
                         ));
@@ -1719,9 +1744,9 @@ impl ConnCheckListSet {
             .iter()
             .position(|cl| cl.checklist_id == checklist_id)
             .ok_or(StunError::ResourceNotFound)?;
-        let (agent, checklist_i) = self.checklists[checklist_i]
+        let (agent_id, checklist_i) = self.checklists[checklist_i]
             .find_agent_for_5tuple(transmit.transport, transmit.to, transmit.from)
-            .map(|agent| (agent.clone(), checklist_i))
+            .map(|agent| (agent.0, checklist_i))
             .unwrap_or_else(|| {
                 // else look at all checklists
                 self.checklists
@@ -1729,7 +1754,7 @@ impl ConnCheckListSet {
                     .find_map(|checklist| {
                         checklist
                             .find_agent_for_5tuple(transmit.transport, transmit.to, transmit.from)
-                            .map(|agent| (agent.clone(), checklist.checklist_id))
+                            .map(|agent| (agent.0, checklist.checklist_id))
                     })
                     .unwrap_or_else(|| {
                         let mut agent = StunAgent::builder(transmit.transport, transmit.to)
@@ -1747,9 +1772,8 @@ impl ConnCheckListSet {
                                 .clone()
                                 .into(),
                         ));
-                        let agent = Arc::new(Mutex::new(agent));
-                        self.checklists[checklist_i].agents.push(agent.clone());
-                        (agent, checklist_i)
+                        let (agent_id, _agent_idx) = self.checklists[checklist_i].add_agent(agent);
+                        (agent_id, checklist_i)
                     })
             });
 
@@ -1757,14 +1781,15 @@ impl ConnCheckListSet {
         match transmit.transport {
             TransportType::Udp => match Message::from_bytes(&transmit.data) {
                 Ok(msg) => {
-                    if let Some(reply) = self.handle_stun(checklist_i, msg, transmit, agent)? {
+                    if let Some(reply) = self.handle_stun(checklist_i, msg, transmit, agent_id)? {
                         ret.push(reply);
                     }
                 }
                 Err(_) => {
-                    let agent_inner = agent.lock().unwrap();
-                    if agent_inner.is_validated_peer(transmit.from) {
-                        ret.push(HandleRecvReply::Data(transmit.data.to_vec(), transmit.from));
+                    if let Some(agent) = self.checklists[checklist_i].agent_by_id(agent_id) {
+                        if agent.is_validated_peer(transmit.from) {
+                            ret.push(HandleRecvReply::Data(transmit.data.to_vec(), transmit.from));
+                        }
                     }
                 }
             },
@@ -1796,15 +1821,17 @@ impl ConnCheckListSet {
                     match Message::from_bytes(&data) {
                         Ok(msg) => {
                             if let Some(reply) =
-                                self.handle_stun(checklist_i, msg, transmit, agent.clone())?
+                                self.handle_stun(checklist_i, msg, transmit, agent_id)?
                             {
                                 ret.push(reply);
                             }
                         }
                         Err(_) => {
-                            let agent_inner = agent.lock().unwrap();
-                            if agent_inner.is_validated_peer(transmit.from) {
-                                ret.push(HandleRecvReply::Data(data, transmit.from));
+                            if let Some(agent) = self.checklists[checklist_i].agent_by_id(agent_id)
+                            {
+                                if agent.is_validated_peer(transmit.from) {
+                                    ret.push(HandleRecvReply::Data(data, transmit.from));
+                                }
                             }
                         }
                     }
@@ -1819,18 +1846,13 @@ impl ConnCheckListSet {
         &mut self,
         checklist_i: usize,
         local: &Candidate,
-        agent: Arc<Mutex<StunAgent>>,
+        agent_id: StunAgentId,
         msg: &Message,
         from: SocketAddr,
+        local_credentials: MessageIntegrityCredentials,
     ) -> Result<Option<MessageBuilder<'a>>, StunError> {
         let checklist = &mut self.checklists[checklist_i];
         trace!("have request {}", msg);
-
-        let local_credentials = agent
-            .lock()
-            .unwrap()
-            .local_credentials()
-            .ok_or(StunError::ResourceNotFound)?;
 
         if let Some(error_msg) = Message::check_attribute_types(
             msg,
@@ -2074,7 +2096,7 @@ impl ConnCheckListSet {
             let mut check = ConnCheck::new(
                 checklist.checklist_id,
                 pair,
-                agent,
+                agent_id,
                 peer_nominating,
                 self.controlling,
             );
@@ -2307,10 +2329,9 @@ impl ConnCheckListSet {
                 conncheck.pair.remote.address,
             ));
         }
-        let ConnCheckVariant::Agent(agent) = &conncheck.variant else {
+        let ConnCheckVariant::Agent(agent_id) = &conncheck.variant else {
             unreachable!();
         };
-        let agent = agent.clone();
 
         let stun_request = ConnCheck::generate_stun_request(
             &conncheck.pair,
@@ -2322,15 +2343,16 @@ impl ConnCheckListSet {
         )
         .unwrap();
         conncheck.stun_request = Some(stun_request.transaction_id());
+        let remote_addr = conncheck.pair.remote.address;
+        let component_id = conncheck.pair.local.component_id;
 
-        let mut agent = agent.lock().unwrap();
+        let agent_id = *agent_id;
+        let agent = checklist.mut_agent_by_id(agent_id).unwrap();
 
-        let transmit = agent
-            .send(stun_request, conncheck.pair.remote.address, now)
-            .unwrap();
+        let transmit = agent.send(stun_request, remote_addr, now).unwrap();
         Ok(CheckListSetPollRet::Transmit(
             checklist_id,
-            conncheck.pair.local.component_id,
+            component_id,
             transmit_send(transmit),
         ))
     }
@@ -2425,10 +2447,15 @@ impl ConnCheckListSet {
         if let Some((checklist_id, cid, transmit)) = self.pending_transmits.pop_back() {
             return CheckListSetPollRet::Transmit(checklist_id, cid, transmit);
         }
-        if let Some((checklist_id, cid, agent, msg, to)) = self.pending_messages.pop_back() {
+        while let Some((checklist_id, cid, agent_id, msg, to)) = self.pending_messages.pop_back() {
+            let Some(checklist) = self.mut_list(checklist_id) else {
+                continue;
+            };
+            let Some(agent) = checklist.mut_agent_by_id(agent_id) else {
+                continue;
+            };
             debug!("Sending response {msg:?} to {:?}", to);
-            let mut agent_inner = agent.lock().unwrap();
-            match agent_inner.send(msg, to, now) {
+            match agent.send(msg, to, now) {
                 Ok(transmit) => {
                     return CheckListSetPollRet::Transmit(
                         checklist_id,
@@ -2471,36 +2498,41 @@ impl ConnCheckListSet {
                     }
                     any_running = true;
                     all_failed = false;
-                    for check in checklist.pairs.iter_mut() {
+                    for idx in 0..checklist.pairs.len() {
+                        let check = &mut checklist.pairs[idx];
                         if check.state != CandidatePairState::InProgress {
                             continue;
                         }
-                        if let Some(agent) = check.agent() {
-                            trace!(
-                                "polling existing stun request for check {}",
-                                check.conncheck_id
-                            );
-                            let mut agent = agent.lock().unwrap();
-                            match agent.poll(now) {
-                                StunAgentPollRet::TransactionTimedOut(_request) => {
-                                    check.set_state(CandidatePairState::Failed);
+                        let Some(agent_id) = check.agent_id() else {
+                            continue;
+                        };
+                        let component_id = check.pair.local.component_id;
+                        let conncheck_id = check.conncheck_id;
+                        let Some(agent) = checklist.mut_agent_by_id(agent_id) else {
+                            continue;
+                        };
+                        trace!("polling existing stun request for check {conncheck_id}");
+                        match agent.poll(now) {
+                            StunAgentPollRet::TransactionTimedOut(_request) => {
+                                let check = &mut checklist.pairs[idx];
+                                check.set_state(CandidatePairState::Failed);
+                            }
+                            StunAgentPollRet::TransactionCancelled(_request) => {
+                                let check = &mut checklist.pairs[idx];
+                                check.set_state(CandidatePairState::Failed);
+                            }
+                            StunAgentPollRet::WaitUntil(wait) => {
+                                if wait < lowest_wait {
+                                    lowest_wait = wait.max(now + Self::MINIMUM_SET_TICK);
                                 }
-                                StunAgentPollRet::TransactionCancelled(_request) => {
-                                    check.set_state(CandidatePairState::Failed);
-                                }
-                                StunAgentPollRet::WaitUntil(wait) => {
-                                    if wait < lowest_wait {
-                                        lowest_wait = wait.max(now + Self::MINIMUM_SET_TICK);
-                                    }
-                                }
-                                StunAgentPollRet::SendData(transmit) => {
-                                    self.last_send_time = now;
-                                    return CheckListSetPollRet::Transmit(
-                                        checklist.checklist_id,
-                                        check.pair.local.component_id,
-                                        transmit_send(transmit),
-                                    );
-                                }
+                            }
+                            StunAgentPollRet::SendData(transmit) => {
+                                self.last_send_time = now;
+                                return CheckListSetPollRet::Transmit(
+                                    checklist.checklist_id,
+                                    component_id,
+                                    transmit_send(transmit),
+                                );
                             }
                         }
                     }
@@ -2570,8 +2602,7 @@ impl ConnCheckListSet {
             return;
         };
 
-        if checklist.agents.iter().any(|a| {
-            let a = a.lock().unwrap();
+        if checklist.agents.iter().map(|a| &a.1).any(|a| {
             a.transport() == TransportType::Tcp
                 && a.local_addr() == from
                 && a.remote_addr() == Some(to)
@@ -2590,6 +2621,9 @@ impl ConnCheckListSet {
                 continue;
             }
             if check.stun_request.is_some() {
+                continue;
+            }
+            if check.pair.local.component_id != component_id {
                 continue;
             }
             trace!("found check with id {} to set agent", check.conncheck_id);
@@ -2618,31 +2652,36 @@ impl ConnCheckListSet {
                     ));
                     let transaction_id = stun_request.transaction_id();
 
-                    let agent = Arc::new(Mutex::new(agent));
+                    let checklist_id = check.checklist_id;
+                    let nominate = check.nominate;
+                    let controlling = check.controlling;
+                    let conncheck_id = check.conncheck_id;
+                    let check_state = check.state;
+
+                    let (agent_id, _agent_idx) = checklist.add_agent(agent);
                     self.pending_messages.push_front((
                         checklist_id,
-                        check.pair.local.component_id,
-                        agent.clone(),
+                        component_id,
+                        agent_id,
                         stun_request.into_owned(),
-                        check.pair.remote.address,
+                        to,
                     ));
-                    checklist.agents.push(agent.clone());
 
                     let mut new_check = ConnCheck::new(
-                        check.checklist_id,
+                        checklist_id,
                         new_pair.clone(),
-                        agent.clone(),
-                        check.nominate,
-                        check.controlling,
+                        agent_id,
+                        nominate,
+                        controlling,
                     );
                     let is_triggered = checklist
                         .triggered
                         .iter()
-                        .any(|&check_id| check.conncheck_id == check_id);
-                    new_check.set_state(check.state);
+                        .any(|&check_id| conncheck_id == check_id);
+                    new_check.set_state(check_state);
                     new_check.stun_request = Some(transaction_id);
 
-                    let old_conncheck_id = check.conncheck_id;
+                    let old_conncheck_id = conncheck_id;
                     checklist
                         .pairs
                         .retain(|check| check.conncheck_id != old_conncheck_id);
