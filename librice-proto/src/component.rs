@@ -10,6 +10,8 @@
 
 use std::net::SocketAddr;
 
+use stun_proto::agent::Transmit;
+
 use crate::candidate::{CandidatePair, TransportType};
 
 use crate::agent::{Agent, AgentError};
@@ -73,6 +75,23 @@ impl<'a> Component<'a> {
             .as_ref()
             .map(|pair| pair.candidate_pair())
     }
+
+    /// Send data to the peer using the selected pair.  This will not succeed until the
+    /// [`Component`] has reached [`ComponentConnectionState::Connected`]
+    pub fn send<'data>(&self, data: &'data [u8]) -> Result<Transmit<'data>, AgentError> {
+        let stream = self.agent.stream_state(self.stream_id).unwrap();
+        let checklist_id = stream.checklist_id;
+        let component = stream.component_state(self.component_id).unwrap();
+        let selected_pair = component
+            .selected_pair
+            .as_ref()
+            .ok_or(AgentError::ResourceNotFound)?;
+        let checklist = self.agent.checklistset.list(checklist_id).unwrap();
+        let stun_agent = checklist
+            .agent_by_id(selected_pair.stun_agent_id())
+            .ok_or(AgentError::ResourceNotFound)?;
+        Ok(stun_agent.send_data(data, selected_pair.candidate_pair().remote.address))
+    }
 }
 
 /// A mutable component in an ICE [`Stream`](crate::stream::Stream)
@@ -117,7 +136,38 @@ impl<'a> ComponentMut<'a> {
         component.gather_candidates(sockets, stun_servers)
     }
 
-    pub(crate) fn set_selected_pair(&mut self, selected: SelectedPair) {
+    /// Set the pair that will be used to send/receive data.  This will override the ICE
+    /// negotiation chosen value.
+    pub fn set_selected_pair(&mut self, selected: CandidatePair) -> Result<(), AgentError> {
+        let stream = self.agent.mut_stream_state(self.stream_id).unwrap();
+        let checklist_id = stream.checklist_id;
+        let checklist = self
+            .agent
+            .checklistset
+            .mut_list(checklist_id)
+            .ok_or(AgentError::ResourceNotFound)?;
+        let agent_id = if let Some((agent_id, _agent)) = checklist.find_agent_for_5tuple(
+            selected.local.transport_type,
+            selected.local.base_address,
+            selected.remote.address,
+        ) {
+            *agent_id
+        } else {
+            checklist
+                .add_agent_for_5tuple(
+                    selected.local.transport_type,
+                    selected.local.base_address,
+                    selected.remote.address,
+                )
+                .0
+        };
+
+        let selected_pair = SelectedPair::new(selected, agent_id);
+        self.set_selected_pair_with_agent(selected_pair);
+        Ok(())
+    }
+
+    pub(crate) fn set_selected_pair_with_agent(&mut self, selected: SelectedPair) {
         let stream = self.agent.mut_stream_state(self.stream_id).unwrap();
         let component = stream.mut_component_state(self.component_id).unwrap();
         component.selected_pair = Some(selected);

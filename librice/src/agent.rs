@@ -275,7 +275,12 @@ impl futures::stream::Stream for AgentStream {
                     if let Some(component) = stream.component(pair.component_id) {
                         if let Some(socket) = stream.socket_for_pair(pair.selected.candidate_pair())
                         {
-                            component.set_selected_pair(SelectedPair::new(*pair.selected, socket));
+                            if let Err(e) = component.set_selected_pair(SelectedPair::new(
+                                pair.selected.candidate_pair().clone(),
+                                socket,
+                            )) {
+                                warn!("Failed setting the selected pair: {e:?}");
+                            }
                         }
                     }
                 }

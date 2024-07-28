@@ -89,22 +89,31 @@ impl Component {
     /// Send data to the peer using the established communication channel.  This will not succeed
     /// until the component is in the [`Connected`](ComponentConnectionState::Connected) state.
     pub async fn send(&self, data: &[u8]) -> Result<(), AgentError> {
-        let (local_agent, channel, to) = {
+        let transmit;
+        let (channel, to) = {
             let inner = self.inner.lock().unwrap();
             let selected_pair = inner.selected_pair.as_ref().ok_or(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "No selected pair",
             ))?;
-            let local_agent = selected_pair.proto.stun_agent().clone();
-            let to = selected_pair.proto.candidate_pair().remote.address;
-            trace!("sending {} bytes to {}", data.len(), to);
-            (local_agent, selected_pair.socket.clone(), to)
+            let to = selected_pair.pair.remote.address;
+            (selected_pair.socket.clone(), to)
         };
 
-        let transmit;
         {
-            let local_agent = local_agent.lock().unwrap();
-            let stun_transmit = local_agent.send_data(data, to);
+            let agent = self.weak_agent.upgrade().ok_or(AgentError::Proto(
+                librice_proto::agent::AgentError::ResourceNotFound,
+            ))?;
+            let agent = agent.lock().unwrap();
+            let stream = agent
+                .stream(self.stream_id)
+                .ok_or(librice_proto::agent::AgentError::ResourceNotFound)?;
+            let component = stream
+                .component(self.id)
+                .ok_or(librice_proto::agent::AgentError::ResourceNotFound)?;
+
+            let stun_transmit = component.send(data)?;
+
             transmit = match stun_transmit.transport {
                 TransportType::Udp => stun_transmit,
                 TransportType::Tcp => {
@@ -122,6 +131,7 @@ impl Component {
             }
         }
 
+        trace!("sending {} bytes to {}", data.len(), to);
         channel.send_to(&transmit.data, transmit.to).await?;
 
         Ok(())
@@ -134,8 +144,23 @@ impl Component {
         }
     }
 
-    pub(crate) fn set_selected_pair(&self, selected: SelectedPair) {
-        self.inner.lock().unwrap().set_selected_pair(selected)
+    pub(crate) fn set_selected_pair(&self, selected: SelectedPair) -> Result<(), AgentError> {
+        let agent = self.weak_agent.upgrade().ok_or(AgentError::Proto(
+            librice_proto::agent::AgentError::ResourceNotFound,
+        ))?;
+        let mut agent = agent.lock().unwrap();
+        let mut stream = agent
+            .mut_stream(self.stream_id)
+            .ok_or(librice_proto::agent::AgentError::ResourceNotFound)?;
+        let mut component = stream
+            .mut_component(self.id)
+            .ok_or(librice_proto::agent::AgentError::ResourceNotFound)?;
+
+        let mut inner = self.inner.lock().unwrap();
+        component.set_selected_pair(selected.pair.clone())?;
+        inner.selected_pair = Some(selected);
+
+        Ok(())
     }
 
     /// The pair that has been selected for communication.  Will not provide a useful value until
@@ -146,7 +171,7 @@ impl Component {
             .unwrap()
             .selected_pair
             .clone()
-            .map(|selected| selected.proto.candidate_pair().clone())
+            .map(|selected| selected.pair.clone())
     }
 }
 
@@ -166,17 +191,6 @@ impl ComponentInner {
             received_data: VecDeque::default(),
             recv_waker: None,
         }
-    }
-
-    #[tracing::instrument(
-        skip(self),
-        fields(
-            component_id = self.id
-        )
-    )]
-    fn set_selected_pair(&mut self, selected: SelectedPair) {
-        debug!("setting");
-        self.selected_pair = Some(selected);
     }
 
     #[tracing::instrument(
@@ -217,16 +231,13 @@ impl futures::Stream for ComponentRecv {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SelectedPair {
-    proto: librice_proto::component::SelectedPair,
+    pair: librice_proto::candidate::CandidatePair,
     socket: StunChannel,
 }
 
 impl SelectedPair {
-    pub(crate) fn new(pair: librice_proto::component::SelectedPair, socket: StunChannel) -> Self {
-        Self {
-            proto: pair,
-            socket,
-        }
+    pub(crate) fn new(pair: librice_proto::candidate::CandidatePair, socket: StunChannel) -> Self {
+        Self { pair, socket }
     }
 }
 
@@ -234,7 +245,6 @@ impl SelectedPair {
 mod tests {
     use async_std::net::UdpSocket;
     use librice_proto::candidate::{Candidate, CandidateType};
-    use stun_proto::agent::StunAgent;
     use stun_proto::types::TransportType;
 
     use super::*;
@@ -258,15 +268,13 @@ mod tests {
         init();
         async_std::task::block_on(async move {
             let agent = Agent::builder().controlling(false).build();
-            let s = agent.add_stream();
-            let send = s.add_component().unwrap();
+            let stream = agent.add_stream();
+            let send = stream.add_component().unwrap();
             let local_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
             let remote_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
             let local_addr = local_socket.local_addr().unwrap();
             let remote_addr = remote_socket.local_addr().unwrap();
             let local_channel = StunChannel::Udp(UdpSocketChannel::new(local_socket));
-
-            let local_agent = StunAgent::builder(TransportType::Udp, local_addr).build();
 
             let local_cand =
                 Candidate::builder(0, CandidateType::Host, TransportType::Udp, "0", local_addr)
@@ -275,17 +283,10 @@ mod tests {
                 Candidate::builder(0, CandidateType::Host, TransportType::Udp, "0", remote_addr)
                     .build();
             let candidate_pair = CandidatePair::new(local_cand, remote_cand);
-            let local_agent = Arc::new(Mutex::new(local_agent));
-            let selected_pair = SelectedPair {
-                proto: librice_proto::component::SelectedPair::new(candidate_pair, local_agent),
-                socket: local_channel,
-            };
+            let selected_pair = SelectedPair::new(candidate_pair, local_channel);
 
-            send.set_selected_pair(selected_pair.clone());
-            assert_eq!(
-                selected_pair.proto.candidate_pair(),
-                &send.selected_pair().unwrap()
-            );
+            send.set_selected_pair(selected_pair.clone()).unwrap();
+            assert_eq!(selected_pair.pair, send.selected_pair().unwrap());
 
             let data = vec![3; 4];
             send.send(&data).await.unwrap();
