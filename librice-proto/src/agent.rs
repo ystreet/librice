@@ -380,6 +380,19 @@ pub enum AgentPoll<'a> {
     ComponentStateChange(AgentComponentStateChange),
 }
 
+impl<'a> AgentPoll<'a> {
+    pub fn into_owned<'b>(self) -> AgentPoll<'b> {
+        match self {
+            Self::Closed => AgentPoll::Closed,
+            Self::WaitUntil(instant) => AgentPoll::WaitUntil(instant),
+            Self::Transmit(transmit) => AgentPoll::Transmit(transmit.into_owned()),
+            Self::TcpConnect(connect) => AgentPoll::TcpConnect(connect),
+            Self::SelectedPair(selected) => AgentPoll::SelectedPair(selected),
+            Self::ComponentStateChange(state) => AgentPoll::ComponentStateChange(state),
+        }
+    }
+}
+
 /// Transmit the data using the specified 5-tuple.
 #[derive(Debug)]
 pub struct AgentTransmit<'a> {
