@@ -227,24 +227,6 @@ impl ConnCheck {
         }
     }
 
-    fn clone_with_pair_nominate(
-        conncheck: &ConnCheck,
-        checklist_id: usize,
-        pair: CandidatePair,
-        new_nominate: bool,
-    ) -> ConnCheck {
-        match &conncheck.variant {
-            ConnCheckVariant::Agent(agent) => ConnCheck::new(
-                checklist_id,
-                pair,
-                agent.clone(),
-                new_nominate,
-                conncheck.controlling,
-            ),
-            _ => unreachable!(),
-        }
-    }
-
     fn agent_id(&self) -> Option<StunAgentId> {
         match &self.variant {
             ConnCheckVariant::Agent(agent) => Some(*agent),
@@ -1487,11 +1469,13 @@ impl ConnCheckList {
                         );
                         None
                     } else {
-                        let mut check = ConnCheck::clone_with_pair_nominate(
-                            check,
+                        let agent_id = check.agent_id().unwrap();
+                        let mut check = ConnCheck::new(
                             self.checklist_id,
                             check.pair.clone(),
+                            agent_id,
                             true,
+                            self.controlling,
                         );
                         check.set_state(CandidatePairState::Waiting);
                         debug!("attempting nomination with check {:?}", check);
@@ -2024,11 +2008,13 @@ impl ConnCheckListSet {
                     if peer_nominating && !check.nominate() {
                         debug!("existing pair succeeded -> nominate");
                         let pair = check.pair.clone();
-                        let mut new_check = ConnCheck::clone_with_pair_nominate(
-                            &check,
+                        let agent_id = check.agent_id().unwrap();
+                        let mut new_check = ConnCheck::new(
                             checklist.checklist_id,
                             pair.clone(),
+                            agent_id,
                             true,
+                            self.controlling,
                         );
                         checklist.add_check(check);
                         new_check.set_state(CandidatePairState::Waiting);
@@ -2056,11 +2042,13 @@ impl ConnCheckListSet {
                     let pair = check.pair.clone();
                     // TODO: ignore response timeouts
 
-                    let mut new_check = ConnCheck::clone_with_pair_nominate(
-                        &check,
+                    let agent_id = check.agent_id().unwrap();
+                    let mut new_check = ConnCheck::new(
                         checklist.checklist_id,
                         pair,
+                        agent_id,
                         peer_nominating,
+                        self.controlling,
                     );
                     checklist.add_check(check);
                     new_check.set_state(CandidatePairState::Waiting);
@@ -2079,11 +2067,12 @@ impl ConnCheckListSet {
                 | CandidatePairState::Failed => {
                     if peer_nominating && !check.nominate() {
                         check.cancel();
-                        check = ConnCheck::clone_with_pair_nominate(
-                            &check,
+                        check = ConnCheck::new(
                             checklist.checklist_id,
                             check.pair.clone(),
+                            agent_id,
                             peer_nominating,
+                            self.controlling,
                         );
                     }
                     check.set_state(CandidatePairState::Waiting);
@@ -2139,8 +2128,14 @@ impl ConnCheckListSet {
         conncheck.set_state(CandidatePairState::Succeeded);
         let pair = conncheck.pair.clone();
         let ok_pair = pair_construct_valid(&pair, addr);
-        let mut ok_check =
-            ConnCheck::clone_with_pair_nominate(conncheck, checklist_id, ok_pair.clone(), false);
+        let agent_id = conncheck.agent_id().unwrap();
+        let mut ok_check = ConnCheck::new(
+            checklist_id,
+            ok_pair.clone(),
+            agent_id,
+            false,
+            self.controlling,
+        );
 
         if checklist.state != CheckListState::Running {
             debug!("checklist is not running, ignoring check response");
@@ -2276,11 +2271,13 @@ impl ConnCheckListSet {
                         let old_pair = conncheck.pair.clone();
                         self.controlling = new_role;
                         conncheck.cancel();
-                        let mut conncheck = ConnCheck::clone_with_pair_nominate(
-                            conncheck,
+                        let agent_id = conncheck.agent_id().unwrap();
+                        let mut conncheck = ConnCheck::new(
                             checklist_id,
                             conncheck.pair.clone(),
+                            agent_id,
                             false,
+                            self.controlling,
                         );
                         conncheck.set_state(CandidatePairState::Waiting);
                         checklist.add_triggered(&conncheck);
@@ -2343,6 +2340,7 @@ impl ConnCheckListSet {
         )
         .unwrap();
         conncheck.stun_request = Some(stun_request.transaction_id());
+        conncheck.controlling = self.controlling;
         let remote_addr = conncheck.pair.remote.address;
         let component_id = conncheck.pair.local.component_id;
 
@@ -2654,7 +2652,6 @@ impl ConnCheckListSet {
 
                     let checklist_id = check.checklist_id;
                     let nominate = check.nominate;
-                    let controlling = check.controlling;
                     let conncheck_id = check.conncheck_id;
                     let check_state = check.state;
 
@@ -2672,7 +2669,7 @@ impl ConnCheckListSet {
                         new_pair.clone(),
                         agent_id,
                         nominate,
-                        controlling,
+                        self.controlling,
                     );
                     let is_triggered = checklist
                         .triggered
