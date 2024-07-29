@@ -472,10 +472,15 @@ pub unsafe extern "C" fn rice_agent_poll(
     let agent = Arc::from_raw(agent);
     let mut proto_agent = agent.proto_agent.lock().unwrap();
     let now = agent.base_instant + Duration::from_micros(now_micros);
-    let ret = Box::new(RiceAgentPoll::from_rust(
-        proto_agent.poll(now),
-        agent.base_instant,
-    ));
+    let ret = proto_agent.poll(now).into_owned();
+    if let AgentPoll::SelectedPair(ref pair) = ret {
+        if let Some(mut stream) = proto_agent.mut_stream(pair.stream_id) {
+            if let Some(mut component) = stream.mut_component(pair.component_id) {
+                component.set_selected_pair_with_agent((*pair.selected).clone());
+            }
+        }
+    }
+    let ret = Box::new(RiceAgentPoll::from_rust(ret, agent.base_instant));
 
     drop(proto_agent);
     core::mem::forget(agent);
@@ -1260,7 +1265,10 @@ pub unsafe extern "C" fn rice_component_send(
             };
             RiceError::Success
         }
-        Err(_e) => RiceError::Failed,
+        Err(e) => {
+            warn!("Failed to send data: {e:?}");
+            RiceError::Failed
+        }
     }
 }
 
