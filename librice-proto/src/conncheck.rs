@@ -167,6 +167,7 @@ impl std::fmt::Display for ConnCheckId {
     }
 }
 
+#[derive(Debug)]
 struct ConnCheck {
     conncheck_id: ConnCheckId,
     checklist_id: usize,
@@ -176,17 +177,6 @@ struct ConnCheck {
     controlling: bool,
     state: CandidatePairState,
     stun_request: Option<TransactionId>,
-}
-
-impl std::fmt::Debug for ConnCheck {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ConnCheck")
-            .field("conncheck_id", &self.conncheck_id)
-            .field("checklist_id", &self.checklist_id)
-            .field("nominate", &self.nominate)
-            .field("pair", &self.pair)
-            .finish()
-    }
 }
 
 impl ConnCheck {
@@ -401,9 +391,6 @@ fn candidate_pair_is_same_connection(a: &CandidatePair, b: &CandidatePair) -> bo
     }
     true
 }
-
-#[derive(Debug, Clone)]
-struct TcpListenCandidate {}
 
 #[derive(Debug)]
 enum LocalCandidateVariant {
@@ -730,66 +717,6 @@ impl ConnCheckList {
         self.dump_check_state();
     }
 
-    #[tracing::instrument(
-        level = "debug",
-        skip(self, thawn_foundations)
-        fields(
-            checklist_id = self.checklist_id
-        )
-    )]
-    fn initial_thaw(&mut self, thawn_foundations: &mut Vec<String>) {
-        debug!("list state change from {:?} to Running", self.state);
-        self.state = CheckListState::Running;
-
-        let _: Vec<_> = self
-            .pairs
-            .iter_mut()
-            .map(|check| {
-                check.set_state(CandidatePairState::Frozen);
-            })
-            .collect();
-
-        // get all the candidates that don't match any of the already thawn foundations
-        let mut maybe_thaw: Vec<_> = self
-            .pairs
-            .iter_mut()
-            .filter(|check| {
-                !thawn_foundations
-                    .iter()
-                    .any(|foundation| &check.pair.foundation() == foundation)
-            })
-            .collect();
-        // sort by component_id
-        maybe_thaw
-            .sort_unstable_by(|a, b| a.pair.local.component_id.cmp(&b.pair.local.component_id));
-
-        // only keep the first candidate for a given foundation which should correspond to the
-        // lowest component_id
-        let mut seen_foundations = vec![];
-        maybe_thaw.retain(|check| {
-            if seen_foundations
-                .iter()
-                .any(|foundation| &check.pair.foundation() == foundation)
-            {
-                false
-            } else {
-                seen_foundations.push(check.pair.foundation());
-                true
-            }
-        });
-
-        // set them to waiting
-        let _: Vec<_> = maybe_thaw
-            .iter_mut()
-            .map(|check| {
-                check.set_state(CandidatePairState::Waiting);
-            })
-            .collect();
-
-        // update the foundations seen for the next check list
-        thawn_foundations.extend(seen_foundations);
-    }
-
     fn next_triggered(&mut self) -> Option<&mut ConnCheck> {
         // triggered checks referenced by these ids may be removed before the check has a chance to
         // start.  Simply remove them and continue processing.
@@ -837,33 +764,6 @@ impl ConnCheckList {
                 } else {
                     None
                 }
-            })
-            .next()
-    }
-
-    #[tracing::instrument(
-        level = "debug",
-        skip(self),
-        fields(
-            checklist_id = self.checklist_id
-        )
-    )]
-    fn next_frozen(&mut self, from_foundations: &[String]) -> Option<&mut ConnCheck> {
-        self.pairs
-            .iter_mut()
-            .filter_map(|check| {
-                if check.state() == CandidatePairState::Frozen {
-                    from_foundations
-                        .iter()
-                        .find(|&f| f == &check.pair.foundation())
-                        .and(Some(check))
-                } else {
-                    None
-                }
-            })
-            .map(|check| {
-                check.set_state(CandidatePairState::Waiting);
-                check
             })
             .next()
     }
@@ -2423,12 +2323,25 @@ impl ConnCheckListSet {
             let next: Vec<_> = foundations_not_waiting_in_progress.into_iter().collect();
             trace!("current foundations not waiting or in progress: {:?}", next);
 
+            for checklist in self.checklists.iter_mut() {
+                for check in checklist.pairs.iter_mut() {
+                    if check.state() != CandidatePairState::Frozen {
+                        continue;
+                    }
+                    if !next.iter().any(|f| f == &check.pair.foundation()) {
+                        continue;
+                    }
+                    check.set_state(CandidatePairState::Waiting);
+                }
+            }
+
             let checklist = &mut self.checklists[self.checklist_i];
-            if let Some(check) = checklist.next_frozen(&next) {
+            if let Some(check) = checklist.next_waiting() {
                 trace!("next check was a frozen check {:?}", check);
                 check.set_state(CandidatePairState::InProgress);
                 Some(check.conncheck_id)
             } else {
+                // XXX: may need to return a check from a different checklist
                 trace!("no next check for stream");
                 None
             }
@@ -3128,11 +3041,6 @@ mod tests {
         let mut state = FineControl::builder().build();
         let now = Instant::now();
 
-        let mut thawn_foundations = vec![];
-        state.local_list().generate_checks();
-        state.local_list().initial_thaw(&mut thawn_foundations);
-        state.local_list().dump_check_state();
-
         let CheckListSetPollRet::Transmit(_checklist_id, _component_id, transmit) =
             state.local.checklist_set.poll(now)
         else {
@@ -3144,6 +3052,7 @@ mod tests {
         );
         assert_eq!(transmit.from, state.local.peer.candidate.base_address);
         assert_eq!(transmit.to, state.remote.candidate.base_address);
+        state.local_list().dump_check_state();
     }
 
     fn assert_list_contains_checks(list: &mut ConnCheckList, pairs: Vec<&CandidatePair>) {
@@ -3197,7 +3106,6 @@ mod tests {
         list.add_local_candidate(local3.candidate.clone());
         list.add_remote_candidate(remote3.candidate.clone());
 
-        list.generate_checks();
         let pair1 = CandidatePair::new(local3.candidate.clone(), remote3.candidate.clone());
         let pair2 = CandidatePair::new(local2.candidate, remote2.candidate);
         let pair3 = CandidatePair::new(local3.candidate, remote1.candidate.clone());
@@ -3209,10 +3117,10 @@ mod tests {
     #[test]
     fn checklists_initial_thaw() {
         let _log = crate::tests::test_init_log();
-        let mut thawn = vec![];
         let mut set = ConnCheckListSet::builder(0, true).build();
         let list1_id = set.new_list();
         let list2_id = set.new_list();
+        let now = Instant::now();
 
         let local1 = Peer::builder()
             .foundation("0")
@@ -3262,15 +3170,18 @@ mod tests {
         list1.add_local_candidate(local1.candidate.clone());
         list1.add_remote_candidate(remote1.candidate.clone());
 
-        list1.generate_checks();
         assert_list_contains_checks(list1, vec![&pair1]);
         // thaw the first checklist with only a single pair will unfreeze that pair
-        list1.initial_thaw(&mut thawn);
-        assert_eq!(thawn.len(), 1);
-        assert_eq!(&thawn[0], &pair1.foundation());
+        let CheckListSetPollRet::Transmit(_, _, _) = set.poll(now) else {
+            unreachable!();
+        };
+        let CheckListSetPollRet::WaitUntil(now) = set.poll(now) else {
+            unreachable!();
+        };
+        let list1 = set.mut_list(list1_id).unwrap();
         let check1 = list1.matching_check(&pair1, Nominate::DontCare).unwrap();
         assert_eq!(check1.pair, pair1);
-        assert_eq!(check1.state(), CandidatePairState::Waiting);
+        assert_eq!(check1.state(), CandidatePairState::InProgress);
 
         let list2 = set.mut_list(list2_id).unwrap();
         list2.add_component(1);
@@ -3280,20 +3191,17 @@ mod tests {
         list2.add_local_candidate(local3.candidate.clone());
         list2.add_remote_candidate(remote3.candidate.clone());
 
-        list2.generate_checks();
         assert_list_contains_checks(list2, vec![&pair2, &pair3, &pair4, &pair5]);
 
         // thaw the second checklist with 2*2 pairs will unfreeze only the foundations not
         // unfrozen by the first checklist, which means unfreezing 3 pairs
-        list2.initial_thaw(&mut thawn);
-        assert_eq!(thawn.len(), 4);
-        assert!(thawn.iter().any(|f| f == &pair2.foundation()));
-        assert!(thawn.iter().any(|f| f == &pair3.foundation()));
-        assert!(thawn.iter().any(|f| f == &pair4.foundation()));
-        assert!(thawn.iter().any(|f| f == &pair5.foundation()));
+        let CheckListSetPollRet::Transmit(_, _, _) = set.poll(now) else {
+            unreachable!();
+        };
+        let list2 = set.mut_list(list2_id).unwrap();
         let check2 = list2.matching_check(&pair2, Nominate::DontCare).unwrap();
         assert_eq!(check2.pair, pair2);
-        assert_eq!(check2.state(), CandidatePairState::Waiting);
+        assert_eq!(check2.state(), CandidatePairState::InProgress);
         let check3 = list2.matching_check(&pair3, Nominate::DontCare).unwrap();
         assert_eq!(check3.pair, pair3);
         assert_eq!(check3.state(), CandidatePairState::Waiting);
@@ -3479,8 +3387,6 @@ mod tests {
         let mut now = Instant::now();
         assert_eq!(state.local.component_id, 1);
 
-        state.local_list().generate_checks();
-
         let pair = CandidatePair::new(
             state.local.peer.candidate.clone(),
             state.remote.candidate.clone(),
@@ -3491,12 +3397,6 @@ mod tests {
             .unwrap();
         assert_eq!(check.state(), CandidatePairState::Frozen);
         let check_id = check.conncheck_id;
-
-        let mut thawn = vec![];
-        // thaw the first checklist with only a single pair will unfreeze that pair
-        state.local_list().initial_thaw(&mut thawn);
-        let check = state.local_list().check_by_id(check_id).unwrap();
-        assert_eq!(check.state(), CandidatePairState::Waiting);
 
         // perform one tick which will start a connectivity check with the peer
         send_next_check_and_response(&state.local.peer, &state.remote)
@@ -3564,8 +3464,6 @@ mod tests {
         let mut state = FineControl::builder().controlling(false).build();
         let mut now = Instant::now();
 
-        state.local_list().generate_checks();
-
         let pair = CandidatePair::new(
             state.local.peer.candidate.clone(),
             state.remote.candidate.clone(),
@@ -3576,12 +3474,6 @@ mod tests {
             .unwrap();
         assert_eq!(check.state(), CandidatePairState::Frozen);
         let check_id = check.conncheck_id;
-
-        let mut thawn = vec![];
-        // thaw the first checklist with only a single pair will unfreeze that pair
-        state.local_list().initial_thaw(&mut thawn);
-        let check = state.local_list().check_by_id(check_id).unwrap();
-        assert_eq!(check.state(), CandidatePairState::Waiting);
 
         // perform one tick which will start a connectivity check with the peer
         send_next_check_and_response(&state.local.peer, &state.remote)
@@ -3678,7 +3570,6 @@ mod tests {
         let wrong_credentials =
             Credentials::new(String::from("wronguser"), String::from("wrongpass"));
         local_list.set_local_credentials(wrong_credentials);
-        local_list.generate_checks();
 
         let pair = CandidatePair::new(
             state.local.peer.candidate.clone(),
@@ -3687,12 +3578,6 @@ mod tests {
         let check = local_list.matching_check(&pair, Nominate::False).unwrap();
         let check_id = check.conncheck_id;
         assert_eq!(check.state(), CandidatePairState::Frozen);
-
-        let mut thawn = vec![];
-        // thaw the first checklist with only a single pair will unfreeze that pair
-        local_list.initial_thaw(&mut thawn);
-        let check = state.local_list().check_by_id(check_id).unwrap();
-        assert_eq!(check.state(), CandidatePairState::Waiting);
 
         // perform one tick which will start a connectivity check with the peer
         send_next_check_and_response(&state.local.peer, &state.remote)
@@ -3724,7 +3609,6 @@ mod tests {
             .transport(TransportType::Tcp)
             .tcp_type(TcpType::Passive);
         let mut state = state.build();
-        state.local_list().generate_checks();
         let pair = CandidatePair::new(
             state.local.peer.candidate.clone(),
             state.remote.candidate.clone(),
@@ -3852,7 +3736,6 @@ mod tests {
             .tcp_type(TcpType::Active)
             .priority(10);
         let mut state = state.build();
-        state.local_list().generate_checks();
         let now = Instant::now();
         let remote_addr = SocketAddr::new(state.remote.candidate.base_address.ip(), 2000);
         let mut remote_cand = state.remote.candidate.clone();
@@ -4006,9 +3889,6 @@ mod tests {
         let mut state = FineControl::builder().build();
         let now = Instant::now();
 
-        // generate existing checks
-        state.local_list().generate_checks();
-
         let pair = CandidatePair::new(
             state.local.peer.candidate.clone(),
             state.remote.candidate.clone(),
@@ -4018,13 +3898,6 @@ mod tests {
             .matching_check(&pair, Nominate::False)
             .unwrap();
         assert_eq!(initial_check.state(), CandidatePairState::Frozen);
-        let check_id = initial_check.conncheck_id;
-
-        let mut thawn = vec![];
-        // thaw the first checklist with only a single pair will unfreeze that pair
-        state.local_list().initial_thaw(&mut thawn);
-        let initial_check = state.local_list().check_by_id(check_id).unwrap();
-        assert_eq!(initial_check.state(), CandidatePairState::Waiting);
 
         let unknown_remote_peer = Peer::builder()
             .local_addr("127.0.0.1:90".parse().unwrap())
@@ -4147,9 +4020,6 @@ mod tests {
         let mut state = FineControl::builder().build();
         let now = Instant::now();
 
-        // generate existing checks
-        state.local_list().generate_checks();
-
         let pair = CandidatePair::new(
             state.local.peer.candidate.clone(),
             state.remote.candidate.clone(),
@@ -4160,12 +4030,6 @@ mod tests {
             .unwrap();
         assert_eq!(initial_check.state(), CandidatePairState::Frozen);
         let check_id = initial_check.conncheck_id;
-
-        let mut thawn = vec![];
-        // thaw the first checklist with only a single pair will unfreeze that pair
-        state.local_list().initial_thaw(&mut thawn);
-        let initial_check = state.local_list().check_by_id(check_id).unwrap();
-        assert_eq!(initial_check.state(), CandidatePairState::Waiting);
 
         let unknown_remote_peer = Peer::builder()
             .foundation("1")
@@ -4381,9 +4245,6 @@ mod tests {
         let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder().build();
 
-        // generate existing checks
-        state.local_list().generate_checks();
-
         let pair = CandidatePair::new(
             state.local.peer.candidate.clone(),
             state.remote.candidate.clone(),
@@ -4394,12 +4255,6 @@ mod tests {
             .unwrap();
         assert_eq!(initial_check.state(), CandidatePairState::Frozen);
         let check_id = initial_check.conncheck_id;
-
-        let mut thawn = vec![];
-        // thaw the first checklist with only a single pair will unfreeze that pair
-        state.local_list().initial_thaw(&mut thawn);
-        let initial_check = state.local_list().check_by_id(check_id).unwrap();
-        assert_eq!(initial_check.state(), CandidatePairState::Waiting);
 
         // Don't generate any initial checks as they should be done as candidates are added to
         // the checklist
@@ -4518,9 +4373,6 @@ mod tests {
         let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder().controlling(false).build();
 
-        // generate existing checks
-        state.local_list().generate_checks();
-
         let pair = CandidatePair::new(
             state.local.peer.candidate.clone(),
             state.remote.candidate.clone(),
@@ -4531,12 +4383,6 @@ mod tests {
             .unwrap();
         assert_eq!(initial_check.state(), CandidatePairState::Frozen);
         let check_id = initial_check.conncheck_id;
-
-        let mut thawn = vec![];
-        // thaw the first checklist with only a single pair will unfreeze that pair
-        state.local_list().initial_thaw(&mut thawn);
-        let initial_check = state.local_list().check_by_id(check_id).unwrap();
-        assert_eq!(initial_check.state(), CandidatePairState::Waiting);
 
         // Don't generate any initial checks as they should be done as candidates are added to
         // the checklist
