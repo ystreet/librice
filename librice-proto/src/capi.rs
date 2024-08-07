@@ -443,23 +443,36 @@ impl From<RiceAgentComponentStateChange> for crate::agent::AgentComponentStateCh
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rice_agent_poll_free(poll: *mut RiceAgentPoll) {
-    match *Box::from_raw(poll) {
-        RiceAgentPoll::Closed => (),
-        RiceAgentPoll::WaitUntilMicros(_instant) => (),
+pub unsafe extern "C" fn rice_agent_poll_init(poll: *mut MaybeUninit<RiceAgentPoll>) {
+    (*poll).write(RiceAgentPoll::Closed);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rice_agent_poll_clear(poll: *mut RiceAgentPoll) {
+    let mut other = RiceAgentPoll::Closed;
+    core::mem::swap(&mut other, &mut *poll);
+    match other {
+        RiceAgentPoll::Closed
+        | RiceAgentPoll::ComponentStateChange(_)
+        | RiceAgentPoll::WaitUntilMicros(_) => (),
         RiceAgentPoll::Transmit(mut transmit) => {
             rice_transmit_clear(&mut transmit);
         }
-        RiceAgentPoll::TcpConnect(connect) => {
-            let _connect = AgentPoll::TcpConnect(connect.into());
+        RiceAgentPoll::TcpConnect(mut connect) => {
+            let mut from = core::ptr::null();
+            core::mem::swap(&mut from, &mut connect.from);
+            let _from = RiceAddress::from_c(from);
+            let mut to = core::ptr::null();
+            core::mem::swap(&mut to, &mut connect.to);
+            let _to = RiceAddress::from_c(connect.to);
         }
-        //Self::SelectedPair(pair) => AgentPoll::SelectedPair(pair.into()),
-        RiceAgentPoll::SelectedPair(pair) => {
-            let _from = RiceAddress::from_c(pair.from);
-            let _to = RiceAddress::from_c(pair.to);
-        }
-        RiceAgentPoll::ComponentStateChange(state) => {
-            let _state = AgentPoll::ComponentStateChange(state.into());
+        RiceAgentPoll::SelectedPair(mut pair) => {
+            let mut from = core::ptr::null();
+            core::mem::swap(&mut from, &mut pair.from);
+            let _from = RiceAddress::from_c(from);
+            let mut to = core::ptr::null();
+            core::mem::swap(&mut to, &mut pair.to);
+            let _to = RiceAddress::from_c(to);
         }
     }
 }
@@ -468,7 +481,8 @@ pub unsafe extern "C" fn rice_agent_poll_free(poll: *mut RiceAgentPoll) {
 pub unsafe extern "C" fn rice_agent_poll(
     agent: *mut RiceAgent,
     now_micros: u64,
-) -> *mut RiceAgentPoll {
+    poll: *mut RiceAgentPoll,
+) {
     let agent = Arc::from_raw(agent);
     let mut proto_agent = agent.proto_agent.lock().unwrap();
     let now = agent.base_instant + Duration::from_micros(now_micros);
@@ -480,11 +494,10 @@ pub unsafe extern "C" fn rice_agent_poll(
             }
         }
     }
-    let ret = Box::new(RiceAgentPoll::from_rust(ret, agent.base_instant));
+    *poll = RiceAgentPoll::from_rust(ret, agent.base_instant);
 
     drop(proto_agent);
     core::mem::forget(agent);
-    Box::into_raw(ret)
 }
 
 #[no_mangle]
@@ -935,8 +948,15 @@ pub enum RiceGatherPoll {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rice_gather_poll_free(poll: *mut RiceGatherPoll) {
-    match *Box::from_raw(poll) {
+pub unsafe extern "C" fn rice_gather_poll_init(poll: *mut MaybeUninit<RiceGatherPoll>) {
+    (*poll).write(RiceGatherPoll::Complete);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rice_gather_poll_clear(poll: *mut RiceGatherPoll) {
+    let mut other = RiceGatherPoll::Complete;
+    core::mem::swap(&mut other, &mut *poll);
+    match other {
         RiceGatherPoll::Complete => (),
         RiceGatherPoll::WaitUntilMicros(_instant) => (),
         RiceGatherPoll::NeedAgent(need_agent) => need_agent.clear_c(),
@@ -1003,21 +1023,21 @@ impl RiceGatherPoll {
 pub unsafe extern "C" fn rice_stream_poll_gather(
     stream: *mut RiceStream,
     now_micros: u64,
-) -> *mut RiceGatherPoll {
+    poll: *mut RiceGatherPoll,
+) {
     let stream = Arc::from_raw(stream);
     let mut proto_agent = stream.proto_agent.lock().unwrap();
     let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
     let now = stream.base_instant + Duration::from_micros(now_micros);
 
-    let ret = Box::new(RiceGatherPoll::from_rust(
+    *poll = RiceGatherPoll::from_rust(
         proto_stream.poll_gather(now).unwrap(),
         stream.stream_id,
         stream.base_instant,
-    ));
+    );
 
     drop(proto_agent);
     core::mem::forget(stream);
-    Box::into_raw(ret)
 }
 
 #[no_mangle]
@@ -1556,27 +1576,30 @@ mod tests {
             rice_component_gather_candidates(component, 1, &mut_override(addr), &transport.into());
             rice_address_free(mut_override(addr));
 
-            let ret = rice_stream_poll_gather(stream, 0);
-            let RiceGatherPoll::NewCandidate(candidate) = *Box::from_raw(ret) else {
+            let mut poll = RiceGatherPoll::Complete;
+            rice_stream_poll_gather(stream, 0, &mut poll);
+            let RiceGatherPoll::NewCandidate(_candidate) = poll else {
                 unreachable!()
             };
-            rice_candidate_free(candidate);
+            rice_gather_poll_clear(&mut poll);
 
-            let ret = rice_stream_poll_gather(stream, 0);
-            let RiceGatherPoll::NewCandidate(candidate) = *Box::from_raw(ret) else {
+            rice_stream_poll_gather(stream, 0, &mut poll);
+            let RiceGatherPoll::NewCandidate(_candidate) = poll else {
                 unreachable!()
             };
-            rice_candidate_free(candidate);
+            rice_gather_poll_clear(&mut poll);
 
-            let ret = rice_stream_poll_gather(stream, 0);
-            let RiceGatherPoll::NeedAgent(mut need_agent) = *Box::from_raw(ret) else {
+            rice_stream_poll_gather(stream, 0, &mut poll);
+            let RiceGatherPoll::NeedAgent(ref need_agent) = poll else {
                 unreachable!()
             };
 
-            let ret = rice_stream_poll_gather(stream, 0);
-            let RiceGatherPoll::WaitUntilMicros(now) = *Box::from_raw(ret) else {
+            let mut poll_wait = RiceGatherPoll::Complete;
+            rice_stream_poll_gather(stream, 0, &mut poll_wait);
+            let RiceGatherPoll::WaitUntilMicros(now) = poll_wait else {
                 unreachable!()
             };
+            rice_gather_poll_clear(&mut poll_wait);
 
             let tcp_from_addr = "192.168.200.4:3000".parse().unwrap();
             let tcp_from_addr = RiceAddress::new(tcp_from_addr).to_c();
@@ -1590,17 +1613,21 @@ mod tests {
                 need_agent.to,
                 stun_agent,
             );
-            need_agent.clear_c();
-            let ret = rice_stream_poll_gather(stream, 0);
-            let RiceGatherPoll::SendData(mut send) = *Box::from_raw(ret) else {
+            rice_gather_poll_clear(&mut poll);
+
+            rice_stream_poll_gather(stream, 0, &mut poll);
+            let RiceGatherPoll::SendData(ref _send) = poll else {
                 unreachable!()
             };
-            rice_transmit_clear(&mut send);
+            rice_gather_poll_clear(&mut poll);
 
-            //rice_gather_poll_free(rice_stream_poll_gather(stream, now));
+            let mut poll = RiceGatherPoll::Complete;
+            rice_stream_poll_gather(stream, now, &mut poll);
+            rice_gather_poll_clear(&mut poll);
 
-            let ret = rice_agent_poll(agent, 0);
-            rice_agent_poll_free(ret);
+            let mut ret = RiceAgentPoll::Closed;
+            rice_agent_poll(agent, 0, &mut ret);
+            rice_agent_poll_clear(&mut ret);
 
             rice_component_unref(component);
             rice_stream_unref(stream);
