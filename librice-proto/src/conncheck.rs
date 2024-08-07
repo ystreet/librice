@@ -454,11 +454,21 @@ impl ConnCheckList {
 
     /// Set the local [`Credentials`] for this checklist
     pub fn set_local_credentials(&mut self, credentials: Credentials) {
+        for (_agent_id, agent) in self.agents.iter_mut() {
+            agent.set_local_credentials(MessageIntegrityCredentials::ShortTerm(
+                credentials.clone().into(),
+            ));
+        }
         self.local_credentials = credentials;
     }
 
     /// Set the remote [`Credentials`] for this checklist
     pub fn set_remote_credentials(&mut self, credentials: Credentials) {
+        for (_agent_id, agent) in self.agents.iter_mut() {
+            agent.set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
+                credentials.clone().into(),
+            ));
+        }
         self.remote_credentials = credentials;
     }
 
