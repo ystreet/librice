@@ -2146,15 +2146,15 @@ impl ConnCheckListSet {
 
         // if response success:
         // if mismatched address -> fail
-        /* FIXME
-        if from != request.peer_address() {
+        if from != conncheck.pair.remote.address {
             warn!(
                 "response came from different ip {:?} than candidate {:?}",
                 from,
-                stun_request.peer_address()
+                conncheck.pair.remote.address
             );
-            checklist.check_response_failure(conncheck.clone());
-        }*/
+            checklist.check_response_failure(conncheck_id);
+            return Ok(());
+        }
 
         // if response error -> fail TODO: might be a recoverable error!
         if response.has_class(MessageClass::Error) {
