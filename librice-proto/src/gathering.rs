@@ -360,6 +360,7 @@ impl StunGatherer {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn handle_stun_response(
         response: Message<'_>,
         transport: TransportType,
