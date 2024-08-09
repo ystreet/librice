@@ -47,7 +47,7 @@ impl Component {
             weak_agent,
             stream_id,
             id,
-            inner: Arc::new(Mutex::new(ComponentInner::new(id))),
+            inner: Arc::new(Mutex::new(ComponentInner::new())),
         }
     }
 
@@ -177,16 +177,14 @@ impl Component {
 
 #[derive(Debug)]
 pub(crate) struct ComponentInner {
-    id: usize,
     selected_pair: Option<SelectedPair>,
     received_data: VecDeque<Vec<u8>>,
     recv_waker: Option<Waker>,
 }
 
 impl ComponentInner {
-    fn new(id: usize) -> Self {
+    fn new() -> Self {
         Self {
-            id,
             selected_pair: None,
             received_data: VecDeque::default(),
             recv_waker: None,
