@@ -85,8 +85,8 @@ impl From<StunError> for AgentError {
 }
 
 impl From<StunParseError> for AgentError {
-    fn from(e: StunParseError) -> Self {
-        e.into()
+    fn from(_e: StunParseError) -> Self {
+        Self::StunParse
     }
 }
 
