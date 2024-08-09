@@ -1223,10 +1223,8 @@ impl ConnCheckList {
             self.pairs.retain(|check| {
                 if nominated_ids.contains(&check.conncheck_id) {
                     true
-                } else if check.pair.local.component_id == pair.local.component_id {
-                    false
                 } else {
-                    true
+                    check.pair.local.component_id != pair.local.component_id
                 }
             });
             // XXX: do we also need to clear self.valid?
