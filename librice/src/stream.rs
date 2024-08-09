@@ -789,6 +789,7 @@ impl Stream {
         None
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn handle_tcp_connect(
         weak_inner: Weak<Mutex<StreamInner>>,
         weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
@@ -868,6 +869,7 @@ impl Stream {
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn handle_gather_tcp_connect(
         weak_inner: Weak<Mutex<StreamInner>>,
         weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
