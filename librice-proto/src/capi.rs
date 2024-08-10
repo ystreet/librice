@@ -56,6 +56,7 @@ fn init_logs() {
 }
 
 #[repr(i32)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum RiceError {
     Success = 0,
     Failed = -1,
