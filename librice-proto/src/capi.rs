@@ -869,15 +869,23 @@ pub unsafe extern "C" fn rice_candidate_to_sdp_string(
     ret.into_raw()
 }
 
+unsafe fn rice_candidate_clear(candidate: &mut RiceCandidate) {
+    let _foundation = CString::from_raw(mut_override(candidate.foundation));
+    candidate.foundation = core::ptr::null_mut();
+    let _address = RiceAddress::from_c(candidate.address);
+    candidate.address = core::ptr::null_mut();
+    let _base_address = RiceAddress::from_c(candidate.base_address);
+    candidate.base_address = core::ptr::null_mut();
+    if !candidate.related_address.is_null() {
+        let _related_address = RiceAddress::from_c(candidate.related_address);
+        candidate.related_address = core::ptr::null_mut();
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rice_candidate_free(candidate: *mut RiceCandidate) {
-    let cand = Box::from_raw(candidate);
-    let _foundation = CString::from_raw(mut_override(cand.foundation));
-    let _address = RiceAddress::from_c(cand.address);
-    let _base_address = RiceAddress::from_c(cand.base_address);
-    if !cand.related_address.is_null() {
-        let _related_address = RiceAddress::from_c(cand.related_address);
-    }
+    let mut cand = Box::from_raw(candidate);
+    rice_candidate_clear(&mut cand);
     // FIXME extensions
 }
 
@@ -1515,9 +1523,10 @@ mod tests {
         .priority(1234)
         .tcp_type(TcpType::Passive)
         .build();
-        let rcand: RiceCandidate = candidate.clone().into();
+        let mut rcand: RiceCandidate = candidate.clone().into();
         let new_cand: Candidate = (&rcand).into();
         assert_eq!(candidate, new_cand);
+        unsafe { rice_candidate_clear(&mut rcand) };
     }
 
     #[test]
