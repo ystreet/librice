@@ -493,6 +493,8 @@ impl Stream {
         for data in reply.data {
             component.handle_incoming_data(data);
         }
+        drop(proto_agent);
+        drop(component);
 
         if reply.gather_handled {
             if let Some(stream) = weak_inner.upgrade() {
