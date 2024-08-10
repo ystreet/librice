@@ -451,6 +451,13 @@ pub struct RiceIoData {
     len: usize,
 }
 
+unsafe fn rice_io_data_clear(data: &mut RiceIoData) {
+    let _from = RiceAddress::from_c(data.from);
+    data.from = core::ptr::null_mut();
+    let _to = RiceAddress::from_c(data.to);
+    data.to = core::ptr::null_mut();
+}
+
 #[repr(C)]
 pub struct RiceIoClosed {
     transport: RiceTransportType,
@@ -470,10 +477,9 @@ pub unsafe extern "C" fn rice_recv_clear(recv: *mut RiceIoRecv) {
     if recv.is_null() {
         return;
     }
-    match &*recv {
-        RiceIoRecv::Data(data) => {
-            let _from = RiceAddress::from_c(data.from);
-            let _to = RiceAddress::from_c(data.to);
+    match &mut *recv {
+        RiceIoRecv::Data(ref mut data) => {
+            rice_io_data_clear(data);
         }
         RiceIoRecv::Closed(closed) => {
             let _from = RiceAddress::from_c(closed.from);
@@ -531,15 +537,97 @@ fn const_override<T>(val: *mut T) -> *const T {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use librice_proto::capi::*;
 
     #[test]
-    fn rice_address() {
+    fn rice_sockets_empty() {
         unsafe {
-            let s = CString::new("127.0.0.1:2000").unwrap();
-            let addr = rice_address_new_from_string(s.as_ptr());
-            let addr2 = rice_address_copy(addr);
+            // an emtpy list of sockets always returns WouldBlock
+            let sockets = rice_sockets_new();
+            let mut io_recv = RiceIoRecv::WouldBlock;
+            let mut recv_buf = [0; 1500];
+            rice_sockets_recv(sockets, recv_buf.as_mut_ptr(), recv_buf.len(), &mut io_recv);
+            assert!(matches!(io_recv, RiceIoRecv::WouldBlock));
+            rice_recv_clear(&mut io_recv);
+            rice_sockets_unref(sockets);
+        }
+    }
+
+    fn rice_sockets_new_with_io_notify_callback<F>(callback: F) -> *mut RiceSockets
+    where
+        F: FnMut() + Send + Sync + 'static,
+    {
+        extern "C" fn io_notify_trampoline<F: FnMut() + Send + Sync + 'static>(f: *mut c_void) {
+            let f: &mut F = unsafe { &mut *(f as *mut F) };
+            f();
+        }
+        unsafe {
+            let callback = Box::into_raw(Box::new(callback));
+            rice_sockets_new_with_notify(
+                Some(io_notify_trampoline::<F>),
+                callback as *mut _,
+                Some(drop_box_fn::<F>),
+            )
+        }
+    }
+
+    extern "C" fn drop_box_fn<T>(data: *mut c_void) {
+        unsafe {
+            let _ = Box::from_raw(data as *mut T);
+        }
+    }
+
+    #[test]
+    fn udp_socket_send_recv() {
+        unsafe {
+            // send a receive data over UDP using our wrappers
+            let (send, recv) = flume::unbounded::<()>();
+            let addr = mut_override(RiceAddress::new("127.0.0.1:0".parse().unwrap()).to_c());
+            let udp1 = rice_udp_socket_new(addr);
+            let udp2 = rice_udp_socket_new(addr);
             rice_address_free(addr);
-            rice_address_free(addr2);
+
+            let local_addr1 = rice_udp_socket_local_addr(udp1);
+            let local_addr2 = rice_udp_socket_local_addr(udp2);
+
+            let sockets = rice_sockets_new_with_io_notify_callback(move || {
+                let _ = send.send(());
+            });
+
+            rice_sockets_add_udp(sockets, udp1);
+            rice_sockets_add_udp(sockets, udp2);
+
+            let data = [4; 6];
+            assert_eq!(
+                RiceError::Success,
+                rice_sockets_send(
+                    sockets,
+                    RiceTransportType::Udp,
+                    local_addr1,
+                    local_addr2,
+                    data.as_ptr(),
+                    data.len()
+                )
+            );
+
+            let _ = recv.recv().unwrap();
+
+            let mut io_recv = RiceIoRecv::WouldBlock;
+            let mut recv_buf = [0; 1500];
+            rice_sockets_recv(sockets, recv_buf.as_mut_ptr(), recv_buf.len(), &mut io_recv);
+            let RiceIoRecv::Data(mut io_data) = io_recv else {
+                unreachable!();
+            };
+            assert_eq!(io_data.transport, RiceTransportType::Udp);
+            assert_eq!(io_data.len, data.len());
+            assert_eq!(&recv_buf[..io_data.len], data);
+            assert_eq!(rice_address_cmp(io_data.from, local_addr1), 0);
+            assert_eq!(rice_address_cmp(io_data.to, local_addr2), 0);
+            rice_io_data_clear(&mut io_data);
+
+            rice_address_free(local_addr1);
+            rice_address_free(local_addr2);
+            rice_sockets_unref(sockets);
         }
     }
 }
