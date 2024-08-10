@@ -413,13 +413,13 @@ pub unsafe extern "C" fn rice_sockets_send(
     transport: RiceTransportType,
     from: *const RiceAddress,
     to: *const RiceAddress,
-    data: *mut u8,
+    data: *const u8,
     len: usize,
 ) -> RiceError {
     let sockets = Arc::from_raw(sockets);
     let from = RiceAddress::from_c(mut_override(from));
     let to = RiceAddress::from_c(mut_override(to));
-    let data = core::slice::from_raw_parts_mut(data, len);
+    let data = core::slice::from_raw_parts(data, len);
     let inner = sockets.inner.lock().unwrap();
     let ret = match transport {
         RiceTransportType::Udp => {
