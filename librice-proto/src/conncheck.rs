@@ -1327,7 +1327,6 @@ impl ConnCheckList {
                 .iter()
                 .filter_map(|check| {
                     let check = check.as_ref().unwrap(); // checked earlier
-                                                         // find the local stun agent for this pair
                     if check.nominate() {
                         trace!(
                             "already have nominate check for component {}",
@@ -1573,13 +1572,19 @@ impl ConnCheckListSet {
         let Some(agent) = self.checklists[checklist_i].mut_agent_by_id(agent_id) else {
             return Ok(None);
         };
-        let local_credentials = agent.local_credentials();
         match agent.handle_stun(msg, transmit.from) {
             HandleStunReply::Drop => (),
             HandleStunReply::StunResponse(response) => {
-                self.handle_stun_response(checklist_i, response, transmit.from)?;
+                let remote_credentials = agent.remote_credentials();
+                self.handle_stun_response(
+                    checklist_i,
+                    response,
+                    transmit.from,
+                    remote_credentials.ok_or(StunError::ResourceNotFound)?,
+                )?;
             }
             HandleStunReply::IncomingStun(request) => {
+                let local_credentials = agent.local_credentials();
                 if request.has_method(BINDING) {
                     let Some(local_cand) = self.checklists[checklist_i]
                         .find_local_candidate(transmit.transport, transmit.to)
@@ -1768,6 +1773,12 @@ impl ConnCheckListSet {
         ) {
             // failure -> send error response
             return Ok(Some(error_msg));
+        }
+        if msg.validate_integrity(&local_credentials).is_err() {
+            let code = ErrorCode::builder(ErrorCode::UNAUTHORIZED).build().unwrap();
+            let mut response = Message::builder_error(msg);
+            response.add_attribute(&code).unwrap();
+            return Ok(Some(response));
         }
         let peer_nominating = if let Some(use_candidate_raw) = msg.raw_attribute(UseCandidate::TYPE)
         {
@@ -2145,6 +2156,7 @@ impl ConnCheckListSet {
         checklist_i: usize,
         response: Message,
         from: SocketAddr,
+        remote_credentials: MessageIntegrityCredentials,
     ) -> Result<(), StunError> {
         let checklist = &mut self.checklists[checklist_i];
         let checklist_id = checklist.checklist_id;
@@ -2159,6 +2171,11 @@ impl ConnCheckListSet {
             }
         };
         let conncheck_id = conncheck.conncheck_id;
+
+        if response.validate_integrity(&remote_credentials).is_err() {
+            debug!("Integrity check failed, ignoring");
+            return Ok(());
+        }
 
         // if response success:
         // if mismatched address -> fail
@@ -2979,6 +2996,13 @@ mod tests {
         ) {
             // failure -> send error response
             return Ok(error_msg);
+        }
+
+        if msg.validate_integrity(&local_stun_credentials).is_err() {
+            let code = ErrorCode::builder(ErrorCode::UNAUTHORIZED).build().unwrap();
+            let mut response = Message::builder_error(msg);
+            response.add_attribute(&code).unwrap();
+            return Ok(response);
         }
 
         let ice_controlling = msg.attribute::<IceControlling>();
@@ -3903,6 +3927,39 @@ mod tests {
         ))
     }
 
+    fn remote_generate_check<'a>(
+        remote_peer: &Peer,
+        remote_agent: &mut StunAgent,
+        to: SocketAddr,
+        now: Instant,
+    ) -> Transmit<'a> {
+        // send a request from some unknown to the local agent address to produce a peer
+        // reflexive candidate on the local agent
+        let mut request = Message::builder_request(BINDING);
+        request
+            .add_attribute(&Priority::new(remote_peer.candidate.priority))
+            .unwrap();
+        request.add_attribute(&IceControlled::new(200)).unwrap();
+        let username = Username::new(
+            &(remote_peer.remote_credentials.clone().unwrap().ufrag
+                + ":"
+                + &remote_peer.local_credentials.clone().unwrap().ufrag),
+        )
+        .unwrap();
+        request.add_attribute(&username).unwrap();
+        request
+            .add_message_integrity(
+                &MessageIntegrityCredentials::ShortTerm(
+                    remote_peer.remote_credentials.clone().unwrap().into(),
+                ),
+                IntegrityAlgorithm::Sha1,
+            )
+            .unwrap();
+        request.add_fingerprint().unwrap();
+
+        remote_agent.send(request, to, now).unwrap().into_owned()
+    }
+
     #[test]
     fn conncheck_incoming_prflx() {
         let _log = crate::tests::test_init_log();
@@ -3927,30 +3984,9 @@ mod tests {
             .build();
         let mut remote_agent = unknown_remote_peer.stun_agent();
 
-        // send a request from some unknown to the local agent address to produce a peer
-        // reflexive candidate on the local agent
-        let mut request = Message::builder_request(BINDING);
-        request
-            .add_attribute(&Priority::new(unknown_remote_peer.candidate.priority))
-            .unwrap();
-        request.add_attribute(&IceControlled::new(200)).unwrap();
-        let username = Username::new(
-            &(state.local.peer.local_credentials.clone().unwrap().ufrag
-                + ":"
-                + &state.remote.local_credentials.clone().unwrap().ufrag),
-        )
-        .unwrap();
-        request.add_attribute(&username).unwrap();
-        request
-            .add_message_integrity(
-                &remote_agent.local_credentials().unwrap(),
-                IntegrityAlgorithm::Sha1,
-            )
-            .unwrap();
-        request.add_fingerprint().unwrap();
-
-        let local_addr = state.local.peer.stun_agent().local_addr();
-        let transmit = remote_agent.send(request, local_addr, now).unwrap();
+        let local_addr = state.local.peer.candidate.base_address;
+        let transmit =
+            remote_generate_check(&unknown_remote_peer, &mut remote_agent, local_addr, now);
 
         info!("sending prflx request");
         let reply = state
@@ -4294,28 +4330,8 @@ mod tests {
         assert!(matches!(set_ret, CheckListSetPollRet::WaitUntil(_)));
 
         let mut remote_agent = state.remote.stun_agent();
-        let mut request = Message::builder_request(BINDING);
-        request
-            .add_attribute(&Priority::new(state.remote.candidate.priority))
-            .unwrap();
-        request.add_attribute(&IceControlled::new(200)).unwrap();
-        let username = Username::new(
-            &(state.local.peer.local_credentials.clone().unwrap().ufrag
-                + ":"
-                + &state.remote.local_credentials.clone().unwrap().ufrag),
-        )
-        .unwrap();
-        request.add_attribute(&username).unwrap();
-        request
-            .add_message_integrity(
-                &remote_agent.local_credentials().unwrap(),
-                IntegrityAlgorithm::Sha1,
-            )
-            .unwrap();
-        request.add_fingerprint().unwrap();
-
         let local_addr = state.local.peer.stun_agent().local_addr();
-        let transmit = remote_agent.send(request, local_addr, now).unwrap();
+        let transmit = remote_generate_check(&state.remote, &mut remote_agent, local_addr, now);
 
         info!("sending request");
         let reply = state
@@ -4440,28 +4456,8 @@ mod tests {
         // receive a normal request as if the remote is doing its own possibly triggered check.
         // The handling of this will add another triggered check entry.
         let mut remote_agent = state.remote.stun_agent();
-        let mut request = Message::builder_request(BINDING);
-        request
-            .add_attribute(&Priority::new(state.remote.candidate.priority))
-            .unwrap();
-        request.add_attribute(&IceControlled::new(200)).unwrap();
-        let username = Username::new(
-            &(state.local.peer.local_credentials.clone().unwrap().ufrag
-                + ":"
-                + &state.remote.local_credentials.clone().unwrap().ufrag),
-        )
-        .unwrap();
-        request.add_attribute(&username).unwrap();
-        request
-            .add_message_integrity(
-                &remote_agent.local_credentials().unwrap(),
-                IntegrityAlgorithm::Sha1,
-            )
-            .unwrap();
-        request.add_fingerprint().unwrap();
-
         let local_addr = state.local.peer.stun_agent().local_addr();
-        let transmit = remote_agent.send(request, local_addr, now).unwrap();
+        let transmit = remote_generate_check(&state.remote, &mut remote_agent, local_addr, now);
 
         info!("sending request");
         let reply = state
