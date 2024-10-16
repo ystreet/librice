@@ -89,9 +89,17 @@ pub struct StunGatherer {
 #[derive(Debug)]
 pub enum GatherPoll<'a> {
     /// Need an agent (and socket) for the specified 5-tuple network address
-    NeedAgent(usize, TransportType, SocketAddr, SocketAddr),
+    NeedAgent {
+        component_id: usize,
+        transport: TransportType,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+    },
     /// Send data from the specified address to the specified address
-    SendData(usize, Transmit<'a>),
+    SendData {
+        component_id: usize,
+        transmit: Transmit<'a>,
+    },
     /// Wait until the specified Instant passes
     WaitUntil(Instant),
     /// A new local candidate was discovered
@@ -272,12 +280,12 @@ impl StunGatherer {
                         );
                         pending_request.local_addr = active_addr;
                         pending_request.agent_request_time = Some(now);
-                        return Ok(GatherPoll::NeedAgent(
-                            self.component_id,
-                            TransportType::Tcp,
-                            active_addr,
-                            pending_request.server_addr,
-                        ));
+                        return Ok(GatherPoll::NeedAgent {
+                            component_id: self.component_id,
+                            transport: TransportType::Tcp,
+                            local_addr: active_addr,
+                            remote_addr: pending_request.server_addr,
+                        });
                     }
                     if lowest_wait.is_none() {
                         lowest_wait = Some(now + Duration::from_secs(600));
@@ -297,7 +305,10 @@ impl StunGatherer {
         }
 
         if let Some((component_id, transmit)) = self.pending_transmits.pop_back() {
-            return Ok(GatherPoll::SendData(component_id, transmit));
+            return Ok(GatherPoll::SendData {
+                component_id,
+                transmit,
+            });
         }
 
         for request in self.requests.iter_mut() {
@@ -311,15 +322,15 @@ impl StunGatherer {
                         let mut msg = Message::builder_request(BINDING);
                         msg.add_fingerprint().unwrap();
                         tcp.request = Some(msg.transaction_id());
-                        return Ok(GatherPoll::SendData(
-                            self.component_id,
-                            request
+                        return Ok(GatherPoll::SendData {
+                            component_id: self.component_id,
+                            transmit: request
                                 .agent
                                 .lock()
                                 .unwrap()
                                 .send(msg, request.server, now)?
                                 .into_owned(),
-                        ));
+                        });
                     } else {
                         if lowest_wait.is_none() {
                             lowest_wait = Some(now + Duration::from_secs(600));
@@ -337,10 +348,10 @@ impl StunGatherer {
                     request.completed = true;
                 }
                 StunAgentPollRet::SendData(transmit) => {
-                    return Ok(GatherPoll::SendData(
-                        self.component_id,
-                        transmit.into_owned(),
-                    ))
+                    return Ok(GatherPoll::SendData {
+                        component_id: self.component_id,
+                        transmit: transmit.into_owned(),
+                    })
                 }
                 StunAgentPollRet::WaitUntil(new_time) => {
                     if let Some(time) = lowest_wait {
@@ -674,7 +685,11 @@ mod tests {
             Ok(GatherPoll::NewCandidate(_cand))
         ));
         let ret = gather.poll(now);
-        if let Ok(GatherPoll::SendData(_cid, transmit)) = ret {
+        if let Ok(GatherPoll::SendData {
+            component_id: _,
+            transmit,
+        }) = ret
+        {
             assert_eq!(transmit.from, local_addr);
             assert_eq!(transmit.to, stun_addr);
             let msg = Message::from_bytes(&transmit.data).unwrap();
@@ -737,7 +752,13 @@ mod tests {
             Ok(GatherPoll::NewCandidate(_cand))
         ));
         let ret = gather.poll(now);
-        if let Ok(GatherPoll::NeedAgent(_cid, transport, from, to)) = ret {
+        if let Ok(GatherPoll::NeedAgent {
+            component_id: _,
+            transport,
+            local_addr: from,
+            remote_addr: to,
+        }) = ret
+        {
             let agent = StunAgent::builder(transport, local_addr)
                 .remote_addr(to)
                 .build();
@@ -748,7 +769,11 @@ mod tests {
         }
 
         let ret = gather.poll(now);
-        if let Ok(GatherPoll::SendData(_cid, transmit)) = ret {
+        if let Ok(GatherPoll::SendData {
+            component_id: _,
+            transmit,
+        }) = ret
+        {
             assert_eq!(transmit.from, local_addr);
             assert_eq!(transmit.to, stun_addr);
             let msg = Message::from_bytes(&transmit.data).unwrap();
