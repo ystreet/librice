@@ -138,7 +138,12 @@ impl futures::stream::Stream for Gather {
                     proto_stream.end_of_local_candidates();
                     return Poll::Ready(None);
                 }
-                Ok(GatherPoll::NeedAgent(component_id, transport, local_addr, server_addr)) => {
+                Ok(GatherPoll::NeedAgent {
+                    component_id,
+                    transport,
+                    local_addr,
+                    remote_addr: server_addr,
+                }) => {
                     if transport == TransportType::Tcp {
                         Stream::handle_gather_tcp_connect(
                             weak_stream.clone(),
@@ -157,7 +162,10 @@ impl futures::stream::Stream for Gather {
                     proto_stream.add_local_candidate(cand.clone());
                     return Poll::Ready(Some(cand));
                 }
-                Ok(GatherPoll::SendData(_component_id, transmit)) => {
+                Ok(GatherPoll::SendData {
+                    component_id: _,
+                    transmit,
+                }) => {
                     if let Err(async_std::channel::TrySendError::Full(transmit)) =
                         transmit_send.try_send(transmit.into_owned())
                     {

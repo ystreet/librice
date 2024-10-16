@@ -1015,12 +1015,21 @@ impl RiceGatherPoll {
             GatherPoll::WaitUntil(instant) => Self::WaitUntilMicros(
                 instant.saturating_duration_since(base_instant).as_micros() as u64,
             ),
-            GatherPoll::NeedAgent(component_id, transport, from, to) => Self::NeedAgent(
-                RiceGatherPollNeedAgent::from_rust(component_id, transport, from, to),
-            ),
-            GatherPoll::SendData(component_id, transmit) => {
-                Self::SendData(transmit_from_rust_gather(stream_id, component_id, transmit))
-            }
+            GatherPoll::NeedAgent {
+                component_id,
+                transport,
+                local_addr: from,
+                remote_addr: to,
+            } => Self::NeedAgent(RiceGatherPollNeedAgent::from_rust(
+                component_id,
+                transport,
+                from,
+                to,
+            )),
+            GatherPoll::SendData {
+                component_id,
+                transmit,
+            } => Self::SendData(transmit_from_rust_gather(stream_id, component_id, transmit)),
             GatherPoll::NewCandidate(cand) => {
                 Self::NewCandidate(Box::into_raw(Box::new(cand.into())))
             }

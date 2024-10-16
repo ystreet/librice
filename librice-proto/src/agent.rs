@@ -293,7 +293,11 @@ impl Agent {
                     }
                     break;
                 }
-                CheckListSetPollRet::Transmit(checklist_id, cid, transmit) => {
+                CheckListSetPollRet::Transmit {
+                    checklist_id,
+                    component_id: cid,
+                    transmit,
+                } => {
                     if let Some(stream) =
                         self.streams.iter().find(|s| s.checklist_id == checklist_id)
                     {
@@ -309,7 +313,12 @@ impl Agent {
                         );
                     }
                 }
-                CheckListSetPollRet::TcpConnect(checklist_id, cid, from, to) => {
+                CheckListSetPollRet::TcpConnect {
+                    checklist_id,
+                    component_id: cid,
+                    local_addr: from,
+                    remote_addr: to,
+                } => {
                     if let Some(stream) =
                         self.streams.iter().find(|s| s.checklist_id == checklist_id)
                     {
@@ -323,10 +332,10 @@ impl Agent {
                         warn!("did not find stream for tcp connect {from:?} -> {to:?}");
                     }
                 }
-                CheckListSetPollRet::Event(
+                CheckListSetPollRet::Event {
                     checklist_id,
-                    ConnCheckEvent::ComponentState(cid, state),
-                ) => {
+                    event: ConnCheckEvent::ComponentState(cid, state),
+                } => {
                     if let Some(stream) =
                         self.streams.iter().find(|s| s.checklist_id == checklist_id)
                     {
@@ -339,10 +348,10 @@ impl Agent {
                         }
                     }
                 }
-                CheckListSetPollRet::Event(
+                CheckListSetPollRet::Event {
                     checklist_id,
-                    ConnCheckEvent::SelectedPair(cid, selected),
-                ) => {
+                    event: ConnCheckEvent::SelectedPair(cid, selected),
+                } => {
                     if let Some(stream) =
                         self.streams.iter().find(|s| s.checklist_id == checklist_id)
                     {

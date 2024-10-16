@@ -623,14 +623,30 @@ impl StreamState {
                     }
                 }
                 GatherPoll::Complete => component.gather_state = GatherProgress::Completed,
-                GatherPoll::SendData(component_id, transmit) => {
-                    return Ok(GatherPoll::SendData(component_id, transmit.into_owned()))
+                GatherPoll::SendData {
+                    component_id,
+                    transmit,
+                } => {
+                    return Ok(GatherPoll::SendData {
+                        component_id,
+                        transmit: transmit.into_owned(),
+                    })
                 }
                 GatherPoll::NewCandidate(candidate) => {
                     return Ok(GatherPoll::NewCandidate(candidate))
                 }
-                GatherPoll::NeedAgent(component_id, transport, from, to) => {
-                    return Ok(GatherPoll::NeedAgent(component_id, transport, from, to))
+                GatherPoll::NeedAgent {
+                    component_id,
+                    transport,
+                    local_addr,
+                    remote_addr,
+                } => {
+                    return Ok(GatherPoll::NeedAgent {
+                        component_id,
+                        transport,
+                        local_addr,
+                        remote_addr,
+                    })
                 }
             }
         }
