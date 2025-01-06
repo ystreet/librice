@@ -30,7 +30,7 @@ A couple of reasons: reusability, and testability.
 Without being bogged down in the details of how IO happens, the same sans-IO
 implementation can be used without prescribing the IO pattern that an application
 must follow. Instead, the application (or parent library) has much more freedom
-in how bytes are transferred between peers. It's also possible to us a sans-IO
+in how bytes are transferred between peers. It's also possible to use a sans-IO
 library in either a synchronous or within an asynchronous runtime.
 
 sans-IO also allows easy testing of any specific state the sans-IO
