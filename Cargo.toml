@@ -10,7 +10,7 @@ edition = "2021"
 rust-version = "1.68.2"
 
 [workspace.dependencies]
-stun-proto = "0.2.0"
+stun-proto = "0.3.0"
 arbitrary = { version = "1", features = ["derive"] }
 byteorder = "1"
 get_if_addrs = "0.5"
