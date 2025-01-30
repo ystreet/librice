@@ -696,9 +696,8 @@ mod tests {
             assert!(msg.has_method(BINDING));
             assert!(msg.has_class(MessageClass::Request));
             let mut response = Message::builder_success(&msg);
-            response
-                .add_attribute(&XorMappedAddress::new(public_ip, response.transaction_id()))
-                .unwrap();
+            let xor_addr = XorMappedAddress::new(public_ip, response.transaction_id());
+            response.add_attribute(&xor_addr).unwrap();
             assert!(matches!(gather.poll(now), Ok(GatherPoll::WaitUntil(_))));
             let response = response.build();
             gather
@@ -780,9 +779,8 @@ mod tests {
             assert!(msg.has_method(BINDING));
             assert!(msg.has_class(MessageClass::Request));
             let mut response = Message::builder_success(&msg);
-            response
-                .add_attribute(&XorMappedAddress::new(public_ip, response.transaction_id()))
-                .unwrap();
+            let xor_addr = XorMappedAddress::new(public_ip, response.transaction_id());
+            response.add_attribute(&xor_addr).unwrap();
             assert!(matches!(gather.poll(now), Ok(GatherPoll::WaitUntil(_))));
             let response = response.build();
             gather

@@ -72,11 +72,10 @@ fn handle_binding_request<'a>(
     }
 
     let mut response = Message::builder_success(msg);
-    response
-        .add_attribute(&XorMappedAddress::new(from, msg.transaction_id()))
-        .unwrap();
+    let xor_addr = XorMappedAddress::new(from, msg.transaction_id());
+    response.add_attribute(&xor_addr).unwrap();
     response.add_fingerprint().unwrap();
-    Ok(response)
+    Ok(response.into_owned())
 }
 
 fn handle_incoming_data<'a>(
@@ -104,10 +103,9 @@ fn handle_incoming_data<'a>(
                 }
             } else {
                 let mut response = Message::builder_error(&msg);
-                response
-                    .add_attribute(&ErrorCode::new(400, "Bad Request").unwrap())
-                    .unwrap();
-                return Some((response, from));
+                let error = ErrorCode::new(400, "Bad Request").unwrap();
+                response.add_attribute(&error).unwrap();
+                return Some((response.into_owned(), from));
             }
             None
         }

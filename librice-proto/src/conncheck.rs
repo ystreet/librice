@@ -265,14 +265,18 @@ impl ConnCheck {
 
         // XXX: this needs to be the priority as if the candidate was peer-reflexive
         let mut msg = Message::builder_request(BINDING);
-        msg.add_attribute(&Priority::new(pair.local.priority))?;
+        let priority = Priority::new(pair.local.priority);
+        msg.add_attribute(&priority)?;
+        let control = IceControlling::new(tie_breaker);
+        let controlled = IceControlled::new(tie_breaker);
         if controlling {
-            msg.add_attribute(&IceControlling::new(tie_breaker))?;
+            msg.add_attribute(&control)?;
         } else {
-            msg.add_attribute(&IceControlled::new(tie_breaker))?;
+            msg.add_attribute(&controlled)?;
         }
+        let use_cand = UseCandidate::new();
         if nominate {
-            msg.add_attribute(&UseCandidate::new())?;
+            msg.add_attribute(&use_cand)?;
         }
         let username = Username::new(&username)?;
         msg.add_attribute(&username)?;
@@ -383,9 +387,10 @@ fn binding_success_response<'a>(
     local_credentials: MessageIntegrityCredentials,
 ) -> Result<MessageBuilder<'a>, StunError> {
     let mut response = Message::builder_success(msg);
-    response.add_attribute(&XorMappedAddress::new(from, msg.transaction_id()))?;
+    let xor_addr = XorMappedAddress::new(from, msg.transaction_id());
+    response.add_attribute(&xor_addr)?;
     response_add_credentials(&mut response, local_credentials)?;
-    Ok(response)
+    Ok(response.into_owned())
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1847,7 +1852,7 @@ impl ConnCheckListSet {
             let code = ErrorCode::builder(ErrorCode::UNAUTHORIZED).build().unwrap();
             let mut response = Message::builder_error(msg);
             response.add_attribute(&code).unwrap();
-            return Ok(Some(response));
+            return Ok(Some(response.into_owned()));
         }
         let peer_nominating = if let Some(use_candidate_raw) = msg.raw_attribute(UseCandidate::TYPE)
         {
@@ -1884,8 +1889,9 @@ impl ConnCheckListSet {
             if !validate_username(username, &checklist.local_credentials) {
                 warn!("binding request failed username validation -> UNAUTHORIZED");
                 let mut response = Message::builder_error(msg);
-                response.add_attribute(&ErrorCode::builder(ErrorCode::UNAUTHORIZED).build()?)?;
-                return Ok(Some(response));
+                let error = ErrorCode::builder(ErrorCode::UNAUTHORIZED).build()?;
+                response.add_attribute(&error)?;
+                return Ok(Some(response.into_owned()));
             }
         } else {
             // existence is checked above so can only fail when the username is invalid
@@ -1907,10 +1913,10 @@ impl ConnCheckListSet {
                     //    a Binding error response and includes an ERROR-CODE attribute
                     //    with a value of 487 (Role Conflict) but retains its role.
                     let mut response = Message::builder_error(msg);
-                    response
-                        .add_attribute(&ErrorCode::builder(ErrorCode::ROLE_CONFLICT).build()?)?;
+                    let error = ErrorCode::builder(ErrorCode::ROLE_CONFLICT).build()?;
+                    response.add_attribute(&error)?;
                     response_add_credentials(&mut response, local_credentials)?;
-                    return Ok(Some(response));
+                    return Ok(Some(response.into_owned()));
                 } else {
                     debug!("role conflict detected, updating controlling state to false");
                     // *  If the agent's tiebreaker value is less than the contents of
@@ -1943,10 +1949,10 @@ impl ConnCheckListSet {
                     //    error response and includes an ERROR-CODE attribute with a
                     //    value of 487 (Role Conflict) but retains its role.
                     let mut response = Message::builder_error(msg);
-                    response
-                        .add_attribute(&ErrorCode::builder(ErrorCode::ROLE_CONFLICT).build()?)?;
+                    let error = ErrorCode::builder(ErrorCode::ROLE_CONFLICT).build()?;
+                    response.add_attribute(&error)?;
                     response_add_credentials(&mut response, local_credentials)?;
-                    return Ok(Some(response));
+                    return Ok(Some(response.into_owned()));
                 }
             }
         }
@@ -3117,7 +3123,7 @@ mod tests {
             let code = ErrorCode::builder(ErrorCode::UNAUTHORIZED).build().unwrap();
             let mut response = Message::builder_error(msg);
             response.add_attribute(&code).unwrap();
-            return Ok(response);
+            return Ok(response.into_owned());
         }
 
         let ice_controlling = msg.attribute::<IceControlling>();
@@ -3130,28 +3136,30 @@ mod tests {
         let mut response = if ice_controlling.is_err() && ice_controlled.is_err() {
             warn!("missing ice controlled/controlling attribute");
             let mut response = Message::builder_error(msg);
-            response.add_attribute(&ErrorCode::builder(ErrorCode::BAD_REQUEST).build()?)?;
-            response
+            let error = ErrorCode::builder(ErrorCode::BAD_REQUEST).build()?;
+            response.add_attribute(&error)?;
+            response.into_owned()
         } else if !valid_username {
             let mut response = Message::builder_error(msg);
-            response.add_attribute(&ErrorCode::builder(ErrorCode::UNAUTHORIZED).build()?)?;
-            response
+            let error = ErrorCode::builder(ErrorCode::UNAUTHORIZED).build()?;
+            response.add_attribute(&error)?;
+            response.into_owned()
         } else if let Some(error_code) = error_response {
             info!("responding with error {}", error_code);
             let mut response = Message::builder_error(msg);
-            response.add_attribute(&ErrorCode::builder(error_code).build()?)?;
-            response
+            let error = ErrorCode::builder(error_code).build()?;
+            response.add_attribute(&error)?;
+            response.into_owned()
         } else {
             let mut response = Message::builder_success(msg);
-            response.add_attribute(&XorMappedAddress::new(
-                response_address.unwrap_or(from),
-                msg.transaction_id(),
-            ))?;
-            response
+            let xor_addr =
+                XorMappedAddress::new(response_address.unwrap_or(from), msg.transaction_id());
+            response.add_attribute(&xor_addr).unwrap();
+            response.into_owned()
         };
         response.add_message_integrity(&local_stun_credentials, IntegrityAlgorithm::Sha1)?;
         response.add_fingerprint()?;
-        Ok(response)
+        Ok(response.into_owned())
     }
 
     fn reply_to_conncheck<'b>(
@@ -4096,10 +4104,10 @@ mod tests {
         // send a request from some unknown to the local agent address to produce a peer
         // reflexive candidate on the local agent
         let mut request = Message::builder_request(BINDING);
-        request
-            .add_attribute(&Priority::new(remote_peer.candidate.priority))
-            .unwrap();
-        request.add_attribute(&IceControlled::new(200)).unwrap();
+        let priority = Priority::new(remote_peer.candidate.priority);
+        request.add_attribute(&priority).unwrap();
+        let ice = IceControlled::new(200);
+        request.add_attribute(&ice).unwrap();
         let username = Username::new(
             &(remote_peer.remote_credentials.clone().unwrap().ufrag
                 + ":"
