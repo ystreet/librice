@@ -166,8 +166,6 @@ pub enum RiceAgentPoll {
     Closed,
     /// Wait until the specified `Instant` has been reached (or an external event)
     WaitUntilMicros(u64),
-    /// Transmit data using the specified 5-tuple
-    Transmit(RiceTransmit),
     /// Connect from the specified interface to the specified address.  Reply (success or failure)
     /// should be notified using [`StreamMut::handle_tcp_connect`] with the same parameters.
     TcpConnect(RiceAgentTcpConnect),
@@ -184,7 +182,6 @@ impl RiceAgentPoll {
             AgentPoll::WaitUntil(instant) => Self::WaitUntilMicros(
                 instant.saturating_duration_since(base_instant).as_micros() as u64,
             ),
-            AgentPoll::Transmit(transmit) => Self::Transmit(transmit.into()),
             AgentPoll::TcpConnect(connect) => Self::TcpConnect(connect.into()),
             AgentPoll::SelectedPair(pair) => Self::SelectedPair(pair.into()),
             AgentPoll::ComponentStateChange(state) => Self::ComponentStateChange(state.into()),
@@ -281,8 +278,8 @@ pub struct RiceTransmit {
     data: RiceData,
 }
 
-impl<'a> From<crate::agent::AgentTransmit<'a>> for RiceTransmit {
-    fn from(value: crate::agent::AgentTransmit<'a>) -> Self {
+impl From<crate::agent::AgentTransmit> for RiceTransmit {
+    fn from(value: crate::agent::AgentTransmit) -> Self {
         let from = Box::new(RiceAddress::new(value.transmit.from));
         let to = Box::new(RiceAddress::new(value.transmit.to));
         Self {
@@ -332,7 +329,7 @@ pub unsafe extern "C" fn rice_transmit_init(transmit: *mut MaybeUninit<RiceTrans
 fn transmit_from_rust_gather(
     stream_id: usize,
     component_id: usize,
-    transmit: Transmit,
+    transmit: Transmit<Data>,
 ) -> RiceTransmit {
     let from = Box::new(RiceAddress::new(transmit.from));
     let to = Box::new(RiceAddress::new(transmit.to));
@@ -404,16 +401,7 @@ impl From<crate::agent::AgentSelectedPair> for RiceAgentSelectedPair {
         }
     }
 }
-/*
-impl From<RiceAgentSelectedPair> for crate::agent::AgentSelectedPair {
-    fn from(value: RiceAgentSelectedPair) -> Self {
-        Self {
-            stream_id: value.stream_id,
-            component_id: value.component_id,
-        }
-    }
-}
-*/
+
 /// A [`Component`](crate::component::Component) has changed state.
 #[derive(Debug)]
 #[repr(C)]
@@ -456,9 +444,6 @@ pub unsafe extern "C" fn rice_agent_poll_clear(poll: *mut RiceAgentPoll) {
         RiceAgentPoll::Closed
         | RiceAgentPoll::ComponentStateChange(_)
         | RiceAgentPoll::WaitUntilMicros(_) => (),
-        RiceAgentPoll::Transmit(mut transmit) => {
-            rice_transmit_clear(&mut transmit);
-        }
         RiceAgentPoll::TcpConnect(mut connect) => {
             let mut from = core::ptr::null();
             core::mem::swap(&mut from, &mut connect.from);
@@ -487,7 +472,7 @@ pub unsafe extern "C" fn rice_agent_poll(
     let agent = Arc::from_raw(agent);
     let mut proto_agent = agent.proto_agent.lock().unwrap();
     let now = agent.base_instant + Duration::from_micros(now_micros);
-    let ret = proto_agent.poll(now).into_owned();
+    let ret = proto_agent.poll(now);
     if let AgentPoll::SelectedPair(ref pair) = ret {
         if let Some(mut stream) = proto_agent.mut_stream(pair.stream_id) {
             if let Some(mut component) = stream.mut_component(pair.component_id) {
@@ -496,6 +481,25 @@ pub unsafe extern "C" fn rice_agent_poll(
         }
     }
     *poll = RiceAgentPoll::from_rust(ret, agent.base_instant);
+
+    drop(proto_agent);
+    core::mem::forget(agent);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rice_agent_poll_transmit(
+    agent: *mut RiceAgent,
+    now_micros: u64,
+    mut transmit: *mut RiceTransmit,
+) {
+    let agent = Arc::from_raw(agent);
+    let mut proto_agent = agent.proto_agent.lock().unwrap();
+    let now = agent.base_instant + Duration::from_micros(now_micros);
+    if let Some(ret) = proto_agent.poll_transmit(now) {
+        *transmit = ret.into();
+    } else {
+        transmit = core::ptr::null_mut();
+    }
 
     drop(proto_agent);
     core::mem::forget(agent);
@@ -950,7 +954,6 @@ pub unsafe extern "C" fn rice_stream_end_of_remote_candidates(stream: *mut RiceS
 #[repr(C)]
 pub enum RiceGatherPoll {
     NeedAgent(RiceGatherPollNeedAgent),
-    SendData(RiceTransmit),
     WaitUntilMicros(u64),
     NewCandidate(*mut RiceCandidate),
     Complete,
@@ -969,9 +972,6 @@ pub unsafe extern "C" fn rice_gather_poll_clear(poll: *mut RiceGatherPoll) {
         RiceGatherPoll::Complete => (),
         RiceGatherPoll::WaitUntilMicros(_instant) => (),
         RiceGatherPoll::NeedAgent(need_agent) => need_agent.clear_c(),
-        RiceGatherPoll::SendData(mut transmit) => {
-            rice_transmit_clear(&mut transmit);
-        }
         RiceGatherPoll::NewCandidate(candidate) => {
             rice_candidate_free(candidate);
         }
@@ -1026,10 +1026,6 @@ impl RiceGatherPoll {
                 from,
                 to,
             )),
-            GatherPoll::SendData {
-                component_id,
-                transmit,
-            } => Self::SendData(transmit_from_rust_gather(stream_id, component_id, transmit)),
             GatherPoll::NewCandidate(cand) => {
                 Self::NewCandidate(Box::into_raw(Box::new(cand.into())))
             }
@@ -1038,7 +1034,7 @@ impl RiceGatherPoll {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn rice_stream_poll_gather(
+pub unsafe extern "C" fn rice_stream_gather_poll(
     stream: *mut RiceStream,
     now_micros: u64,
     poll: *mut RiceGatherPoll,
@@ -1053,6 +1049,31 @@ pub unsafe extern "C" fn rice_stream_poll_gather(
         stream.stream_id,
         stream.base_instant,
     );
+
+    drop(proto_agent);
+    core::mem::forget(stream);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rice_stream_gather_poll_transmit(
+    stream: *mut RiceStream,
+    now_micros: u64,
+    mut transmit: *mut RiceTransmit,
+) {
+    let stream = Arc::from_raw(stream);
+    let mut proto_agent = stream.proto_agent.lock().unwrap();
+    let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
+    let now = stream.base_instant + Duration::from_micros(now_micros);
+
+    if let Some(ret) = proto_stream.poll_gather_transmit(now) {
+        *transmit = crate::agent::AgentTransmit {
+            stream_id: stream.stream_id,
+            component_id: ret.0,
+            transmit: ret.1.into_owned(),
+        }.into()
+    } else {
+        transmit = core::ptr::null_mut();
+    }
 
     drop(proto_agent);
     core::mem::forget(stream);
@@ -1290,7 +1311,7 @@ pub unsafe extern "C" fn rice_component_send(
     let proto_stream = proto_agent.stream(component.stream_id).unwrap();
     let proto_component = proto_stream.component(component.component_id).unwrap();
 
-    let bytes = core::slice::from_raw_parts(data, len);
+    let bytes = Data::from(core::slice::from_raw_parts(data, len));
     match proto_component.send(bytes) {
         Ok(stun_transmit) => {
             *transmit = RiceTransmit {

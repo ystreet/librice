@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use crate::gathering::GatherPoll;
 use stun_proto::agent::{StunAgent, StunError, Transmit};
+use stun_proto::types::data::Data;
 
 use crate::agent::{Agent, AgentError};
 use crate::component::{Component, ComponentMut, ComponentState, GatherProgress};
@@ -330,10 +331,10 @@ impl<'a> StreamMut<'a> {
             component.id = component_id,
         )
     )]
-    pub fn handle_incoming_data(
+    pub fn handle_incoming_data<T: AsRef<[u8]>>(
         &mut self,
         component_id: usize,
-        transmit: Transmit,
+        transmit: Transmit<T>,
     ) -> StreamIncomingDataReply {
         let stream_state = self.agent.mut_stream_state(self.id).unwrap();
         let checklist_id = stream_state.checklist_id;
@@ -375,6 +376,15 @@ impl<'a> StreamMut<'a> {
             .mut_stream_state(self.id)
             .ok_or(StunError::ResourceNotFound)?;
         stream_state.poll_gather(now)
+    }
+
+    /// Poll the gathering process in order to make further progress.  The returned value indicates
+    /// what the caller should do next.
+    pub fn poll_gather_transmit(&mut self, now: Instant) -> Option<(usize, Transmit<Data>)> {
+        let stream_state = self
+            .agent
+            .mut_stream_state(self.id)?;
+        stream_state.poll_gather_transmit(now)
     }
 
     /// Indicate that no more candidates are expected from the peer.  This may allow the ICE
@@ -570,10 +580,10 @@ impl StreamState {
         self.remote_credentials.clone()
     }
 
-    pub(crate) fn handle_incoming_data(
+    pub(crate) fn handle_incoming_data<T: AsRef<[u8]>>(
         &mut self,
         component_id: usize,
-        transmit: &Transmit,
+        transmit: &Transmit<T>,
     ) -> StreamIncomingDataReply {
         let Some(component) = self.mut_component_state(component_id) else {
             return StreamIncomingDataReply::default();
@@ -623,15 +633,6 @@ impl StreamState {
                     }
                 }
                 GatherPoll::Complete => component.gather_state = GatherProgress::Completed,
-                GatherPoll::SendData {
-                    component_id,
-                    transmit,
-                } => {
-                    return Ok(GatherPoll::SendData {
-                        component_id,
-                        transmit: transmit.into_owned(),
-                    })
-                }
                 GatherPoll::NewCandidate(candidate) => {
                     return Ok(GatherPoll::NewCandidate(candidate))
                 }
@@ -655,6 +656,26 @@ impl StreamState {
         } else {
             Ok(GatherPoll::Complete)
         }
+    }
+
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub(crate) fn poll_gather_transmit(&mut self, now: Instant) -> Option<(usize, Transmit<Data>)> {
+        for component in self.components.iter_mut() {
+            let Some(component) = component else {
+                continue;
+            };
+            let Some(gatherer) = component.gatherer.as_mut() else {
+                continue;
+            };
+            if component.gather_state != GatherProgress::InProgress {
+                continue;
+            }
+
+            if let Some(transmit) = gatherer.poll_transmit(now) {
+                return Some((component.id, transmit));
+            }
+        }
+        None
     }
 }
 

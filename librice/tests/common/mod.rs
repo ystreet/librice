@@ -150,8 +150,9 @@ pub async fn stund_tcp(listener: TcpListener) -> std::io::Result<()> {
             if let Some((response, to)) =
                 handle_incoming_data(&data[..size], remote_addr, &mut tcp_stun_agent)
             {
-                if let Ok(data) = tcp_stun_agent.send(response, to, Instant::now()) {
-                    warn_on_err(stream.write_all(&data.data).await, ());
+                if let Ok(transmit) = tcp_stun_agent.send(response, to, Instant::now()) {
+                    let data = transmit.data.build();
+                    warn_on_err(stream.write_all(&data).await, ());
                 }
             }
             // XXX: Assumes that the stun packet arrives in a single packet

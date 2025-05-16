@@ -15,6 +15,7 @@ use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, Instant};
 
 use rand::prelude::*;
+use stun_proto::types::data::Data;
 
 use crate::component::ComponentConnectionState;
 //use crate::gathering::GatherPoll;
@@ -293,26 +294,6 @@ impl Agent {
                     }
                     break;
                 }
-                CheckListSetPollRet::Transmit {
-                    checklist_id,
-                    component_id: cid,
-                    transmit,
-                } => {
-                    if let Some(stream) =
-                        self.streams.iter().find(|s| s.checklist_id == checklist_id)
-                    {
-                        return AgentPoll::Transmit(AgentTransmit {
-                            stream_id: stream.id(),
-                            component_id: cid,
-                            transmit: transmit.into_owned(),
-                        });
-                    } else {
-                        warn!(
-                            "did not find stream for transmit {:?} -> {:?}",
-                            transmit.from, transmit.to
-                        );
-                    }
-                }
                 CheckListSetPollRet::TcpConnect {
                     checklist_id,
                     component_id: cid,
@@ -369,17 +350,34 @@ impl Agent {
 
         AgentPoll::WaitUntil(lowest_wait.unwrap_or_else(|| now + Duration::from_secs(600)))
     }
+
+    pub fn poll_transmit(&mut self, now: Instant) -> Option<AgentTransmit> {
+        let transmit = self.checklistset.poll_transmit(now)?;
+        if let Some(stream) =
+            self.streams.iter().find(|s| s.checklist_id == transmit.checklist_id)
+        {
+            Some(AgentTransmit {
+                stream_id: stream.id(),
+                component_id: transmit.component_id,
+                transmit: transmit.transmit,
+            })
+        } else {
+            warn!(
+                "did not find stream for transmit {:?} -> {:?}",
+                transmit.transmit.from, transmit.transmit.to
+            );
+            None
+        }
+    }
 }
 
 /// Indicates what the caller should do after calling [`Agent::poll`]
 #[derive(Debug)]
-pub enum AgentPoll<'a> {
+pub enum AgentPoll {
     /// The Agent is closed.  No further progress will be made.
     Closed,
     /// Wait until the specified `Instant` has been reached (or an external event)
     WaitUntil(Instant),
-    /// Transmit data using the specified 5-tuple
-    Transmit(AgentTransmit<'a>),
     /// Connect from the specified interface to the specified address.  Reply (success or failure)
     /// should be notified using [`StreamMut::handle_tcp_connect`] with the same parameters.
     TcpConnect(AgentTcpConnect),
@@ -389,35 +387,12 @@ pub enum AgentPoll<'a> {
     ComponentStateChange(AgentComponentStateChange),
 }
 
-impl<'a> AgentPoll<'a> {
-    pub fn into_owned<'b>(self) -> AgentPoll<'b> {
-        match self {
-            Self::Closed => AgentPoll::Closed,
-            Self::WaitUntil(instant) => AgentPoll::WaitUntil(instant),
-            Self::Transmit(transmit) => AgentPoll::Transmit(transmit.into_owned()),
-            Self::TcpConnect(connect) => AgentPoll::TcpConnect(connect),
-            Self::SelectedPair(selected) => AgentPoll::SelectedPair(selected),
-            Self::ComponentStateChange(state) => AgentPoll::ComponentStateChange(state),
-        }
-    }
-}
-
 /// Transmit the data using the specified 5-tuple.
 #[derive(Debug)]
-pub struct AgentTransmit<'a> {
+pub struct AgentTransmit {
     pub stream_id: usize,
     pub component_id: usize,
-    pub transmit: Transmit<'a>,
-}
-
-impl<'a> AgentTransmit<'a> {
-    pub fn into_owned<'b>(self) -> AgentTransmit<'b> {
-        AgentTransmit {
-            stream_id: self.stream_id,
-            component_id: self.component_id,
-            transmit: self.transmit.into_owned(),
-        }
-    }
+    pub transmit: Transmit<Data<'static>>,
 }
 
 /// Connect from the specified interface to the specified address.  Reply (success or failure)
