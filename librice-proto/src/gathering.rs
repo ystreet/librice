@@ -10,12 +10,12 @@
 
 use std::collections::VecDeque;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::candidate::{Candidate, TcpType, TransportType};
 use stun_proto::agent::{HandleStunReply, StunAgent, StunAgentPollRet, StunError, Transmit};
 use stun_proto::types::attribute::XorMappedAddress;
+use stun_proto::types::data::Data;
 use stun_proto::types::message::{Message, MessageHeader, StunParseError, TransactionId, BINDING};
 
 fn address_is_ignorable(ip: IpAddr) -> bool {
@@ -54,7 +54,7 @@ struct RequestTcp {
 struct Request {
     protocol: RequestProtocol,
     // TODO: remove this Arc<Mutex<>>,
-    agent: Arc<Mutex<StunAgent>>,
+    agent: StunAgent,
     base_addr: SocketAddr,
     server: SocketAddr,
     other_preference: u32,
@@ -81,24 +81,19 @@ pub struct StunGatherer {
     pending_candidates: VecDeque<Candidate>,
     produced_candidates: VecDeque<Candidate>,
     produced_i: usize,
-    pending_transmits: VecDeque<(usize, Transmit<'static>)>,
+    pending_transmits: VecDeque<Transmit<Data<'static>>>,
     pending_requests: VecDeque<PendingRequest>,
 }
 
 /// Return value for the gather state machine
 #[derive(Debug)]
-pub enum GatherPoll<'a> {
+pub enum GatherPoll {
     /// Need an agent (and socket) for the specified 5-tuple network address
     NeedAgent {
         component_id: usize,
         transport: TransportType,
         local_addr: SocketAddr,
         remote_addr: SocketAddr,
-    },
-    /// Send data from the specified address to the specified address
-    SendData {
-        component_id: usize,
-        transmit: Transmit<'a>,
     },
     /// Wait until the specified Instant passes
     WaitUntil(Instant),
@@ -232,12 +227,6 @@ impl StunGatherer {
     pub fn poll(&mut self, now: Instant) -> Result<GatherPoll, StunError> {
         let mut lowest_wait = None;
 
-        if let Some(cand) = self.pending_candidates.pop_back() {
-            info!("produced {cand:?}");
-            self.produced_candidates.push_front(cand.clone());
-            return Ok(GatherPoll::NewCandidate(cand));
-        }
-
         for pending_request in self.pending_requests.iter_mut() {
             if pending_request.completed {
                 continue;
@@ -257,16 +246,15 @@ impl StunGatherer {
                         local_addr = pending_request.local_addr,
                         server_addr = pending_request.server_addr
                     );
-                    self.pending_transmits.push_front((
-                        pending_request.component_id,
+                    self.pending_transmits.push_front(
                         agent
-                            .send(msg, pending_request.server_addr, now)
+                            .send_request(msg, pending_request.server_addr, now)
                             .unwrap()
                             .into_owned(),
-                    ));
+                    );
                     (
                         RequestProtocol::Udp,
-                        Arc::new(Mutex::new(agent)),
+                        agent,
                         pending_request.local_addr,
                     )
                 }
@@ -304,11 +292,10 @@ impl StunGatherer {
             });
         }
 
-        if let Some((component_id, transmit)) = self.pending_transmits.pop_back() {
-            return Ok(GatherPoll::SendData {
-                component_id,
-                transmit,
-            });
+        if let Some(cand) = self.pending_candidates.pop_back() {
+            info!("produced {cand:?}");
+            self.produced_candidates.push_front(cand.clone());
+            return Ok(GatherPoll::NewCandidate(cand));
         }
 
         for request in self.requests.iter_mut() {
@@ -319,18 +306,7 @@ impl StunGatherer {
                 RequestProtocol::Udp => (),
                 RequestProtocol::Tcp(ref mut tcp) => {
                     if tcp.request.is_none() {
-                        let mut msg = Message::builder_request(BINDING);
-                        msg.add_fingerprint().unwrap();
-                        tcp.request = Some(msg.transaction_id());
-                        return Ok(GatherPoll::SendData {
-                            component_id: self.component_id,
-                            transmit: request
-                                .agent
-                                .lock()
-                                .unwrap()
-                                .send(msg, request.server, now)?
-                                .into_owned(),
-                        });
+                        return Ok(GatherPoll::WaitUntil(now));
                     } else {
                         if lowest_wait.is_none() {
                             lowest_wait = Some(now + Duration::from_secs(600));
@@ -339,19 +315,12 @@ impl StunGatherer {
                     }
                 }
             };
-            let mut agent = request.agent.lock().unwrap();
-            match agent.poll(now) {
+            match request.agent.poll(now) {
                 StunAgentPollRet::TransactionCancelled(_msg) => {
                     request.completed = true;
                 }
                 StunAgentPollRet::TransactionTimedOut(_msg) => {
                     request.completed = true;
-                }
-                StunAgentPollRet::SendData(transmit) => {
-                    return Ok(GatherPoll::SendData {
-                        component_id: self.component_id,
-                        transmit: transmit.into_owned(),
-                    })
                 }
                 StunAgentPollRet::WaitUntil(new_time) => {
                     if let Some(time) = lowest_wait {
@@ -369,6 +338,39 @@ impl StunGatherer {
         } else {
             Ok(GatherPoll::Complete)
         }
+    }
+
+    /// Poll the gatherer for transmission.  Should be called repeatedly until None is returned.
+    #[tracing::instrument(name = "gatherer_poll_transmit", level = "trace", skip(self))]
+    pub fn poll_transmit(&mut self, now: Instant) -> Option<Transmit<Data>> {
+        if let Some(transmit) = self.pending_transmits.pop_back() {
+            return Some(transmit);
+        }
+        for request in self.requests.iter_mut() {
+            if request.completed {
+                continue;
+            }
+
+            match request.protocol {
+                RequestProtocol::Udp => (),
+                RequestProtocol::Tcp(ref mut tcp) => {
+                    if tcp.request.is_none() {
+                        let mut msg = Message::builder_request(BINDING);
+                        msg.add_fingerprint().unwrap();
+                        tcp.request = Some(msg.transaction_id());
+                        let Ok(transmit) = request.agent.send_request(msg, request.server, now) else {
+                            continue;
+                        };
+                        return Some(transmit);
+                    }
+                }
+            }
+
+            if let Some(transmit) = request.agent.poll_transmit(now) {
+                return Some(Transmit::new(transmit.data.into(), transmit.transport, transmit.from, transmit.to));
+            }
+        }
+        None
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -431,8 +433,8 @@ impl StunGatherer {
             to = %transmit.to,
         )
     )]
-    pub fn handle_data<'a>(&'a mut self, transmit: &Transmit<'a>) -> Result<bool, StunError> {
-        trace!("received {} bytes", transmit.data.len());
+    pub fn handle_data<T: AsRef<[u8]>>(&mut self, transmit: &Transmit<T>) -> Result<bool, StunError> {
+        trace!("received {} bytes", transmit.data.as_ref().len());
         trace!("requests {:?}", self.requests);
         for request in self.requests.iter_mut() {
             if !request.completed
@@ -440,11 +442,10 @@ impl StunGatherer {
                 && request.server == transmit.from
                 && request.base_addr == transmit.to
             {
-                let mut agent_inner = request.agent.lock().unwrap();
                 let mut handled = false;
                 match &mut request.protocol {
                     RequestProtocol::Tcp(ref mut tcp) => {
-                        tcp.tcp_buffer.extend_from_slice(&transmit.data);
+                        tcp.tcp_buffer.extend_from_slice(transmit.data.as_ref());
                         match MessageHeader::from_bytes(&tcp.tcp_buffer) {
                             // we fail for anything that is not a BINDING response
                             Ok(header) => {
@@ -465,7 +466,7 @@ impl StunGatherer {
                             Ok(msg) => {
                                 trace!("parsed STUN message {msg}");
                                 if let HandleStunReply::StunResponse(response) =
-                                    agent_inner.handle_stun(msg, transmit.from)
+                                    request.agent.handle_stun(msg, transmit.from)
                                 {
                                     request.completed = true;
                                     for tcp_type in [TcpType::Active, TcpType::Passive] {
@@ -508,11 +509,11 @@ impl StunGatherer {
                             Err(_e) => request.completed = true,
                         }
                     }
-                    RequestProtocol::Udp => match Message::from_bytes(&transmit.data) {
+                    RequestProtocol::Udp => match Message::from_bytes(transmit.data.as_ref()) {
                         Ok(msg) => {
                             trace!("parsed STUN message {msg}");
                             if let HandleStunReply::StunResponse(response) =
-                                agent_inner.handle_stun(msg, transmit.from)
+                                request.agent.handle_stun(msg, transmit.from)
                             {
                                 request.completed = true;
                                 let foundation = self.produced_i.to_string();
@@ -582,7 +583,7 @@ impl StunGatherer {
                                 request: None,
                                 tcp_buffer: vec![],
                             }),
-                            agent: Arc::new(Mutex::new(agent)),
+                            agent,
                             base_addr: local_addr,
                             server: request.server_addr,
                             other_preference: request.other_preference,
@@ -684,34 +685,26 @@ mod tests {
             gather.poll(now),
             Ok(GatherPoll::NewCandidate(_cand))
         ));
-        let ret = gather.poll(now);
-        if let Ok(GatherPoll::SendData {
-            component_id: _,
-            transmit,
-        }) = ret
-        {
-            assert_eq!(transmit.from, local_addr);
-            assert_eq!(transmit.to, stun_addr);
-            let msg = Message::from_bytes(&transmit.data).unwrap();
-            assert!(msg.has_method(BINDING));
-            assert!(msg.has_class(MessageClass::Request));
-            let mut response = Message::builder_success(&msg);
-            let xor_addr = XorMappedAddress::new(public_ip, response.transaction_id());
-            response.add_attribute(&xor_addr).unwrap();
-            assert!(matches!(gather.poll(now), Ok(GatherPoll::WaitUntil(_))));
-            let response = response.build();
-            gather
-                .handle_data(&Transmit::new(
-                    &*response,
-                    TransportType::Udp,
-                    stun_addr,
-                    local_addr,
-                ))
-                .unwrap();
-        } else {
-            error!("{ret:?}");
-            unreachable!();
-        }
+        let transmit = gather.poll_transmit(now).unwrap();
+        assert_eq!(transmit.from, local_addr);
+        assert_eq!(transmit.to, stun_addr);
+        let msg = Message::from_bytes(&transmit.data).unwrap();
+        assert!(msg.has_method(BINDING));
+        assert!(msg.has_class(MessageClass::Request));
+        let mut response = Message::builder_success(&msg);
+        let xor_addr = XorMappedAddress::new(public_ip, response.transaction_id());
+        response.add_attribute(&xor_addr).unwrap();
+        assert!(matches!(gather.poll(now), Ok(GatherPoll::WaitUntil(_))));
+        let response = response.build();
+        gather
+            .handle_data(&Transmit::new(
+                &*response,
+                TransportType::Udp,
+                stun_addr,
+                local_addr,
+            ))
+            .unwrap();
+
         let ret = gather.poll(now);
         if let Ok(GatherPoll::NewCandidate(cand)) = ret {
             assert_eq!(cand.component_id, 1);
@@ -741,15 +734,6 @@ mod tests {
             vec![(TransportType::Tcp, stun_addr)],
         );
         let now = Instant::now();
-        /* host candidate contents checked in `host_tcp()` */
-        assert!(matches!(
-            gather.poll(now),
-            Ok(GatherPoll::NewCandidate(_cand))
-        ));
-        assert!(matches!(
-            gather.poll(now),
-            Ok(GatherPoll::NewCandidate(_cand))
-        ));
         let ret = gather.poll(now);
         if let Ok(GatherPoll::NeedAgent {
             component_id: _,
@@ -766,35 +750,36 @@ mod tests {
             error!("{ret:?}");
             unreachable!();
         }
+        /* host candidate contents checked in `host_tcp()` */
+        assert!(matches!(
+            gather.poll(now),
+            Ok(GatherPoll::NewCandidate(_cand))
+        ));
+        assert!(matches!(
+            gather.poll(now),
+            Ok(GatherPoll::NewCandidate(_cand))
+        ));
 
-        let ret = gather.poll(now);
-        if let Ok(GatherPoll::SendData {
-            component_id: _,
-            transmit,
-        }) = ret
-        {
-            assert_eq!(transmit.from, local_addr);
-            assert_eq!(transmit.to, stun_addr);
-            let msg = Message::from_bytes(&transmit.data).unwrap();
-            assert!(msg.has_method(BINDING));
-            assert!(msg.has_class(MessageClass::Request));
-            let mut response = Message::builder_success(&msg);
-            let xor_addr = XorMappedAddress::new(public_ip, response.transaction_id());
-            response.add_attribute(&xor_addr).unwrap();
-            assert!(matches!(gather.poll(now), Ok(GatherPoll::WaitUntil(_))));
-            let response = response.build();
-            gather
-                .handle_data(&Transmit::new(
-                    &*response,
-                    TransportType::Tcp,
-                    stun_addr,
-                    local_addr,
-                ))
-                .unwrap();
-        } else {
-            error!("{ret:?}");
-            unreachable!();
-        }
+        let transmit = gather.poll_transmit(now).unwrap();
+        assert_eq!(transmit.from, local_addr);
+        assert_eq!(transmit.to, stun_addr);
+        let msg = Message::from_bytes(&transmit.data).unwrap();
+        assert!(msg.has_method(BINDING));
+        assert!(msg.has_class(MessageClass::Request));
+        let mut response = Message::builder_success(&msg);
+        let xor_addr = XorMappedAddress::new(public_ip, response.transaction_id());
+        response.add_attribute(&xor_addr).unwrap();
+        assert!(matches!(gather.poll(now), Ok(GatherPoll::WaitUntil(_))));
+        let response = response.build();
+        gather
+            .handle_data(&Transmit::<Vec<_>>::new(
+                response,
+                TransportType::Tcp,
+                stun_addr,
+                local_addr,
+            ))
+            .unwrap();
+
         let ret = gather.poll(now);
         if let Ok(GatherPoll::NewCandidate(cand)) = ret {
             let local_addr = SocketAddr::new(local_addr.ip(), 9);

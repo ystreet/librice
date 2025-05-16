@@ -18,9 +18,10 @@ use crate::candidate::{Candidate, CandidatePair, CandidateType, TcpType, Transpo
 use crate::component::ComponentConnectionState;
 use byteorder::{BigEndian, ByteOrder};
 use stun_proto::agent::{
-    HandleStunReply, StunAgent, StunAgentPollRet, StunError, TcpBuffer, Transmit,
+    DelayedTransmitBuild, HandleStunReply, StunAgent, StunAgentPollRet, StunError, TcpBuffer, Transmit, TransmitBuild
 };
 use stun_proto::types::attribute::*;
+use stun_proto::types::data::Data;
 use stun_proto::types::message::*;
 
 static STUN_AGENT_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -1579,7 +1580,6 @@ impl ConnCheckListSetBuilder {
             trickle_ice: self.trickle_ice,
             checklist_i: 0,
             last_send_time: Instant::now() - ConnCheckListSet::MINIMUM_SET_TICK,
-            pending_transmits: Default::default(),
             pending_messages: Default::default(),
         }
     }
@@ -1594,14 +1594,7 @@ pub struct ConnCheckListSet {
     trickle_ice: bool,
     checklist_i: usize,
     last_send_time: Instant,
-    pending_transmits: VecDeque<(usize, usize, Transmit<'static>)>,
-    pending_messages: VecDeque<(
-        usize,
-        usize,
-        StunAgentId,
-        MessageBuilder<'static>,
-        SocketAddr,
-    )>,
+    pending_messages: VecDeque<CheckListSetPendingMessage>,
 }
 
 impl ConnCheckListSet {
@@ -1636,11 +1629,11 @@ impl ConnCheckListSet {
         self.controlling
     }
 
-    fn handle_stun(
+    fn handle_stun<T: AsRef<[u8]>>(
         &mut self,
         checklist_i: usize,
         msg: Message<'_>,
-        transmit: &Transmit,
+        transmit: &Transmit<T>,
         agent_id: StunAgentId,
     ) -> Result<Option<HandleRecvReply>, StunError> {
         let Some(agent) = self.checklists[checklist_i].mut_agent_by_id(agent_id) else {
@@ -1676,13 +1669,13 @@ impl ConnCheckListSet {
                         transmit.from,
                         local_credentials.ok_or(StunError::ResourceNotFound)?,
                     )? {
-                        self.pending_messages.push_back((
+                        self.pending_messages.push_back(CheckListSetPendingMessage {
                             checklist_id,
-                            local_cand.component_id,
+                            component_id: local_cand.component_id,
                             agent_id,
-                            response.into_owned(),
-                            transmit.from,
-                        ));
+                            msg: response.into_owned(),
+                            to: transmit.from,
+                        });
                         return Ok(Some(HandleRecvReply::Handled));
                     }
                 }
@@ -1707,10 +1700,10 @@ impl ConnCheckListSet {
             to = %transmit.to,
         )
     )]
-    pub fn incoming_data(
+    pub fn incoming_data<T: AsRef<[u8]>>(
         &mut self,
         checklist_id: usize,
-        transmit: &Transmit,
+        transmit: &Transmit<T>,
     ) -> Result<Vec<HandleRecvReply>, StunError> {
         let checklist_i = self
             .checklists
@@ -1752,7 +1745,7 @@ impl ConnCheckListSet {
 
         let mut ret = vec![];
         match transmit.transport {
-            TransportType::Udp => match Message::from_bytes(&transmit.data) {
+            TransportType::Udp => match Message::from_bytes(transmit.data.as_ref()) {
                 Ok(msg) => {
                     if let Some(reply) = self.handle_stun(checklist_i, msg, transmit, agent_id)? {
                         ret.push(reply);
@@ -1761,7 +1754,10 @@ impl ConnCheckListSet {
                 Err(_) => {
                     if let Some(agent) = self.checklists[checklist_i].agent_by_id(agent_id) {
                         if agent.is_validated_peer(transmit.from) {
-                            ret.push(HandleRecvReply::Data(transmit.data.to_vec(), transmit.from));
+                            ret.push(HandleRecvReply::Data(
+                                transmit.data.as_ref().to_vec(),
+                                transmit.from,
+                            ));
                         }
                     }
                 }
@@ -1786,7 +1782,7 @@ impl ConnCheckListSet {
                 };
                 self.checklists[checklist_i].tcp_buffers[tcp_buffer_idx]
                     .tcp_buffer
-                    .push_data(transmit.data());
+                    .push_data(transmit.data.as_ref());
                 while let Some(data) = self.checklists[checklist_i].tcp_buffers[tcp_buffer_idx]
                     .tcp_buffer
                     .pull_data()
@@ -1856,7 +1852,7 @@ impl ConnCheckListSet {
         }
         let peer_nominating = if let Some(use_candidate_raw) = msg.raw_attribute(UseCandidate::TYPE)
         {
-            if UseCandidate::from_raw(&use_candidate_raw).is_ok() {
+            if UseCandidate::from_raw(use_candidate_raw).is_ok() {
                 true
             } else {
                 let response = Message::bad_request(msg);
@@ -2318,8 +2314,7 @@ impl ConnCheckListSet {
         &mut self,
         checklist_i: usize,
         conncheck_id: ConnCheckId,
-        now: Instant,
-    ) -> Result<CheckListSetPollRet, StunError> {
+    ) -> Result<Option<CheckListSetTcpConnect>, StunError> {
         let checklist_id = self.checklists[self.checklist_i].checklist_id;
         let checklist = &mut self.checklists[checklist_i];
         let local_credentials = checklist.local_credentials.clone();
@@ -2333,12 +2328,12 @@ impl ConnCheckListSet {
         }
 
         if let ConnCheckVariant::Tcp(_tcp) = &conncheck.variant {
-            return Ok(CheckListSetPollRet::TcpConnect {
+            return Ok(Some(CheckListSetTcpConnect {
                 checklist_id,
                 component_id: conncheck.pair.local.component_id,
                 local_addr: conncheck.pair.local.base_address,
                 remote_addr: conncheck.pair.remote.address,
-            });
+            }));
         }
         let ConnCheckVariant::Agent(agent_id) = &conncheck.variant else {
             unreachable!();
@@ -2358,15 +2353,15 @@ impl ConnCheckListSet {
         let remote_addr = conncheck.pair.remote.address;
         let component_id = conncheck.pair.local.component_id;
 
-        let agent_id = *agent_id;
-        let agent = checklist.mut_agent_by_id(agent_id).unwrap();
-
-        let transmit = agent.send(stun_request, remote_addr, now).unwrap();
-        Ok(CheckListSetPollRet::Transmit {
-            checklist_id,
-            component_id,
-            transmit: transmit_send(transmit),
-        })
+        self.pending_messages
+            .push_front(CheckListSetPendingMessage {
+                checklist_id,
+                component_id,
+                agent_id: *agent_id,
+                msg: stun_request.into_owned(),
+                to: remote_addr,
+            });
+        Ok(None)
     }
 
     #[tracing::instrument(
@@ -2468,32 +2463,9 @@ impl ConnCheckListSet {
     /// Advance the set state machine.  Should be called repeatedly until
     /// [`CheckListSetPollRet::WaitUntil`] or [`CheckListSetPollRet::Completed`] is returned.
     #[tracing::instrument(name = "check_set_poll", level = "debug", ret, skip(self))]
-    pub fn poll<'a>(&mut self, now: Instant) -> CheckListSetPollRet<'a> {
-        if let Some((checklist_id, cid, transmit)) = self.pending_transmits.pop_back() {
-            return CheckListSetPollRet::Transmit {
-                checklist_id,
-                component_id: cid,
-                transmit,
-            };
-        }
-        while let Some((checklist_id, cid, agent_id, msg, to)) = self.pending_messages.pop_back() {
-            let Some(checklist) = self.mut_list(checklist_id) else {
-                continue;
-            };
-            let Some(agent) = checklist.mut_agent_by_id(agent_id) else {
-                continue;
-            };
-            debug!("Sending response {msg:?} to {:?}", to);
-            match agent.send(msg, to, now) {
-                Ok(transmit) => {
-                    return CheckListSetPollRet::Transmit {
-                        checklist_id,
-                        component_id: cid,
-                        transmit: transmit_send(transmit),
-                    }
-                }
-                Err(e) => warn!("error sending: {e}"),
-            }
+    pub fn poll(&mut self, now: Instant) -> CheckListSetPollRet {
+        if !self.pending_messages.is_empty() {
+            return CheckListSetPollRet::WaitUntil(now);
         }
 
         for checklist in self.checklists.iter_mut() {
@@ -2538,7 +2510,6 @@ impl ConnCheckListSet {
                         let Some(agent_id) = check.agent_id() else {
                             continue;
                         };
-                        let component_id = check.pair.local.component_id;
                         let conncheck_id = check.conncheck_id;
                         let Some(agent) = checklist.mut_agent_by_id(agent_id) else {
                             continue;
@@ -2559,14 +2530,6 @@ impl ConnCheckListSet {
                                 if wait < lowest_wait {
                                     lowest_wait = wait.max(now + Self::MINIMUM_SET_TICK);
                                 }
-                            }
-                            StunAgentPollRet::SendData(transmit) => {
-                                self.last_send_time = now;
-                                return CheckListSetPollRet::Transmit {
-                                    checklist_id: checklist.checklist_id,
-                                    component_id,
-                                    transmit: transmit_send(transmit),
-                                };
                             }
                         }
                     }
@@ -2597,15 +2560,83 @@ impl ConnCheckListSet {
             };
 
             trace!("starting conncheck");
-            match self.perform_conncheck(self.checklist_i, conncheck_id, now) {
-                Ok(ret) => {
-                    let ret = ret.into_owned();
-                    self.last_send_time = now;
-                    return ret;
-                }
+            match self.perform_conncheck(self.checklist_i, conncheck_id) {
+                Ok(Some(tcp_connect)) => return tcp_connect.into_poll_ret(),
+                Ok(None) => return CheckListSetPollRet::WaitUntil(now),
                 Err(e) => warn!("failed to perform check: {e:?}"),
             }
         }
+    }
+
+    #[tracing::instrument(name = "check_set_poll_transmit", level = "trace", skip(self))]
+    pub fn poll_transmit(&mut self, now: Instant) -> Option<CheckListSetTransmit> {
+        while let Some(pending) = self.pending_messages.pop_back() {
+            let Some(checklist) = self.mut_list(pending.checklist_id) else {
+                continue;
+            };
+            let Some(agent) = checklist.mut_agent_by_id(pending.agent_id) else {
+                continue;
+            };
+            debug!("Sending response {:?} to {:?}", pending.msg, pending.to);
+            if pending.msg.has_class(MessageClass::Request) {
+                match agent.send_request(pending.msg, pending.to, now) {
+                    Ok(transmit) => {
+                        return Some(CheckListSetTransmit {
+                            checklist_id: pending.checklist_id,
+                            component_id: pending.component_id,
+                            transmit: transmit_send(transmit),
+                        });
+                    }
+                    Err(e) => warn!("error sending: {e}"),
+                }
+            } else {
+                match agent.send(pending.msg, pending.to, now) {
+                    Ok(transmit) => {
+                        return Some(CheckListSetTransmit {
+                            checklist_id: pending.checklist_id,
+                            component_id: pending.component_id,
+                            transmit: transmit_send_build(transmit),
+                        });
+                    }
+                    Err(e) => warn!("error sending: {e}"),
+                }
+            }
+        }
+
+        if self.last_send_time + Self::MINIMUM_SET_TICK > now {
+            return None;
+        }
+
+        for checklist in self.checklists.iter_mut() {
+            if checklist.state() != CheckListState::Running {
+                continue;
+            }
+            let checklist_id = checklist.checklist_id;
+            for idx in 0..checklist.pairs.len() {
+                let check = &mut checklist.pairs[idx];
+                if check.state != CandidatePairState::InProgress {
+                    continue;
+                }
+                let Some(agent_id) = check.agent_id() else {
+                    continue;
+                };
+                let component_id = check.pair.local.component_id;
+                let Some(agent) = checklist.mut_agent_by_id(agent_id) else {
+                    continue;
+                };
+                let Some(transmit) = agent.poll_transmit(now) else {
+                    continue;
+                };
+
+                self.last_send_time = now;
+                return Some(CheckListSetTransmit {
+                    checklist_id,
+                    component_id,
+                    transmit: transmit_send(transmit),
+                });
+            }
+        }
+        None
     }
 
     /// Report a reply (success or failure) to a TCP connection attempt.
@@ -2694,13 +2725,13 @@ impl ConnCheckListSet {
                     let conncheck_id = check.conncheck_id;
 
                     let (agent_id, _agent_idx) = checklist.add_agent(agent);
-                    self.pending_messages.push_front((
+                    self.pending_messages.push_front(CheckListSetPendingMessage {
                         checklist_id,
                         component_id,
                         agent_id,
-                        stun_request.into_owned(),
+                        msg: stun_request.into_owned(),
                         to,
-                    ));
+                    });
 
                     let mut new_check = ConnCheck::new(
                         checklist_id,
@@ -2743,7 +2774,7 @@ impl ConnCheckListSet {
 
 /// Return values for polling a set of checklists.
 #[derive(Debug)]
-pub enum CheckListSetPollRet<'a> {
+pub enum CheckListSetPollRet {
     /// Perform a TCP connection from the provided address to the provided address.  Report success
     /// or failure with `tcp_connect_reply()`.
     TcpConnect {
@@ -2751,12 +2782,6 @@ pub enum CheckListSetPollRet<'a> {
         component_id: usize,
         local_addr: SocketAddr,
         remote_addr: SocketAddr,
-    },
-    /// Transmit data
-    Transmit {
-        checklist_id: usize,
-        component_id: usize,
-        transmit: Transmit<'a>,
     },
     /// Wait until the specified time has passed.  Receiving handled data may cause a different
     /// value to be returned from `poll()`
@@ -2771,38 +2796,37 @@ pub enum CheckListSetPollRet<'a> {
     Completed,
 }
 
-impl<'a> CheckListSetPollRet<'a> {
-    fn into_owned<'b>(self) -> CheckListSetPollRet<'b> {
-        match self {
-            CheckListSetPollRet::Transmit {
-                checklist_id,
-                component_id,
-                transmit,
-            } => CheckListSetPollRet::Transmit {
-                checklist_id,
-                component_id,
-                transmit: transmit.into_owned(),
-            },
-            CheckListSetPollRet::Event {
-                checklist_id,
-                event,
-            } => CheckListSetPollRet::Event {
-                checklist_id,
-                event,
-            },
-            CheckListSetPollRet::Completed => CheckListSetPollRet::Completed,
-            CheckListSetPollRet::WaitUntil(a) => CheckListSetPollRet::WaitUntil(a),
-            CheckListSetPollRet::TcpConnect {
-                checklist_id,
-                component_id,
-                local_addr,
-                remote_addr,
-            } => CheckListSetPollRet::TcpConnect {
-                checklist_id,
-                component_id,
-                local_addr,
-                remote_addr,
-            },
+#[derive(Debug)]
+pub struct CheckListSetTransmit {
+    pub checklist_id: usize,
+    pub component_id: usize,
+    pub transmit: Transmit<Data<'static>>,
+}
+
+#[derive(Debug)]
+struct CheckListSetPendingMessage {
+    checklist_id: usize,
+    component_id: usize,
+    agent_id: StunAgentId,
+    msg: MessageBuilder<'static>,
+    to: SocketAddr,
+}
+
+#[derive(Debug)]
+struct CheckListSetTcpConnect {
+    checklist_id: usize,
+    component_id: usize,
+    local_addr: SocketAddr,
+    remote_addr: SocketAddr,
+}
+
+impl CheckListSetTcpConnect {
+    fn into_poll_ret(self) -> CheckListSetPollRet {
+        CheckListSetPollRet::TcpConnect {
+            checklist_id: self.checklist_id,
+            component_id: self.component_id,
+            local_addr: self.local_addr,
+            remote_addr: self.remote_addr,
         }
     }
 }
@@ -2861,16 +2885,53 @@ fn validate_username(username: Username, local_credentials: &Credentials) -> boo
     }
 }
 
-pub(crate) fn transmit_send(transmit: Transmit) -> Transmit<'static> {
+pub(crate) fn transmit_send<'a, T: AsRef<[u8]>>(transmit: Transmit<T>) -> Transmit<Data<'a>> {
     match transmit.transport {
-        TransportType::Udp => transmit.into_owned(),
+        TransportType::Udp => {
+            Transmit::new(
+            Data::from(transmit.data.as_ref()),
+            transmit.transport,
+            transmit.from,
+            transmit.to,
+        )
+        .into_owned()
+        },
         TransportType::Tcp => {
-            let mut data = Vec::with_capacity(transmit.data.len());
+            let len = transmit.data.as_ref().len();
+            let mut data = Vec::with_capacity(2 + len);
             data.resize(2, 0);
-            BigEndian::write_u16(&mut data, transmit.data.len() as u16);
-            data.extend_from_slice(&transmit.data);
-            Transmit::new_owned(
-                data.into_boxed_slice(),
+            BigEndian::write_u16(&mut data, len as u16);
+            data.extend_from_slice(transmit.data.as_ref());
+            Transmit::new(
+                Data::from(data.into_boxed_slice()),
+                transmit.transport,
+                transmit.from,
+                transmit.to,
+            )
+        }
+    }
+}
+
+pub(crate) fn transmit_send_build<'a, T: DelayedTransmitBuild>(transmit: TransmitBuild<T>) -> Transmit<Data<'a>> {
+    match transmit.transport {
+        TransportType::Udp => {
+            let data = transmit.data.build().into_boxed_slice();
+            Transmit::new(
+            Data::from(data),
+            transmit.transport,
+            transmit.from,
+            transmit.to,
+        )
+        .into_owned()
+        },
+        TransportType::Tcp => {
+            let len = transmit.data.len();
+            let mut data = Vec::with_capacity(2 + transmit.data.len());
+            data.resize(2 + len, 0);
+            BigEndian::write_u16(&mut data, len as u16);
+            transmit.data.write_into(&mut data[2..]);
+            Transmit::new(
+                Data::from(data.into_boxed_slice()),
                 transmit.transport,
                 transmit.from,
                 transmit.to,
@@ -3162,20 +3223,20 @@ mod tests {
         Ok(response.into_owned())
     }
 
-    fn reply_to_conncheck<'b>(
-        agent: &mut StunAgent,
+    fn reply_to_conncheck<'b, T: AsRef<[u8]>>(
+        agent: &'b mut StunAgent,
         credentials: &Credentials,
-        transmit: Transmit<'_>,
+        transmit: Transmit<T>,
         error_response: Option<u16>,
         response_address: Option<SocketAddr>,
         now: Instant,
-    ) -> Option<Transmit<'b>> {
+    ) -> Option<Transmit<Data<'b>>> {
         // XXX: assumes that tcp framing is not in use
         let offset = match transmit.transport {
             TransportType::Udp => 0,
             TransportType::Tcp => 2,
         };
-        match Message::from_bytes(&transmit.data[offset..]) {
+        match Message::from_bytes(&transmit.data.as_ref()[offset..]) {
             Err(e) => error!("error parsing STUN message {e:?}"),
             Ok(msg) => {
                 debug!("received from {}: {}", transmit.to, msg);
@@ -3195,7 +3256,7 @@ mod tests {
                             now,
                         )
                         .unwrap();
-                    return Some(transmit_send(transmit));
+                    return Some(transmit_send_build(transmit));
                 }
             }
         }
@@ -3208,11 +3269,14 @@ mod tests {
         let mut state = FineControl::builder().build();
         let now = Instant::now();
 
-        let CheckListSetPollRet::Transmit {
+        let CheckListSetPollRet::WaitUntil(_) = state.local.checklist_set.poll(now) else {
+            unreachable!();
+        };
+        let Some(CheckListSetTransmit {
             checklist_id: _,
             component_id: _,
             transmit,
-        } = state.local.checklist_set.poll(now)
+        }) = state.local.checklist_set.poll_transmit(now)
         else {
             unreachable!()
         };
@@ -3342,12 +3406,10 @@ mod tests {
 
         assert_list_contains_checks(list1, vec![&pair1]);
         // thaw the first checklist with only a single pair will unfreeze that pair
-        let CheckListSetPollRet::Transmit {
-            checklist_id: _,
-            component_id: _,
-            transmit: _,
-        } = set.poll(now)
-        else {
+        let CheckListSetPollRet::WaitUntil(now) = set.poll(now) else {
+            unreachable!();
+        };
+        let Some(_) = set.poll_transmit(now) else {
             unreachable!();
         };
         let CheckListSetPollRet::WaitUntil(now) = set.poll(now) else {
@@ -3370,12 +3432,11 @@ mod tests {
 
         // thaw the second checklist with 2*2 pairs will unfreeze only the foundations not
         // unfrozen by the first checklist, which means unfreezing 3 pairs
-        let CheckListSetPollRet::Transmit {
-            checklist_id: _,
-            component_id: _,
-            transmit: _,
-        } = set.poll(now)
-        else {
+        assert!(matches!(
+            set.poll(now),
+            CheckListSetPollRet::WaitUntil(_now)
+        ));
+        let Some(_) = set.poll_transmit(now) else {
             unreachable!();
         };
         let list2 = set.mut_list(list2_id).unwrap();
@@ -3502,7 +3563,7 @@ mod tests {
         response_address: Option<SocketAddr>,
     }
 
-    impl<'a> NextCheckAndResponse<'a> {
+    impl NextCheckAndResponse<'_> {
         fn error_response(mut self, error_response: u16) -> Self {
             self.error_response = Some(error_response);
             self
@@ -3515,17 +3576,6 @@ mod tests {
 
         fn perform(self, set: &mut ConnCheckListSet, now: Instant) {
             // perform one tick which will start a connectivity check with the peer
-            let transmit = match set.poll(now) {
-                CheckListSetPollRet::Transmit {
-                    checklist_id: _,
-                    component_id: _,
-                    transmit,
-                } => transmit,
-                ret => {
-                    error!("{ret:?}");
-                    unreachable!()
-                }
-            };
             match set.poll(now) {
                 CheckListSetPollRet::WaitUntil(_) => (),
                 ret => {
@@ -3533,13 +3583,17 @@ mod tests {
                     unreachable!()
                 }
             }
+            let Some(transmit) = set.poll_transmit(now) else {
+                unreachable!()
+            };
             debug!("tick");
 
             // send a response (success or some kind of error like role-conflict)
+            let mut remote_agent = self.remote_peer.stun_agent();
             let reply = reply_to_conncheck(
-                &mut self.remote_peer.stun_agent(),
+                &mut remote_agent,
                 &self.remote_peer.local_credentials.clone().unwrap(),
-                transmit,
+                transmit.transmit,
                 self.error_response,
                 self.response_address,
                 now,
@@ -3574,7 +3628,7 @@ mod tests {
     fn very_fine_control1() {
         let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder().build();
-        let mut now = Instant::now();
+        let now = Instant::now();
         assert_eq!(state.local.component_id, 1);
 
         let pair = CandidatePair::new(
@@ -3593,15 +3647,6 @@ mod tests {
             .perform(&mut state.local.checklist_set, now);
         let check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(check.state(), CandidatePairState::Succeeded);
-        match state.local.checklist_set.poll(now) {
-            CheckListSetPollRet::WaitUntil(new_now) => {
-                now = new_now;
-            }
-            ret => {
-                error!("{ret:?}");
-                unreachable!();
-            }
-        }
 
         // should have resulted in a nomination and therefore a triggered check (always a new
         // check in our implementation)
@@ -3652,7 +3697,7 @@ mod tests {
         // start off in the controlled mode, otherwise, the test needs to do the nomination
         // check
         let mut state = FineControl::builder().controlling(false).build();
-        let mut now = Instant::now();
+        let now = Instant::now();
 
         let pair = CandidatePair::new(
             state.local.peer.candidate.clone(),
@@ -3672,15 +3717,6 @@ mod tests {
         state.local_list().dump_check_state();
         let check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(check.state(), CandidatePairState::Failed);
-        match state.local.checklist_set.poll(now) {
-            CheckListSetPollRet::WaitUntil(new_now) => {
-                now = new_now;
-            }
-            ret => {
-                error!("{ret:?}");
-                unreachable!();
-            }
-        }
 
         // should have resulted in the check being retriggered (always a new
         // check in our implementation)
@@ -3697,15 +3733,6 @@ mod tests {
             .perform(&mut state.local.checklist_set, now);
         let triggered_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(triggered_check.state(), CandidatePairState::Succeeded);
-        match state.local.checklist_set.poll(now) {
-            CheckListSetPollRet::WaitUntil(new_now) => {
-                now = new_now;
-            }
-            ret => {
-                error!("{ret:?}");
-                unreachable!();
-            }
-        }
 
         // should have resulted in a nomination and therefore a triggered check (always a new
         // check in our implementation)
@@ -3836,24 +3863,25 @@ mod tests {
             .tcp_connect_reply(id, cid, from, to, Ok(local_agent));
         error!("tcp connect replied");
 
-        let CheckListSetPollRet::Transmit {
-            checklist_id: id,
-            component_id: cid,
-            transmit,
-        } = state.local.checklist_set.poll(now)
-        else {
+        let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
             unreachable!();
         };
-        assert_eq!(id, state.local.checklist_id);
-        assert_eq!(cid, state.local.peer.candidate.component_id);
-        assert_eq!(transmit.from, state.local.peer.candidate.base_address);
-        assert_eq!(transmit.to, state.remote.candidate.address);
+        assert_eq!(transmit.checklist_id, state.local.checklist_id);
+        assert_eq!(
+            transmit.component_id,
+            state.local.peer.candidate.component_id
+        );
+        assert_eq!(
+            transmit.transmit.from,
+            state.local.peer.candidate.base_address
+        );
+        assert_eq!(transmit.transmit.to, state.remote.candidate.address);
         error!("tcp transmit");
 
         let Some(response) = reply_to_conncheck(
             &mut remote_agent,
             state.local.peer.remote_credentials.as_ref().unwrap(),
-            transmit,
+            transmit.transmit,
             None,
             None,
             now,
@@ -3879,19 +3907,14 @@ mod tests {
             unreachable!();
         };
 
-        let CheckListSetPollRet::Transmit {
-            checklist_id: _,
-            component_id: _,
-            transmit,
-        } = state.local.checklist_set.poll(now)
-        else {
+        let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
             unreachable!();
         };
 
         let Some(response) = reply_to_conncheck(
             &mut remote_agent,
             state.local.peer.remote_credentials.as_ref().unwrap(),
-            transmit.into_owned(),
+            transmit.transmit,
             None,
             None,
             now,
@@ -3973,7 +3996,7 @@ mod tests {
                     state.local.checklist_id,
                     &transmit_send(
                         remote_agent
-                            .send(request, state.local.peer.candidate.base_address, now)
+                            .send_request(request, state.local.peer.candidate.base_address, now)
                             .unwrap()
                     ),
                 )
@@ -3989,40 +4012,48 @@ mod tests {
 
         // success response
         let now = Instant::now();
-        let CheckListSetPollRet::Transmit {
-            checklist_id: id,
-            component_id: cid,
-            transmit,
-        } = state.local.checklist_set.poll(now)
-        else {
+        let CheckListSetPollRet::WaitUntil(_) = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
-        assert_eq!(id, state.local.checklist_id);
-        assert_eq!(cid, state.local.peer.candidate.component_id);
-        assert_eq!(transmit.from, state.local.peer.candidate.base_address);
-        assert_eq!(transmit.to, remote_cand.address);
+        let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
+            unreachable!();
+        };
+        assert_eq!(transmit.checklist_id, state.local.checklist_id);
+        assert_eq!(
+            transmit.component_id,
+            state.local.peer.candidate.component_id
+        );
+        assert_eq!(
+            transmit.transmit.from,
+            state.local.peer.candidate.base_address
+        );
+        assert_eq!(transmit.transmit.to, remote_cand.address);
 
-        let response = Message::from_bytes(&transmit.data[2..]).unwrap();
+        let response = Message::from_bytes(&transmit.transmit.data[2..]).unwrap();
         assert!(response.has_class(MessageClass::Success));
 
         // triggered check
-        let CheckListSetPollRet::Transmit {
-            checklist_id: id,
-            component_id: cid,
-            transmit,
-        } = state.local.checklist_set.poll(now)
-        else {
+        let CheckListSetPollRet::WaitUntil(_) = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
-        assert_eq!(id, state.local.checklist_id);
-        assert_eq!(cid, state.local.peer.candidate.component_id);
-        assert_eq!(transmit.from, state.local.peer.candidate.base_address);
-        assert_eq!(transmit.to, remote_cand.address);
+        let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
+            unreachable!();
+        };
+        assert_eq!(transmit.checklist_id, state.local.checklist_id);
+        assert_eq!(
+            transmit.component_id,
+            state.local.peer.candidate.component_id
+        );
+        assert_eq!(
+            transmit.transmit.from,
+            state.local.peer.candidate.base_address
+        );
+        assert_eq!(transmit.transmit.to, remote_cand.address);
 
         let Some(response) = reply_to_conncheck(
             &mut remote_agent,
             state.local.peer.remote_credentials.as_ref().unwrap(),
-            transmit.into_owned(),
+            transmit.transmit,
             None,
             None,
             now,
@@ -4049,19 +4080,14 @@ mod tests {
         };
 
         // nominate triggered check
-        let CheckListSetPollRet::Transmit {
-            checklist_id: _,
-            component_id: _,
-            transmit,
-        } = state.local.checklist_set.poll(now)
-        else {
+        let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
             unreachable!();
         };
 
         let Some(response) = reply_to_conncheck(
             &mut remote_agent,
             state.local.peer.remote_credentials.as_ref().unwrap(),
-            transmit.into_owned(),
+            transmit.transmit,
             None,
             None,
             now,
@@ -4097,10 +4123,10 @@ mod tests {
 
     fn remote_generate_check<'a>(
         remote_peer: &Peer,
-        remote_agent: &mut StunAgent,
+        remote_agent: &'a mut StunAgent,
         to: SocketAddr,
         now: Instant,
-    ) -> Transmit<'a> {
+    ) -> Transmit<Data<'a>> {
         // send a request from some unknown to the local agent address to produce a peer
         // reflexive candidate on the local agent
         let mut request = Message::builder_request(BINDING);
@@ -4125,7 +4151,7 @@ mod tests {
             .unwrap();
         request.add_fingerprint().unwrap();
 
-        remote_agent.send(request, to, now).unwrap().into_owned()
+        remote_agent.send_request(request, to, now).unwrap()
     }
 
     #[test]
@@ -4163,21 +4189,16 @@ mod tests {
             .incoming_data(state.local.checklist_id, &transmit)
             .unwrap();
         assert!(matches!(reply[0], HandleRecvReply::Handled));
-        let CheckListSetPollRet::Transmit {
-            checklist_id: _,
-            component_id: _,
-            transmit,
-        } = state.local.checklist_set.poll(now)
-        else {
+        let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
             unreachable!();
         };
-        let response = Message::from_bytes(&transmit.data).unwrap();
+        let response = Message::from_bytes(&transmit.transmit.data).unwrap();
         let HandleStunReply::StunResponse(response) =
-            remote_agent.handle_stun(response, transmit.from)
+            remote_agent.handle_stun(response, transmit.transmit.from)
         else {
             unreachable!();
         };
-        assert_eq!(transmit.from, local_addr);
+        assert_eq!(transmit.transmit.from, local_addr);
         assert!(response.has_class(MessageClass::Success));
         info!("have prflx response");
 
@@ -4200,9 +4221,6 @@ mod tests {
         info!("perform triggered check");
         send_next_check_and_response(&state.local.peer, &unknown_remote_peer)
             .perform(&mut state.local.checklist_set, now);
-        let CheckListSetPollRet::WaitUntil(now) = state.local.checklist_set.poll(now) else {
-            unreachable!();
-        };
 
         info!("have reply to triggered check");
         let triggered_check = state.local_list().check_by_id(check_id).unwrap();
@@ -4271,9 +4289,6 @@ mod tests {
         send_next_check_and_response(&state.local.peer, &state.remote)
             .response_address(remote_agent.local_addr())
             .perform(&mut state.local.checklist_set, now);
-        let CheckListSetPollRet::WaitUntil(now) = state.local.checklist_set.poll(now) else {
-            unreachable!();
-        };
         let initial_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(initial_check.state(), CandidatePairState::Succeeded);
 
@@ -4330,7 +4345,7 @@ mod tests {
     fn conncheck_trickle_ice() {
         let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder().trickle_ice(true).build();
-        let mut now = Instant::now();
+        let now = Instant::now();
         assert_eq!(state.local.component_id, 1);
 
         // Don't generate any initial checks as they should be done as candidates are added to
@@ -4370,15 +4385,6 @@ mod tests {
         assert_eq!(check.state(), CandidatePairState::Succeeded);
 
         state.local_list().dump_check_state();
-        match state.local.checklist_set.poll(now) {
-            CheckListSetPollRet::WaitUntil(new_now) => {
-                now = new_now;
-            }
-            ret => {
-                error!("{ret:?}");
-                unreachable!();
-            }
-        }
 
         // should have resulted in a nomination and therefore a triggered check (always a new
         // check in our implementation)
@@ -4489,16 +4495,10 @@ mod tests {
         let now = Instant::now();
 
         // send the conncheck (unanswered)
-        let _transmit = match state.local.checklist_set.poll(now) {
-            CheckListSetPollRet::Transmit {
-                checklist_id: _,
-                component_id: _,
-                transmit,
-            } => transmit,
-            ret => {
-                error!("{ret:?}");
-                unreachable!()
-            }
+        let set_ret = state.local.checklist_set.poll(now);
+        assert!(matches!(set_ret, CheckListSetPollRet::WaitUntil(_)));
+        let Some(_) = state.local.checklist_set.poll_transmit(now) else {
+            unreachable!()
         };
         let initial_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(initial_check.state(), CandidatePairState::InProgress);
@@ -4517,12 +4517,7 @@ mod tests {
             .unwrap();
         assert!(matches!(reply[0], HandleRecvReply::Handled));
         // eat the success response
-        let CheckListSetPollRet::Transmit {
-            checklist_id: _,
-            component_id: _,
-            transmit: _,
-        } = state.local.checklist_set.poll(now)
-        else {
+        let Some(_) = state.local.checklist_set.poll_transmit(now) else {
             unreachable!()
         };
         let CheckListSetPollRet::WaitUntil(now) = state.local.checklist_set.poll(now) else {
@@ -4622,16 +4617,8 @@ mod tests {
         let CheckListSetPollRet::WaitUntil(now) = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
-        let _transmit = match state.local.checklist_set.poll(now) {
-            CheckListSetPollRet::Transmit {
-                checklist_id: _,
-                component_id: _,
-                transmit,
-            } => transmit,
-            ret => {
-                error!("{ret:?}");
-                unreachable!()
-            }
+        let Some(_) = state.local.checklist_set.poll_transmit(now) else {
+            unreachable!()
         };
         let set_ret = state.local.checklist_set.poll(now);
         assert!(matches!(set_ret, CheckListSetPollRet::WaitUntil(_)));
@@ -4650,11 +4637,11 @@ mod tests {
             .unwrap();
         assert!(matches!(reply[0], HandleRecvReply::Handled));
         // eat the success response
-        let CheckListSetPollRet::Transmit {
+        let Some(CheckListSetTransmit {
             checklist_id: _,
             component_id: _,
             transmit: _,
-        } = state.local.checklist_set.poll(now)
+        }) = state.local.checklist_set.poll_transmit(now)
         else {
             unreachable!()
         };
@@ -4764,20 +4751,20 @@ mod tests {
             .unwrap();
         assert_eq!(prflx_check.state(), CandidatePairState::Waiting);
         let check_id = prflx_check.conncheck_id;
-        let ret = state.local.checklist_set.poll(now);
+        let ret = state.local.checklist_set.poll_transmit(now);
         // response to prflx request
-        let CheckListSetPollRet::Transmit {
+        let Some(CheckListSetTransmit {
             checklist_id: _,
             component_id: _,
             transmit,
-        } = ret
+        }) = ret
         else {
             error!("{ret:?}");
             unreachable!()
         };
         assert_eq!(transmit.from, state.local.peer.candidate.base_address);
         assert_eq!(transmit.to, state.remote.candidate.base_address);
-        let response = Message::from_bytes(transmit.data()).unwrap();
+        let response = Message::from_bytes(&transmit.data).unwrap();
         response
             .validate_integrity(&MessageIntegrityCredentials::ShortTerm(
                 state.local.peer.local_credentials.clone().unwrap().into(),

@@ -201,7 +201,7 @@ struct AgentStream {
     agent: Arc<Mutex<librice_proto::agent::Agent>>,
     inner: Arc<Mutex<AgentInner>>,
     timer: Option<Pin<Box<async_io::Timer>>>,
-    pending_transmit: Option<AgentTransmit<'static>>,
+    pending_transmit: Option<AgentTransmit>,
 }
 
 impl futures::stream::Stream for AgentStream {
@@ -215,7 +215,7 @@ impl futures::stream::Stream for AgentStream {
                     transmit.transmit = retry;
                     inner.waker = Some(cx.waker().clone());
                     drop(inner);
-                    self.as_mut().pending_transmit = Some(transmit.into_owned());
+                    self.as_mut().pending_transmit = Some(transmit);
                     return Poll::Pending;
                 }
             }
@@ -226,10 +226,66 @@ impl futures::stream::Stream for AgentStream {
         let mut agent = self.agent.lock().unwrap();
         let now = Instant::now();
 
-        let wait = match agent.poll(now) {
-            AgentPoll::Closed => return Poll::Ready(None),
-            AgentPoll::Transmit(transmit) => {
-                let mut transmit = transmit.into_owned();
+        let wait = loop {
+            let wait = match agent.poll(now) {
+                AgentPoll::Closed => return Poll::Ready(None),
+                AgentPoll::TcpConnect(tcp_connect) => {
+                    drop(agent);
+                    let inner = self.inner.lock().unwrap();
+                    if let Some(stream) = inner.streams.get(tcp_connect.stream_id) {
+                        let weak_stream = Arc::downgrade(&stream.inner);
+                        drop(inner);
+                        Stream::handle_tcp_connect(
+                            weak_stream,
+                            weak_proto_agent,
+                            weak_agent_inner,
+                            tcp_connect.stream_id,
+                            tcp_connect.component_id,
+                            tcp_connect.from,
+                            tcp_connect.to,
+                            cx.waker().clone(),
+                        );
+                    }
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                AgentPoll::WaitUntil(time) => Some(time),
+                AgentPoll::SelectedPair(pair) => {
+                    drop(agent);
+                    let inner = self.inner.lock().unwrap();
+                    if let Some(stream) = inner.streams.get(pair.stream_id) {
+                        if let Some(component) = stream.component(pair.component_id) {
+                            if let Some(socket) = stream.socket_for_pair(pair.selected.candidate_pair())
+                            {
+                                if let Err(e) = component.set_selected_pair(SelectedPair::new(
+                                    pair.selected.candidate_pair().clone(),
+                                    socket,
+                                )) {
+                                    warn!("Failed setting the selected pair: {e:?}");
+                                }
+                            }
+                        }
+                    }
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                AgentPoll::ComponentStateChange(state) => {
+                    drop(agent);
+                    let inner = self.inner.lock().unwrap();
+                    if let Some(stream) = inner.streams.get(state.stream_id) {
+                        if let Some(component) = stream.component(state.component_id) {
+                            return Poll::Ready(Some(AgentMessage::ComponentStateChange(
+                                component.clone(),
+                                state.state,
+                            )));
+                        }
+                    }
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+            };
+
+            if let Some(mut transmit) = agent.poll_transmit(now) {
                 drop(agent);
                 let mut inner = self.inner.lock().unwrap();
                 if let Some(stream) = inner.streams.get(transmit.stream_id) {
@@ -247,60 +303,7 @@ impl futures::stream::Stream for AgentStream {
                 cx.waker().wake_by_ref();
                 return Poll::Pending;
             }
-            AgentPoll::TcpConnect(tcp_connect) => {
-                drop(agent);
-                let inner = self.inner.lock().unwrap();
-                if let Some(stream) = inner.streams.get(tcp_connect.stream_id) {
-                    let weak_stream = Arc::downgrade(&stream.inner);
-                    drop(inner);
-                    Stream::handle_tcp_connect(
-                        weak_stream,
-                        weak_proto_agent,
-                        weak_agent_inner,
-                        tcp_connect.stream_id,
-                        tcp_connect.component_id,
-                        tcp_connect.from,
-                        tcp_connect.to,
-                        cx.waker().clone(),
-                    );
-                }
-                cx.waker().wake_by_ref();
-                return Poll::Pending;
-            }
-            AgentPoll::WaitUntil(time) => Some(time),
-            AgentPoll::SelectedPair(pair) => {
-                drop(agent);
-                let inner = self.inner.lock().unwrap();
-                if let Some(stream) = inner.streams.get(pair.stream_id) {
-                    if let Some(component) = stream.component(pair.component_id) {
-                        if let Some(socket) = stream.socket_for_pair(pair.selected.candidate_pair())
-                        {
-                            if let Err(e) = component.set_selected_pair(SelectedPair::new(
-                                pair.selected.candidate_pair().clone(),
-                                socket,
-                            )) {
-                                warn!("Failed setting the selected pair: {e:?}");
-                            }
-                        }
-                    }
-                }
-                cx.waker().wake_by_ref();
-                return Poll::Pending;
-            }
-            AgentPoll::ComponentStateChange(state) => {
-                drop(agent);
-                let inner = self.inner.lock().unwrap();
-                if let Some(stream) = inner.streams.get(state.stream_id) {
-                    if let Some(component) = stream.component(state.component_id) {
-                        return Poll::Ready(Some(AgentMessage::ComponentStateChange(
-                            component.clone(),
-                            state.state,
-                        )));
-                    }
-                }
-                cx.waker().wake_by_ref();
-                return Poll::Pending;
-            }
+            break wait;
         };
         drop(agent);
 

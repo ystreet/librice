@@ -18,6 +18,7 @@ use async_std::net::TcpStream;
 use futures::StreamExt;
 use librice_proto::gathering::GatherPoll;
 use stun_proto::agent::{StunAgent, Transmit};
+use stun_proto::types::data::Data;
 use stun_proto::types::TransportType;
 
 use crate::agent::{AgentError, AgentInner};
@@ -37,7 +38,7 @@ pub struct Stream {
     weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
     pub(crate) id: usize,
     weak_agent_inner: Weak<Mutex<AgentInner>>,
-    transmit_send: async_std::channel::Sender<Transmit<'static>>,
+    transmit_send: async_std::channel::Sender<Transmit<Data<'static>>>,
     pub(crate) inner: Arc<Mutex<StreamInner>>,
 }
 
@@ -97,8 +98,8 @@ pub struct Gather {
     stream_id: usize,
     stream: Arc<Mutex<StreamInner>>,
     timer: Option<Pin<Box<async_io::Timer>>>,
-    transmit_send: async_std::channel::Sender<Transmit<'static>>,
-    pending_transmit_send: Option<Transmit<'static>>,
+    transmit_send: async_std::channel::Sender<Transmit<Data<'static>>>,
+    pending_transmit_send: Option<Transmit<Data<'static>>>,
 }
 
 impl futures::stream::Stream for Gather {
@@ -162,29 +163,28 @@ impl futures::stream::Stream for Gather {
                     proto_stream.add_local_candidate(cand.clone());
                     return Poll::Ready(Some(cand));
                 }
-                Ok(GatherPoll::SendData {
-                    component_id: _,
-                    transmit,
-                }) => {
-                    if let Err(async_std::channel::TrySendError::Full(transmit)) =
-                        transmit_send.try_send(transmit.into_owned())
-                    {
-                        pending_transmit_send = Some(transmit);
-                        break;
-                    }
-                }
-                Ok(GatherPoll::WaitUntil(wait_time)) => {
-                    match lowest_wait {
-                        Some(wait) => {
-                            if wait_time < wait {
-                                lowest_wait = Some(wait_time);
-                            }
+                Ok(GatherPoll::WaitUntil(wait_time)) => match lowest_wait {
+                    Some(wait) => {
+                        if wait_time < wait {
+                            lowest_wait = Some(wait_time);
                         }
-                        None => lowest_wait = Some(wait_time),
                     }
+                    None => lowest_wait = Some(wait_time),
+                },
+                Err(e) => warn!("error produced while gathering: {e:?}"),
+            }
+
+            if let Some(transmit) = proto_stream.poll_gather_transmit(now) {
+                if let Err(async_std::channel::TrySendError::Full(transmit)) =
+                    transmit_send.try_send(transmit.1.into_owned())
+                {
+                    pending_transmit_send = Some(transmit);
                     break;
                 }
-                Err(e) => warn!("error produced while gathering: {e:?}"),
+            }
+
+            if lowest_wait.is_some() {
+                break;
             }
         }
         self.stream.lock().unwrap().gather_waker = Some(cx.waker().clone());
@@ -221,7 +221,8 @@ impl Stream {
         id: usize,
     ) -> Self {
         let inner = Arc::new(Mutex::new(StreamInner::default()));
-        let (transmit_send, mut transmit_recv) = async_std::channel::bounded::<Transmit>(16);
+        let (transmit_send, mut transmit_recv) =
+            async_std::channel::bounded::<Transmit<Data<'static>>>(16);
         let weak_inner = Arc::downgrade(&inner);
         async_std::task::spawn(async move {
             while let Some(transmit) = transmit_recv.next().await {
@@ -470,18 +471,18 @@ impl Stream {
             component.id = component_id,
         )
     )]
-    fn handle_incoming_data(
+    fn handle_incoming_data<T: AsRef<[u8]>>(
         weak_inner: Weak<Mutex<StreamInner>>,
         weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
         weak_agent_inner: Weak<Mutex<AgentInner>>,
         weak_component: Weak<Mutex<ComponentInner>>,
         stream_id: usize,
         component_id: usize,
-        transmit: Transmit,
+        transmit: Transmit<T>,
     ) {
         trace!(
             "incoming data of {} bytes from {} to {} via {}",
-            transmit.data.len(),
+            transmit.data.as_ref().len(),
             transmit.from,
             transmit.to,
             transmit.transport
@@ -784,13 +785,18 @@ impl Stream {
         proto_stream.end_of_remote_candidates()
     }
 
-    pub(crate) fn handle_transmit<'a>(
+    pub(crate) fn handle_transmit<T: AsRef<[u8]>>(
         &self,
-        transmit: Transmit<'a>,
+        transmit: Transmit<T>,
         waker: Waker,
-    ) -> Option<Transmit<'a>> {
+    ) -> Option<Transmit<Data<'static>>> {
         if let Err(async_std::channel::TrySendError::Full(transmit)) =
-            self.transmit_send.try_send(transmit.into_owned())
+            self.transmit_send.try_send(Transmit::new(
+                Data::from(transmit.data.as_ref()).into_owned(),
+                transmit.transport,
+                transmit.from,
+                transmit.to,
+            ))
         {
             let mut inner = self.inner.lock().unwrap();
             inner.transmit_waker.push(waker);

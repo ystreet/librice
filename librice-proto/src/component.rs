@@ -78,7 +78,7 @@ impl<'a> Component<'a> {
 
     /// Send data to the peer using the selected pair.  This will not succeed until the
     /// [`Component`] has reached [`ComponentConnectionState::Connected`]
-    pub fn send<'data>(&self, data: &'data [u8]) -> Result<Transmit<'data>, AgentError> {
+    pub fn send<T: AsRef<[u8]>>(&self, data: T) -> Result<Transmit<T>, AgentError> {
         let stream = self.agent.stream_state(self.stream_id).unwrap();
         let checklist_id = stream.checklist_id;
         let component = stream.component_state(self.component_id).unwrap();

@@ -18,6 +18,7 @@ use librice_proto::candidate::CandidatePair;
 
 pub use librice_proto::component::ComponentConnectionState;
 use stun_proto::agent::Transmit;
+use stun_proto::types::data::Data;
 use stun_proto::types::TransportType;
 
 use crate::agent::AgentError;
@@ -89,7 +90,7 @@ impl Component {
     /// Send data to the peer using the established communication channel.  This will not succeed
     /// until the component is in the [`Connected`](ComponentConnectionState::Connected) state.
     pub async fn send(&self, data: &[u8]) -> Result<(), AgentError> {
-        let transmit;
+        let transmit: Transmit<Data<'_>>;
         let (channel, to) = {
             let inner = self.inner.lock().unwrap();
             let selected_pair = inner.selected_pair.as_ref().ok_or(std::io::Error::new(
@@ -115,14 +116,14 @@ impl Component {
             let stun_transmit = component.send(data)?;
 
             transmit = match stun_transmit.transport {
-                TransportType::Udp => stun_transmit,
+                TransportType::Udp => Transmit::new(stun_transmit.data.into(), stun_transmit.transport, stun_transmit.from, stun_transmit.to),
                 TransportType::Tcp => {
                     let mut data = Vec::with_capacity(stun_transmit.data.len());
                     data.resize(2, 0);
                     BigEndian::write_u16(&mut data, stun_transmit.data.len() as u16);
-                    data.extend_from_slice(&stun_transmit.data);
-                    Transmit::new_owned(
-                        data.into_boxed_slice(),
+                    data.extend_from_slice(stun_transmit.data);
+                    Transmit::new(
+                        data.into_boxed_slice().into(),
                         stun_transmit.transport,
                         stun_transmit.from,
                         stun_transmit.to,
