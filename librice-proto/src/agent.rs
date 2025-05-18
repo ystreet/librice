@@ -17,14 +17,14 @@ use std::time::{Duration, Instant};
 use rand::prelude::*;
 use stun_proto::types::data::Data;
 
-use crate::component::ComponentConnectionState;
-//use crate::gathering::GatherPoll;
 use crate::candidate::{ParseCandidateError, TransportType};
+use crate::component::ComponentConnectionState;
 use crate::conncheck::{CheckListSetPollRet, ConnCheckEvent, ConnCheckListSet, SelectedPair};
 use crate::stream::{Stream, StreamMut, StreamState};
 use stun_proto::agent::{StunError, Transmit};
 use stun_proto::types::message::StunParseError;
-//use crate::turn::agent::TurnCredentials;
+
+pub use turn_client_proto::types::TurnCredentials;
 
 /// Errors that can be returned as a result of agent operations.
 #[derive(Debug)]
@@ -98,7 +98,7 @@ pub struct Agent {
     closed: bool,
     pub(crate) checklistset: ConnCheckListSet,
     pub(crate) stun_servers: Vec<(TransportType, SocketAddr)>,
-    //pub(crate) turn_servers: Vec<(TransportType, SocketAddr, TurnCredentials)>,
+    pub(crate) turn_servers: Vec<(TransportType, SocketAddr, TurnCredentials)>,
     streams: Vec<StreamState>,
 }
 
@@ -136,6 +136,7 @@ impl AgentBuilder {
                 .trickle_ice(self.trickle_ice)
                 .build(),
             stun_servers: vec![],
+            turn_servers: vec![],
             streams: vec![],
         }
     }
@@ -224,19 +225,27 @@ impl Agent {
     pub fn stun_servers(&self) -> &Vec<(TransportType, SocketAddr)> {
         &self.stun_servers
     }
-    /*
+
     #[tracing::instrument(
         name = "ice_add_turn_server",
         skip(self)
         fields(ice.id = self.id)
     )]
-    pub fn add_turn_server(&self, transport: TransportType, addr: SocketAddr, credentials: TurnCredentials) {
-        let mut inner = self.inner.lock().unwrap();
-        info!("Adding stun server");
-        inner.turn_servers.push((transport, addr, credentials));
-        */
-    // TODO: propagate towards the gatherer as required
-    //    }
+    pub fn add_turn_server(
+        &mut self,
+        transport: TransportType,
+        addr: SocketAddr,
+        credentials: TurnCredentials,
+    ) {
+        info!("Adding turn server");
+        self.turn_servers.push((transport, addr, credentials));
+        // TODO: propagate towards the gatherer as required
+    }
+
+    /// The current list of STUN servers used by this [`Agent`]
+    pub fn turn_servers(&self) -> &Vec<(TransportType, SocketAddr, TurnCredentials)> {
+        &self.turn_servers
+    }
 
     /// Get a [`Stream`] by id.  If the stream does not exist, then `None` will be returned.
     pub fn stream(&self, id: usize) -> Option<crate::stream::Stream<'_>> {
@@ -353,12 +362,13 @@ impl Agent {
 
     pub fn poll_transmit(&mut self, now: Instant) -> Option<AgentTransmit> {
         let transmit = self.checklistset.poll_transmit(now)?;
-        if let Some(stream) =
-            self.streams.iter().find(|s| s.checklist_id == transmit.checklist_id)
+        if let Some(stream) = self
+            .streams
+            .iter()
+            .find(|s| s.checklist_id == transmit.checklist_id)
         {
             Some(AgentTransmit {
                 stream_id: stream.id(),
-                component_id: transmit.component_id,
                 transmit: transmit.transmit,
             })
         } else {
@@ -391,7 +401,6 @@ pub enum AgentPoll {
 #[derive(Debug)]
 pub struct AgentTransmit {
     pub stream_id: usize,
-    pub component_id: usize,
     pub transmit: Transmit<Data<'static>>,
 }
 

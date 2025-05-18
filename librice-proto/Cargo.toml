@@ -24,9 +24,11 @@ rand.workspace = true
 stun-proto.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, optional = true }
+turn-client-proto.workspace = true
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
+turn-server-proto = "0.2"
 
 [package.metadata.capi]
 min_version = "0.9.21"

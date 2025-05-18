@@ -9,14 +9,18 @@
 //! A [`Component`] in an ICE [`Stream`](crate::stream::Stream)
 
 use std::net::SocketAddr;
+use std::time::Instant;
 
-use stun_proto::agent::Transmit;
+use stun_proto::agent::{DelayedTransmitBuild, Transmit};
+use stun_proto::types::data::Data;
 
-use crate::candidate::{CandidatePair, TransportType};
+use crate::candidate::{CandidatePair, CandidateType, TransportType};
 
 use crate::agent::{Agent, AgentError};
+use crate::conncheck::transmit_send;
 pub use crate::conncheck::SelectedPair;
 use crate::gathering::StunGatherer;
+use turn_client_proto::types::TurnCredentials;
 
 pub const RTP: usize = 1;
 pub const RTCP: usize = 2;
@@ -75,23 +79,6 @@ impl<'a> Component<'a> {
             .as_ref()
             .map(|pair| pair.candidate_pair())
     }
-
-    /// Send data to the peer using the selected pair.  This will not succeed until the
-    /// [`Component`] has reached [`ComponentConnectionState::Connected`]
-    pub fn send<T: AsRef<[u8]>>(&self, data: T) -> Result<Transmit<T>, AgentError> {
-        let stream = self.agent.stream_state(self.stream_id).unwrap();
-        let checklist_id = stream.checklist_id;
-        let component = stream.component_state(self.component_id).unwrap();
-        let selected_pair = component
-            .selected_pair
-            .as_ref()
-            .ok_or(AgentError::ResourceNotFound)?;
-        let checklist = self.agent.checklistset.list(checklist_id).unwrap();
-        let stun_agent = checklist
-            .agent_by_id(selected_pair.stun_agent_id())
-            .ok_or(AgentError::ResourceNotFound)?;
-        Ok(stun_agent.send_data(data, selected_pair.candidate_pair().remote.address))
-    }
 }
 
 /// A mutable component in an ICE [`Stream`](crate::stream::Stream)
@@ -130,10 +117,11 @@ impl<'a> ComponentMut<'a> {
         &mut self,
         sockets: Vec<(TransportType, SocketAddr)>,
         stun_servers: Vec<(TransportType, SocketAddr)>,
+        turn_servers: Vec<(TransportType, SocketAddr, TurnCredentials)>,
     ) -> Result<(), AgentError> {
         let stream = self.agent.mut_stream_state(self.stream_id).unwrap();
         let component = stream.mut_component_state(self.component_id).unwrap();
-        component.gather_candidates(sockets, stun_servers)
+        component.gather_candidates(sockets, stun_servers, turn_servers)
     }
 
     /// Set the pair that will be used to send/receive data.  This will override the ICE
@@ -151,7 +139,7 @@ impl<'a> ComponentMut<'a> {
             selected.local.base_address,
             selected.remote.address,
         ) {
-            *agent_id
+            agent_id
         } else {
             checklist
                 .add_agent_for_5tuple(
@@ -171,6 +159,61 @@ impl<'a> ComponentMut<'a> {
         let stream = self.agent.mut_stream_state(self.stream_id).unwrap();
         let component = stream.mut_component_state(self.component_id).unwrap();
         component.selected_pair = Some(selected);
+    }
+
+    /// Send data to the peer using the selected pair.  This will not succeed until the
+    /// [`Component`] has reached [`ComponentConnectionState::Connected`]
+    pub fn send<T: AsRef<[u8]> + std::fmt::Debug>(
+        &mut self,
+        data: T,
+        now: Instant,
+    ) -> Result<Transmit<Data<'static>>, AgentError> {
+        // TODO: store statistics about bytes/packets sent
+        let stream = self.agent.stream_state(self.stream_id).unwrap();
+        let checklist_id = stream.checklist_id;
+        let component = stream.component_state(self.component_id).unwrap();
+        let selected_pair = component
+            .selected_pair
+            .as_ref()
+            .ok_or(AgentError::ResourceNotFound)?;
+        let pair = selected_pair.candidate_pair();
+        let local_candidate_type = pair.local.candidate_type;
+        let local_transport = pair.local.transport_type;
+        let local_addr = pair.local.address;
+        let remote_addr = pair.remote.address;
+        let stun_agent_id = selected_pair.stun_agent_id();
+
+        let data_len = data.as_ref().len();
+
+        let checklist = self.agent.checklistset.mut_list(checklist_id).unwrap();
+        if local_candidate_type == CandidateType::Relayed {
+            let turn_client = checklist
+                .mut_turn_client_by_allocated_address(local_transport, local_addr)
+                .ok_or(AgentError::ResourceNotFound)?
+                .1;
+            let transmit = turn_client.send_to(local_transport, remote_addr, data, now)?;
+            trace!(
+                "sending {} bytes from {} {} through TURN server {} with allocation {local_transport} {local_addr} to {remote_addr}",
+                data_len, transmit.transport, transmit.from, transmit.to,
+            );
+            let data = Data::from(transmit.data.build().into_boxed_slice());
+            Ok(Transmit::new(
+                data,
+                transmit.transport,
+                transmit.from,
+                transmit.to,
+            ))
+        } else {
+            let stun_agent = checklist
+                .agent_by_id(stun_agent_id)
+                .ok_or(AgentError::ResourceNotFound)?;
+            trace!(
+                "sending {} bytes directly over {local_transport} {local_addr} -> {remote_addr}",
+                data_len
+            );
+            let transmit = stun_agent.send_data(data, remote_addr);
+            Ok(transmit_send(&transmit))
+        }
     }
 }
 
@@ -220,12 +263,18 @@ impl ComponentState {
         &mut self,
         sockets: Vec<(TransportType, SocketAddr)>,
         stun_servers: Vec<(TransportType, SocketAddr)>,
+        turn_servers: Vec<(TransportType, SocketAddr, TurnCredentials)>,
     ) -> Result<(), AgentError> {
         if self.gather_state != GatherProgress::New {
             return Err(AgentError::AlreadyInProgress);
         }
 
-        self.gatherer = Some(StunGatherer::new(self.id, sockets, stun_servers.clone()));
+        self.gatherer = Some(StunGatherer::new(
+            self.id,
+            sockets,
+            stun_servers,
+            turn_servers,
+        ));
         self.gather_state = GatherProgress::InProgress;
 
         Ok(())

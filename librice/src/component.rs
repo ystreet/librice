@@ -12,14 +12,13 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, Weak};
 
 use std::task::{Poll, Waker};
+use std::time::Instant;
 
-use byteorder::{BigEndian, ByteOrder};
 use librice_proto::candidate::CandidatePair;
 
 pub use librice_proto::component::ComponentConnectionState;
 use stun_proto::agent::Transmit;
 use stun_proto::types::data::Data;
-use stun_proto::types::TransportType;
 
 use crate::agent::AgentError;
 use crate::socket::StunChannel;
@@ -105,31 +104,15 @@ impl Component {
             let agent = self.weak_agent.upgrade().ok_or(AgentError::Proto(
                 librice_proto::agent::AgentError::ResourceNotFound,
             ))?;
-            let agent = agent.lock().unwrap();
-            let stream = agent
-                .stream(self.stream_id)
+            let mut agent = agent.lock().unwrap();
+            let mut stream = agent
+                .mut_stream(self.stream_id)
                 .ok_or(librice_proto::agent::AgentError::ResourceNotFound)?;
-            let component = stream
-                .component(self.id)
+            let mut component = stream
+                .mut_component(self.id)
                 .ok_or(librice_proto::agent::AgentError::ResourceNotFound)?;
 
-            let stun_transmit = component.send(data)?;
-
-            transmit = match stun_transmit.transport {
-                TransportType::Udp => Transmit::new(stun_transmit.data.into(), stun_transmit.transport, stun_transmit.from, stun_transmit.to),
-                TransportType::Tcp => {
-                    let mut data = Vec::with_capacity(stun_transmit.data.len());
-                    data.resize(2, 0);
-                    BigEndian::write_u16(&mut data, stun_transmit.data.len() as u16);
-                    data.extend_from_slice(stun_transmit.data);
-                    Transmit::new(
-                        data.into_boxed_slice().into(),
-                        stun_transmit.transport,
-                        stun_transmit.from,
-                        stun_transmit.to,
-                    )
-                }
-            }
+            transmit = component.send(data, Instant::now())?;
         }
 
         trace!("sending {} bytes to {}", data.len(), to);
