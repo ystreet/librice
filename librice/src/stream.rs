@@ -139,7 +139,7 @@ impl futures::stream::Stream for Gather {
                     proto_stream.end_of_local_candidates();
                     return Poll::Ready(None);
                 }
-                Ok(GatherPoll::NeedAgent {
+                Ok(GatherPoll::AllocateSocket {
                     component_id,
                     transport,
                     local_addr,
@@ -159,9 +159,10 @@ impl futures::stream::Stream for Gather {
                         continue;
                     }
                 }
-                Ok(GatherPoll::NewCandidate(cand)) => {
-                    proto_stream.add_local_candidate(cand.clone());
-                    return Poll::Ready(Some(cand));
+                Ok(GatherPoll::NewCandidate(gathered)) => {
+                    let candidate = gathered.candidate.clone();
+                    proto_stream.add_local_gathered_candidate(gathered);
+                    return Poll::Ready(Some(candidate));
                 }
                 Ok(GatherPoll::WaitUntil(wait_time)) => match lowest_wait {
                     Some(wait) => {
@@ -463,6 +464,7 @@ impl Stream {
         ret.map_err(AgentError::Proto)
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(
         name = "stream_handle_incoming_data",
         skip(weak_inner, weak_proto_agent, weak_agent_inner, weak_component, stream_id, component_id, transmit),
@@ -471,7 +473,7 @@ impl Stream {
             component.id = component_id,
         )
     )]
-    fn handle_incoming_data<T: AsRef<[u8]>>(
+    fn handle_incoming_data<T: AsRef<[u8]> + std::fmt::Debug>(
         weak_inner: Weak<Mutex<StreamInner>>,
         weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
         weak_agent_inner: Weak<Mutex<AgentInner>>,
@@ -479,6 +481,7 @@ impl Stream {
         stream_id: usize,
         component_id: usize,
         transmit: Transmit<T>,
+        now: Instant,
     ) {
         trace!(
             "incoming data of {} bytes from {} to {} via {}",
@@ -493,7 +496,7 @@ impl Stream {
         let mut proto_agent = proto_agent.lock().unwrap();
         let mut proto_stream = proto_agent.mut_stream(stream_id).unwrap();
 
-        let reply = proto_stream.handle_incoming_data(component_id, transmit);
+        let reply = proto_stream.handle_incoming_data(component_id, transmit, now);
 
         let Some(component) = weak_component.upgrade() else {
             return;
@@ -547,11 +550,15 @@ impl Stream {
             .weak_proto_agent
             .upgrade()
             .ok_or(AgentError::Proto(ProtoAgentError::ResourceNotFound))?;
-        let (stun_servers, component_ids) = {
+        let (stun_servers, turn_servers, component_ids) = {
             let proto_agent = proto_agent.lock().unwrap();
             let proto_stream = proto_agent.stream(self.id).unwrap();
             let component_ids = proto_stream.component_ids_iter().collect::<Vec<_>>();
-            (proto_agent.stun_servers().clone(), component_ids)
+            (
+                proto_agent.stun_servers().clone(),
+                proto_agent.turn_servers().clone(),
+                component_ids,
+            )
         };
         let weak_inner = Arc::downgrade(&self.inner);
 
@@ -596,6 +603,7 @@ impl Stream {
                                         from,
                                         local_addr,
                                     ),
+                                    Instant::now(),
                                 )
                             }
                         });
@@ -638,6 +646,7 @@ impl Stream {
                                                 from,
                                                 local_addr,
                                             ),
+                                            Instant::now(),
                                         )
                                     }
                                 });
@@ -650,7 +659,11 @@ impl Stream {
                 let mut proto_agent = proto_agent.lock().unwrap();
                 let mut proto_stream = proto_agent.mut_stream(self.id).unwrap();
                 let mut component = proto_stream.mut_component(component_id).unwrap();
-                component.gather_candidates(proto_sockets, stun_servers.clone())?;
+                component.gather_candidates(
+                    proto_sockets,
+                    stun_servers.clone(),
+                    turn_servers.clone(),
+                )?;
             }
         }
 
@@ -879,6 +892,7 @@ impl Stream {
                             from,
                             local_addr,
                         ),
+                        Instant::now(),
                     )
                 }
             }
@@ -920,22 +934,13 @@ impl Stream {
 
             let channel = {
                 let mut proto_agent = proto_agent.lock().unwrap();
-                let (agent, channel) = match channel {
-                    Ok(channel) => {
-                        let local_addr = channel.local_addr().unwrap();
-                        let remote_addr = channel.remote_addr().unwrap();
-                        (
-                            Ok(StunAgent::builder(TransportType::Tcp, local_addr)
-                                .remote_addr(remote_addr)
-                                .build()),
-                            Some(channel),
-                        )
-                    }
+                let (local_addr, channel) = match channel {
+                    Ok(channel) => (Ok(channel.local_addr().unwrap()), Some(channel)),
                     Err(e) => (Err(e), None),
                 };
 
                 let mut proto_stream = proto_agent.mut_stream(stream_id).unwrap();
-                proto_stream.handle_gather_tcp_connect(component_id, from, to, agent);
+                proto_stream.handle_gather_tcp_connect(component_id, from, to, local_addr);
                 channel
             };
             if let Some(waker) = weak_inner
@@ -968,6 +973,7 @@ impl Stream {
                             from,
                             local_addr,
                         ),
+                        Instant::now(),
                     )
                 }
             }

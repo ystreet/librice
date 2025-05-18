@@ -11,7 +11,7 @@
 use std::net::SocketAddr;
 use std::time::Instant;
 
-use crate::gathering::GatherPoll;
+use crate::gathering::{GatherPoll, GatheredCandidate};
 use stun_proto::agent::{StunAgent, StunError, Transmit};
 use stun_proto::types::data::Data;
 
@@ -331,15 +331,16 @@ impl<'a> StreamMut<'a> {
             component.id = component_id,
         )
     )]
-    pub fn handle_incoming_data<T: AsRef<[u8]>>(
+    pub fn handle_incoming_data<T: AsRef<[u8]> + std::fmt::Debug>(
         &mut self,
         component_id: usize,
         transmit: Transmit<T>,
+        now: Instant,
     ) -> StreamIncomingDataReply {
         let stream_state = self.agent.mut_stream_state(self.id).unwrap();
         let checklist_id = stream_state.checklist_id;
         // first try to provide the incoming data to the gathering process if it exist
-        let mut ret = stream_state.handle_incoming_data(component_id, &transmit);
+        let mut ret = stream_state.handle_incoming_data(component_id, &transmit, now);
         if ret.gather_handled {
             return ret;
         }
@@ -348,10 +349,16 @@ impl<'a> StreamMut<'a> {
         };
 
         // or, provide the data to the connection check component for further processing
+        let transmit = Transmit::new(
+            Data::from(transmit.data.as_ref()),
+            transmit.transport,
+            transmit.from,
+            transmit.to,
+        );
         if let Ok(replies) = self
             .agent
             .checklistset
-            .incoming_data(checklist_id, &transmit)
+            .incoming_data(checklist_id, transmit, now)
         {
             for reply in replies {
                 match reply {
@@ -381,9 +388,7 @@ impl<'a> StreamMut<'a> {
     /// Poll the gathering process in order to make further progress.  The returned value indicates
     /// what the caller should do next.
     pub fn poll_gather_transmit(&mut self, now: Instant) -> Option<(usize, Transmit<Data>)> {
-        let stream_state = self
-            .agent
-            .mut_stream_state(self.id)?;
+        let stream_state = self.agent.mut_stream_state(self.id)?;
         stream_state.poll_gather_transmit(now)
     }
 
@@ -403,14 +408,14 @@ impl<'a> StreamMut<'a> {
         checklist.end_of_remote_candidates();
     }
 
-    /// Provide a reply to the [`GatherPoll::NeedAgent`] request.  The `component_id`, `from`, and
+    /// Provide a reply to the [`GatherPoll::AllocateSocket`] request.  The `component_id`, `from`, and
     /// `to` values must match exactly with the request.
     pub fn handle_gather_tcp_connect(
         &mut self,
         component_id: usize,
         from: SocketAddr,
         to: SocketAddr,
-        agent: Result<StunAgent, StunError>,
+        socket: Result<SocketAddr, StunError>,
     ) {
         let stream_state = self.agent.mut_stream_state(self.id).unwrap();
         let Some(component_state) = stream_state.mut_component_state(component_id) else {
@@ -420,7 +425,7 @@ impl<'a> StreamMut<'a> {
             return;
         }
         if let Some(gather) = component_state.gatherer.as_mut() {
-            gather.add_agent(TransportType::Tcp, from, to, agent)
+            gather.allocated_socket(TransportType::Tcp, from, to, socket)
         }
     }
 
@@ -446,6 +451,14 @@ impl<'a> StreamMut<'a> {
         let checklist_id = stream_state.checklist_id;
         let checklist = self.agent.checklistset.mut_list(checklist_id).unwrap();
         checklist.add_local_candidate(candidate)
+    }
+
+    /// Add a local candidate for this stream
+    pub fn add_local_gathered_candidate(&mut self, candidate: GatheredCandidate) {
+        let stream_state = self.agent.mut_stream_state(self.id).unwrap();
+        let checklist_id = stream_state.checklist_id;
+        let checklist = self.agent.checklistset.mut_list(checklist_id).unwrap();
+        checklist.add_local_gathered_candidate(candidate)
     }
 
     /// Signal the end of local candidates.  Calling this function may allow ICE processing to
@@ -580,10 +593,11 @@ impl StreamState {
         self.remote_credentials.clone()
     }
 
-    pub(crate) fn handle_incoming_data<T: AsRef<[u8]>>(
+    pub(crate) fn handle_incoming_data<T: AsRef<[u8]> + std::fmt::Debug>(
         &mut self,
         component_id: usize,
         transmit: &Transmit<T>,
+        now: Instant,
     ) -> StreamIncomingDataReply {
         let Some(component) = self.mut_component_state(component_id) else {
             return StreamIncomingDataReply::default();
@@ -596,7 +610,7 @@ impl StreamState {
         };
         // XXX: is this enough to successfully route to the gatherer over the
         // connection check or component received handling?
-        let Ok(wake) = gather.handle_data(transmit) else {
+        let Ok(wake) = gather.handle_data(transmit, now) else {
             return StreamIncomingDataReply::default();
         };
         if wake {
@@ -636,13 +650,13 @@ impl StreamState {
                 GatherPoll::NewCandidate(candidate) => {
                     return Ok(GatherPoll::NewCandidate(candidate))
                 }
-                GatherPoll::NeedAgent {
+                GatherPoll::AllocateSocket {
                     component_id,
                     transport,
                     local_addr,
                     remote_addr,
                 } => {
-                    return Ok(GatherPoll::NeedAgent {
+                    return Ok(GatherPoll::AllocateSocket {
                         component_id,
                         transport,
                         local_addr,

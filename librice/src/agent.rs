@@ -19,8 +19,8 @@ use librice_proto::component::ComponentConnectionState;
 
 use crate::component::{Component, SelectedPair};
 use crate::stream::Stream;
+pub use librice_proto::agent::TurnCredentials;
 use librice_proto::candidate::TransportType;
-//use crate::turn::agent::TurnCredentials;
 
 /// Errors that can be returned as a result of agent operations.
 #[derive(Debug)]
@@ -171,17 +171,20 @@ impl Agent {
     pub fn add_stun_server(&self, transport: TransportType, addr: SocketAddr) {
         self.agent.lock().unwrap().add_stun_server(transport, addr)
     }
-    /*
-    #[tracing::instrument(
-        name = "ice_add_turn_server",
-        skip(self)
-        fields(ice.id = self.id)
-    )]
-    pub fn add_turn_server(&self, transport: TransportType, addr: SocketAddr, credentials: TurnCredentials) {
-        self.agent.lock().unwrap().add_turn_server(transport, addr, credentials)
-        */
-    // TODO: propagate towards the gatherer as required
-    //    }
+
+    /// Add a TURN server by address and transport to use for gathering potential candidates
+    pub fn add_turn_server(
+        &self,
+        transport: TransportType,
+        addr: SocketAddr,
+        credentials: TurnCredentials,
+    ) {
+        self.agent
+            .lock()
+            .unwrap()
+            .add_turn_server(transport, addr, credentials)
+        // TODO: propagate towards the gatherer as required
+    }
 }
 
 #[derive(Debug, Default)]
@@ -226,7 +229,7 @@ impl futures::stream::Stream for AgentStream {
         let mut agent = self.agent.lock().unwrap();
         let now = Instant::now();
 
-        let wait = loop {
+        let wait = {
             let wait = match agent.poll(now) {
                 AgentPoll::Closed => return Poll::Ready(None),
                 AgentPoll::TcpConnect(tcp_connect) => {
@@ -255,7 +258,8 @@ impl futures::stream::Stream for AgentStream {
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(pair.stream_id) {
                         if let Some(component) = stream.component(pair.component_id) {
-                            if let Some(socket) = stream.socket_for_pair(pair.selected.candidate_pair())
+                            if let Some(socket) =
+                                stream.socket_for_pair(pair.selected.candidate_pair())
                             {
                                 if let Err(e) = component.set_selected_pair(SelectedPair::new(
                                     pair.selected.candidate_pair().clone(),
@@ -303,7 +307,7 @@ impl futures::stream::Stream for AgentStream {
                 cx.waker().wake_by_ref();
                 return Poll::Pending;
             }
-            break wait;
+            wait
         };
         drop(agent);
 

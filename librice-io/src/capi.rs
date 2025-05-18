@@ -126,6 +126,7 @@ pub unsafe extern "C" fn rice_udp_socket_new(local_addr: *const RiceAddress) -> 
     let local_addr = Box::from_raw(mut_override(local_addr));
 
     let ret = if let Ok(socket) = Async::<UdpSocket>::bind(**local_addr) {
+        info!("created new UDP socket for {local_addr}");
         mut_override(Arc::into_raw(Arc::new(RiceUdpSocket { socket })))
     } else {
         core::ptr::null_mut::<RiceUdpSocket>()
