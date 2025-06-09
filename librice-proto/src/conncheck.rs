@@ -3239,7 +3239,7 @@ mod tests {
         match Message::from_bytes(&transmit.data.as_ref()[offset..]) {
             Err(e) => error!("error parsing STUN message {e:?}"),
             Ok(msg) => {
-                debug!("received from {}: {}", transmit.to, msg);
+                debug!("received {} -> {}: {}", transmit.from, transmit.to, msg);
                 if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
                     let transmit = agent
                         .send(
@@ -3553,6 +3553,49 @@ mod tests {
             self.remote.local_credentials = Some(credentials.clone());
             self.local_list().set_remote_credentials(credentials);
         }
+
+        fn check_nomination(&mut self, pair: &CandidatePair, now: Instant) {
+            let nominate_check = self
+                .local_list()
+                .matching_check(pair, Nominate::True)
+                .unwrap();
+            assert_eq!(nominate_check.state(), CandidatePairState::Waiting);
+            let pair = nominate_check.pair.clone();
+            let check_id = nominate_check.conncheck_id;
+            assert!(self.local_list().is_triggered(&pair));
+
+            // perform one tick which will perform the nomination check
+            send_next_check_and_response(&self.local.peer, &self.remote)
+                .perform(&mut self.local.checklist_set, now);
+
+            error!("nominated id {check_id:?}");
+            let nominate_check = self.local_list().check_by_id(check_id).unwrap();
+            assert_eq!(nominate_check.state(), CandidatePairState::Succeeded);
+
+            // check list is done
+            assert_eq!(self.local_list().state(), CheckListState::Completed);
+
+            let CheckListSetPollRet::Event {
+                checklist_id: _,
+                event: ConnCheckEvent::SelectedPair(_cid, _selected_pair),
+            } = self.local.checklist_set.poll(now)
+            else {
+                unreachable!();
+            };
+            let CheckListSetPollRet::Event {
+                checklist_id: _,
+                event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connected),
+            } = self.local.checklist_set.poll(now)
+            else {
+                unreachable!();
+            };
+
+            // perform one final tick attempt which should end the processing
+            assert!(matches!(
+                self.local.checklist_set.poll(now),
+                CheckListSetPollRet::Completed
+            ));
+        }
     }
 
     struct NextCheckAndResponse<'next> {
@@ -3648,47 +3691,7 @@ mod tests {
         let check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(check.state(), CandidatePairState::Succeeded);
 
-        // should have resulted in a nomination and therefore a triggered check (always a new
-        // check in our implementation)
-        let nominate_check = state
-            .local_list()
-            .matching_check(&pair, Nominate::True)
-            .unwrap();
-        let pair = nominate_check.pair.clone();
-        let check_id = nominate_check.conncheck_id;
-        assert!(state.local_list().is_triggered(&pair));
-
-        // perform one tick which will perform the nomination check
-        send_next_check_and_response(&state.local.peer, &state.remote)
-            .perform(&mut state.local.checklist_set, now);
-
-        error!("nominated id {check_id:?}");
-        let nominate_check = state.local_list().check_by_id(check_id).unwrap();
-        assert_eq!(nominate_check.state(), CandidatePairState::Succeeded);
-
-        // check list is done
-        assert_eq!(state.local_list().state(), CheckListState::Completed);
-
-        let CheckListSetPollRet::Event {
-            checklist_id: _,
-            event: ConnCheckEvent::SelectedPair(_cid, _selected_pair),
-        } = state.local.checklist_set.poll(now)
-        else {
-            unreachable!();
-        };
-        let CheckListSetPollRet::Event {
-            checklist_id: _,
-            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connected),
-        } = state.local.checklist_set.poll(now)
-        else {
-            unreachable!();
-        };
-
-        // perform one final tick attempt which should end the processing
-        assert!(matches!(
-            state.local.checklist_set.poll(now),
-            CheckListSetPollRet::Completed
-        ));
+        state.check_nomination(&pair, now);
     }
 
     #[test]
@@ -3734,42 +3737,7 @@ mod tests {
         let triggered_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(triggered_check.state(), CandidatePairState::Succeeded);
 
-        // should have resulted in a nomination and therefore a triggered check (always a new
-        // check in our implementation)
-        let nominate_check = state
-            .local_list()
-            .matching_check(&pair, Nominate::True)
-            .unwrap();
-        let pair = nominate_check.pair.clone();
-        assert!(state.local_list().is_triggered(&pair));
-
-        // perform one tick which will perform the nomination check
-        send_next_check_and_response(&state.local.peer, &state.remote)
-            .perform(&mut state.local.checklist_set, now);
-
-        // check list is done
-        assert_eq!(state.local_list().state(), CheckListState::Completed);
-
-        let CheckListSetPollRet::Event {
-            checklist_id: _,
-            event: ConnCheckEvent::SelectedPair(_cid, _selected_pair),
-        } = state.local.checklist_set.poll(now)
-        else {
-            unreachable!();
-        };
-        let CheckListSetPollRet::Event {
-            checklist_id: _,
-            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connected),
-        } = state.local.checklist_set.poll(now)
-        else {
-            unreachable!();
-        };
-
-        // perform one final tick attempt which should end the processing
-        assert!(matches!(
-            state.local.checklist_set.poll(now),
-            CheckListSetPollRet::Completed
-        ));
+        state.check_nomination(&pair, now);
     }
 
     #[test]
@@ -4386,48 +4354,7 @@ mod tests {
 
         state.local_list().dump_check_state();
 
-        // should have resulted in a nomination and therefore a triggered check (always a new
-        // check in our implementation)
-        let nominate_check = state
-            .local_list()
-            .matching_check(&pair, Nominate::True)
-            .unwrap();
-        let check_id = nominate_check.conncheck_id;
-        let pair = nominate_check.pair.clone();
-        assert!(state.local_list().is_triggered(&pair));
-
-        // perform one tick which will perform the nomination check
-        send_next_check_and_response(&state.local.peer, &state.remote)
-            .perform(&mut state.local.checklist_set, now);
-
-        let nominate_check = state.local_list().check_by_id(check_id).unwrap();
-        assert_eq!(nominate_check.state(), CandidatePairState::Succeeded);
-
-        // check list is done
-        // TODO: provide end-of-candidate notification and delay completed until we receive
-        // end-of-candidate
-        assert_eq!(state.local_list().state(), CheckListState::Completed);
-
-        let CheckListSetPollRet::Event {
-            checklist_id: _,
-            event: ConnCheckEvent::SelectedPair(_cid, _selected_pair),
-        } = state.local.checklist_set.poll(now)
-        else {
-            unreachable!();
-        };
-        let CheckListSetPollRet::Event {
-            checklist_id: _,
-            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connected),
-        } = state.local.checklist_set.poll(now)
-        else {
-            unreachable!();
-        };
-
-        // perform one final tick attempt which should end the processing
-        assert!(matches!(
-            state.local.checklist_set.poll(now),
-            CheckListSetPollRet::Completed
-        ));
+        state.check_nomination(&pair, now);
     }
 
     #[test]
@@ -4543,39 +4470,7 @@ mod tests {
         let triggered_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(triggered_check.state(), CandidatePairState::Succeeded);
 
-        let nominated_check = state
-            .local_list()
-            .matching_check(&pair, Nominate::True)
-            .unwrap();
-        assert_eq!(nominated_check.state(), CandidatePairState::Waiting);
-        info!("perform nominated check");
-        let CheckListSetPollRet::WaitUntil(now) = state.local.checklist_set.poll(now) else {
-            unreachable!();
-        };
-        send_next_check_and_response(&state.local.peer, &state.remote)
-            .perform(&mut state.local.checklist_set, now);
-
-        let set_ret = state.local.checklist_set.poll(now);
-        let CheckListSetPollRet::Event {
-            checklist_id: _,
-            event: ConnCheckEvent::SelectedPair(_comp, selected_pair),
-        } = set_ret
-        else {
-            unreachable!();
-        };
-        assert_eq!(selected_pair.candidate_pair, pair);
-        let set_ret = state.local.checklist_set.poll(now);
-        let CheckListSetPollRet::Event {
-            checklist_id: _,
-            event: ConnCheckEvent::ComponentState(_comp, ComponentConnectionState::Connected),
-        } = set_ret
-        else {
-            unreachable!();
-        };
-        let set_ret = state.local.checklist_set.poll(now);
-        assert!(matches!(set_ret, CheckListSetPollRet::Completed));
-        // a checklist with only a local candidates but no more possible candidates will error
-        assert_eq!(state.local_list().state(), CheckListState::Completed);
+        state.check_nomination(&pair, now);
     }
 
     #[test]
@@ -4671,39 +4566,7 @@ mod tests {
         let triggered_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(triggered_check.state(), CandidatePairState::InProgress);
 
-        let nominated_check = state
-            .local_list()
-            .matching_check(&pair, Nominate::True)
-            .unwrap();
-        assert_eq!(nominated_check.state(), CandidatePairState::Waiting);
-        info!("perform nominated check");
-        let CheckListSetPollRet::WaitUntil(now) = state.local.checklist_set.poll(now) else {
-            unreachable!();
-        };
-        send_next_check_and_response(&state.local.peer, &state.remote)
-            .perform(&mut state.local.checklist_set, now);
-
-        let set_ret = state.local.checklist_set.poll(now);
-        let CheckListSetPollRet::Event {
-            checklist_id: _,
-            event: ConnCheckEvent::SelectedPair(_comp, selected_pair),
-        } = set_ret
-        else {
-            unreachable!();
-        };
-        assert_eq!(selected_pair.candidate_pair, pair);
-        let set_ret = state.local.checklist_set.poll(now);
-        let CheckListSetPollRet::Event {
-            checklist_id: _,
-            event: ConnCheckEvent::ComponentState(_comp, ComponentConnectionState::Connected),
-        } = set_ret
-        else {
-            unreachable!();
-        };
-        let set_ret = state.local.checklist_set.poll(now);
-        assert!(matches!(set_ret, CheckListSetPollRet::Completed));
-        // a checklist with only a local candidates but no more possible candidates will error
-        assert_eq!(state.local_list().state(), CheckListState::Completed);
+        state.check_nomination(&pair, now);
     }
 
     #[test]
@@ -4799,38 +4662,6 @@ mod tests {
             .unwrap();
         assert_eq!(prflx_check.state(), CandidatePairState::Succeeded);
 
-        let nominated_check = state
-            .local_list()
-            .matching_check(&pair, Nominate::True)
-            .unwrap();
-        assert_eq!(nominated_check.state(), CandidatePairState::Waiting);
-        info!("perform nominated check");
-        let CheckListSetPollRet::WaitUntil(now) = state.local.checklist_set.poll(now) else {
-            unreachable!();
-        };
-        send_next_check_and_response(&state.local.peer, &state.remote)
-            .perform(&mut state.local.checklist_set, now);
-
-        let set_ret = state.local.checklist_set.poll(now);
-        let CheckListSetPollRet::Event {
-            checklist_id: _,
-            event: ConnCheckEvent::SelectedPair(_comp, selected_pair),
-        } = set_ret
-        else {
-            unreachable!();
-        };
-        assert_eq!(selected_pair.candidate_pair, pair);
-        let set_ret = state.local.checklist_set.poll(now);
-        let CheckListSetPollRet::Event {
-            checklist_id: _,
-            event: ConnCheckEvent::ComponentState(_comp, ComponentConnectionState::Connected),
-        } = set_ret
-        else {
-            unreachable!();
-        };
-        let set_ret = state.local.checklist_set.poll(now);
-        assert!(matches!(set_ret, CheckListSetPollRet::Completed));
-        // a checklist with only a local candidates but no more possible candidates will error
-        assert_eq!(state.local_list().state(), CheckListState::Completed);
+        state.check_nomination(&pair, now);
     }
 }
