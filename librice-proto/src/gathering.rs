@@ -992,6 +992,36 @@ mod tests {
     }
 
     #[test]
+    fn host_udp_incoming_data_ignored() {
+        let _log = crate::tests::test_init_log();
+        let local_addr = "192.168.1.1:1000".parse().unwrap();
+        let mut gather =
+            StunGatherer::new(1, vec![(TransportType::Udp, local_addr)], vec![], vec![]);
+        let now = Instant::now();
+        let ret = gather.poll(now);
+        if let Ok(GatherPoll::NewCandidate(cand)) = ret {
+            assert!(cand.turn_agent.is_none());
+            let cand = cand.candidate;
+            assert_eq!(cand.component_id, 1);
+            assert_eq!(cand.candidate_type, CandidateType::Host);
+            assert_eq!(cand.transport_type, TransportType::Udp);
+            assert_eq!(cand.address, local_addr);
+            assert_eq!(cand.base_address, local_addr);
+            assert_eq!(cand.tcp_type, None);
+            assert_eq!(cand.extensions, vec![]);
+        } else {
+            error!("{ret:?}");
+            unreachable!();
+        }
+        let remote_addr = "192.168.1.2:2000".parse().unwrap();
+        let transmit = Transmit::new([6; 10], TransportType::Udp, remote_addr, local_addr);
+        assert!(!gather.handle_data(&transmit, now).unwrap());
+
+        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
+        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
+    }
+
+    #[test]
     fn host_tcp() {
         let _log = crate::tests::test_init_log();
         let local_addr = "192.168.1.1:1000".parse().unwrap();
@@ -1175,6 +1205,42 @@ mod tests {
             error!("{ret:?}");
             unreachable!();
         }
+        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
+        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
+    }
+
+    #[test]
+    fn stun_interrupted_by_non_stun() {
+        let _log = crate::tests::test_init_log();
+        let local_addr = "192.168.1.1:1000".parse().unwrap();
+        let stun_addr = "192.168.1.2:2000".parse().unwrap();
+        let mut gather = StunGatherer::new(
+            1,
+            vec![(TransportType::Tcp, local_addr)],
+            vec![(TransportType::Tcp, stun_addr)],
+            vec![],
+        );
+        let now = Instant::now();
+        handle_allocate_socket(&mut gather, local_addr, now);
+        /* host candidate contents checked in `host_tcp()` */
+        assert!(matches!(
+            gather.poll(now),
+            Ok(GatherPoll::NewCandidate(_cand))
+        ));
+        assert!(matches!(
+            gather.poll(now),
+            Ok(GatherPoll::NewCandidate(_cand))
+        ));
+
+        let transmit = gather.poll_transmit(now).unwrap();
+        assert_eq!(transmit.from, local_addr);
+        assert_eq!(transmit.to, stun_addr);
+
+        let response = [4; 12];
+        let response = Transmit::new(&response, transmit.transport, transmit.to, transmit.from);
+        assert!(matches!(gather.poll(now), Ok(GatherPoll::WaitUntil(_))));
+        assert!(!gather.handle_data(&response, now).unwrap());
+
         assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
         assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
     }
