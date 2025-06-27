@@ -1,0 +1,38 @@
+name: C Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - name: Install cargo-c
+      uses: actions-rs/cargo@v1
+      with:
+        command: install
+        args: 'cargo-c'
+    - name: CBuild librice-proto
+      run: cargo cbuild -p librice-proto --verbose
+    - name: CBuild librice-io
+      run: cargo cbuild -p librice-io --verbose
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - name: Install cargo-c
+      uses: actions-rs/cargo@v1
+      with:
+        command: install
+        args: 'cargo-c'
+    - name: CTest librice-proto
+      run: cargo ctest -p librice-proto --verbose
+    - name: CTest librice-io
+      run: cargo ctest -p librice-io --verbose
