@@ -19,7 +19,7 @@ capi = ["libc", "tracing-subscriber"]
 arbitrary = { workspace = true, optional = true }
 byteorder.workspace = true
 libc = { version = "0.2", optional = true }
-nom = "7"
+nom = "8"
 rand.workspace = true
 stun-proto.workspace = true
 tracing.workspace = true

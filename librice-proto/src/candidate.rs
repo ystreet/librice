@@ -475,6 +475,7 @@ mod parse {
 
     // https://datatracker.ietf.org/doc/html/rfc8839#section-5.1
     fn parse_candidate(s: &str) -> Result<Candidate, ParseCandidateError> {
+        use nom::Parser;
         let (s, _) = tag::<_, _, nom::error::Error<_>>("a=candidate:")(s)
             .map_err(|_| ParseCandidateError::NotCandidate)?;
         let (s, foundation) = take_while_m_n::<_, _, nom::error::Error<_>>(1, 32, is_ice_char)(s)
@@ -483,7 +484,8 @@ mod parse {
         let (s, component_id): (_, usize) = map_res(
             take_while_m_n::<_, _, nom::error::Error<_>>(1, 3, is_digit),
             str::parse,
-        )(s)
+        )
+        .parse(s)
         .map_err(|_| ParseCandidateError::BadComponentId)?;
         let s = skip_spaces(s)?;
         let (s, transport_type) = take_while1::<_, _, nom::error::Error<_>>(is_alphabetic)(s)
@@ -493,20 +495,23 @@ mod parse {
         let (s, priority) = map_res(
             take_while1::<_, _, nom::error::Error<_>>(is_digit),
             str::parse,
-        )(s)
+        )
+        .parse(s)
         .map_err(|_| ParseCandidateError::BadPriority)?;
         let s = skip_spaces(s)?;
         // FIXME: proper address parsing
         let (s, connection_address) = map_res(
             take_while1::<_, _, nom::error::Error<_>>(is_part_of_socket_addr),
             |s: &str| s.parse(),
-        )(s)
+        )
+        .parse(s)
         .map_err(|_| ParseCandidateError::BadAddress)?;
         let s = skip_spaces(s)?;
         let (s, port) = map_res(
             take_while1::<_, _, nom::error::Error<_>>(is_digit),
             str::parse,
-        )(s)
+        )
+        .parse(s)
         .map_err(|_| ParseCandidateError::BadAddress)?;
         let address = SocketAddr::new(connection_address, port);
         let s = skip_spaces(s)?;
@@ -516,7 +521,8 @@ mod parse {
         let (s, candidate_type) = map_res(
             take_while1::<_, _, nom::error::Error<_>>(is_alphabetic),
             CandidateType::from_str,
-        )(s)
+        )
+        .parse(s)
         .map_err(|_| ParseCandidateError::BadCandidateType)?;
 
         let mut builder = Candidate::builder(
