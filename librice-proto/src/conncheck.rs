@@ -2700,16 +2700,9 @@ impl ConnCheckListSet {
             //     checklist set) in the Waiting or In-Progress state, the agent
             //     puts the candidate pair state to Waiting and continues with the
             //     next step.
-            let mut foundations = std::collections::HashSet::new();
+            let mut foundations_not_waiting_in_progress = std::collections::HashSet::new();
             for checklist in self.checklists.iter() {
                 for f in checklist.foundations() {
-                    foundations.insert(f);
-                }
-            }
-            let mut foundations_not_waiting_in_progress = std::collections::HashSet::new();
-            let _: Vec<_> = foundations
-                .into_iter()
-                .map(|f| {
                     if self
                         .checklists
                         .iter()
@@ -2717,13 +2710,14 @@ impl ConnCheckListSet {
                     {
                         foundations_not_waiting_in_progress.insert(f);
                     }
-                })
-                .collect();
+                }
+            }
             trace!(
                 "current foundations not waiting or in progress: {:?}",
                 foundations_not_waiting_in_progress
             );
 
+            let mut foundations_check_added = std::collections::HashSet::new();
             for checklist in self.checklists.iter_mut() {
                 for check in checklist.pairs.iter_mut() {
                     if check.state() != CandidatePairState::Frozen {
@@ -2735,7 +2729,14 @@ impl ConnCheckListSet {
                     {
                         continue;
                     }
+                    if foundations_check_added
+                        .iter()
+                        .any(|f| f == &check.pair.foundation())
+                    {
+                        continue;
+                    }
                     check.set_state(CandidatePairState::Waiting);
+                    foundations_check_added.insert(check.pair.foundation());
                 }
             }
 
@@ -3830,20 +3831,6 @@ mod tests {
         list1.add_remote_candidate(remote1.candidate.clone());
 
         assert_list_contains_checks(list1, vec![&pair1]);
-        // thaw the first checklist with only a single pair will unfreeze that pair
-        let CheckListSetPollRet::WaitUntil(now) = set.poll(now) else {
-            unreachable!();
-        };
-        let Some(_) = set.poll_transmit(now) else {
-            unreachable!();
-        };
-        let CheckListSetPollRet::WaitUntil(now) = set.poll(now) else {
-            unreachable!();
-        };
-        let list1 = set.mut_list(list1_id).unwrap();
-        let check1 = list1.matching_check(&pair1, Nominate::DontCare).unwrap();
-        assert_eq!(check1.pair, pair1);
-        assert_eq!(check1.state(), CandidatePairState::InProgress);
 
         let list2 = set.mut_list(list2_id).unwrap();
         list2.add_component(1);
@@ -3855,6 +3842,35 @@ mod tests {
 
         assert_list_contains_checks(list2, vec![&pair2, &pair3, &pair4, &pair5]);
 
+        // thaw the first checklist with only a single pair will unfreeze that pair
+        let CheckListSetPollRet::WaitUntil(now) = set.poll(now) else {
+            unreachable!();
+        };
+        let Some(_) = set.poll_transmit(now) else {
+            unreachable!();
+        };
+
+        let list2 = set.mut_list(list2_id).unwrap();
+        list2.dump_check_state();
+        let check2 = list2.matching_check(&pair2, Nominate::DontCare).unwrap();
+        assert_eq!(check2.pair, pair2);
+        assert_eq!(check2.state(), CandidatePairState::InProgress);
+        let check3 = list2.matching_check(&pair3, Nominate::DontCare).unwrap();
+        assert_eq!(check3.pair, pair3);
+        assert_eq!(check3.state(), CandidatePairState::Waiting);
+        let check4 = list2.matching_check(&pair4, Nominate::DontCare).unwrap();
+        assert_eq!(check4.pair, pair4);
+        assert_eq!(check4.state(), CandidatePairState::Waiting);
+        let check5 = list2.matching_check(&pair5, Nominate::DontCare).unwrap();
+        assert_eq!(check5.pair, pair5);
+        assert_eq!(check5.state(), CandidatePairState::Frozen);
+
+        let list1 = set.mut_list(list1_id).unwrap();
+        list1.dump_check_state();
+        let check1 = list1.matching_check(&pair1, Nominate::DontCare).unwrap();
+        assert_eq!(check1.pair, pair1);
+        assert_eq!(check1.state(), CandidatePairState::Waiting);
+
         // thaw the second checklist with 2*2 pairs will unfreeze only the foundations not
         // unfrozen by the first checklist, which means unfreezing 3 pairs
         assert!(matches!(
@@ -3864,7 +3880,15 @@ mod tests {
         let Some(_) = set.poll_transmit(now) else {
             unreachable!();
         };
+
+        let list1 = set.mut_list(list1_id).unwrap();
+        list1.dump_check_state();
+        let check1 = list1.matching_check(&pair1, Nominate::DontCare).unwrap();
+        assert_eq!(check1.pair, pair1);
+        assert_eq!(check1.state(), CandidatePairState::InProgress);
+
         let list2 = set.mut_list(list2_id).unwrap();
+        list2.dump_check_state();
         let check2 = list2.matching_check(&pair2, Nominate::DontCare).unwrap();
         assert_eq!(check2.pair, pair2);
         assert_eq!(check2.state(), CandidatePairState::InProgress);
