@@ -438,8 +438,8 @@ impl PartialEq<bool> for Nominate {
 }
 
 fn generate_random_ice_string(alphabet: &[u8], length: usize) -> String {
-    use rand::{seq::SliceRandom, thread_rng};
-    let mut rng = thread_rng();
+    use rand::prelude::*;
+    let mut rng = rand::rng();
     String::from_utf8(
         (0..length)
             .map(|_| *alphabet.choose(&mut rng).unwrap())

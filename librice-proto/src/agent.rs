@@ -126,8 +126,8 @@ impl AgentBuilder {
     /// Construct a new [`Agent`]
     pub fn build(self) -> Agent {
         let id = AGENT_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let mut rnd = rand::thread_rng();
-        let tie_breaker = rnd.gen::<u64>();
+        let mut rnd = rand::rng();
+        let tie_breaker = rnd.random::<u64>();
         let controlling = self.controlling;
         Agent {
             id,
