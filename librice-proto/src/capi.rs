@@ -100,6 +100,7 @@ struct RiceAgentInner {
     streams: Vec<Arc<RiceStream>>,
 }
 
+/// The Rice Agent used for interacting with the ICE process.
 #[derive(Debug)]
 pub struct RiceAgent {
     proto_agent: Arc<Mutex<Agent>>,
@@ -131,17 +132,30 @@ pub unsafe extern "C" fn rice_agent_new(controlling: bool, trickle_ice: bool) ->
     mut_override(Arc::into_raw(agent))
 }
 
+/// Increase the reference count of the `RiceAgent`.
+///
+/// This function is multi-threading safe.
 #[no_mangle]
 pub unsafe extern "C" fn rice_agent_ref(agent: *mut RiceAgent) -> *mut RiceAgent {
     Arc::increment_strong_count(agent);
     agent
 }
 
+/// Decrease the reference count of the `RiceAgent`.
+///
+/// If this is the last reference, then the `RiceAgent` is freed.
+///
+/// This function is multi-threading safe.
 #[no_mangle]
 pub unsafe extern "C" fn rice_agent_unref(agent: *mut RiceAgent) {
     Arc::decrement_strong_count(agent)
 }
 
+/// Close the `RiceAgent`.
+///
+/// Closure does involve closing network resources (signalled through calls to
+/// `rice_agent_poll()`) and will only succesfully complete once `rice_agent_poll`() returns
+/// `Closed`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_agent_close(agent: *mut RiceAgent) {
     let agent = Arc::from_raw(agent);
@@ -152,6 +166,10 @@ pub unsafe extern "C" fn rice_agent_close(agent: *mut RiceAgent) {
     core::mem::forget(agent);
 }
 
+/// Get the controlling state of the `RiceAgent`.
+///
+/// A return value of `true` indicates the `RiceAgent` is in controlling mode, false the controlled
+/// mode.  This value can change during ICE processing.
 #[no_mangle]
 pub unsafe extern "C" fn rice_agent_get_controlling(agent: *mut RiceAgent) -> bool {
     let agent = Arc::from_raw(agent);
@@ -163,6 +181,7 @@ pub unsafe extern "C" fn rice_agent_get_controlling(agent: *mut RiceAgent) -> bo
     ret
 }
 
+/// Return value of `rice_agent_poll()`.
 #[derive(Debug)]
 #[repr(C)]
 pub enum RiceAgentPoll {
@@ -193,17 +212,23 @@ impl RiceAgentPoll {
     }
 }
 
+/// A sequence of bytes and size.
 #[derive(Debug)]
 #[repr(C)]
 pub enum RiceData {
+    /// The data is borrowed and will not be freed on destruction.
     Borrowed(RiceDataImpl),
+    /// The data is owned and will be freed on destruction.
     Owned(RiceDataImpl),
 }
 
+/// A pointer to a sequence of bytes and the associated size.
 #[derive(Debug)]
 #[repr(C)]
 pub struct RiceDataImpl {
+    /// A pointer to a sequence of bytes.
     ptr: *mut u8,
+    /// Number of bytes pointed to in `ptr`.
     size: usize,
 }
 
@@ -259,6 +284,7 @@ impl<'a> From<RiceData> for Data<'a> {
     }
 }
 
+/// The number of bytes in a `RiceData`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_data_len(data: *const RiceData) -> usize {
     let len = match &*data {
@@ -269,6 +295,7 @@ pub unsafe extern "C" fn rice_data_len(data: *const RiceData) -> usize {
     len
 }
 
+/// The data pointer for a `RiceData`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_data_ptr(data: *const RiceData) -> *mut u8 {
     let ptr = match &*data {
@@ -283,10 +310,15 @@ pub unsafe extern "C" fn rice_data_ptr(data: *const RiceData) -> *mut u8 {
 #[derive(Debug)]
 #[repr(C)]
 pub struct RiceTransmit {
+    /// The associated stream identifier.
     stream_id: usize,
+    /// The transport type for the transmission.
     transport: RiceTransportType,
+    /// The socket source address to send from.
     from: *const RiceAddress,
+    /// The socket destination address to send to.
     to: *const RiceAddress,
+    /// The data to send.
     data: RiceData,
 }
 
@@ -319,6 +351,9 @@ impl From<crate::agent::AgentTransmit> for RiceTransmit {
     }
 }
 
+/// Free any resources allocated within a `RiceTransmit`.
+///
+/// The `RiceTransmit` must have been previously initialized with `rice_transmit_init()`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_transmit_clear(transmit: *mut RiceTransmit) {
     if !(*transmit).from.is_null() {
@@ -336,6 +371,7 @@ pub unsafe extern "C" fn rice_transmit_clear(transmit: *mut RiceTransmit) {
     }
 }
 
+/// Initialize a `RiceTransmit` with default values.
 #[no_mangle]
 pub unsafe extern "C" fn rice_transmit_init(transmit: *mut MaybeUninit<RiceTransmit>) {
     (*transmit).write(RiceTransmit::default());
@@ -359,9 +395,13 @@ fn transmit_from_rust_gather(stream_id: usize, transmit: Transmit<Data>) -> Rice
 #[derive(Debug)]
 #[repr(C)]
 pub struct RiceAgentTcpConnect {
+    /// The ICE stream id.
     pub stream_id: usize,
+    /// The ICE component id.
     pub component_id: usize,
+    /// The source address to allocate from.
     pub from: *const RiceAddress,
+    /// The destination address to connect to.
     pub to: *const RiceAddress,
 }
 
@@ -393,10 +433,15 @@ impl From<RiceAgentTcpConnect> for crate::agent::AgentTcpConnect {
 #[derive(Debug)]
 #[repr(C)]
 pub struct RiceAgentSelectedPair {
+    /// The ICE stream id.
     stream_id: usize,
+    /// The ICE component id.
     component_id: usize,
+    /// The transport type of the selected pair.
     transport: RiceTransportType,
+    /// The source address to send data from.
     from: *const RiceAddress,
+    /// The destination address to send data to.
     to: *const RiceAddress,
 }
 
@@ -416,8 +461,11 @@ impl From<crate::agent::AgentSelectedPair> for RiceAgentSelectedPair {
 #[derive(Debug)]
 #[repr(C)]
 pub struct RiceAgentComponentStateChange {
+    /// The ICE stream id.
     pub stream_id: usize,
+    /// The ICE component id.
     pub component_id: usize,
+    /// The new state of the component.
     pub state: ComponentConnectionState,
 }
 
@@ -441,11 +489,15 @@ impl From<RiceAgentComponentStateChange> for crate::agent::AgentComponentStateCh
     }
 }
 
+/// Initialize a `RiceAgentPoll` with a default value.
 #[no_mangle]
 pub unsafe extern "C" fn rice_agent_poll_init(poll: *mut MaybeUninit<RiceAgentPoll>) {
     (*poll).write(RiceAgentPoll::Closed);
 }
 
+/// Clear a `RiceAgentPoll` of any allocated values.
+///
+/// `rice_agent_poll_init()` must have been called previously.
 #[no_mangle]
 pub unsafe extern "C" fn rice_agent_poll_clear(poll: *mut RiceAgentPoll) {
     let mut other = RiceAgentPoll::Closed;
@@ -473,6 +525,9 @@ pub unsafe extern "C" fn rice_agent_poll_clear(poll: *mut RiceAgentPoll) {
     }
 }
 
+/// Poll the `RiceAgent` for further progress.
+///
+/// The returned value indicates what should be done to continue making progress.
 #[no_mangle]
 pub unsafe extern "C" fn rice_agent_poll(
     agent: *mut RiceAgent,
@@ -496,6 +551,11 @@ pub unsafe extern "C" fn rice_agent_poll(
     core::mem::forget(agent);
 }
 
+/// Poll the `RiceAgent` for a transmission to send.
+///
+/// If there is no transmission, then `transmit` will be filled with empty data.
+///
+/// `rice_transmit_init()` or `rice_transmit_clear()` must be called before this function.
 #[no_mangle]
 pub unsafe extern "C" fn rice_agent_poll_transmit(
     agent: *mut RiceAgent,
@@ -515,6 +575,7 @@ pub unsafe extern "C" fn rice_agent_poll_transmit(
     core::mem::forget(agent);
 }
 
+/// Add a STUN server to this `RiceAgent`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_agent_add_stun_server(
     agent: *mut RiceAgent,
@@ -530,6 +591,7 @@ pub unsafe extern "C" fn rice_agent_add_stun_server(
     core::mem::forget(agent);
 }
 
+/// Add a TURN server to this `RiceAgent`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_agent_add_turn_server(
     agent: *mut RiceAgent,
@@ -553,6 +615,11 @@ pub unsafe extern "C" fn rice_agent_add_turn_server(
     core::mem::forget(agent);
 }
 
+/// Get the current time in microseconds of the `RiceAgent`.
+///
+/// The returned value can be passed to functions that require the current time.
+///
+/// This value is the same as `rice_stream_now()`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_agent_now(agent: *mut RiceAgent) -> u64 {
     let agent = Arc::from_raw(agent);
@@ -563,6 +630,7 @@ pub unsafe extern "C" fn rice_agent_now(agent: *mut RiceAgent) -> u64 {
     ret
 }
 
+/// A data stream in a `RiceAgent`.
 #[derive(Debug)]
 pub struct RiceStream {
     proto_agent: Arc<Mutex<Agent>>,
@@ -577,6 +645,7 @@ struct RiceStreamInner {
     components: Vec<Arc<RiceComponent>>,
 }
 
+/// Add a data stream to the `RiceAgent`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_agent_add_stream(agent: *mut RiceAgent) -> *mut RiceStream {
     let agent = Arc::from_raw(agent);
@@ -599,6 +668,9 @@ pub unsafe extern "C" fn rice_agent_add_stream(agent: *mut RiceAgent) -> *mut Ri
     mut_override(Arc::into_raw(stream))
 }
 
+/// Retrieve a previously added stream from the `RiceAgent`.
+///
+/// Will return `NULL` if the stream does not exist.
 #[no_mangle]
 pub unsafe extern "C" fn rice_agent_get_stream(
     agent: *mut RiceAgent,
@@ -617,17 +689,27 @@ pub unsafe extern "C" fn rice_agent_get_stream(
     ret
 }
 
+/// Increase the reference count of the `RiceStream`.
+///
+/// This function is multi-threading safe.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_ref(stream: *mut RiceStream) -> *mut RiceStream {
     Arc::increment_strong_count(stream);
     stream
 }
 
+/// Decrease the reference count of the `RiceStream`.
+///
+/// If this is the last reference, then the `RiceStream` is freed (but will still be referenced by
+/// the `RiceAgent`).
+///
+/// This function is multi-threading safe.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_unref(stream: *mut RiceStream) {
     Arc::decrement_strong_count(stream)
 }
 
+/// Retrieve the stream id of the `RiceStream`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_get_id(stream: *mut RiceStream) -> usize {
     let stream = Arc::from_raw(stream);
@@ -636,6 +718,11 @@ pub unsafe extern "C" fn rice_stream_get_id(stream: *mut RiceStream) -> usize {
     ret
 }
 
+/// Get the current time in microseconds of the `RiceStream`.
+///
+/// The returned value can be passed to functions that require the current time.
+///
+/// This value is the same as `rice_agent_now()`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_now(stream: *mut RiceStream) -> u64 {
     let stream = Arc::from_raw(stream);
@@ -646,12 +733,16 @@ pub unsafe extern "C" fn rice_stream_now(stream: *mut RiceStream) -> u64 {
     ret
 }
 
+/// ICE/TURN credentials.
 #[derive(Debug)]
 pub struct RiceCredentials {
+    /// The username.
     pub ufrag: *mut c_char,
+    /// The password.
     pub passwd: *mut c_char,
 }
 
+/// Construct a new set of ICE/TURN credentials.
 #[no_mangle]
 pub unsafe extern "C" fn rice_credentials_new(
     ufrag: *mut c_char,
@@ -660,6 +751,7 @@ pub unsafe extern "C" fn rice_credentials_new(
     Box::into_raw(Box::new(RiceCredentials { ufrag, passwd }))
 }
 
+/// Free a set of ICE/TURN credentials.
 #[no_mangle]
 pub unsafe extern "C" fn rice_credentials_free(credentials: *mut RiceCredentials) {
     let creds = Box::from_raw(credentials);
@@ -667,7 +759,7 @@ pub unsafe extern "C" fn rice_credentials_free(credentials: *mut RiceCredentials
     let _passwd = CString::from_raw(creds.passwd);
 }
 
-pub fn credentials_to_c(credentials: Credentials) -> *mut RiceCredentials {
+fn credentials_to_c(credentials: Credentials) -> *mut RiceCredentials {
     let creds = Box::new(RiceCredentials {
         ufrag: CString::new(credentials.ufrag).unwrap().into_raw(),
         passwd: CString::new(credentials.passwd).unwrap().into_raw(),
@@ -675,6 +767,7 @@ pub fn credentials_to_c(credentials: Credentials) -> *mut RiceCredentials {
     Box::into_raw(creds)
 }
 
+/// Retrieve the local ICE credentials currently set on the `RiceStream`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_get_local_credentials(
     stream: *mut RiceStream,
@@ -694,6 +787,7 @@ pub unsafe extern "C" fn rice_stream_get_local_credentials(
     ret
 }
 
+/// Retrieve the remote ICE credentials currently set on the `RiceStream`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_get_remote_credentials(
     stream: *mut RiceStream,
@@ -717,6 +811,7 @@ unsafe fn string_from_c(cstr: *const c_char) -> String {
     CStr::from_ptr(cstr).to_str().unwrap().to_owned()
 }
 
+/// Set the local credentials to use for this `RiceStream`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_set_local_credentials(
     stream: *mut RiceStream,
@@ -733,6 +828,7 @@ pub unsafe extern "C" fn rice_stream_set_local_credentials(
     core::mem::forget(stream);
 }
 
+/// Set the remote credentials to use for this `RiceStream`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_set_remote_credentials(
     stream: *mut RiceStream,
@@ -749,12 +845,18 @@ pub unsafe extern "C" fn rice_stream_set_remote_credentials(
     core::mem::forget(stream);
 }
 
+/// The type of the TCP candidate.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u32)]
 pub enum RiceTcpType {
+    /// Not a TCP candidate.
     None,
+    /// The candidate address will connect to a remote address.
     Active,
+    /// The candidate will listen for incominng TCP connections.
     Passive,
+    /// Simultaneous open.  The candidate will both listen for incoming connections, and connect to
+    /// remote addresses.
     So,
 }
 
@@ -815,6 +917,7 @@ impl From<RiceCandidateType> for CandidateType {
     }
 }
 
+/// An ICE candidate.
 #[derive(Debug)]
 #[repr(C)]
 pub struct RiceCandidate {
@@ -883,6 +986,10 @@ impl From<&RiceCandidate> for crate::candidate::Candidate {
     }
 }
 
+/// Construct a `RiceCandidate` from a string as formatted in an SDP and specified in RFC5245
+/// Section 15.1.
+///
+/// Takes the form 'a=candidate:foundation 1 UDP 12345 127.0.0.1 23456 typ host'.
 #[no_mangle]
 pub unsafe extern "C" fn rice_candidate_new_from_sdp_string(
     cand_str: *const c_char,
@@ -896,6 +1003,7 @@ pub unsafe extern "C" fn rice_candidate_new_from_sdp_string(
     Box::into_raw(Box::new(RiceCandidate::from(candidate)))
 }
 
+/// Return a SDP candidate string as specified in RFC5245 Section 15.1.
 #[no_mangle]
 pub unsafe extern "C" fn rice_candidate_to_sdp_string(
     candidate: *const RiceCandidate,
@@ -907,6 +1015,7 @@ pub unsafe extern "C" fn rice_candidate_to_sdp_string(
     ret.into_raw()
 }
 
+/// Perform a deep copy of a `RiceCandidate`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_candidate_copy(
     candidate: *const RiceCandidate,
@@ -949,6 +1058,7 @@ unsafe fn rice_candidate_clear(candidate: &mut RiceCandidate) {
     }
 }
 
+/// Free a `RiceCandidate`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_candidate_free(candidate: *mut RiceCandidate) {
     let mut cand = Box::from_raw(candidate);
@@ -956,6 +1066,10 @@ pub unsafe extern "C" fn rice_candidate_free(candidate: *mut RiceCandidate) {
     // FIXME extensions
 }
 
+/// A local candidate that has been gathered.
+///
+/// Pass to `rice_stream_add_local_gathered_candidate()` or free with
+/// `rice_gathered_candidate_free()`.
 #[derive(Debug)]
 #[repr(C)]
 pub struct RiceGatheredCandidate {
@@ -995,6 +1109,7 @@ impl From<GatheredCandidate> for RiceGatheredCandidate {
     }
 }
 
+/// Free a `RiceGatheredCandidate`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_gathered_candidate_free(gathered: *mut RiceGatheredCandidate) {
     let mut gathered = Box::from_raw(gathered);
@@ -1005,6 +1120,7 @@ pub unsafe extern "C" fn rice_gathered_candidate_free(gathered: *mut RiceGathere
     }
 }
 
+/// Add a local `RiceGatheredCandidate` to a `RiceStream`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_add_local_gathered_candidate(
     stream: *mut RiceStream,
@@ -1020,6 +1136,7 @@ pub unsafe extern "C" fn rice_stream_add_local_gathered_candidate(
     core::mem::forget(stream);
 }
 
+/// Add a remote candidate to the `RiceStream`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_add_remote_candidate(
     stream: *mut RiceStream,
@@ -1038,6 +1155,9 @@ pub unsafe extern "C" fn rice_stream_add_remote_candidate(
     core::mem::forget(candidate);
 }
 
+/// Signal the end of a set of local candidates.
+///
+/// Any local candidates provided after calling this function will result in an error.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_end_of_local_candidates(stream: *mut RiceStream) {
     let stream = Arc::from_raw(stream);
@@ -1049,6 +1169,9 @@ pub unsafe extern "C" fn rice_stream_end_of_local_candidates(stream: *mut RiceSt
     core::mem::forget(stream);
 }
 
+/// Signal the end of a set of remote candidates.
+///
+/// Any remote candidates provided after calling this function will result in an error.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_end_of_remote_candidates(stream: *mut RiceStream) {
     let stream = Arc::from_raw(stream);
@@ -1060,20 +1183,29 @@ pub unsafe extern "C" fn rice_stream_end_of_remote_candidates(stream: *mut RiceS
     core::mem::forget(stream);
 }
 
+/// Return value of `rice_stream_gather_poll()`.
 #[derive(Debug)]
 #[repr(C)]
 pub enum RiceGatherPoll {
+    /// A socket needs to be allocated.
     AllocateSocket(RiceGatherPollAllocateSocket),
+    /// Nothing to do, wait until the provided time and re-`poll()`.
     WaitUntilMicros(u64),
+    /// A new candidate has been discovered.
     NewCandidate(*mut RiceGatheredCandidate),
+    /// Gathering is complete. No further progress will be made.
     Complete,
 }
 
+/// Initialize a `RiceGatherPoll`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_gather_poll_init(poll: *mut MaybeUninit<RiceGatherPoll>) {
     (*poll).write(RiceGatherPoll::Complete);
 }
 
+/// Clear a `RiceGatherPoll` of any allocated resources.
+///
+/// `rice_gather_poll_init()` must have been called for this `RiceGatherPoll`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_gather_poll_clear(poll: *mut RiceGatherPoll) {
     let mut other = RiceGatherPoll::Complete;
@@ -1088,13 +1220,19 @@ pub unsafe extern "C" fn rice_gather_poll_clear(poll: *mut RiceGatherPoll) {
     }
 }
 
+/// Request to allocate a socket for further processing.
 #[derive(Debug)]
 #[repr(C)]
 pub struct RiceGatherPollAllocateSocket {
+    /// The ICE stream id.
     stream_id: usize,
+    /// The ICE component id.
     component_id: usize,
+    /// The transport of the new socket.
     transport: RiceTransportType,
+    /// The source address to allocate the socket with.
     from: *const RiceAddress,
+    /// The destination address to allocate the socket with.
     to: *const RiceAddress,
 }
 
@@ -1147,6 +1285,9 @@ impl RiceGatherPoll {
     }
 }
 
+/// Poll a `RiceStream` for gathering progress.
+///
+/// The filled `RiceGatherPoll` indicates what to do next.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_gather_poll(
     stream: *mut RiceStream,
@@ -1193,6 +1334,10 @@ pub unsafe extern "C" fn rice_stream_gather_poll_transmit(
     core::mem::forget(stream);
 }
 
+/// Answer a `RiceGatherPollAllocateSocket` with a provided local address of the newly allocated
+/// socket (or `NULL`).
+///
+/// The provided values must match exactly the values from the `RiceGatherPollAllocateSocket`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_handle_gather_tcp_connect(
     stream: *mut RiceStream,
@@ -1222,16 +1367,25 @@ pub unsafe extern "C" fn rice_stream_handle_gather_tcp_connect(
     core::mem::forget(stream);
 }
 
+/// Return value for `rice_stream_handle_incoming_data()`.
 #[derive(Debug)]
 #[repr(C)]
 pub struct RiceStreamIncomingData {
+    /// The gathering process handled the data. `rice_stream_gather_poll() should be called at the
+    /// next earlier opportunity.
     gather_handled: bool,
+    /// The ICE connection process handled the data. `rice_agent_poll()` should be called at the
+    /// next earliest opportunity.
     conncheck_handled: bool,
+    /// Number of data pointers provided.
     data_len: usize,
+    /// The length of each data pointer.
     data_data_lens: *const usize,
+    /// An array of a sequence of data pointers.
     data: *const *const u8,
 }
 
+/// Free a `RiceStreamIncomingData`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_incoming_data_free(incoming: *mut RiceStreamIncomingData) {
     let incoming = Box::from_raw(incoming);
@@ -1249,6 +1403,10 @@ pub unsafe extern "C" fn rice_stream_incoming_data_free(incoming: *mut RiceStrea
     }
 }
 
+/// Provide data to the `RiceStream` for processing.
+///
+/// The returned value contains what processing was completed on the provided data and any
+/// application data that needs to be handled.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_handle_incoming_data(
     stream: *mut RiceStream,
@@ -1309,6 +1467,7 @@ pub unsafe extern "C" fn rice_stream_handle_incoming_data(
 // - handle_gather_tcp_connect
 // - handle_tcp_connect
 
+/// An ICE component within a `RiceStream`.
 #[derive(Debug)]
 pub struct RiceComponent {
     proto_agent: Arc<Mutex<Agent>>,
@@ -1318,6 +1477,7 @@ pub struct RiceComponent {
     base_instant: Instant,
 }
 
+/// Add an ICE component to a `RiceStream`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_add_component(stream: *mut RiceStream) -> *mut RiceComponent {
     let stream = Arc::from_raw(stream);
@@ -1341,17 +1501,29 @@ pub unsafe extern "C" fn rice_stream_add_component(stream: *mut RiceStream) -> *
     mut_override(Arc::into_raw(component))
 }
 
+/// Increase the reference count of the `RiceComponent`.
+///
+/// This function is multi-threading safe.
 #[no_mangle]
 pub unsafe extern "C" fn rice_component_ref(component: *mut RiceComponent) -> *mut RiceComponent {
     Arc::increment_strong_count(component);
     component
 }
 
+/// Decrease the reference count of the `RiceComponent`.
+///
+/// If this is the last reference, then the `RiceComponent` is freed (but will still be referenced by
+/// the `RiceStream`).
+///
+/// This function is multi-threading safe.
 #[no_mangle]
 pub unsafe extern "C" fn rice_component_unref(component: *mut RiceComponent) {
     Arc::decrement_strong_count(component)
 }
 
+/// Retrieve a previously added `RiceComponent`.
+///
+/// If the `RiceComponent` does not exist, `NULL` is returned.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_get_component(
     stream: *mut RiceStream,
@@ -1373,6 +1545,7 @@ pub unsafe extern "C" fn rice_stream_get_component(
     ret
 }
 
+/// Start gathering candidates for a component with the provided local socket addresses.
 #[no_mangle]
 pub unsafe extern "C" fn rice_component_gather_candidates(
     component: *mut RiceComponent,
@@ -1416,6 +1589,9 @@ pub unsafe extern "C" fn rice_component_gather_candidates(
     core::mem::forget(component);
 }
 
+/// Send data to the connected peer.
+///
+/// This will fail before a connection is successfully completed.
 #[no_mangle]
 pub unsafe extern "C" fn rice_component_send(
     component: *mut RiceComponent,
@@ -1455,6 +1631,7 @@ pub unsafe extern "C" fn rice_component_send(
 // - state
 // - selected_pair
 
+/// A socket address.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
 pub struct RiceAddress(SocketAddr);
 
@@ -1486,6 +1663,7 @@ impl std::ops::Deref for RiceAddress {
     }
 }
 
+/// Create a `RiceAddress` from a string representation of the socket address.
 #[no_mangle]
 pub unsafe extern "C" fn rice_address_new_from_string(string: *const c_char) -> *mut RiceAddress {
     let Ok(string) = CStr::from_ptr(string).to_str() else {
@@ -1498,12 +1676,18 @@ pub unsafe extern "C" fn rice_address_new_from_string(string: *const c_char) -> 
     mut_override(RiceAddress::to_c(RiceAddress(saddr)))
 }
 
+/// The address family.
 #[repr(u32)]
 pub enum RiceAddressFamily {
     Ipv4 = 1,
     Ipv6,
 }
 
+/// Construct a `RiceAddress` from a sequence of bytes.
+///
+/// The number of bytes required depends on the address family being constructed:
+/// - IPv4 -> 4.
+/// - IPv6 -> 16.
 #[no_mangle]
 pub unsafe extern "C" fn rice_address_new_from_bytes(
     family: RiceAddressFamily,
@@ -1527,6 +1711,7 @@ pub unsafe extern "C" fn rice_address_new_from_bytes(
     Box::into_raw(Box::new(RiceAddress(SocketAddr::new(ip_addr, port))))
 }
 
+/// The address family of the `RiceAddress`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_address_get_family(addr: *const RiceAddress) -> RiceAddressFamily {
     let addr = RiceAddress::from_c(addr);
@@ -1538,6 +1723,11 @@ pub unsafe extern "C" fn rice_address_get_family(addr: *const RiceAddress) -> Ri
     ret
 }
 
+/// Retrieve the bytes of a `RiceAddress`.
+///
+/// The number of bytes required depends on the address family being constructed:
+/// - IPv4 -> 4.
+/// - IPv6 -> 16.
 #[no_mangle]
 pub unsafe extern "C" fn rice_address_get_address_bytes(
     addr: *const RiceAddress,
@@ -1564,6 +1754,7 @@ pub unsafe extern "C" fn rice_address_get_address_bytes(
     ret
 }
 
+/// Retrieve the port of a `RiceAddress`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_address_get_port(addr: *const RiceAddress) -> u16 {
     let addr = RiceAddress::from_c(addr);
@@ -1572,6 +1763,7 @@ pub unsafe extern "C" fn rice_address_get_port(addr: *const RiceAddress) -> u16 
     ret
 }
 
+/// Compare whether two `RiceAddress`es are equal.
 #[no_mangle]
 pub unsafe extern "C" fn rice_address_cmp(
     addr: *const RiceAddress,
@@ -1585,6 +1777,7 @@ pub unsafe extern "C" fn rice_address_cmp(
     ret
 }
 
+/// Copy a `RiceAddress`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_address_copy(addr: *const RiceAddress) -> *mut RiceAddress {
     let addr = RiceAddress::from_c(mut_override(addr));
@@ -1593,6 +1786,7 @@ pub unsafe extern "C" fn rice_address_copy(addr: *const RiceAddress) -> *mut Ric
     ret
 }
 
+/// Free a `RiceAddress`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_address_free(addr: *mut RiceAddress) {
     let _addr = Box::from_raw(addr);
