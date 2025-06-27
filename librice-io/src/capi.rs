@@ -77,48 +77,13 @@ fn schedule(runnable: Runnable) {
     sender().send(runnable).unwrap();
 }
 
-/*
-/// Connect from the specified interface to the specified address.  Reply (success or failure)
-/// should be notified using [`rice_agent_handle_tcp_connect`] with the same parameters.
-#[derive(Debug)]
-#[repr(C)]
-pub struct RiceIoTcpConnect {
-    pub stream_id: usize,
-    pub component_id: usize,
-    pub from: *const RiceAddress,
-    pub to: *const RiceAddress,
-}
-
-impl From<librice_proto::agent::AgentTcpConnect> for RiceIoTcpConnect {
-    fn from(value: librice_proto::agent::AgentTcpConnect) -> Self {
-        Self {
-            stream_id: value.stream_id,
-            component_id: value.component_id,
-            from: Box::into_raw(Box::new(RiceAddress(value.from))),
-            to: Box::into_raw(Box::new(RiceAddress(value.to))),
-        }
-    }
-}
-
-impl From<RiceIoTcpConnect> for librice_proto::agent::AgentTcpConnect {
-    fn from(value: RiceIoTcpConnect) -> Self {
-        unsafe {
-            Self {
-                stream_id: value.stream_id,
-                component_id: value.component_id,
-                from: RiceAddress::from_c(value.from).0,
-                to: RiceAddress::from_c(value.to).0,
-            }
-        }
-    }
-}
-*/
-
+/// A UDP socket.
 #[derive(Debug)]
 pub struct RiceUdpSocket {
     socket: Async<UdpSocket>,
 }
 
+/// Construct a UDP socket with the specified local address.
 #[no_mangle]
 pub unsafe extern "C" fn rice_udp_socket_new(local_addr: *const RiceAddress) -> *mut RiceUdpSocket {
     init_logs();
@@ -126,7 +91,6 @@ pub unsafe extern "C" fn rice_udp_socket_new(local_addr: *const RiceAddress) -> 
     let local_addr = Box::from_raw(mut_override(local_addr));
 
     let ret = if let Ok(socket) = Async::<UdpSocket>::bind(**local_addr) {
-        info!("created new UDP socket for {local_addr}");
         mut_override(Arc::into_raw(Arc::new(RiceUdpSocket { socket })))
     } else {
         core::ptr::null_mut::<RiceUdpSocket>()
@@ -136,17 +100,26 @@ pub unsafe extern "C" fn rice_udp_socket_new(local_addr: *const RiceAddress) -> 
     ret
 }
 
+/// Increase the reference count of the `RiceUdpSocket`.
+///
+/// This function is multi-threading safe.
 #[no_mangle]
 pub unsafe extern "C" fn rice_udp_socket_ref(udp: *mut RiceUdpSocket) -> *mut RiceUdpSocket {
     Arc::increment_strong_count(udp);
     udp
 }
 
+/// Decrease the reference count of the `RiceUdpSocket`.
+///
+/// If this is the last reference, then the `RiceUdpSocket` is freed.
+///
+/// This function is multi-threading safe.
 #[no_mangle]
 pub unsafe extern "C" fn rice_udp_socket_unref(udp: *mut RiceUdpSocket) {
     Arc::decrement_strong_count(udp);
 }
 
+/// Retreive the local bound address of the `RiceUdpSocket`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_udp_socket_local_addr(udp: *const RiceUdpSocket) -> *mut RiceAddress {
     let udp = Arc::from_raw(udp);
@@ -158,11 +131,13 @@ pub unsafe extern "C" fn rice_udp_socket_local_addr(udp: *const RiceUdpSocket) -
     ret
 }
 
+/// A connected TCP socket.
 #[derive(Debug)]
 pub struct RiceTcpSocket {
     socket: Async<TcpStream>,
 }
 
+/// Retrieve the local address of a connected TCP socket.
 #[no_mangle]
 pub unsafe extern "C" fn rice_tcp_socket_local_addr(tcp: *mut RiceTcpSocket) -> *mut RiceAddress {
     let tcp = Arc::from_raw(tcp);
@@ -174,6 +149,7 @@ pub unsafe extern "C" fn rice_tcp_socket_local_addr(tcp: *mut RiceTcpSocket) -> 
     addr
 }
 
+/// Retrieve the remote address of a connected TCP socket.
 #[no_mangle]
 pub unsafe extern "C" fn rice_tcp_socket_remote_addr(tcp: *mut RiceTcpSocket) -> *mut RiceAddress {
     let tcp = Arc::from_raw(tcp);
@@ -185,21 +161,25 @@ pub unsafe extern "C" fn rice_tcp_socket_remote_addr(tcp: *mut RiceTcpSocket) ->
     addr
 }
 
+/// A cancellation object for a particular task.
 #[derive(Debug)]
 pub struct RiceIoCancel {
     task: Option<Task<()>>,
 }
 
+/// Construct a new cancellation object.
 #[no_mangle]
 pub unsafe extern "C" fn rice_io_cancel_new() -> *mut RiceIoCancel {
     Box::into_raw(Box::new(RiceIoCancel { task: None }))
 }
 
+/// Free a `RiceIoCancel`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_io_cancel_free(cancel: *mut RiceIoCancel) {
     let _ = Box::from_raw(cancel);
 }
 
+/// Cancel a task referenced by a `RiceIoCancel`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_io_cancel_cancel(cancel: *mut RiceIoCancel) {
     let cancel = unsafe { &mut *cancel };
@@ -208,8 +188,12 @@ pub unsafe extern "C" fn rice_io_cancel_cancel(cancel: *mut RiceIoCancel) {
     }
 }
 
+/// A callback function when a TCP connection has been made.
+///
+/// `stream` can be `NULL` if the connection was unsuccessful.
 pub type RiceIoOnTcpConnect = Option<extern "C" fn(*mut RiceTcpSocket, data: *mut c_void)>;
 
+/// Connect over TCP to a remote address.
 #[no_mangle]
 pub unsafe extern "C" fn rice_tcp_connect(
     remote_addr: *const RiceAddress,
@@ -256,6 +240,7 @@ pub unsafe extern "C" fn rice_tcp_connect(
     runnable.run();
 }
 
+/// Callback for when an incoming TCP connection is received.
 pub type RiceIoOnTcpListen = Option<extern "C" fn(*mut RiceTcpSocket, data: *mut c_void)>;
 
 struct DestroyOnDrop {
@@ -271,12 +256,16 @@ impl Drop for DestroyOnDrop {
     }
 }
 
+/// Listener for incoming TCP connections.
 #[derive(Debug)]
 pub struct RiceTcpListener {
     listener: Arc<Async<TcpListener>>,
     cancel: RiceIoCancel,
 }
 
+/// Listen for TCP connections on the provided local address.
+///
+/// `NULL` is returned on failure.
 #[no_mangle]
 pub unsafe extern "C" fn rice_tcp_listen(
     local_addr: *const RiceAddress,
@@ -337,6 +326,9 @@ pub unsafe extern "C" fn rice_tcp_listen(
     })))
 }
 
+/// Increase the reference count of the `RiceTcpListener`.
+///
+/// This function is multi-threading safe.
 #[no_mangle]
 pub unsafe extern "C" fn rice_tcp_listener_ref(
     listener: *mut RiceTcpListener,
@@ -345,11 +337,17 @@ pub unsafe extern "C" fn rice_tcp_listener_ref(
     listener
 }
 
+/// Decrease the reference count of the `RiceTcpListener`.
+///
+/// If this is the last reference, then the `RiceListener` is freed.
+///
+/// This function is multi-threading safe.
 #[no_mangle]
 pub unsafe extern "C" fn rice_tcp_listener_unref(listener: *mut RiceTcpListener) {
     Arc::decrement_strong_count(listener);
 }
 
+/// Retrieve the local address of the `RiceTcpListener`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_tcp_listener_local_addr(
     listener: *mut RiceTcpListener,
@@ -392,6 +390,7 @@ struct TcpSocketTask {
     readable: PollReadableTask,
 }
 
+/// A collection of sockets that can be waited on concurrently.
 #[derive(Debug)]
 pub struct RiceSockets {
     inner: Mutex<RiceSocketsInner>,
@@ -440,7 +439,9 @@ struct RiceSocketsInner {
     tcp_sockets: HashMap<(SocketAddr, SocketAddr), TcpSocketTask>,
 }
 
+/// Callback notification that data is available for reading
 pub type RiceIoNotify = Option<extern "C" fn(data: *mut c_void)>;
+/// Callback when the associated user data should be freed.
 pub type RiceIoDestroy = Option<extern "C" fn(data: *mut c_void)>;
 
 #[derive(Debug, Copy, Clone)]
@@ -457,6 +458,7 @@ impl SendPtr {
     }
 }
 
+/// Construct a new `RiceSockets` object with the specified notification functions.
 #[no_mangle]
 pub unsafe extern "C" fn rice_sockets_new_with_notify(
     io_notify: RiceIoNotify,
@@ -480,22 +482,34 @@ pub unsafe extern "C" fn rice_sockets_new_with_notify(
     mut_override(Arc::into_raw(ret))
 }
 
+/// Construct a new `RiceSockets` object.
 #[no_mangle]
 pub unsafe extern "C" fn rice_sockets_new() -> *mut RiceSockets {
     rice_sockets_new_with_notify(None, core::ptr::null_mut(), None)
 }
 
+/// Increase the reference count of the `RiceSocket`.
+///
+/// This function is multi-threading safe.
 #[no_mangle]
 pub unsafe extern "C" fn rice_sockets_ref(sockets: *mut RiceSockets) -> *mut RiceSockets {
     Arc::increment_strong_count(sockets);
     sockets
 }
 
+/// Decrease the reference count of the `RiceSockets`.
+///
+/// If this is the last reference, then the `RiceSockets` is freed.
+///
+/// This function is multi-threading safe.
 #[no_mangle]
 pub unsafe extern "C" fn rice_sockets_unref(sockets: *mut RiceSockets) {
     Arc::decrement_strong_count(sockets)
 }
 
+/// Set the notification callbacks for this `RiceSockets`.
+///
+/// This function is multi-threading safe.
 #[no_mangle]
 pub unsafe extern "C" fn rice_sockets_set_notify(
     sockets: *mut RiceSockets,
@@ -515,6 +529,9 @@ pub unsafe extern "C" fn rice_sockets_set_notify(
     core::mem::forget(sockets);
 }
 
+/// Add a `RiceUdpSocket` to this `RiceSockets.
+///
+/// This will cause the UDP socket to produce notifications when it is readable and has data.
 #[no_mangle]
 pub unsafe extern "C" fn rice_sockets_add_udp(
     sockets: *mut RiceSockets,
@@ -590,6 +607,9 @@ pub unsafe extern "C" fn rice_sockets_add_udp(
     ret
 }
 
+/// Add a `RiceTcpSocket` to this `RiceSockets.
+///
+/// This will cause the TCP socket to produce notifications when it is readable and has data.
 #[no_mangle]
 pub unsafe extern "C" fn rice_sockets_add_tcp(
     sockets: *mut RiceSockets,
@@ -678,6 +698,7 @@ fn address_is_ignorable(ip: IpAddr) -> bool {
     }
 }
 
+/// Retrieve a list of local addresses interfaces.
 #[no_mangle]
 pub unsafe extern "C" fn rice_interfaces(ret_len: *mut usize) -> *mut *mut RiceAddress {
     init_logs();
@@ -701,6 +722,7 @@ pub unsafe extern "C" fn rice_interfaces(ret_len: *mut usize) -> *mut *mut RiceA
     Box::into_raw(ret) as *mut _
 }
 
+/// Free a list of `RiceAddresses` retrieved from `rice_interfaces()`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_addresses_free(addresses: *mut *mut RiceAddress, len: usize) {
     let addresses = Box::from_raw(core::slice::from_raw_parts_mut(addresses, len));
@@ -709,6 +731,9 @@ pub unsafe extern "C" fn rice_addresses_free(addresses: *mut *mut RiceAddress, l
     }
 }
 
+/// Send data using the specified network 5-tuple.
+///
+/// If the relevant socket has not been added to this `RiceSockets`, an error will be returned.
 #[no_mangle]
 pub unsafe extern "C" fn rice_sockets_send(
     sockets: *mut RiceSockets,
@@ -758,6 +783,7 @@ pub unsafe extern "C" fn rice_sockets_send(
     ret
 }
 
+/// A received sequence of bytes from a particular resource.
 #[repr(C)]
 pub struct RiceIoData {
     transport: RiceTransportType,
@@ -773,6 +799,7 @@ unsafe fn rice_io_data_clear(data: &mut RiceIoData) {
     data.to = core::ptr::null_mut();
 }
 
+/// A socket has been closed.
 #[repr(C)]
 pub struct RiceIoClosed {
     transport: RiceTransportType,
@@ -780,6 +807,7 @@ pub struct RiceIoClosed {
     to: *mut RiceAddress,
 }
 
+/// Return value options when attempting to receive data from a remote resource.
 #[repr(C)]
 pub enum RiceIoRecv {
     WouldBlock,
@@ -787,6 +815,7 @@ pub enum RiceIoRecv {
     Closed(RiceIoClosed),
 }
 
+/// Clear any allocated resources from the `RiceIoRecv`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_recv_clear(recv: *mut RiceIoRecv) {
     if recv.is_null() {
@@ -805,6 +834,7 @@ pub unsafe extern "C" fn rice_recv_clear(recv: *mut RiceIoRecv) {
     *recv = RiceIoRecv::WouldBlock
 }
 
+/// Attempt to receive data into a provided data pointer.
 #[no_mangle]
 pub unsafe extern "C" fn rice_sockets_recv(
     sockets: *mut RiceSockets,
