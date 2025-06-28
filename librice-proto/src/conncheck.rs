@@ -321,7 +321,7 @@ struct CheckStunAgent {
 pub struct ConnCheckList {
     checklist_id: usize,
     state: CheckListState,
-    component_ids: Vec<usize>,
+    component_ids: Vec<(usize, ComponentConnectionState)>,
     local_credentials: Credentials,
     remote_credentials: Credentials,
     local_candidates: Vec<ConnCheckLocalCandidate>,
@@ -568,13 +568,18 @@ impl ConnCheckList {
 
     /// Add a component id to this checklist
     pub fn add_component(&mut self, component_id: usize) {
-        if self.component_ids.iter().any(|&id| id == component_id) {
+        if self
+            .component_ids
+            .iter()
+            .any(|(cid, _state)| component_id == *cid)
+        {
             panic!(
                 "Component with ID {} already exists in checklist!",
                 component_id
             );
         };
-        self.component_ids.push(component_id);
+        self.component_ids
+            .push((component_id, ComponentConnectionState::New));
     }
 
     fn poll_event(&mut self) -> Option<ConnCheckEvent> {
@@ -805,7 +810,7 @@ impl ConnCheckList {
             let existing = self
                 .component_ids
                 .iter()
-                .find(|&id| id == &local.component_id);
+                .find(|(id, _state)| id == &local.component_id);
             if let Some(_existing) = existing {
                 (
                     self.local_credentials.clone(),
@@ -886,8 +891,13 @@ impl ConnCheckList {
             error!("Attempt made to add a remote candidate after an end-of-candidates received");
             return;
         }
-        if !self.component_ids.iter().any(|&v| v == remote.component_id) {
-            self.component_ids.push(remote.component_id);
+        if !self
+            .component_ids
+            .iter()
+            .any(|(cid, _state)| cid == &remote.component_id)
+        {
+            self.component_ids
+                .push((remote.component_id, ComponentConnectionState::New));
         }
         self.remote_candidates.push(remote);
         self.generate_checks();
@@ -1154,7 +1164,7 @@ impl ConnCheckList {
                     let component_id = self
                         .component_ids
                         .iter()
-                        .find(|&id| id == &local.candidate.component_id)
+                        .find(|(id, _state)| id == &local.candidate.component_id)
                         .unwrap_or_else(|| {
                             panic!(
                                 "No component {} for local candidate",
@@ -1401,26 +1411,24 @@ impl ConnCheckList {
         if self.state == CheckListState::Completed {
             return;
         }
-        if !self.trickle_ice || self.local_end_of_candidates && self.remote_end_of_candidates {
+        if !self.trickle_ice || (self.local_end_of_candidates && self.remote_end_of_candidates) {
             debug!("all candidates have arrived");
-            let any_not_failed = self
-                .component_ids
-                .iter()
-                .fold(true, |accum, &component_id| {
-                    if !accum {
-                        !accum
-                    } else {
-                        let ret = self.pairs.iter().any(|check| {
-                            if check.pair.local.component_id == component_id {
-                                check.state() != CandidatePairState::Failed
-                            } else {
-                                false
-                            }
-                        });
-                        trace!("component {component_id} has any non-failed check:{ret}");
-                        ret
-                    }
-                });
+            let mut any_not_failed = false;
+            for (component_id, state) in self.component_ids.iter_mut() {
+                if self.pairs.iter().any(|check| {
+                    check.pair.local.component_id == *component_id
+                        && check.state() != CandidatePairState::Failed
+                }) {
+                    any_not_failed = true;
+                    trace!("component {component_id} has any non-failed check");
+                } else if *state != ComponentConnectionState::Failed {
+                    *state = ComponentConnectionState::Failed;
+                    self.events.push_front(ConnCheckEvent::ComponentState(
+                        *component_id,
+                        ComponentConnectionState::Failed,
+                    ));
+                }
+            }
             if !any_not_failed {
                 self.set_state(CheckListState::Failed);
             }
@@ -1456,11 +1464,13 @@ impl ConnCheckList {
                 "nominated"
             );
             self.nominated.push(self.valid.remove(idx));
-            let component_id = self
-                .component_ids
-                .iter()
-                .find(|&id| id == &pair.local.component_id)
-                .cloned();
+            let component_id = self.component_ids.iter().find_map(|(id, _state)| {
+                if *id == pair.local.component_id {
+                    Some(*id)
+                } else {
+                    None
+                }
+            });
             // o Once a candidate pair for a component of a data stream has been
             //   nominated, and the state of the checklist associated with the data
             //   stream is Running, the ICE agent MUST remove all candidate pairs
@@ -1497,11 +1507,11 @@ impl ConnCheckList {
             //   nominated, and the state of the checklist associated with the data
             //   stream is Running, the ICE agent sets the state of the checklist
             //   to Completed.
-            let all_nominated = self.component_ids.iter().all(|&component_id| {
+            let all_nominated = self.component_ids.iter().all(|(component_id, _state)| {
                 self.nominated
                     .iter()
                     .filter_map(|&check_id| self.check_by_id(check_id))
-                    .any(|check| check.pair.local.component_id == component_id)
+                    .any(|check| check.pair.local.component_id == *component_id)
             });
             if all_nominated {
                 // ... Once an ICE agent sets the
@@ -1521,10 +1531,7 @@ impl ConnCheckList {
                         };
                         let check_component_id = check.pair.local.component_id;
                         // Only nominate one valid candidatePair
-                        if component_ids_selected
-                            .iter()
-                            .any(|&comp_id| comp_id == check_component_id)
-                        {
+                        if component_ids_selected.contains(&check_component_id) {
                             return component_ids_selected;
                         }
                         if let Some(component_id) = component_id {
@@ -1554,7 +1561,7 @@ impl ConnCheckList {
         let retriggered: Vec<_> = self
             .component_ids
             .iter()
-            .map(|&component_id| {
+            .map(|(component_id, _state)| {
                 let nominated = self.pairs.iter().find(|check| check.nominate());
                 nominated.or({
                     let mut valid: Vec<_> = self
@@ -1562,7 +1569,7 @@ impl ConnCheckList {
                         .iter()
                         .filter_map(|&check_id| self.check_by_id(check_id))
                         .filter(|check| {
-                            check.pair.local.component_id == component_id
+                            check.pair.local.component_id == *component_id
                                 && (check.pair.local.transport_type != TransportType::Tcp
                                     || check.pair.local.address.port() != 9)
                         })
@@ -2611,6 +2618,23 @@ impl ConnCheckListSet {
             None
         };
         let conncheck = checklist.mut_check_by_id(conncheck_id).unwrap();
+        let component_id = conncheck.pair.local.component_id;
+        for (cid, state) in checklist.component_ids.iter_mut() {
+            if *cid == component_id
+                && [
+                    ComponentConnectionState::New,
+                    ComponentConnectionState::Failed,
+                ]
+                .contains(state)
+            {
+                *state = ComponentConnectionState::Connecting;
+                checklist.events.push_front(ConnCheckEvent::ComponentState(
+                    component_id,
+                    ComponentConnectionState::Connecting,
+                ));
+            }
+        }
+        let conncheck = checklist.mut_check_by_id(conncheck_id).unwrap();
 
         trace!("performing connectivity {:?}", &conncheck);
         if conncheck.stun_request.is_some() {
@@ -2892,7 +2916,17 @@ impl ConnCheckListSet {
             trace!("starting conncheck");
             match self.perform_conncheck(self.checklist_i, conncheck_id) {
                 Ok(Some(tcp_connect)) => return tcp_connect.into_poll_ret(),
-                Ok(None) => return CheckListSetPollRet::WaitUntil(now),
+                Ok(None) => {
+                    let checklist = &mut self.checklists[self.checklist_i];
+                    if let Some(event) = checklist.poll_event() {
+                        return CheckListSetPollRet::Event {
+                            checklist_id: checklist.checklist_id,
+                            event,
+                        };
+                    } else {
+                        return CheckListSetPollRet::WaitUntil(now);
+                    }
+                }
                 Err(e) => warn!("failed to perform check: {e:?}"),
             }
         }
@@ -3696,6 +3730,14 @@ mod tests {
         let mut state = FineControl::builder().build();
         let now = Instant::now();
 
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
         let CheckListSetPollRet::WaitUntil(_) = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
@@ -3843,9 +3885,14 @@ mod tests {
         assert_list_contains_checks(list2, vec![&pair2, &pair3, &pair4, &pair5]);
 
         // thaw the first checklist with only a single pair will unfreeze that pair
-        let CheckListSetPollRet::WaitUntil(now) = set.poll(now) else {
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = set.poll(now)
+        else {
             unreachable!();
         };
+
         let Some(_) = set.poll_transmit(now) else {
             unreachable!();
         };
@@ -3873,10 +3920,13 @@ mod tests {
 
         // thaw the second checklist with 2*2 pairs will unfreeze only the foundations not
         // unfrozen by the first checklist, which means unfreezing 3 pairs
-        assert!(matches!(
-            set.poll(now),
-            CheckListSetPollRet::WaitUntil(_now)
-        ));
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = set.poll(now)
+        else {
+            unreachable!();
+        };
         let Some(_) = set.poll_transmit(now) else {
             unreachable!();
         };
@@ -4157,6 +4207,14 @@ mod tests {
         assert_eq!(check.state(), CandidatePairState::Frozen);
         let check_id = check.conncheck_id;
 
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
         // perform one tick which will start a connectivity check with the peer
         send_next_check_and_response(&state.local.peer, &state.remote)
             .perform(&mut state.local.checklist_set, now);
@@ -4184,6 +4242,14 @@ mod tests {
             .unwrap();
         assert_eq!(check.state(), CandidatePairState::Frozen);
         let check_id = check.conncheck_id;
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
 
         // perform one tick which will start a connectivity check with the peer
         send_next_check_and_response(&state.local.peer, &state.remote)
@@ -4235,6 +4301,14 @@ mod tests {
         let check = local_list.matching_check(&pair, Nominate::False).unwrap();
         let check_id = check.conncheck_id;
         assert_eq!(check.state(), CandidatePairState::Frozen);
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
 
         // perform one tick which will start a connectivity check with the peer
         send_next_check_and_response(&state.local.peer, &state.remote)
@@ -4296,6 +4370,14 @@ mod tests {
         assert_eq!(from, state.local.peer.candidate.base_address);
         assert_eq!(to, state.remote.candidate.address);
         error!("tcp connect");
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
 
         state
             .local
@@ -4465,6 +4547,14 @@ mod tests {
         let response = Message::from_bytes(&transmit.transmit.data[2..]).unwrap();
         assert!(response.has_class(MessageClass::Success));
 
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
         // triggered check
         let CheckListSetPollRet::WaitUntil(_) = state.local.checklist_set.poll(now) else {
             unreachable!();
@@ -4618,9 +4708,11 @@ mod tests {
             .incoming_data(state.local.checklist_id, transmit, now)
             .unwrap();
         assert!(matches!(reply[0], HandleRecvReply::Handled));
+
         let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
             unreachable!();
         };
+
         let response = Message::from_bytes(&transmit.transmit.data).unwrap();
         let HandleStunReply::StunResponse(response) =
             remote_agent.handle_stun(response, transmit.transmit.from)
@@ -4645,6 +4737,14 @@ mod tests {
             .unwrap();
         assert_eq!(triggered_check.state(), CandidatePairState::Waiting);
         let check_id = triggered_check.conncheck_id;
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
 
         // perform one tick which will start a connectivity check with the peer
         info!("perform triggered check");
@@ -4712,6 +4812,14 @@ mod tests {
             .remote_credentials(state.local.peer.local_credentials.clone().unwrap())
             .build();
         let remote_agent = unknown_remote_peer.stun_agent();
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
 
         // send the next connectivity check but response with a different xor-mapped-address
         // which should result in a PeerReflexive address being produced in the check list
@@ -4807,6 +4915,14 @@ mod tests {
         assert_eq!(check.state(), CandidatePairState::Waiting);
         let check_id = check.conncheck_id;
 
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
         // perform one tick which will start a connectivity check with the peer
         send_next_check_and_response(&state.local.peer, &state.remote)
             .perform(&mut state.local.checklist_set, now);
@@ -4827,6 +4943,7 @@ mod tests {
         // Don't generate any initial checks as they should be done as candidates are added to
         // the checklist
         let now = Instant::now();
+
         let set_ret = state.local.checklist_set.poll(now);
         // a checklist with no candidates has nothing to do
         assert!(matches!(set_ret, CheckListSetPollRet::WaitUntil(_)));
@@ -4839,6 +4956,14 @@ mod tests {
         assert!(matches!(set_ret, CheckListSetPollRet::WaitUntil(_)));
 
         state.local_list().end_of_remote_candidates();
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Failed),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
 
         let set_ret = state.local.checklist_set.poll(now);
         assert!(matches!(set_ret, CheckListSetPollRet::Completed));
@@ -4881,6 +5006,14 @@ mod tests {
         // Don't generate any initial checks as they should be done as candidates are added to
         // the checklist
         let now = Instant::now();
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
 
         // send the conncheck (unanswered)
         let set_ret = state.local.checklist_set.poll(now);
@@ -4953,6 +5086,14 @@ mod tests {
         // Don't generate any initial checks as they should be done as candidates are added to
         // the checklist
         let now = Instant::now();
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
 
         // send the conncheck, reply with ROLE_CONFLICT
         // perform one tick which will start a connectivity check with the peer
@@ -5093,6 +5234,14 @@ mod tests {
             ))
             .unwrap();
 
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
         // send the triggered conncheck which will fail due to incorrect credentials and be ignored
         send_next_check_and_response(&state.local.peer, &state.remote)
             .perform(&mut state.local.checklist_set, now);
@@ -5226,9 +5375,11 @@ mod tests {
 
         set_handle_permission(&mut state.local.checklist_set, &mut turn_server, now);
 
-        // XXX: Could remove this poll if set.incoming_data() would unfreeze checks on permission
-        // success
-        let CheckListSetPollRet::WaitUntil(_wait) = state.local.checklist_set.poll(now) else {
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
             unreachable!();
         };
 
@@ -5389,6 +5540,14 @@ mod tests {
             .checklist_set
             .incoming_data(checklist_id, transmit, now)
             .unwrap();
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
 
         // perform one tick which will start a connectivity check with the peer
         send_next_check_and_response(&state.local.peer, &state.remote)

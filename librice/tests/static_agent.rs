@@ -133,6 +133,8 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
             }
         }
     }
+    assert_eq!(lcomp.state(), ComponentConnectionState::Connected);
+    assert_eq!(rcomp.state(), ComponentConnectionState::Connected);
     trace!("connected");
 
     let rcomp_recv_stream = rcomp.recv();

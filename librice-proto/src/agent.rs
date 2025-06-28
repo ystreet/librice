@@ -179,7 +179,7 @@ impl Agent {
             ice.id = self.id
         )
     )]
-    pub fn add_stream<'a>(&'a mut self) -> usize {
+    pub fn add_stream(&mut self) -> usize {
         let checklist_id = self.checklistset.new_list();
         let id = self.streams.len();
         let stream = crate::stream::StreamState::new(id, checklist_id);
@@ -326,15 +326,21 @@ impl Agent {
                     checklist_id,
                     event: ConnCheckEvent::ComponentState(cid, state),
                 } => {
-                    if let Some(stream) =
-                        self.streams.iter().find(|s| s.checklist_id == checklist_id)
+                    if let Some(stream) = self
+                        .streams
+                        .iter_mut()
+                        .find(|s| s.checklist_id == checklist_id)
                     {
-                        if stream.component_state(cid).is_some() {
-                            return AgentPoll::ComponentStateChange(AgentComponentStateChange {
-                                stream_id: stream.id(),
-                                component_id: cid,
-                                state,
-                            });
+                        if let Some(component) = stream.mut_component_state(cid) {
+                            if component.set_state(state) {
+                                return AgentPoll::ComponentStateChange(
+                                    AgentComponentStateChange {
+                                        stream_id: stream.id(),
+                                        component_id: cid,
+                                        state,
+                                    },
+                                );
+                            }
                         }
                     }
                 }
