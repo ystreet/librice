@@ -17,7 +17,7 @@ use std::time::Instant;
 use async_std::net::TcpStream;
 use futures::StreamExt;
 use librice_proto::gathering::GatherPoll;
-use stun_proto::agent::{StunAgent, Transmit};
+use stun_proto::agent::Transmit;
 use stun_proto::types::data::Data;
 use stun_proto::types::TransportType;
 
@@ -146,12 +146,13 @@ impl futures::stream::Stream for Gather {
                     remote_addr: server_addr,
                 }) => {
                     if transport == TransportType::Tcp {
-                        Stream::handle_gather_tcp_connect(
+                        Stream::handle_gather_allocate_socket(
                             weak_stream.clone(),
                             weak_proto_agent.clone(),
                             self.weak_agent_inner.clone(),
                             self.stream_id,
                             component_id,
+                            transport,
                             local_addr,
                             server_addr,
                             cx.waker().clone(),
@@ -819,16 +820,21 @@ impl Stream {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn handle_tcp_connect(
+    pub(crate) fn handle_allocate_socket(
         weak_inner: Weak<Mutex<StreamInner>>,
         weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
         weak_agent_inner: Weak<Mutex<AgentInner>>,
         stream_id: usize,
         component_id: usize,
+        transport: TransportType,
         from: SocketAddr,
         to: SocketAddr,
         waker: Waker,
     ) {
+        if transport != TransportType::Tcp {
+            unreachable!();
+        }
+
         async_std::task::spawn(async move {
             let stream = TcpStream::connect(to).await;
             let mut weak_component = None;
@@ -853,22 +859,16 @@ impl Stream {
 
             let channel = {
                 let mut proto_agent = proto_agent.lock().unwrap();
-                let (agent, channel) = match channel {
+                let (local_addr, channel) = match channel {
                     Ok(channel) => {
                         let local_addr = channel.local_addr().unwrap();
-                        let remote_addr = channel.remote_addr().unwrap();
-                        (
-                            Ok(StunAgent::builder(TransportType::Tcp, local_addr)
-                                .remote_addr(remote_addr)
-                                .build()),
-                            Some(channel),
-                        )
+                        (Ok(local_addr), Some(channel))
                     }
                     Err(e) => (Err(e), None),
                 };
 
                 let mut proto_stream = proto_agent.mut_stream(stream_id).unwrap();
-                proto_stream.handle_tcp_connect(component_id, from, to, agent);
+                proto_stream.allocated_socket(component_id, transport, from, to, local_addr);
                 channel
             };
 
@@ -900,16 +900,20 @@ impl Stream {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn handle_gather_tcp_connect(
+    pub(crate) fn handle_gather_allocate_socket(
         weak_inner: Weak<Mutex<StreamInner>>,
         weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
         weak_agent_inner: Weak<Mutex<AgentInner>>,
         stream_id: usize,
         component_id: usize,
+        transport: TransportType,
         from: SocketAddr,
         to: SocketAddr,
         waker: Waker,
     ) {
+        if transport != TransportType::Tcp {
+            unreachable!();
+        }
         async_std::task::spawn(async move {
             let stream = TcpStream::connect(to).await;
             let mut weak_component = None;
@@ -940,7 +944,7 @@ impl Stream {
                 };
 
                 let mut proto_stream = proto_agent.mut_stream(stream_id).unwrap();
-                proto_stream.handle_gather_tcp_connect(component_id, from, to, local_addr);
+                proto_stream.allocated_gather_socket(component_id, transport, from, to, local_addr);
                 channel
             };
             if let Some(waker) = weak_inner
