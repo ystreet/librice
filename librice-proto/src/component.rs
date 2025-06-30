@@ -97,19 +97,6 @@ impl<'a> ComponentMut<'a> {
         }
     }
 
-    #[tracing::instrument(name = "set_component_state", level = "debug", skip(self, state))]
-    pub(crate) fn set_state(&mut self, state: ComponentConnectionState) -> bool {
-        let stream = self.agent.mut_stream_state(self.stream_id).unwrap();
-        let component = stream.mut_component_state(self.component_id).unwrap();
-        if component.state != state {
-            debug!(old_state = ?component.state, new_state = ?state, "setting");
-            component.state = state;
-            true
-        } else {
-            false
-        }
-    }
-
     /// Start gathering candidates for this component.  The parent
     /// [`StreamMut::poll_gather`](crate::stream::StreamMut::poll_gather) is used to progress
     /// the gathering.
@@ -278,6 +265,17 @@ impl ComponentState {
         self.gather_state = GatherProgress::InProgress;
 
         Ok(())
+    }
+
+    #[tracing::instrument(name = "set_component_state", level = "debug", skip(self, state))]
+    pub(crate) fn set_state(&mut self, state: ComponentConnectionState) -> bool {
+        if self.state != state {
+            debug!(old_state = ?self.state, new_state = ?state, "setting");
+            self.state = state;
+            true
+        } else {
+            false
+        }
     }
 }
 
