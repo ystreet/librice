@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::time::Instant;
 
 use crate::gathering::{GatherPoll, GatheredCandidate};
-use stun_proto::agent::{StunAgent, StunError, Transmit};
+use stun_proto::agent::{StunError, Transmit};
 use stun_proto::types::data::Data;
 
 use crate::agent::{Agent, AgentError};
@@ -408,11 +408,12 @@ impl<'a> StreamMut<'a> {
         checklist.end_of_remote_candidates();
     }
 
-    /// Provide a reply to the [`GatherPoll::AllocateSocket`] request.  The `component_id`, `from`, and
-    /// `to` values must match exactly with the request.
-    pub fn handle_gather_tcp_connect(
+    /// Provide a reply to the [`GatherPoll::AllocateSocket`] request.  The `component_id`,
+    /// `transport`, `from`, and `to` values must match exactly with the request.
+    pub fn allocated_gather_socket(
         &mut self,
         component_id: usize,
+        transport: TransportType,
         from: SocketAddr,
         to: SocketAddr,
         socket: Result<SocketAddr, StunError>,
@@ -425,24 +426,31 @@ impl<'a> StreamMut<'a> {
             return;
         }
         if let Some(gather) = component_state.gatherer.as_mut() {
-            gather.allocated_socket(TransportType::Tcp, from, to, socket)
+            gather.allocated_socket(transport, from, to, socket)
         }
     }
 
-    /// Provide a reply to the [`AgentPoll::TcpConnect`](crate::agent::AgentPoll::TcpConnect)
-    /// request.  The `component_id`, `from`, and `to` values must match exactly with the request.
-    pub fn handle_tcp_connect(
+    /// Provide a reply to the
+    /// [`AgentPoll::AllocateSocket`](crate::agent::AgentPoll::AllocateSocket) request.  The
+    /// `component_id`, `transport`, `from`, and `to` values must match exactly with the request.
+    pub fn allocated_socket(
         &mut self,
         component_id: usize,
+        transport: TransportType,
         from: SocketAddr,
         to: SocketAddr,
-        agent: Result<StunAgent, StunError>,
+        local_addr: Result<SocketAddr, StunError>,
     ) {
         let stream_state = self.agent.mut_stream_state(self.id).unwrap();
         let checklist_id = stream_state.checklist_id;
-        self.agent
-            .checklistset
-            .tcp_connect_reply(checklist_id, component_id, from, to, agent);
+        self.agent.checklistset.allocated_socket(
+            checklist_id,
+            component_id,
+            transport,
+            from,
+            to,
+            local_addr,
+        );
     }
 
     /// Add a local candidate for this stream

@@ -303,18 +303,20 @@ impl Agent {
                     }
                     break;
                 }
-                CheckListSetPollRet::TcpConnect {
+                CheckListSetPollRet::AllocateSocket {
                     checklist_id,
                     component_id: cid,
+                    transport,
                     local_addr: from,
                     remote_addr: to,
                 } => {
                     if let Some(stream) =
                         self.streams.iter().find(|s| s.checklist_id == checklist_id)
                     {
-                        return AgentPoll::TcpConnect(AgentTcpConnect {
+                        return AgentPoll::AllocateSocket(AgentAllocateSocket {
                             stream_id: stream.id(),
                             component_id: cid,
+                            transport,
                             from,
                             to,
                         });
@@ -394,9 +396,9 @@ pub enum AgentPoll {
     Closed,
     /// Wait until the specified `Instant` has been reached (or an external event)
     WaitUntil(Instant),
-    /// Connect from the specified interface to the specified address.  Reply (success or failure)
-    /// should be notified using [`StreamMut::handle_tcp_connect`] with the same parameters.
-    TcpConnect(AgentTcpConnect),
+    /// Connect using the specified 5-tuple.  Reply (success or failure)
+    /// should be notified using [`StreamMut::allocated_socket`] with the same parameters.
+    AllocateSocket(AgentAllocateSocket),
     /// A new pair has been selected for a component.
     SelectedPair(AgentSelectedPair),
     /// A [`Component`](crate::component::Component) has changed state.
@@ -411,11 +413,12 @@ pub struct AgentTransmit {
 }
 
 /// Connect from the specified interface to the specified address.  Reply (success or failure)
-/// should be notified using [`StreamMut::handle_tcp_connect`] with the same parameters.
+/// should be notified using [`StreamMut::allocated_socket`] with the same parameters.
 #[derive(Debug)]
-pub struct AgentTcpConnect {
+pub struct AgentAllocateSocket {
     pub stream_id: usize,
     pub component_id: usize,
+    pub transport: TransportType,
     pub from: SocketAddr,
     pub to: SocketAddr,
 }

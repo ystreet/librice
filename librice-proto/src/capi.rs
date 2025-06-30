@@ -190,8 +190,8 @@ pub enum RiceAgentPoll {
     /// Wait until the specified `Instant` has been reached (or an external event)
     WaitUntilMicros(u64),
     /// Connect from the specified interface to the specified address.  Reply (success or failure)
-    /// should be notified using [`StreamMut::handle_tcp_connect`] with the same parameters.
-    TcpConnect(RiceAgentTcpConnect),
+    /// should be notified using [`rice_agent_allocated_socket`] with the same parameters.
+    AllocateSocket(RiceAgentAllocateSocket),
     /// A new pair has been selected for a component.
     SelectedPair(RiceAgentSelectedPair),
     /// A [`Component`](crate::component::Component) has changed state.
@@ -205,7 +205,7 @@ impl RiceAgentPoll {
             AgentPoll::WaitUntil(instant) => Self::WaitUntilMicros(
                 instant.saturating_duration_since(base_instant).as_micros() as u64,
             ),
-            AgentPoll::TcpConnect(connect) => Self::TcpConnect(connect.into()),
+            AgentPoll::AllocateSocket(connect) => Self::AllocateSocket(connect.into()),
             AgentPoll::SelectedPair(pair) => Self::SelectedPair(pair.into()),
             AgentPoll::ComponentStateChange(state) => Self::ComponentStateChange(state.into()),
         }
@@ -391,37 +391,41 @@ fn transmit_from_rust_gather(stream_id: usize, transmit: Transmit<Data>) -> Rice
 }
 
 /// Connect from the specified interface to the specified address.  Reply (success or failure)
-/// should be notified using [`rice_agent_handle_tcp_connect`] with the same parameters.
+/// should be notified using [`rice_agent_allocated_socket`] with the same parameters.
 #[derive(Debug)]
 #[repr(C)]
-pub struct RiceAgentTcpConnect {
+pub struct RiceAgentAllocateSocket {
     /// The ICE stream id.
     pub stream_id: usize,
     /// The ICE component id.
     pub component_id: usize,
+    /// The transport type to allocate.
+    pub transport: RiceTransportType,
     /// The source address to allocate from.
     pub from: *const RiceAddress,
     /// The destination address to connect to.
     pub to: *const RiceAddress,
 }
 
-impl From<crate::agent::AgentTcpConnect> for RiceAgentTcpConnect {
-    fn from(value: crate::agent::AgentTcpConnect) -> Self {
+impl From<crate::agent::AgentAllocateSocket> for RiceAgentAllocateSocket {
+    fn from(value: crate::agent::AgentAllocateSocket) -> Self {
         Self {
             stream_id: value.stream_id,
             component_id: value.component_id,
+            transport: value.transport.into(),
             from: Box::into_raw(Box::new(RiceAddress::new(value.from))),
             to: Box::into_raw(Box::new(RiceAddress::new(value.to))),
         }
     }
 }
 
-impl From<RiceAgentTcpConnect> for crate::agent::AgentTcpConnect {
-    fn from(value: RiceAgentTcpConnect) -> Self {
+impl From<RiceAgentAllocateSocket> for crate::agent::AgentAllocateSocket {
+    fn from(value: RiceAgentAllocateSocket) -> Self {
         unsafe {
             Self {
                 stream_id: value.stream_id,
                 component_id: value.component_id,
+                transport: value.transport.into(),
                 from: **RiceAddress::from_c(value.from),
                 to: **RiceAddress::from_c(value.to),
             }
@@ -506,7 +510,7 @@ pub unsafe extern "C" fn rice_agent_poll_clear(poll: *mut RiceAgentPoll) {
         RiceAgentPoll::Closed
         | RiceAgentPoll::ComponentStateChange(_)
         | RiceAgentPoll::WaitUntilMicros(_) => (),
-        RiceAgentPoll::TcpConnect(mut connect) => {
+        RiceAgentPoll::AllocateSocket(mut connect) => {
             let mut from = core::ptr::null();
             core::mem::swap(&mut from, &mut connect.from);
             let _from = RiceAddress::from_c(from);
@@ -1339,9 +1343,10 @@ pub unsafe extern "C" fn rice_stream_gather_poll_transmit(
 ///
 /// The provided values must match exactly the values from the `RiceGatherPollAllocateSocket`.
 #[no_mangle]
-pub unsafe extern "C" fn rice_stream_handle_gather_tcp_connect(
+pub unsafe extern "C" fn rice_stream_allocated_gather_socket(
     stream: *mut RiceStream,
     component_id: usize,
+    transport: RiceTransportType,
     from: *const RiceAddress,
     to: *const RiceAddress,
     socket: *mut RiceAddress,
@@ -1359,7 +1364,7 @@ pub unsafe extern "C" fn rice_stream_handle_gather_tcp_connect(
         Ok(**RiceAddress::from_c(socket))
     };
 
-    proto_stream.handle_gather_tcp_connect(component_id, **from, **to, socket);
+    proto_stream.allocated_gather_socket(component_id, transport.into(), **from, **to, socket);
 
     drop(proto_agent);
     core::mem::forget(from);
@@ -1464,8 +1469,6 @@ pub unsafe extern "C" fn rice_stream_handle_incoming_data(
 // TODO:
 // - local_candidates
 // - component_ids_iter
-// - handle_gather_tcp_connect
-// - handle_tcp_connect
 
 /// An ICE component within a `RiceStream`.
 #[derive(Debug)]
@@ -1926,7 +1929,14 @@ mod tests {
 
             let tcp_from_addr = "192.168.200.4:3000".parse().unwrap();
             let tcp_from_addr = mut_override(RiceAddress::new(tcp_from_addr).to_c());
-            rice_stream_handle_gather_tcp_connect(stream, component_id, from, to, tcp_from_addr);
+            rice_stream_allocated_gather_socket(
+                stream,
+                component_id,
+                RiceTransportType::Tcp,
+                from,
+                to,
+                tcp_from_addr,
+            );
 
             let mut transmit = RiceTransmit::default();
             rice_stream_gather_poll_transmit(stream, 0, &mut transmit);

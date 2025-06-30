@@ -3085,16 +3085,17 @@ impl ConnCheckListSet {
         fields(
             checklist.id = checklist_id,
             component.id = component_id,
-            ?agent,
+            ?local_addr,
         )
     )]
-    pub fn tcp_connect_reply(
+    pub fn allocated_socket(
         &mut self,
         checklist_id: usize,
         component_id: usize,
+        transport: TransportType,
         from: SocketAddr,
         to: SocketAddr,
-        agent: Result<StunAgent, StunError>,
+        local_addr: Result<SocketAddr, StunError>,
     ) {
         let Some(checklist) = self
             .checklists
@@ -3136,12 +3137,15 @@ impl ConnCheckListSet {
                 continue;
             }
             trace!("found check with id {} to set agent", check.conncheck_id);
-            match agent {
-                Ok(mut agent) => {
+            match local_addr {
+                Ok(local_addr) => {
                     let mut new_pair = check.pair.clone();
+                    let mut agent = StunAgent::builder(transport, local_addr)
+                        .remote_addr(check.pair.remote.address)
+                        .build();
                     // FIXME: handle TURN TCP connection construction
-                    new_pair.local.base_address = agent.local_addr();
-                    new_pair.local.address = agent.local_addr();
+                    new_pair.local.base_address = local_addr;
+                    new_pair.local.address = local_addr;
 
                     let Ok(stun_request) = ConnCheck::generate_stun_request(
                         &new_pair,
@@ -3218,11 +3222,12 @@ impl ConnCheckListSet {
 /// Return values for polling a set of checklists.
 #[derive(Debug)]
 pub enum CheckListSetPollRet {
-    /// Perform a TCP connection from the provided address to the provided address.  Report success
-    /// or failure with `tcp_connect_reply()`.
-    TcpConnect {
+    /// Allocate a socket using the specified network 5-tuple.  Report success
+    /// or failure with `allocated_socket()`.
+    AllocateSocket {
         checklist_id: usize,
         component_id: usize,
+        transport: TransportType,
         local_addr: SocketAddr,
         remote_addr: SocketAddr,
     },
@@ -3264,9 +3269,10 @@ struct CheckListSetTcpConnect {
 
 impl CheckListSetTcpConnect {
     fn into_poll_ret(self) -> CheckListSetPollRet {
-        CheckListSetPollRet::TcpConnect {
+        CheckListSetPollRet::AllocateSocket {
             checklist_id: self.checklist_id,
             component_id: self.component_id,
+            transport: TransportType::Tcp,
             local_addr: self.local_addr,
             remote_addr: self.remote_addr,
         }
@@ -4356,9 +4362,10 @@ mod tests {
         state.remote.configure_stun_agent(&mut remote_agent);
         let now = Instant::now();
 
-        let CheckListSetPollRet::TcpConnect {
+        let CheckListSetPollRet::AllocateSocket {
             checklist_id: id,
             component_id: cid,
+            transport,
             local_addr: from,
             remote_addr: to,
         } = state.local.checklist_set.poll(now)
@@ -4369,6 +4376,7 @@ mod tests {
         assert_eq!(cid, state.local.peer.candidate.component_id);
         assert_eq!(from, state.local.peer.candidate.base_address);
         assert_eq!(to, state.remote.candidate.address);
+        assert_eq!(transport, TransportType::Tcp);
         error!("tcp connect");
 
         let CheckListSetPollRet::Event {
@@ -4379,10 +4387,14 @@ mod tests {
             unreachable!();
         };
 
-        state
-            .local
-            .checklist_set
-            .tcp_connect_reply(id, cid, from, to, Ok(local_agent));
+        state.local.checklist_set.allocated_socket(
+            id,
+            cid,
+            transport,
+            from,
+            to,
+            Ok(local_agent.local_addr()),
+        );
         error!("tcp connect replied");
 
         let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {

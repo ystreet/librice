@@ -232,20 +232,21 @@ impl futures::stream::Stream for AgentStream {
         let wait = {
             let wait = match agent.poll(now) {
                 AgentPoll::Closed => return Poll::Ready(None),
-                AgentPoll::TcpConnect(tcp_connect) => {
+                AgentPoll::AllocateSocket(allocate) => {
                     drop(agent);
                     let inner = self.inner.lock().unwrap();
-                    if let Some(stream) = inner.streams.get(tcp_connect.stream_id) {
+                    if let Some(stream) = inner.streams.get(allocate.stream_id) {
                         let weak_stream = Arc::downgrade(&stream.inner);
                         drop(inner);
-                        Stream::handle_tcp_connect(
+                        Stream::handle_allocate_socket(
                             weak_stream,
                             weak_proto_agent,
                             weak_agent_inner,
-                            tcp_connect.stream_id,
-                            tcp_connect.component_id,
-                            tcp_connect.from,
-                            tcp_connect.to,
+                            allocate.stream_id,
+                            allocate.component_id,
+                            allocate.transport,
+                            allocate.from,
+                            allocate.to,
                             cx.waker().clone(),
                         );
                     }
