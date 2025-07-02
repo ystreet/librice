@@ -377,11 +377,10 @@ impl<'a> StreamMut<'a> {
 
     /// Poll the gathering process in order to make further progress.  The returned value indicates
     /// what the caller should do next.
-    pub fn poll_gather(&mut self, now: Instant) -> Result<GatherPoll, StunError> {
-        let stream_state = self
-            .agent
-            .mut_stream_state(self.id)
-            .ok_or(StunError::ResourceNotFound)?;
+    pub fn poll_gather(&mut self, now: Instant) -> GatherPoll {
+        let Some(stream_state) = self.agent.mut_stream_state(self.id) else {
+            return GatherPoll::Complete;
+        };
         stream_state.poll_gather(now)
     }
 
@@ -631,7 +630,7 @@ impl StreamState {
     }
 
     #[tracing::instrument(ret, level = "trace", skip(self))]
-    pub(crate) fn poll_gather(&mut self, now: Instant) -> Result<GatherPoll, StunError> {
+    pub(crate) fn poll_gather(&mut self, now: Instant) -> GatherPoll {
         let mut lowest_wait = None;
         for component in self.components.iter_mut() {
             let Some(component) = component else {
@@ -644,7 +643,7 @@ impl StreamState {
                 continue;
             }
 
-            match gatherer.poll(now)? {
+            match gatherer.poll(now) {
                 GatherPoll::WaitUntil(wait) => {
                     if let Some(check_wait) = lowest_wait {
                         if wait < check_wait {
@@ -655,28 +654,13 @@ impl StreamState {
                     }
                 }
                 GatherPoll::Complete => component.gather_state = GatherProgress::Completed,
-                GatherPoll::NewCandidate(candidate) => {
-                    return Ok(GatherPoll::NewCandidate(candidate))
-                }
-                GatherPoll::AllocateSocket {
-                    component_id,
-                    transport,
-                    local_addr,
-                    remote_addr,
-                } => {
-                    return Ok(GatherPoll::AllocateSocket {
-                        component_id,
-                        transport,
-                        local_addr,
-                        remote_addr,
-                    })
-                }
+                other => return other,
             }
         }
         if let Some(lowest_wait) = lowest_wait {
-            Ok(GatherPoll::WaitUntil(lowest_wait))
+            GatherPoll::WaitUntil(lowest_wait)
         } else {
-            Ok(GatherPoll::Complete)
+            GatherPoll::Complete
         }
     }
 

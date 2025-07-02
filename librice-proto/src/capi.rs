@@ -1304,7 +1304,7 @@ pub unsafe extern "C" fn rice_stream_gather_poll(
     let now = stream.base_instant + Duration::from_micros(now_micros);
 
     *poll = RiceGatherPoll::from_rust(
-        proto_stream.poll_gather(now).unwrap(),
+        proto_stream.poll_gather(now),
         stream.stream_id,
         stream.base_instant,
     );
