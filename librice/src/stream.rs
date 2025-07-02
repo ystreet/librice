@@ -135,16 +135,16 @@ impl futures::stream::Stream for Gather {
 
         loop {
             match proto_stream.poll_gather(now) {
-                Ok(GatherPoll::Complete) => {
+                GatherPoll::Complete => {
                     proto_stream.end_of_local_candidates();
                     return Poll::Ready(None);
                 }
-                Ok(GatherPoll::AllocateSocket {
+                GatherPoll::AllocateSocket {
                     component_id,
                     transport,
                     local_addr,
                     remote_addr: server_addr,
-                }) => {
+                } => {
                     if transport == TransportType::Tcp {
                         Stream::handle_gather_allocate_socket(
                             weak_stream.clone(),
@@ -160,12 +160,12 @@ impl futures::stream::Stream for Gather {
                         continue;
                     }
                 }
-                Ok(GatherPoll::NewCandidate(gathered)) => {
+                GatherPoll::NewCandidate(gathered) => {
                     let candidate = gathered.candidate.clone();
                     proto_stream.add_local_gathered_candidate(gathered);
                     return Poll::Ready(Some(candidate));
                 }
-                Ok(GatherPoll::WaitUntil(wait_time)) => match lowest_wait {
+                GatherPoll::WaitUntil(wait_time) => match lowest_wait {
                     Some(wait) => {
                         if wait_time < wait {
                             lowest_wait = Some(wait_time);
@@ -173,7 +173,6 @@ impl futures::stream::Stream for Gather {
                     }
                     None => lowest_wait = Some(wait_time),
                 },
-                Err(e) => warn!("error produced while gathering: {e:?}"),
             }
 
             if let Some(transmit) = proto_stream.poll_gather_transmit(now) {

@@ -325,8 +325,8 @@ impl StunGatherer {
 
     /// Poll the gatherer.  Should be called repeatedly until [`GatherPoll::WaitUntil`]
     /// or [`GatherPoll::Complete`] is returned.
-    #[tracing::instrument(name = "gatherer_poll", level = "trace", ret, err, skip(self))]
-    pub fn poll(&mut self, now: Instant) -> Result<GatherPoll, StunError> {
+    #[tracing::instrument(name = "gatherer_poll", level = "trace", ret, skip(self))]
+    pub fn poll(&mut self, now: Instant) -> GatherPoll {
         let mut lowest_wait = None;
 
         for pending_request in self.pending_requests.iter_mut() {
@@ -398,12 +398,12 @@ impl StunGatherer {
                                 from: active_addr,
                                 to: pending_request.server_addr,
                             });
-                            return Ok(GatherPoll::AllocateSocket {
+                            return GatherPoll::AllocateSocket {
                                 component_id: self.component_id,
                                 transport: TransportType::Tcp,
                                 local_addr: active_addr,
                                 remote_addr: pending_request.server_addr,
-                            });
+                            };
                         };
                     }
                     if lowest_wait.is_none() {
@@ -426,7 +426,7 @@ impl StunGatherer {
         if let Some(cand) = self.pending_candidates.pop_back() {
             info!("produced {cand:?}");
             self.produced_candidates.push_front(cand.candidate.clone());
-            return Ok(GatherPoll::NewCandidate(cand));
+            return GatherPoll::NewCandidate(cand);
         }
 
         for request in self.requests.iter_mut() {
@@ -437,7 +437,7 @@ impl StunGatherer {
                 RequestProtocol::Udp => (),
                 RequestProtocol::Tcp(ref mut tcp) => {
                     if tcp.is_none() {
-                        return Ok(GatherPoll::WaitUntil(now));
+                        return GatherPoll::WaitUntil(now);
                     } else {
                         if lowest_wait.is_none() {
                             lowest_wait = Some(now + Duration::from_secs(600));
@@ -481,9 +481,9 @@ impl StunGatherer {
             }
         }
         if let Some(lowest_wait) = lowest_wait {
-            Ok(GatherPoll::WaitUntil(lowest_wait))
+            GatherPoll::WaitUntil(lowest_wait)
         } else {
-            Ok(GatherPoll::Complete)
+            GatherPoll::Complete
         }
     }
 
@@ -973,7 +973,7 @@ mod tests {
             StunGatherer::new(1, vec![(TransportType::Udp, local_addr)], vec![], vec![]);
         let now = Instant::now();
         let ret = gather.poll(now);
-        if let Ok(GatherPoll::NewCandidate(cand)) = ret {
+        if let GatherPoll::NewCandidate(cand) = ret {
             assert!(cand.turn_agent.is_none());
             let cand = cand.candidate;
             assert_eq!(cand.component_id, 1);
@@ -987,8 +987,8 @@ mod tests {
             error!("{ret:?}");
             unreachable!();
         }
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete));
     }
 
     #[test]
@@ -999,7 +999,7 @@ mod tests {
             StunGatherer::new(1, vec![(TransportType::Udp, local_addr)], vec![], vec![]);
         let now = Instant::now();
         let ret = gather.poll(now);
-        if let Ok(GatherPoll::NewCandidate(cand)) = ret {
+        if let GatherPoll::NewCandidate(cand) = ret {
             assert!(cand.turn_agent.is_none());
             let cand = cand.candidate;
             assert_eq!(cand.component_id, 1);
@@ -1017,8 +1017,8 @@ mod tests {
         let transmit = Transmit::new([6; 10], TransportType::Udp, remote_addr, local_addr);
         assert!(!gather.handle_data(&transmit, now).unwrap());
 
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete));
     }
 
     #[test]
@@ -1029,7 +1029,7 @@ mod tests {
             StunGatherer::new(1, vec![(TransportType::Tcp, local_addr)], vec![], vec![]);
         let now = Instant::now();
         let ret = gather.poll(now);
-        if let Ok(GatherPoll::NewCandidate(cand)) = ret {
+        if let GatherPoll::NewCandidate(cand) = ret {
             let local_addr = SocketAddr::new(local_addr.ip(), 9);
             assert!(cand.turn_agent.is_none());
             let cand = cand.candidate;
@@ -1045,7 +1045,7 @@ mod tests {
             unreachable!();
         }
         let ret = gather.poll(now);
-        if let Ok(GatherPoll::NewCandidate(cand)) = ret {
+        if let GatherPoll::NewCandidate(cand) = ret {
             assert!(cand.turn_agent.is_none());
             let cand = cand.candidate;
             assert_eq!(cand.component_id, 1);
@@ -1059,8 +1059,8 @@ mod tests {
             error!("{ret:?}");
             unreachable!();
         }
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete));
     }
 
     fn respond_to_stun_binding(
@@ -1096,19 +1096,16 @@ mod tests {
         );
         let now = Instant::now();
         /* host candidate contents checked in `host_udp()` */
-        assert!(matches!(
-            gather.poll(now),
-            Ok(GatherPoll::NewCandidate(_cand))
-        ));
+        assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
         let transmit = gather.poll_transmit(now).unwrap();
         assert_eq!(transmit.from, local_addr);
         assert_eq!(transmit.to, stun_addr);
         let response = respond_to_stun_binding(transmit, public_ip);
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::WaitUntil(_))));
+        assert!(matches!(gather.poll(now), GatherPoll::WaitUntil(_)));
         gather.handle_data(&response, now).unwrap();
 
         let ret = gather.poll(now);
-        if let Ok(GatherPoll::NewCandidate(cand)) = ret {
+        if let GatherPoll::NewCandidate(cand) = ret {
             assert!(cand.turn_agent.is_none());
             let cand = cand.candidate;
             assert_eq!(cand.component_id, 1);
@@ -1122,18 +1119,18 @@ mod tests {
             error!("{ret:?}");
             unreachable!();
         }
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete));
     }
 
     fn handle_allocate_socket(gather: &mut StunGatherer, local_addr: SocketAddr, now: Instant) {
         let ret = gather.poll(now);
-        if let Ok(GatherPoll::AllocateSocket {
+        if let GatherPoll::AllocateSocket {
             component_id: _,
             transport,
             local_addr: from,
             remote_addr: to,
-        }) = ret
+        } = ret
         {
             gather.allocated_socket(transport, from, to, Ok(local_addr));
         } else {
@@ -1157,24 +1154,18 @@ mod tests {
         let now = Instant::now();
         handle_allocate_socket(&mut gather, local_addr, now);
         /* host candidate contents checked in `host_tcp()` */
-        assert!(matches!(
-            gather.poll(now),
-            Ok(GatherPoll::NewCandidate(_cand))
-        ));
-        assert!(matches!(
-            gather.poll(now),
-            Ok(GatherPoll::NewCandidate(_cand))
-        ));
+        assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
+        assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
 
         let transmit = gather.poll_transmit(now).unwrap();
         assert_eq!(transmit.from, local_addr);
         assert_eq!(transmit.to, stun_addr);
         let response = respond_to_stun_binding(transmit, public_ip);
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::WaitUntil(_))));
+        assert!(matches!(gather.poll(now), GatherPoll::WaitUntil(_)));
         gather.handle_data(&response, now).unwrap();
 
         let ret = gather.poll(now);
-        if let Ok(GatherPoll::NewCandidate(cand)) = ret {
+        if let GatherPoll::NewCandidate(cand) = ret {
             let local_addr = SocketAddr::new(local_addr.ip(), 9);
             let public_ip = SocketAddr::new(public_ip.ip(), 9);
             assert!(cand.turn_agent.is_none());
@@ -1191,7 +1182,7 @@ mod tests {
             unreachable!();
         }
         let ret = gather.poll(now);
-        if let Ok(GatherPoll::NewCandidate(cand)) = ret {
+        if let GatherPoll::NewCandidate(cand) = ret {
             assert!(cand.turn_agent.is_none());
             let cand = cand.candidate;
             assert_eq!(cand.component_id, 1);
@@ -1205,8 +1196,8 @@ mod tests {
             error!("{ret:?}");
             unreachable!();
         }
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete));
     }
 
     #[test]
@@ -1223,14 +1214,8 @@ mod tests {
         let now = Instant::now();
         handle_allocate_socket(&mut gather, local_addr, now);
         /* host candidate contents checked in `host_tcp()` */
-        assert!(matches!(
-            gather.poll(now),
-            Ok(GatherPoll::NewCandidate(_cand))
-        ));
-        assert!(matches!(
-            gather.poll(now),
-            Ok(GatherPoll::NewCandidate(_cand))
-        ));
+        assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
+        assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
 
         let transmit = gather.poll_transmit(now).unwrap();
         assert_eq!(transmit.from, local_addr);
@@ -1238,11 +1223,11 @@ mod tests {
 
         let response = [4; 12];
         let response = Transmit::new(&response, transmit.transport, transmit.to, transmit.from);
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::WaitUntil(_))));
+        assert!(matches!(gather.poll(now), GatherPoll::WaitUntil(_)));
         assert!(!gather.handle_data(&response, now).unwrap());
 
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete));
     }
 
     #[test]
@@ -1271,19 +1256,16 @@ mod tests {
         );
         let now = Instant::now();
         /* host candidate contents checked in `host_udp()` */
-        assert!(matches!(
-            gather.poll(now),
-            Ok(GatherPoll::NewCandidate(_cand))
-        ));
+        assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
         let stun_transmit = gather.poll_transmit(now).unwrap();
         assert_eq!(stun_transmit.from, local_addr);
         assert_eq!(stun_transmit.to, turn_listen_addr);
         let response = respond_to_stun_binding(stun_transmit, public_ip);
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::WaitUntil(_))));
+        assert!(matches!(gather.poll(now), GatherPoll::WaitUntil(_)));
         gather.handle_data(&response, now).unwrap();
 
         let ret = gather.poll(now);
-        if let Ok(GatherPoll::NewCandidate(cand)) = ret {
+        if let GatherPoll::NewCandidate(cand) = ret {
             assert!(cand.turn_agent.is_none());
             let cand = cand.candidate;
             assert_eq!(cand.component_id, 1);
@@ -1328,7 +1310,7 @@ mod tests {
         let reply = turn_server.poll_transmit(now).unwrap();
         assert!(gather.handle_data(&reply, now).unwrap());
         let ret = gather.poll(now);
-        if let Ok(GatherPoll::NewCandidate(cand)) = ret {
+        if let GatherPoll::NewCandidate(cand) = ret {
             assert!(cand.turn_agent.is_some());
             let cand = cand.candidate;
             assert_eq!(cand.component_id, 1);
@@ -1343,8 +1325,8 @@ mod tests {
             unreachable!();
         }
 
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete));
     }
 
     #[test]
@@ -1374,24 +1356,18 @@ mod tests {
         let now = Instant::now();
         handle_allocate_socket(&mut gather, local_addr, now);
         /* host candidate contents checked in `host_tcp()` */
-        assert!(matches!(
-            gather.poll(now),
-            Ok(GatherPoll::NewCandidate(_cand))
-        ));
-        assert!(matches!(
-            gather.poll(now),
-            Ok(GatherPoll::NewCandidate(_cand))
-        ));
+        assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
+        assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
 
         let stun_transmit = gather.poll_transmit(now).unwrap();
         assert_eq!(stun_transmit.from, local_addr);
         assert_eq!(stun_transmit.to, turn_listen_addr);
         let response = respond_to_stun_binding(stun_transmit, public_ip);
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::WaitUntil(_))));
+        assert!(matches!(gather.poll(now), GatherPoll::WaitUntil(_)));
         gather.handle_data(&response, now).unwrap();
 
         let ret = gather.poll(now);
-        if let Ok(GatherPoll::NewCandidate(cand)) = ret {
+        if let GatherPoll::NewCandidate(cand) = ret {
             let local_addr = SocketAddr::new(local_addr.ip(), 9);
             let public_ip = SocketAddr::new(public_ip.ip(), 9);
             assert!(cand.turn_agent.is_none());
@@ -1408,7 +1384,7 @@ mod tests {
             unreachable!();
         }
         let ret = gather.poll(now);
-        if let Ok(GatherPoll::NewCandidate(cand)) = ret {
+        if let GatherPoll::NewCandidate(cand) = ret {
             assert!(cand.turn_agent.is_none());
             let cand = cand.candidate;
             assert_eq!(cand.component_id, 1);
@@ -1453,7 +1429,7 @@ mod tests {
         let reply = turn_server.poll_transmit(now).unwrap();
         assert!(gather.handle_data(&reply, now).unwrap());
         let ret = gather.poll(now);
-        if let Ok(GatherPoll::NewCandidate(cand)) = ret {
+        if let GatherPoll::NewCandidate(cand) = ret {
             assert!(cand.turn_agent.is_some());
             let cand = cand.candidate;
             assert_eq!(cand.component_id, 1);
@@ -1468,7 +1444,7 @@ mod tests {
             unreachable!();
         }
 
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
-        assert!(matches!(gather.poll(now), Ok(GatherPoll::Complete)));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete));
     }
 }

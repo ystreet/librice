@@ -290,6 +290,7 @@ impl Agent {
         }
 
         let mut lowest_wait = None;
+
         loop {
             match self.checklistset.poll(now) {
                 CheckListSetPollRet::Completed => break,
@@ -321,7 +322,7 @@ impl Agent {
                             to,
                         });
                     } else {
-                        warn!("did not find stream for tcp connect {from:?} -> {to:?}");
+                        warn!("did not find stream for allocate socket {from:?} -> {to:?}");
                     }
                 }
                 CheckListSetPollRet::Event {
