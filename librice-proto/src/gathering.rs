@@ -614,17 +614,6 @@ impl StunGatherer {
         Some(cand)
     }
 
-    fn candidate_is_redunant(&self, candidate: &Candidate) -> bool {
-        self.produced_candidates
-            .iter()
-            .chain(
-                self.pending_candidates
-                    .iter()
-                    .map(|pending| &pending.candidate),
-            )
-            .any(|c| candidate.redundant_with(c))
-    }
-
     /// Provide the gatherer with data received from a socket.  If [`HandleStunReply::StunResponse`] is
     /// returned, then `poll()` should to be called at the next earliest opportunity.
     #[tracing::instrument(
@@ -729,10 +718,6 @@ impl StunGatherer {
                                         server,
                                         Some(tcp_type),
                                     ) {
-                                        if self.candidate_is_redunant(&cand) {
-                                            trace!("redundant {cand:?}");
-                                            return Ok(true);
-                                        }
                                         self.produced_i += 1;
                                         self.pending_candidates.push_front(GatheredCandidate {
                                             candidate: cand.clone(),
@@ -779,10 +764,6 @@ impl StunGatherer {
                                         .related_address(request.server)
                                         .base_address(relayed_address)
                                         .build();
-                                        if self.candidate_is_redunant(&cand) {
-                                            trace!("redundant {cand:?}");
-                                            return Ok(true);
-                                        }
                                         self.produced_i += 1;
                                         turn_ret = Some((idx, cand));
                                     }
@@ -818,10 +799,6 @@ impl StunGatherer {
                                         request.server,
                                         None,
                                     ) {
-                                        if self.candidate_is_redunant(&cand) {
-                                            trace!("redundant {cand:?}");
-                                            return Ok(true);
-                                        }
                                         self.produced_i += 1;
                                         self.pending_candidates.push_front(GatheredCandidate {
                                             candidate: cand.clone(),
@@ -868,10 +845,6 @@ impl StunGatherer {
                                             .related_address(request.server)
                                             .base_address(relayed_address)
                                             .build();
-                                            if self.candidate_is_redunant(&cand) {
-                                                trace!("redundant {cand:?}");
-                                                return Ok(true);
-                                            }
                                             self.produced_i += 1;
                                             turn_ret = Some((idx, cand));
                                         }

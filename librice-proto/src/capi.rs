@@ -1204,17 +1204,18 @@ impl From<GatheredCandidate> for RiceGatheredCandidate {
 pub unsafe extern "C" fn rice_stream_add_local_gathered_candidate(
     stream: *mut RiceStream,
     candidate: *mut RiceGatheredCandidate,
-) {
+) -> bool {
     let stream = Arc::from_raw(stream);
     let mut proto_agent = stream.proto_agent.lock().unwrap();
     let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
     let gathered = Box::from_raw(mut_override(candidate));
 
-    proto_stream.add_local_gathered_candidate((*gathered).into());
+    let ret = proto_stream.add_local_gathered_candidate((*gathered).into());
     (*candidate).turn_agent = core::ptr::null_mut();
     rice_candidate_clear(&mut (*candidate).candidate);
     drop(proto_agent);
     core::mem::forget(stream);
+    ret
 }
 
 /// Add a remote candidate to the `RiceStream`.
