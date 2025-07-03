@@ -98,7 +98,7 @@ impl<'a> ComponentMut<'a> {
     }
 
     /// Start gathering candidates for this component.  The parent
-    /// [`StreamMut::poll_gather`](crate::stream::StreamMut::poll_gather) is used to progress
+    /// [`Agent::poll`](crate::agent::Agent::poll) is used to progress
     /// the gathering.
     pub fn gather_candidates(
         &mut self,

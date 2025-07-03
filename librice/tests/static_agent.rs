@@ -6,12 +6,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use async_std::net::{TcpListener, UdpSocket};
 
 use futures::future::{AbortHandle, Abortable, Aborted};
-use futures::StreamExt;
+use futures::{SinkExt, StreamExt};
 
 use librice::agent::{Agent, AgentMessage};
 use librice::candidate::TransportType;
@@ -89,50 +90,83 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     rstream.set_remote_credentials(lcreds);
     let rcomp = rstream.add_component().unwrap();
 
-    let mut lgatherer = lstream.gather_candidates().await.unwrap();
-    let mut rgatherer = rstream.gather_candidates().await.unwrap();
+    lstream.gather_candidates().await.unwrap();
+    rstream.gather_candidates().await.unwrap();
 
-    let lgather = async_std::task::spawn(async move {
-        while let Some(cand) = lgatherer.next().await {
-            if config.remote.transports.contains(&cand.transport_type) {
-                rstream.add_remote_candidate(cand).unwrap();
+    let n_completed = Arc::new(AtomicUsize::new(0));
+    let (complete_send, mut completed) = futures::channel::mpsc::channel(1);
+    let mut lmessages = lagent.messages();
+    let mut rmessages = ragent.messages();
+    let (lgath_send, mut lgathered) = futures::channel::mpsc::channel(1);
+    let lloop = async_std::task::spawn({
+        let n_completed = n_completed.clone();
+        let complete_send = complete_send.clone();
+        let lgath_send = lgath_send.clone();
+        async move {
+            while let Some(msg) = lmessages.next().await {
+                match msg {
+                    AgentMessage::GatheredCandidate(_stream, candidate) => {
+                        if config.remote.transports.contains(&candidate.transport_type) {
+                            rstream.add_remote_candidate(candidate).unwrap();
+                        }
+                    }
+                    AgentMessage::GatheringComplete(_component) => {
+                        rstream.end_of_remote_candidates();
+                        let _ = lgath_send.clone().send(()).await;
+                    }
+                    AgentMessage::ComponentStateChange(_component, state) => {
+                        if state == ComponentConnectionState::Connected
+                            && 1 == n_completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        {
+                            let _ = complete_send.clone().send(()).await;
+                        }
+                    }
+                }
             }
         }
-        rstream.end_of_remote_candidates();
     });
 
-    let rgather = async_std::task::spawn(async move {
-        while let Some(cand) = rgatherer.next().await {
-            if config.local.transports.contains(&cand.transport_type) {
-                lstream.add_remote_candidate(cand).unwrap();
+    let (rgath_send, mut rgathered) = futures::channel::mpsc::channel(1);
+    let rloop = async_std::task::spawn({
+        let rgath_send = rgath_send.clone();
+        let n_completed = n_completed.clone();
+        async move {
+            while let Some(msg) = rmessages.next().await {
+                match msg {
+                    AgentMessage::GatheredCandidate(_stream, candidate) => {
+                        if config.local.transports.contains(&candidate.transport_type) {
+                            lstream.add_remote_candidate(candidate).unwrap();
+                        }
+                    }
+                    AgentMessage::GatheringComplete(_component) => {
+                        lstream.end_of_remote_candidates();
+                        let _ = rgath_send.clone().send(()).await;
+                    }
+                    AgentMessage::ComponentStateChange(_component, state) => {
+                        if state == ComponentConnectionState::Connected
+                            && 1 == n_completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        {
+                            let _ = complete_send.clone().send(()).await;
+                        }
+                    }
+                }
             }
         }
-        lstream.end_of_remote_candidates();
     });
 
     if !config.local.trickle_ice {
-        lgather.await;
+        let _ = lgathered.next().await;
     }
     if !config.remote.trickle_ice {
-        rgather.await;
+        let _ = rgathered.next().await;
     }
+    drop(lgathered);
+    drop(rgathered);
     trace!("gathered");
 
-    let lmessages = lagent.messages();
-    let rmessages = ragent.messages();
-    let mut s = futures::stream_select!(lmessages, rmessages);
-    let mut n_completed = 0;
-    while let Some(msg) = s.next().await {
-        if matches!(
-            msg,
-            AgentMessage::ComponentStateChange(_component, ComponentConnectionState::Connected)
-        ) {
-            n_completed += 1;
-            if n_completed == 2 {
-                break;
-            }
-        }
-    }
+    completed.next().await.unwrap();
+    drop(completed);
+
     assert_eq!(lcomp.state(), ComponentConnectionState::Connected);
     assert_eq!(rcomp.state(), ComponentConnectionState::Connected);
     trace!("connected");
@@ -164,6 +198,9 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     trace!("agents aborted");
     assert!(matches!(udp_stun_server.await, Err(Aborted)));
     assert!(matches!(tcp_stun_server.await, Err(Aborted)));
+
+    let _ = lloop.await;
+    let _ = rloop.await;
     trace!("done");
 }
 

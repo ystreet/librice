@@ -20,7 +20,7 @@ use librice_proto::component::ComponentConnectionState;
 use crate::component::{Component, SelectedPair};
 use crate::stream::Stream;
 pub use librice_proto::agent::TurnCredentials;
-use librice_proto::candidate::TransportType;
+use librice_proto::candidate::{Candidate, TransportType};
 
 /// Errors that can be returned as a result of agent operations.
 #[derive(Debug)]
@@ -197,6 +197,10 @@ pub(crate) struct AgentInner {
 pub enum AgentMessage {
     /// A [`Component`] has changed state.
     ComponentStateChange(Component, ComponentConnectionState),
+    /// A [`Component`] has gathered a candidate.
+    GatheredCandidate(Stream, Candidate),
+    /// A [`Component`] has completed gathering.
+    GatheringComplete(Component),
 }
 
 #[derive(Debug)]
@@ -213,15 +217,18 @@ impl futures::stream::Stream for AgentStream {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if let Some(mut transmit) = self.pending_transmit.take() {
             let mut inner = self.inner.lock().unwrap();
+            inner.waker = Some(cx.waker().clone());
             if let Some(stream) = inner.streams.get(transmit.stream_id) {
-                if let Some(retry) = stream.handle_transmit(transmit.transmit, cx.waker().clone()) {
+                if let Some(retry) = stream.handle_transmit(transmit.transmit) {
                     transmit.transmit = retry;
-                    inner.waker = Some(cx.waker().clone());
                     drop(inner);
                     self.as_mut().pending_transmit = Some(transmit);
                     return Poll::Pending;
                 }
             }
+        } else {
+            let mut inner = self.inner.lock().unwrap();
+            inner.waker = Some(cx.waker().clone());
         }
 
         let weak_proto_agent = Arc::downgrade(&self.agent);
@@ -247,7 +254,6 @@ impl futures::stream::Stream for AgentStream {
                             allocate.transport,
                             allocate.from,
                             allocate.to,
-                            cx.waker().clone(),
                         );
                     }
                     cx.waker().wake_by_ref();
@@ -288,17 +294,40 @@ impl futures::stream::Stream for AgentStream {
                     cx.waker().wake_by_ref();
                     return Poll::Pending;
                 }
+                AgentPoll::GatheredCandidate(gathered) => {
+                    drop(agent);
+                    let inner = self.inner.lock().unwrap();
+                    if let Some(stream) = inner.streams.get(gathered.stream_id) {
+                        let candidate = gathered.gathered.candidate.clone();
+                        stream.add_local_gathered_candidates(gathered.gathered);
+                        return Poll::Ready(Some(AgentMessage::GatheredCandidate(stream.clone(), candidate)));
+                    }
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                },
+                AgentPoll::GatheringComplete(complete) => {
+                    drop(agent);
+                    let inner = self.inner.lock().unwrap();
+                    if let Some(stream) = inner.streams.get(complete.stream_id) {
+                        if let Some(component) = stream.component(complete.component_id) {
+                            return Poll::Ready(Some(AgentMessage::GatheringComplete(
+                                component.clone(),
+                            )));
+                        }
+                    }
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
             };
 
             if let Some(mut transmit) = agent.poll_transmit(now) {
                 drop(agent);
-                let mut inner = self.inner.lock().unwrap();
+                let inner = self.inner.lock().unwrap();
                 if let Some(stream) = inner.streams.get(transmit.stream_id) {
                     if let Some(retry) =
-                        stream.handle_transmit(transmit.transmit, cx.waker().clone())
+                        stream.handle_transmit(transmit.transmit)
                     {
                         transmit.transmit = retry;
-                        inner.waker = Some(cx.waker().clone());
 
                         drop(inner);
                         self.as_mut().pending_transmit = Some(transmit);
@@ -320,18 +349,12 @@ impl futures::stream::Stream for AgentStream {
             if core::future::Future::poll(self.as_mut().timer.as_mut().unwrap().as_mut(), cx)
                 .is_pending()
             {
-                // XXX: setting the waker may need to be done with the proto_agent lock held to
-                // avoid the waker being set after a relevant event may need to wake it.
-                let mut agent_inner = self.inner.lock().unwrap();
-                agent_inner.waker = Some(cx.waker().clone());
                 return Poll::Pending;
             }
             // timeout value passed, rerun our loop which will make more progress
             cx.waker().wake_by_ref();
             return Poll::Pending;
         }
-        let mut agent_inner = self.inner.lock().unwrap();
-        agent_inner.waker = Some(cx.waker().clone());
         Poll::Pending
     }
 }
