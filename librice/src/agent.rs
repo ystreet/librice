@@ -300,11 +300,14 @@ impl futures::stream::Stream for AgentStream {
                     if let Some(stream) = inner.streams.get(gathered.stream_id) {
                         let candidate = gathered.gathered.candidate.clone();
                         stream.add_local_gathered_candidates(gathered.gathered);
-                        return Poll::Ready(Some(AgentMessage::GatheredCandidate(stream.clone(), candidate)));
+                        return Poll::Ready(Some(AgentMessage::GatheredCandidate(
+                            stream.clone(),
+                            candidate,
+                        )));
                     }
                     cx.waker().wake_by_ref();
                     return Poll::Pending;
-                },
+                }
                 AgentPoll::GatheringComplete(complete) => {
                     drop(agent);
                     let inner = self.inner.lock().unwrap();
@@ -324,9 +327,7 @@ impl futures::stream::Stream for AgentStream {
                 drop(agent);
                 let inner = self.inner.lock().unwrap();
                 if let Some(stream) = inner.streams.get(transmit.stream_id) {
-                    if let Some(retry) =
-                        stream.handle_transmit(transmit.transmit)
-                    {
+                    if let Some(retry) = stream.handle_transmit(transmit.transmit) {
                         transmit.transmit = retry;
 
                         drop(inner);

@@ -150,7 +150,7 @@ impl<'a> Stream<'a> {
     ///     addr
     /// )
     /// .build();
-    /// stream.add_remote_candidate(candidate.clone()).unwrap();
+    /// stream.add_remote_candidate(candidate.clone());
     /// let remote_cands = stream.remote_candidates();
     /// assert_eq!(remote_cands.len(), 1);
     /// assert_eq!(remote_cands[0], candidate);
@@ -300,7 +300,7 @@ impl<'a> StreamMut<'a> {
     ///     addr
     /// )
     /// .build();
-    /// stream.add_remote_candidate(candidate).unwrap();
+    /// stream.add_remote_candidate(candidate);
     /// ```
     #[tracing::instrument(
         skip(self, cand),
@@ -308,16 +308,14 @@ impl<'a> StreamMut<'a> {
             stream.id = self.id
         )
     )]
-    pub fn add_remote_candidate(&mut self, cand: Candidate) -> Result<(), AgentError> {
+    pub fn add_remote_candidate(&mut self, cand: Candidate) {
         info!("adding remote candidate {:?}", cand);
-        let stream_state = self
-            .agent
-            .mut_stream_state(self.id)
-            .ok_or(AgentError::ResourceNotFound)?;
+        let Some(stream_state) = self.agent.mut_stream_state(self.id) else {
+            return;
+        };
         let checklist_id = stream_state.checklist_id;
         let checklist = self.agent.checklistset.mut_list(checklist_id).unwrap();
         checklist.add_remote_candidate(cand);
-        Ok(())
     }
 
     /// Provide the stream with data that has been received on an external socket.  The returned
@@ -624,7 +622,7 @@ impl StreamState {
                 GatherPoll::Complete(component_id) => {
                     component.gather_state = GatherProgress::Completed;
                     return GatherPoll::Complete(component_id);
-                },
+                }
                 GatherPoll::Finished => (),
                 other => return other,
             }

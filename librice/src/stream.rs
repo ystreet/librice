@@ -309,14 +309,13 @@ impl Stream {
     ///     addr
     /// )
     /// .build();
-    /// stream.add_remote_candidate(candidate).unwrap();
+    /// stream.add_remote_candidate(candidate);
     /// ```
-    pub fn add_remote_candidate(&self, cand: Candidate) -> Result<(), AgentError> {
-        let ret = {
-            let proto_agent = self
-                .weak_proto_agent
-                .upgrade()
-                .ok_or(AgentError::Proto(ProtoAgentError::ResourceNotFound))?;
+    pub fn add_remote_candidate(&self, cand: Candidate) {
+        {
+            let Some(proto_agent) = self.weak_proto_agent.upgrade() else {
+                return;
+            };
             let mut proto_agent = proto_agent.lock().unwrap();
             let mut proto_stream = proto_agent.mut_stream(self.id).unwrap();
             proto_stream.add_remote_candidate(cand)
@@ -328,7 +327,6 @@ impl Stream {
                 waker.wake();
             }
         }
-        ret.map_err(AgentError::Proto)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -608,7 +606,7 @@ impl Stream {
     ///     addr
     /// )
     /// .build();
-    /// stream.add_remote_candidate(candidate.clone()).unwrap();
+    /// stream.add_remote_candidate(candidate.clone());
     /// let remote_cands = stream.remote_candidates();
     /// assert_eq!(remote_cands.len(), 1);
     /// assert_eq!(remote_cands[0], candidate);
@@ -782,7 +780,10 @@ mod tests {
             s.gather_candidates().await.unwrap();
             let mut messages = agent.messages();
             loop {
-                if matches!(messages.next().await, Some(AgentMessage::GatheringComplete(_))) {
+                if matches!(
+                    messages.next().await,
+                    Some(AgentMessage::GatheringComplete(_))
+                ) {
                     break;
                 }
             }

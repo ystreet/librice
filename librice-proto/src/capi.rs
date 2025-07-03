@@ -796,7 +796,7 @@ pub unsafe extern "C" fn rice_stream_handle_allocated_socket(
     let mut proto_agent = stream.proto_agent.lock().unwrap();
     let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
 
-    let from = RiceAddress::from_c(from);                                                                         
+    let from = RiceAddress::from_c(from);
     let to = RiceAddress::from_c(to);
     let socket = if socket_addr.is_null() {
         Err(StunError::ResourceNotFound)
@@ -1228,9 +1228,7 @@ pub unsafe extern "C" fn rice_stream_add_remote_candidate(
     let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
     let candidate = Box::from_raw(mut_override(candidate));
 
-    proto_stream
-        .add_remote_candidate(candidate.as_ref().into())
-        .unwrap();
+    proto_stream.add_remote_candidate(candidate.as_ref().into());
     drop(proto_agent);
     core::mem::forget(stream);
     core::mem::forget(candidate);
