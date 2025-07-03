@@ -299,11 +299,12 @@ impl futures::stream::Stream for AgentStream {
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(gathered.stream_id) {
                         let candidate = gathered.gathered.candidate.clone();
-                        stream.add_local_gathered_candidates(gathered.gathered);
-                        return Poll::Ready(Some(AgentMessage::GatheredCandidate(
-                            stream.clone(),
-                            candidate,
-                        )));
+                        if stream.add_local_gathered_candidates(gathered.gathered) {
+                            return Poll::Ready(Some(AgentMessage::GatheredCandidate(
+                                stream.clone(),
+                                candidate,
+                            )));
+                        }
                     }
                     cx.waker().wake_by_ref();
                     return Poll::Pending;

@@ -771,15 +771,18 @@ impl ConnCheckList {
             candidate = ?gathered.candidate,
         )
     )]
-    pub fn add_local_gathered_candidate(&mut self, gathered: GatheredCandidate) {
+    pub fn add_local_gathered_candidate(&mut self, gathered: GatheredCandidate) -> bool {
         let candidate_type = gathered.candidate.candidate_type;
-        self.add_local_candidate_internal(gathered.candidate);
+        if !self.add_local_candidate_internal(gathered.candidate) {
+            return false;
+        }
         if candidate_type == CandidateType::Relayed {
             let client = gathered.turn_agent.unwrap();
             let agent_id = StunAgentId::generate();
             self.turn_clients.push((agent_id, *client));
         }
         self.generate_checks();
+        true
     }
 
     /// Add a local candidate to this checklist.
@@ -797,12 +800,16 @@ impl ConnCheckList {
             checklist_id = self.checklist_id,
         )
     )]
-    pub fn add_local_candidate(&mut self, local: Candidate) {
-        self.add_local_candidate_internal(local);
-        self.generate_checks();
+    pub fn add_local_candidate(&mut self, local: Candidate) -> bool {
+        if self.add_local_candidate_internal(local) {
+            self.generate_checks();
+            true
+        } else {
+            false
+        }
     }
 
-    fn add_local_candidate_internal(&mut self, local: Candidate) {
+    fn add_local_candidate_internal(&mut self, local: Candidate) -> bool {
         let (local_credentials, remote_credentials) = {
             if self.local_end_of_candidates {
                 panic!("Attempt made to add a local candidate after end-of-candidate received");
@@ -823,7 +830,34 @@ impl ConnCheckList {
             }
         };
 
-        info!("adding {:?}", local);
+        if let Some(idx) = self
+            .local_candidates
+            .iter()
+            .position(|c| local.redundant_with(&c.candidate))
+        {
+            let other = &self.local_candidates[idx].candidate;
+            if self.trickle_ice || other.priority >= local.priority {
+                debug!("not adding redundant candidate");
+                return false;
+            } else if !self.trickle_ice {
+                let removed = self.local_candidates.swap_remove(idx);
+                debug!(
+                    "removing already existing redundant candidate {:?}",
+                    removed.candidate
+                );
+                self.pairs.retain(|pair| {
+                    pair.pair.local != removed.candidate
+                        || ![
+                            CandidatePairState::InProgress,
+                            CandidatePairState::Succeeded,
+                        ]
+                        .contains(&pair.state)
+                });
+                // TODO: signal potential socket/agent removal?
+            }
+        }
+
+        info!("adding");
 
         match local.transport_type {
             TransportType::Udp => {
@@ -849,6 +883,7 @@ impl ConnCheckList {
                 }
             }
         }
+        true
     }
 
     /// Signal to the checklist that no more local candidates will be provided.
@@ -3780,9 +3815,17 @@ mod tests {
         let list = set.mut_list(list).unwrap();
         list.add_component(1);
         list.add_component(2);
-        let local1 = Peer::builder()
+        let local1_removed = Peer::builder()
             .priority(1)
             .local_addr("127.0.0.1:1".parse().unwrap())
+            .build();
+        let local1 = Peer::builder()
+            .priority(100)
+            .local_addr("127.0.0.1:100".parse().unwrap())
+            .build();
+        let local1_ignored2 = Peer::builder()
+            .priority(99)
+            .local_addr("127.0.0.1:99".parse().unwrap())
             .build();
         let remote1 = Peer::builder()
             .priority(2)
@@ -3791,34 +3834,36 @@ mod tests {
         let local2 = Peer::builder()
             .component_id(2)
             .priority(4)
-            .local_addr("127.0.0.1:3".parse().unwrap())
+            .local_addr("127.0.0.2:3".parse().unwrap())
             .build();
         let remote2 = Peer::builder()
             .component_id(2)
             .priority(6)
-            .local_addr("127.0.0.1:4".parse().unwrap())
+            .local_addr("127.0.0.2:4".parse().unwrap())
             .build();
         let local3 = Peer::builder()
             .priority(10)
-            .local_addr("127.0.0.1:5".parse().unwrap())
+            .local_addr("127.0.0.3:5".parse().unwrap())
             .build();
         let remote3 = Peer::builder()
             .priority(15)
-            .local_addr("127.0.0.1:6".parse().unwrap())
+            .local_addr("127.0.0.3:6".parse().unwrap())
             .build();
 
-        list.add_local_candidate(local1.candidate.clone());
+        assert!(list.add_local_candidate(local1_removed.candidate.clone()));
+        assert!(list.add_local_candidate(local1.candidate.clone()));
+        assert!(!list.add_local_candidate(local1_ignored2.candidate.clone()));
         list.add_remote_candidate(remote1.candidate.clone());
-        list.add_local_candidate(local2.candidate.clone());
+        assert!(list.add_local_candidate(local2.candidate.clone()));
         list.add_remote_candidate(remote2.candidate.clone());
-        list.add_local_candidate(local3.candidate.clone());
+        assert!(list.add_local_candidate(local3.candidate.clone()));
         list.add_remote_candidate(remote3.candidate.clone());
 
-        let pair1 = CandidatePair::new(local3.candidate.clone(), remote3.candidate.clone());
-        let pair2 = CandidatePair::new(local2.candidate, remote2.candidate);
-        let pair3 = CandidatePair::new(local3.candidate, remote1.candidate.clone());
-        let pair4 = CandidatePair::new(local1.candidate.clone(), remote3.candidate);
-        let pair5 = CandidatePair::new(local1.candidate, remote1.candidate);
+        let pair1 = CandidatePair::new(local1.candidate.clone(), remote3.candidate.clone());
+        let pair2 = CandidatePair::new(local3.candidate.clone(), remote3.candidate);
+        let pair3 = CandidatePair::new(local2.candidate, remote2.candidate);
+        let pair4 = CandidatePair::new(local1.candidate, remote1.candidate.clone());
+        let pair5 = CandidatePair::new(local3.candidate, remote1.candidate);
         assert_list_contains_checks(list, vec![&pair1, &pair2, &pair3, &pair4, &pair5]);
     }
 
@@ -3844,25 +3889,25 @@ mod tests {
             .foundation("0")
             .component_id(2)
             .priority(3)
-            .local_addr("127.0.0.1:3".parse().unwrap())
+            .local_addr("127.0.0.2:3".parse().unwrap())
             .build();
         let remote2 = Peer::builder()
             .foundation("0")
             .component_id(2)
             .priority(4)
-            .local_addr("127.0.0.1:4".parse().unwrap())
+            .local_addr("127.0.0.2:4".parse().unwrap())
             .build();
         let local3 = Peer::builder()
             .foundation("1")
             .component_id(2)
             .priority(7)
-            .local_addr("127.0.0.1:5".parse().unwrap())
+            .local_addr("127.0.0.3:5".parse().unwrap())
             .build();
         let remote3 = Peer::builder()
             .foundation("1")
             .component_id(2)
             .priority(10)
-            .local_addr("127.0.0.1:6".parse().unwrap())
+            .local_addr("127.0.0.3:6".parse().unwrap())
             .build();
 
         // generated pairs

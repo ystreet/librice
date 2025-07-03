@@ -421,16 +421,20 @@ impl<'a> StreamMut<'a> {
         );
     }
 
-    /// Add a local candidate for this stream
-    pub fn add_local_candidate(&mut self, candidate: Candidate) {
+    /// Add a local candidate for this stream.
+    ///
+    /// Returns whether the candidate was added internally.
+    pub fn add_local_candidate(&mut self, candidate: Candidate) -> bool {
         let stream_state = self.agent.mut_stream_state(self.id).unwrap();
         let checklist_id = stream_state.checklist_id;
         let checklist = self.agent.checklistset.mut_list(checklist_id).unwrap();
         checklist.add_local_candidate(candidate)
     }
 
-    /// Add a local candidate for this stream
-    pub fn add_local_gathered_candidate(&mut self, candidate: GatheredCandidate) {
+    /// Add a local candidate for this stream.
+    ///
+    /// Returns whether the candidate was added internally.
+    pub fn add_local_gathered_candidate(&mut self, candidate: GatheredCandidate) -> bool {
         let stream_state = self.agent.mut_stream_state(self.id).unwrap();
         let checklist_id = stream_state.checklist_id;
         let checklist = self.agent.checklistset.mut_list(checklist_id).unwrap();

@@ -749,9 +749,9 @@ impl Stream {
             .cloned()
     }
 
-    pub(crate) fn add_local_gathered_candidates(&self, gathered: GatheredCandidate) {
+    pub(crate) fn add_local_gathered_candidates(&self, gathered: GatheredCandidate) -> bool {
         let Some(proto_agent) = self.weak_proto_agent.upgrade() else {
-            return;
+            return false;
         };
         let mut proto_agent = proto_agent.lock().unwrap();
         let mut proto_stream = proto_agent.mut_stream(self.id).unwrap();
