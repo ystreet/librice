@@ -341,7 +341,7 @@ impl<'a> StreamMut<'a> {
         let checklist_id = stream_state.checklist_id;
         // first try to provide the incoming data to the gathering process if it exist
         let mut ret = stream_state.handle_incoming_data(component_id, &transmit, now);
-        if ret.gather_handled {
+        if ret.data_handled {
             return ret;
         }
         if stream_state.component_state(component_id).is_none() {
@@ -366,29 +366,13 @@ impl<'a> StreamMut<'a> {
                         ret.data.push(data);
                     }
                     HandleRecvReply::Handled => {
-                        ret.conncheck_handled = true;
+                        ret.data_handled = true;
                     }
                 }
             }
         }
 
         ret
-    }
-
-    /// Poll the gathering process in order to make further progress.  The returned value indicates
-    /// what the caller should do next.
-    pub fn poll_gather(&mut self, now: Instant) -> GatherPoll {
-        let Some(stream_state) = self.agent.mut_stream_state(self.id) else {
-            return GatherPoll::Complete;
-        };
-        stream_state.poll_gather(now)
-    }
-
-    /// Poll the gathering process in order to make further progress.  The returned value indicates
-    /// what the caller should do next.
-    pub fn poll_gather_transmit(&mut self, now: Instant) -> Option<(usize, Transmit<Data>)> {
-        let stream_state = self.agent.mut_stream_state(self.id)?;
-        stream_state.poll_gather_transmit(now)
     }
 
     /// Indicate that no more candidates are expected from the peer.  This may allow the ICE
@@ -407,28 +391,6 @@ impl<'a> StreamMut<'a> {
         checklist.end_of_remote_candidates();
     }
 
-    /// Provide a reply to the [`GatherPoll::AllocateSocket`] request.  The `component_id`,
-    /// `transport`, `from`, and `to` values must match exactly with the request.
-    pub fn allocated_gather_socket(
-        &mut self,
-        component_id: usize,
-        transport: TransportType,
-        from: SocketAddr,
-        to: SocketAddr,
-        socket: Result<SocketAddr, StunError>,
-    ) {
-        let stream_state = self.agent.mut_stream_state(self.id).unwrap();
-        let Some(component_state) = stream_state.mut_component_state(component_id) else {
-            return;
-        };
-        if component_state.gather_state != GatherProgress::InProgress {
-            return;
-        }
-        if let Some(gather) = component_state.gatherer.as_mut() {
-            gather.allocated_socket(transport, from, to, socket)
-        }
-    }
-
     /// Provide a reply to the
     /// [`AgentPoll::AllocateSocket`](crate::agent::AgentPoll::AllocateSocket) request.  The
     /// `component_id`, `transport`, `from`, and `to` values must match exactly with the request.
@@ -442,6 +404,15 @@ impl<'a> StreamMut<'a> {
     ) {
         let stream_state = self.agent.mut_stream_state(self.id).unwrap();
         let checklist_id = stream_state.checklist_id;
+        let Some(component_state) = stream_state.mut_component_state(component_id) else {
+            return;
+        };
+        if component_state.gather_state != GatherProgress::InProgress {
+            return;
+        }
+        if let Some(gather) = component_state.gatherer.as_mut() {
+            gather.allocated_socket(transport, from, to, &local_addr)
+        }
         self.agent.checklistset.allocated_socket(
             checklist_id,
             component_id,
@@ -490,12 +461,9 @@ pub(crate) struct StreamState {
 /// Reply information to [`StreamMut::handle_incoming_data`]
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct StreamIncomingDataReply {
-    /// The gather process handled this data.  [`StreamMut::poll_gather`] may be able to make
-    /// further progress and should be woken.
-    pub gather_handled: bool,
-    /// The connectivity check process handled this data.  [`Agent::poll`] may be able to make
-    /// further progress and should be woken.
-    pub conncheck_handled: bool,
+    /// The data was handled internally.  [`Agent::poll`] may be able to make further progress
+    /// and should be woken.
+    pub data_handled: bool,
     /// A list of unhandled data blocks that were received and should be handled by the
     /// application.
     pub data: Vec<Vec<u8>>,
@@ -622,7 +590,7 @@ impl StreamState {
         };
         if wake {
             return StreamIncomingDataReply {
-                gather_handled: true,
+                data_handled: true,
                 ..Default::default()
             };
         }
@@ -653,14 +621,18 @@ impl StreamState {
                         lowest_wait = Some(wait);
                     }
                 }
-                GatherPoll::Complete => component.gather_state = GatherProgress::Completed,
+                GatherPoll::Complete(component_id) => {
+                    component.gather_state = GatherProgress::Completed;
+                    return GatherPoll::Complete(component_id);
+                },
+                GatherPoll::Finished => (),
                 other => return other,
             }
         }
         if let Some(lowest_wait) = lowest_wait {
             GatherPoll::WaitUntil(lowest_wait)
         } else {
-            GatherPoll::Complete
+            GatherPoll::Finished
         }
     }
 

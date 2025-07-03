@@ -6,7 +6,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use librice::agent::Agent;
+use librice::agent::{Agent, AgentMessage};
 
 use async_std::task;
 
@@ -56,10 +56,14 @@ fn main() -> io::Result<()> {
         let stream = agent.add_stream();
         let _comp = stream.add_component();
 
-        let gather_stream = stream.gather_candidates().await.unwrap();
-        futures::pin_mut!(gather_stream);
-        while let Some(candidate) = gather_stream.next().await {
-            println! {"{:?}", candidate};
+        stream.gather_candidates().await.unwrap();
+        let mut messages = agent.messages();
+        while let Some(msg) = messages.next().await {
+            match msg {
+                AgentMessage::GatheredCandidate(_stream, candidate) => println! {"{:?}", candidate},
+                AgentMessage::GatheringComplete(_component) => break,
+                _ => (),
+            }
         }
         Ok(())
     })

@@ -9,14 +9,12 @@
 //! An ICE Stream
 
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
-use std::task::{Poll, Waker};
 use std::time::Instant;
 
 use async_std::net::TcpStream;
 use futures::StreamExt;
-use librice_proto::gathering::GatherPoll;
+use librice_proto::gathering::GatheredCandidate;
 use stun_proto::agent::Transmit;
 use stun_proto::types::data::Data;
 use stun_proto::types::TransportType;
@@ -45,9 +43,7 @@ pub struct Stream {
 #[derive(Debug, Default)]
 pub(crate) struct StreamInner {
     sockets: Vec<StunChannel>,
-    transmit_waker: Vec<Waker>,
     components: Vec<Option<Component>>,
-    gather_waker: Option<Waker>,
 }
 
 impl StreamInner {
@@ -89,132 +85,6 @@ impl StreamInner {
     }
 }
 
-/// A Future that completes the candidate gathering process.
-#[derive(Debug)]
-#[must_use = "futures/streams/sinks do nothing unless you `.await` or poll them"]
-pub struct Gather {
-    weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
-    weak_agent_inner: Weak<Mutex<AgentInner>>,
-    stream_id: usize,
-    stream: Arc<Mutex<StreamInner>>,
-    timer: Option<Pin<Box<async_io::Timer>>>,
-    transmit_send: async_std::channel::Sender<Transmit<Data<'static>>>,
-    pending_transmit_send: Option<Transmit<Data<'static>>>,
-}
-
-impl futures::stream::Stream for Gather {
-    type Item = Candidate;
-
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        let now = Instant::now();
-        let mut lowest_wait = None;
-        let transmit_send = self.transmit_send.clone();
-        if let Some(transmit) = self.pending_transmit_send.take() {
-            // if we are still trying to send some data for this gather, ensure it is sent
-            // before the next data is asked for.
-            if let Err(async_std::channel::TrySendError::Full(transmit)) =
-                transmit_send.try_send(transmit)
-            {
-                self.pending_transmit_send = Some(transmit);
-                let mut stream = self.stream.lock().unwrap();
-                stream.transmit_waker.push(cx.waker().clone());
-                return Poll::Pending;
-            }
-        }
-        let weak_stream = Arc::downgrade(&self.stream);
-        let mut pending_transmit_send = None;
-        let Some(proto_agent) = self.weak_proto_agent.upgrade() else {
-            return Poll::Ready(None);
-        };
-        let weak_proto_agent = Arc::downgrade(&proto_agent);
-        let mut proto_agent = proto_agent.lock().unwrap();
-        let mut proto_stream = proto_agent.mut_stream(self.stream_id).unwrap();
-
-        loop {
-            match proto_stream.poll_gather(now) {
-                GatherPoll::Complete => {
-                    proto_stream.end_of_local_candidates();
-                    return Poll::Ready(None);
-                }
-                GatherPoll::AllocateSocket {
-                    component_id,
-                    transport,
-                    local_addr,
-                    remote_addr: server_addr,
-                } => {
-                    if transport == TransportType::Tcp {
-                        Stream::handle_gather_allocate_socket(
-                            weak_stream.clone(),
-                            weak_proto_agent.clone(),
-                            self.weak_agent_inner.clone(),
-                            self.stream_id,
-                            component_id,
-                            transport,
-                            local_addr,
-                            server_addr,
-                            cx.waker().clone(),
-                        );
-                        continue;
-                    }
-                }
-                GatherPoll::NewCandidate(gathered) => {
-                    let candidate = gathered.candidate.clone();
-                    proto_stream.add_local_gathered_candidate(gathered);
-                    return Poll::Ready(Some(candidate));
-                }
-                GatherPoll::WaitUntil(wait_time) => match lowest_wait {
-                    Some(wait) => {
-                        if wait_time < wait {
-                            lowest_wait = Some(wait_time);
-                        }
-                    }
-                    None => lowest_wait = Some(wait_time),
-                },
-            }
-
-            if let Some(transmit) = proto_stream.poll_gather_transmit(now) {
-                if let Err(async_std::channel::TrySendError::Full(transmit)) =
-                    transmit_send.try_send(transmit.1.into_owned())
-                {
-                    pending_transmit_send = Some(transmit);
-                    break;
-                }
-            }
-
-            if lowest_wait.is_some() {
-                break;
-            }
-        }
-        self.stream.lock().unwrap().gather_waker = Some(cx.waker().clone());
-        drop(proto_agent);
-
-        if let Some(pending_transmit) = pending_transmit_send {
-            self.pending_transmit_send = Some(pending_transmit);
-            let mut stream = self.stream.lock().unwrap();
-            stream.transmit_waker.push(cx.waker().clone());
-            return Poll::Pending;
-        }
-
-        if let Some(lowest_wait) = lowest_wait {
-            match self.as_mut().timer.as_mut() {
-                Some(timer) => timer.set_at(lowest_wait),
-                None => self.as_mut().timer = Some(Box::pin(async_io::Timer::at(lowest_wait))),
-            }
-            if core::future::Future::poll(self.as_mut().timer.as_mut().unwrap().as_mut(), cx)
-                .is_pending()
-            {
-                return Poll::Pending;
-            }
-            // timeout value passed, rerun our loop which will make more progress
-            cx.waker().wake_by_ref();
-        }
-        Poll::Pending
-    }
-}
-
 impl Stream {
     pub(crate) fn new(
         weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
@@ -231,10 +101,7 @@ impl Stream {
                     break;
                 };
                 let socket = {
-                    let mut inner = inner.lock().unwrap();
-                    while let Some(waker) = inner.transmit_waker.pop() {
-                        waker.wake_by_ref();
-                    }
+                    let inner = inner.lock().unwrap();
                     inner
                         .socket_for_5tuple(transmit.transport, transmit.from, transmit.to)
                         .cloned()
@@ -467,14 +334,13 @@ impl Stream {
     #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(
         name = "stream_handle_incoming_data",
-        skip(weak_inner, weak_proto_agent, weak_agent_inner, weak_component, stream_id, component_id, transmit),
+        skip(weak_proto_agent, weak_agent_inner, weak_component, stream_id, component_id, transmit),
         fields(
             stream.id = stream_id,
             component.id = component_id,
         )
     )]
     fn handle_incoming_data<T: AsRef<[u8]> + std::fmt::Debug>(
-        weak_inner: Weak<Mutex<StreamInner>>,
         weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
         weak_agent_inner: Weak<Mutex<AgentInner>>,
         weak_component: Weak<Mutex<ComponentInner>>,
@@ -508,22 +374,12 @@ impl Stream {
         drop(proto_agent);
         drop(component);
 
-        if reply.gather_handled {
-            if let Some(stream) = weak_inner.upgrade() {
-                let mut stream = stream.lock().unwrap();
-                if let Some(waker) = stream.gather_waker.take() {
-                    waker.wake()
-                }
-            }
-        }
-        //        if reply.conncheck_handled {
         if let Some(agent) = weak_agent_inner.upgrade() {
             let mut agent = agent.lock().unwrap();
             if let Some(waker) = agent.waker.take() {
                 waker.wake();
             }
         }
-        //        }
     }
 
     /// Start gathering local candidates.  Credentials must have been set before this function can
@@ -545,7 +401,7 @@ impl Stream {
     ///     stream.gather_candidates().await.unwrap();
     /// });
     /// ```
-    pub async fn gather_candidates(&self) -> Result<Gather, AgentError> {
+    pub async fn gather_candidates(&self) -> Result<(), AgentError> {
         let proto_agent = self
             .weak_proto_agent
             .upgrade()
@@ -591,7 +447,6 @@ impl Stream {
                             let mut recv = core::pin::pin!(recv);
                             while let Some((data, from)) = recv.next().await {
                                 Self::handle_incoming_data(
-                                    weak_inner.clone(),
                                     weak_proto_agent.clone(),
                                     weak_agent_inner.clone(),
                                     weak_component.clone(),
@@ -634,7 +489,6 @@ impl Stream {
                                     let mut recv = core::pin::pin!(recv);
                                     while let Some((data, from)) = recv.next().await {
                                         Self::handle_incoming_data(
-                                            weak_inner.clone(),
                                             weak_proto_agent.clone(),
                                             weak_agent_inner.clone(),
                                             weak_component.clone(),
@@ -666,18 +520,7 @@ impl Stream {
                 )?;
             }
         }
-
-        let stream_id = self.id;
-        let transmit_send = self.transmit_send.clone();
-        Ok(Gather {
-            weak_proto_agent: self.weak_proto_agent.clone(),
-            weak_agent_inner: self.weak_agent_inner.clone(),
-            stream_id,
-            stream: self.inner.clone(),
-            timer: None,
-            transmit_send,
-            pending_transmit_send: None,
-        })
+        Ok(())
     }
     /*
     pub async fn add_local_candidate(&self, candidate: &Candidate) -> Result<(), AgentError> {
@@ -700,7 +543,6 @@ impl Stream {
                     let mut recv = core::pin::pin!(recv);
                     while let Some((data, from)) = recv.next().await {
                         Self::handle_incoming_data(
-                            weak_state.clone(),
                             weak_set.clone(),
                             weak_agent.clone(),
                             stream_id,
@@ -722,7 +564,7 @@ impl Stream {
                          let stream = TcpListener::bind(candidate.base_address).await?;
                          async_std::task::spawn(async move {
                              while let Some(stream) =
-                             Self::handle_incoming_data(weak_state, weak_set, stream_id, checklist_id, component_id, transmit)
+                             Self::handle_incoming_data(weak_set, stream_id, checklist_id, component_id, transmit)
                          });
                      }
                      _ => return Err(AgentError::WrongImplementation);
@@ -801,7 +643,6 @@ impl Stream {
     pub(crate) fn handle_transmit<T: AsRef<[u8]>>(
         &self,
         transmit: Transmit<T>,
-        waker: Waker,
     ) -> Option<Transmit<Data<'static>>> {
         if let Err(async_std::channel::TrySendError::Full(transmit)) =
             self.transmit_send.try_send(Transmit::new(
@@ -811,8 +652,6 @@ impl Stream {
                 transmit.to,
             ))
         {
-            let mut inner = self.inner.lock().unwrap();
-            inner.transmit_waker.push(waker);
             return Some(transmit);
         }
         None
@@ -828,7 +667,6 @@ impl Stream {
         transport: TransportType,
         from: SocketAddr,
         to: SocketAddr,
-        waker: Waker,
     ) {
         if transport != TransportType::Tcp {
             unreachable!();
@@ -871,7 +709,12 @@ impl Stream {
                 channel
             };
 
-            waker.wake();
+            if let Some(agent) = weak_agent_inner.upgrade() {
+                let mut agent = agent.lock().unwrap();
+                if let Some(waker) = agent.waker.take() {
+                    waker.wake();
+                }
+            }
 
             if let Some(channel) = channel {
                 let recv = channel.recv();
@@ -879,92 +722,6 @@ impl Stream {
                 let local_addr = channel.local_addr().unwrap();
                 while let Some((data, from)) = recv.next().await {
                     Self::handle_incoming_data(
-                        weak_inner.clone(),
-                        weak_proto_agent.clone(),
-                        weak_agent_inner.clone(),
-                        weak_component.clone().unwrap(),
-                        stream_id,
-                        component_id,
-                        Transmit::new(
-                            data.into_boxed_slice(),
-                            TransportType::Tcp,
-                            from,
-                            local_addr,
-                        ),
-                        Instant::now(),
-                    )
-                }
-            }
-        });
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn handle_gather_allocate_socket(
-        weak_inner: Weak<Mutex<StreamInner>>,
-        weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
-        weak_agent_inner: Weak<Mutex<AgentInner>>,
-        stream_id: usize,
-        component_id: usize,
-        transport: TransportType,
-        from: SocketAddr,
-        to: SocketAddr,
-        waker: Waker,
-    ) {
-        if transport != TransportType::Tcp {
-            unreachable!();
-        }
-        async_std::task::spawn(async move {
-            let stream = TcpStream::connect(to).await;
-            let mut weak_component = None;
-            let channel = match stream {
-                Ok(stream) => {
-                    let Some(inner) = weak_inner.upgrade() else {
-                        return;
-                    };
-                    let mut inner = inner.lock().unwrap();
-                    let channel = StunChannel::Tcp(TcpChannel::new(stream.clone()));
-                    inner.sockets.push(channel.clone());
-                    weak_component = Some(Arc::downgrade(
-                        &inner.component(component_id).unwrap().inner,
-                    ));
-                    Ok(channel)
-                }
-                Err(_e) => Err(stun_proto::agent::StunError::ResourceNotFound),
-            };
-            let Some(proto_agent) = weak_proto_agent.upgrade() else {
-                return;
-            };
-
-            let channel = {
-                let mut proto_agent = proto_agent.lock().unwrap();
-                let (local_addr, channel) = match channel {
-                    Ok(channel) => (Ok(channel.local_addr().unwrap()), Some(channel)),
-                    Err(e) => (Err(e), None),
-                };
-
-                let mut proto_stream = proto_agent.mut_stream(stream_id).unwrap();
-                proto_stream.allocated_gather_socket(component_id, transport, from, to, local_addr);
-                channel
-            };
-            if let Some(waker) = weak_inner
-                .upgrade()
-                .unwrap()
-                .lock()
-                .unwrap()
-                .gather_waker
-                .take()
-            {
-                waker.wake();
-            }
-            waker.wake();
-
-            if let Some(channel) = channel {
-                let recv = channel.recv();
-                let mut recv = core::pin::pin!(recv);
-                let local_addr = channel.local_addr().unwrap();
-                while let Some((data, from)) = recv.next().await {
-                    Self::handle_incoming_data(
-                        weak_inner.clone(),
                         weak_proto_agent.clone(),
                         weak_agent_inner.clone(),
                         weak_component.clone().unwrap(),
@@ -993,12 +750,21 @@ impl Stream {
             )
             .cloned()
     }
+
+    pub(crate) fn add_local_gathered_candidates(&self, gathered: GatheredCandidate) {
+        let Some(proto_agent) = self.weak_proto_agent.upgrade() else {
+            return;
+        };
+        let mut proto_agent = proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(self.id).unwrap();
+        proto_stream.add_local_gathered_candidate(gathered)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::Agent;
+    use crate::agent::{Agent, AgentMessage};
 
     fn init() {
         crate::tests::test_init_log();
@@ -1013,8 +779,13 @@ mod tests {
         s.set_remote_credentials(Credentials::new("ruser".into(), "rpass".into()));
         let _c = s.add_component().unwrap();
         async_std::task::block_on(async move {
-            let mut gather = s.gather_candidates().await.unwrap();
-            while let Some(_cand) = gather.next().await {}
+            s.gather_candidates().await.unwrap();
+            let mut messages = agent.messages();
+            loop {
+                if matches!(messages.next().await, Some(AgentMessage::GatheringComplete(_))) {
+                    break;
+                }
+            }
             let local_cands = s.local_candidates();
             info!("gathered local candidates {:?}", local_cands);
             assert!(!local_cands.is_empty());

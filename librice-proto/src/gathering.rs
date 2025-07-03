@@ -139,6 +139,7 @@ pub struct StunGatherer {
     pending_requests: VecDeque<PendingRequest>,
     pending_tcp: VecDeque<PendingTcp>,
     tcp_buffers: VecDeque<GatherTcpBuffer>,
+    completed: bool,
 }
 
 #[derive(Debug)]
@@ -157,7 +158,7 @@ pub struct GatheredCandidate {
 
 /// Return value for the gather state machine
 #[derive(Debug)]
-pub enum GatherPoll {
+pub(crate) enum GatherPoll {
     /// Need a socket for the specified 5-tuple network address
     AllocateSocket {
         component_id: usize,
@@ -169,13 +170,15 @@ pub enum GatherPoll {
     WaitUntil(Instant),
     /// A new local candidate was discovered
     NewCandidate(GatheredCandidate),
-    /// Gathering process is complete, no further progress is possible.
-    Complete,
+    /// Gathering process is complete for a component
+    Complete(usize),
+    /// Gathering complete. No further progress can be made.
+    Finished,
 }
 
 impl StunGatherer {
     /// Create a new gatherer
-    pub fn new(
+    pub(crate) fn new(
         component_id: usize,
         sockets: Vec<(TransportType, SocketAddr)>,
         stun_servers: Vec<(TransportType, SocketAddr)>,
@@ -315,18 +318,14 @@ impl StunGatherer {
             pending_requests,
             pending_tcp: Default::default(),
             tcp_buffers: Default::default(),
+            completed: false,
         }
-    }
-
-    /// The component ID of this gatherer
-    pub fn component_id(&self) -> usize {
-        self.component_id
     }
 
     /// Poll the gatherer.  Should be called repeatedly until [`GatherPoll::WaitUntil`]
     /// or [`GatherPoll::Complete`] is returned.
     #[tracing::instrument(name = "gatherer_poll", level = "trace", ret, skip(self))]
-    pub fn poll(&mut self, now: Instant) -> GatherPoll {
+    pub(crate) fn poll(&mut self, now: Instant) -> GatherPoll {
         let mut lowest_wait = None;
 
         for pending_request in self.pending_requests.iter_mut() {
@@ -482,14 +481,17 @@ impl StunGatherer {
         }
         if let Some(lowest_wait) = lowest_wait {
             GatherPoll::WaitUntil(lowest_wait)
+        } else if self.completed {
+            GatherPoll::Finished
         } else {
-            GatherPoll::Complete
+            self.completed = true;
+            GatherPoll::Complete(self.component_id)
         }
     }
 
     /// Poll the gatherer for transmission.  Should be called repeatedly until None is returned.
     #[tracing::instrument(name = "gatherer_poll_transmit", level = "trace", skip(self))]
-    pub fn poll_transmit(&mut self, now: Instant) -> Option<Transmit<Data>> {
+    pub(crate) fn poll_transmit(&mut self, now: Instant) -> Option<Transmit<Data>> {
         if let Some(transmit) = self.pending_transmits.pop_back() {
             trace!(
                 "returning {:?} byte {} transmission from {} -> {}",
@@ -637,7 +639,7 @@ impl StunGatherer {
             to = %transmit.to,
         )
     )]
-    pub fn handle_data<T: AsRef<[u8]> + std::fmt::Debug>(
+    pub(crate) fn handle_data<T: AsRef<[u8]> + std::fmt::Debug>(
         &mut self,
         transmit: &Transmit<T>,
         now: Instant,
@@ -901,12 +903,12 @@ impl StunGatherer {
     /// Provide a socket as requested through [`GatherPoll::AllocateSocket`].  The transport and address
     /// must match the value from the corresponding [`GatherPoll::AllocateSocket`].
     #[tracing::instrument(name = "gatherer_allocated_socket", level = "debug", skip(self))]
-    pub fn allocated_socket(
+    pub(crate) fn allocated_socket(
         &mut self,
         transport: TransportType,
         local_addr: SocketAddr,
         remote_addr: SocketAddr,
-        socket: Result<SocketAddr, StunError>,
+        socket: &Result<SocketAddr, StunError>,
     ) {
         if transport != TransportType::Tcp {
             return;
@@ -931,12 +933,12 @@ impl StunGatherer {
                 info!("adding TCP socket with local addr {socket:?}",);
                 request.completed = true;
                 if let Ok(socket_addr) = socket {
-                    self.requests.push(request.as_tcp_request(socket_addr));
+                    self.requests.push(request.as_tcp_request(*socket_addr));
                     if !tcp_buffer_added {
                         tcp_buffer_added = true;
                         self.tcp_buffers.push_back(GatherTcpBuffer {
                             requested_local_addr: local_addr,
-                            local_addr: socket_addr,
+                            local_addr: *socket_addr,
                             remote_addr,
                             tcp_buffer: vec![],
                         });
@@ -987,8 +989,8 @@ mod tests {
             error!("{ret:?}");
             unreachable!();
         }
-        assert!(matches!(gather.poll(now), GatherPoll::Complete));
-        assert!(matches!(gather.poll(now), GatherPoll::Complete));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete(_)));
+        assert!(matches!(gather.poll(now), GatherPoll::Finished));
     }
 
     #[test]
@@ -1017,8 +1019,8 @@ mod tests {
         let transmit = Transmit::new([6; 10], TransportType::Udp, remote_addr, local_addr);
         assert!(!gather.handle_data(&transmit, now).unwrap());
 
-        assert!(matches!(gather.poll(now), GatherPoll::Complete));
-        assert!(matches!(gather.poll(now), GatherPoll::Complete));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete(_)));
+        assert!(matches!(gather.poll(now), GatherPoll::Finished));
     }
 
     #[test]
@@ -1059,8 +1061,8 @@ mod tests {
             error!("{ret:?}");
             unreachable!();
         }
-        assert!(matches!(gather.poll(now), GatherPoll::Complete));
-        assert!(matches!(gather.poll(now), GatherPoll::Complete));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete(_)));
+        assert!(matches!(gather.poll(now), GatherPoll::Finished));
     }
 
     fn respond_to_stun_binding(
@@ -1119,8 +1121,8 @@ mod tests {
             error!("{ret:?}");
             unreachable!();
         }
-        assert!(matches!(gather.poll(now), GatherPoll::Complete));
-        assert!(matches!(gather.poll(now), GatherPoll::Complete));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete(_)));
+        assert!(matches!(gather.poll(now), GatherPoll::Finished));
     }
 
     fn handle_allocate_socket(gather: &mut StunGatherer, local_addr: SocketAddr, now: Instant) {
@@ -1132,7 +1134,7 @@ mod tests {
             remote_addr: to,
         } = ret
         {
-            gather.allocated_socket(transport, from, to, Ok(local_addr));
+            gather.allocated_socket(transport, from, to, &Ok(local_addr));
         } else {
             error!("{ret:?}");
             unreachable!();
@@ -1196,8 +1198,8 @@ mod tests {
             error!("{ret:?}");
             unreachable!();
         }
-        assert!(matches!(gather.poll(now), GatherPoll::Complete));
-        assert!(matches!(gather.poll(now), GatherPoll::Complete));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete(_)));
+        assert!(matches!(gather.poll(now), GatherPoll::Finished));
     }
 
     #[test]
@@ -1226,8 +1228,8 @@ mod tests {
         assert!(matches!(gather.poll(now), GatherPoll::WaitUntil(_)));
         assert!(!gather.handle_data(&response, now).unwrap());
 
-        assert!(matches!(gather.poll(now), GatherPoll::Complete));
-        assert!(matches!(gather.poll(now), GatherPoll::Complete));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete(_)));
+        assert!(matches!(gather.poll(now), GatherPoll::Finished));
     }
 
     #[test]
@@ -1325,8 +1327,8 @@ mod tests {
             unreachable!();
         }
 
-        assert!(matches!(gather.poll(now), GatherPoll::Complete));
-        assert!(matches!(gather.poll(now), GatherPoll::Complete));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete(_)));
+        assert!(matches!(gather.poll(now), GatherPoll::Finished));
     }
 
     #[test]
@@ -1444,7 +1446,7 @@ mod tests {
             unreachable!();
         }
 
-        assert!(matches!(gather.poll(now), GatherPoll::Complete));
-        assert!(matches!(gather.poll(now), GatherPoll::Complete));
+        assert!(matches!(gather.poll(now), GatherPoll::Complete(_)));
+        assert!(matches!(gather.poll(now), GatherPoll::Finished));
     }
 }

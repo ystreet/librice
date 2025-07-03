@@ -20,6 +20,7 @@ use stun_proto::types::data::Data;
 use crate::candidate::{ParseCandidateError, TransportType};
 use crate::component::ComponentConnectionState;
 use crate::conncheck::{CheckListSetPollRet, ConnCheckEvent, ConnCheckListSet, SelectedPair};
+use crate::gathering::{GatherPoll, GatheredCandidate};
 use crate::stream::{Stream, StreamMut, StreamState};
 use stun_proto::agent::{StunError, Transmit};
 use stun_proto::types::message::StunParseError;
@@ -291,6 +292,48 @@ impl Agent {
 
         let mut lowest_wait = None;
 
+        for stream in self.streams.iter_mut() {
+            let stream_id = stream.id();
+            match stream.poll_gather(now) {
+                GatherPoll::AllocateSocket {
+                    component_id,
+                    transport,
+                    local_addr,
+                    remote_addr,
+                } => {
+                    return AgentPoll::AllocateSocket(AgentAllocateSocket {
+                        stream_id,
+                        component_id,
+                        transport,
+                        from: local_addr,
+                        to: remote_addr,
+                    })
+                }
+                GatherPoll::WaitUntil(earliest_wait) => {
+                    if let Some(check_wait) = lowest_wait {
+                        if earliest_wait < check_wait {
+                            lowest_wait = Some(earliest_wait);
+                        }
+                    } else {
+                        lowest_wait = Some(earliest_wait);
+                    }
+                }
+                GatherPoll::NewCandidate(candidate) => {
+                    return AgentPoll::GatheredCandidate(AgentGatheredCandidate {
+                        stream_id,
+                        gathered: candidate,
+                    })
+                }
+                GatherPoll::Complete(component_id) => {
+                    return AgentPoll::GatheringComplete(AgentGatheringComplete {
+                        stream_id,
+                        component_id,
+                    })
+                }
+                GatherPoll::Finished => (),
+            }
+        }
+
         loop {
             match self.checklistset.poll(now) {
                 CheckListSetPollRet::Completed => break,
@@ -370,6 +413,15 @@ impl Agent {
     }
 
     pub fn poll_transmit(&mut self, now: Instant) -> Option<AgentTransmit> {
+        for stream in self.streams.iter_mut() {
+            let stream_id = stream.id();
+            if let Some((_component_id, transmit)) = stream.poll_gather_transmit(now) {
+                return Some(AgentTransmit {
+                    stream_id,
+                    transmit: transmit.into_owned(),
+                });
+            }
+        }
         let transmit = self.checklistset.poll_transmit(now)?;
         if let Some(stream) = self
             .streams
@@ -404,6 +456,10 @@ pub enum AgentPoll {
     SelectedPair(AgentSelectedPair),
     /// A [`Component`](crate::component::Component) has changed state.
     ComponentStateChange(AgentComponentStateChange),
+    /// A [`Component`](crate::component::Component) has gathered a candidate.
+    GatheredCandidate(AgentGatheredCandidate),
+    /// A [`Component`](crate::component::Component) has completed gathering.
+    GatheringComplete(AgentGatheringComplete),
 }
 
 /// Transmit the data using the specified 5-tuple.
@@ -439,6 +495,22 @@ pub struct AgentComponentStateChange {
     pub stream_id: usize,
     pub component_id: usize,
     pub state: ComponentConnectionState,
+}
+
+/// A [`Component`](crate::component::Component) has gathered a candidate.
+#[derive(Debug)]
+#[repr(C)]
+pub struct AgentGatheredCandidate {
+    pub stream_id: usize,
+    pub gathered: GatheredCandidate,
+}
+
+/// A [`Component`](crate::component::Component) has completed gathering.
+#[derive(Debug)]
+#[repr(C)]
+pub struct AgentGatheringComplete {
+    pub stream_id: usize,
+    pub component_id: usize,
 }
 
 #[cfg(test)]

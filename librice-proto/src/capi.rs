@@ -25,7 +25,7 @@ pub use crate::agent::AgentPoll;
 use crate::agent::TurnCredentials;
 use crate::candidate::{Candidate, CandidateType, TransportType};
 pub use crate::component::ComponentConnectionState;
-use crate::gathering::{GatherPoll, GatheredCandidate};
+use crate::gathering::GatheredCandidate;
 use crate::stream::Credentials;
 use stun_proto::agent::{StunError, Transmit};
 use stun_proto::types::data::{Data, DataOwned, DataSlice};
@@ -196,6 +196,10 @@ pub enum RiceAgentPoll {
     SelectedPair(RiceAgentSelectedPair),
     /// A [`Component`](crate::component::Component) has changed state.
     ComponentStateChange(RiceAgentComponentStateChange),
+    /// A [`Component`](crate::component::Component) has gathered a candidate.
+    GatheredCandidate(RiceAgentGatheredCandidate),
+    /// A [`Component`](crate::component::Component) has completed gathering.
+    GatheringComplete(RiceAgentGatheringComplete),
 }
 
 impl RiceAgentPoll {
@@ -208,6 +212,8 @@ impl RiceAgentPoll {
             AgentPoll::AllocateSocket(connect) => Self::AllocateSocket(connect.into()),
             AgentPoll::SelectedPair(pair) => Self::SelectedPair(pair.into()),
             AgentPoll::ComponentStateChange(state) => Self::ComponentStateChange(state.into()),
+            AgentPoll::GatheredCandidate(gathered) => Self::GatheredCandidate(gathered.into()),
+            AgentPoll::GatheringComplete(complete) => Self::GatheringComplete(complete.into()),
         }
     }
 }
@@ -377,19 +383,6 @@ pub unsafe extern "C" fn rice_transmit_init(transmit: *mut MaybeUninit<RiceTrans
     (*transmit).write(RiceTransmit::default());
 }
 
-fn transmit_from_rust_gather(stream_id: usize, transmit: Transmit<Data>) -> RiceTransmit {
-    let from = Box::new(RiceAddress::new(transmit.from));
-    let to = Box::new(RiceAddress::new(transmit.to));
-    let ret = RiceTransmit {
-        stream_id,
-        transport: transmit.transport.into(),
-        from: Box::into_raw(from),
-        to: Box::into_raw(to),
-        data: transmit.data.into(),
-    };
-    ret
-}
-
 /// Connect from the specified interface to the specified address.  Reply (success or failure)
 /// should be notified using [`rice_agent_allocated_socket`] with the same parameters.
 #[derive(Debug)]
@@ -493,6 +486,62 @@ impl From<RiceAgentComponentStateChange> for crate::agent::AgentComponentStateCh
     }
 }
 
+/// A [`Component`](crate::component::Component) has gathered a candidate.
+#[derive(Debug)]
+#[repr(C)]
+pub struct RiceAgentGatheredCandidate {
+    /// The ICE stream id.
+    pub stream_id: usize,
+    /// The candidate gathered.
+    pub gathered: RiceGatheredCandidate,
+}
+
+impl From<crate::agent::AgentGatheredCandidate> for RiceAgentGatheredCandidate {
+    fn from(value: crate::agent::AgentGatheredCandidate) -> Self {
+        Self {
+            stream_id: value.stream_id,
+            gathered: value.gathered.into(),
+        }
+    }
+}
+
+impl From<RiceAgentGatheredCandidate> for crate::agent::AgentGatheredCandidate {
+    fn from(value: RiceAgentGatheredCandidate) -> Self {
+        Self {
+            stream_id: value.stream_id,
+            gathered: value.gathered.into(),
+        }
+    }
+}
+
+/// A [`Component`](crate::component::Component) has completed gathering.
+#[derive(Debug)]
+#[repr(C)]
+pub struct RiceAgentGatheringComplete {
+    /// The ICE stream id.
+    pub stream_id: usize,
+    /// The ICE component id.
+    pub component_id: usize,
+}
+
+impl From<crate::agent::AgentGatheringComplete> for RiceAgentGatheringComplete {
+    fn from(value: crate::agent::AgentGatheringComplete) -> Self {
+        Self {
+            stream_id: value.stream_id,
+            component_id: value.component_id,
+        }
+    }
+}
+
+impl From<RiceAgentGatheringComplete> for crate::agent::AgentGatheringComplete {
+    fn from(value: RiceAgentGatheringComplete) -> Self {
+        Self {
+            stream_id: value.stream_id,
+            component_id: value.component_id,
+        }
+    }
+}
+
 /// Initialize a `RiceAgentPoll` with a default value.
 #[no_mangle]
 pub unsafe extern "C" fn rice_agent_poll_init(poll: *mut MaybeUninit<RiceAgentPoll>) {
@@ -509,14 +558,15 @@ pub unsafe extern "C" fn rice_agent_poll_clear(poll: *mut RiceAgentPoll) {
     match other {
         RiceAgentPoll::Closed
         | RiceAgentPoll::ComponentStateChange(_)
-        | RiceAgentPoll::WaitUntilMicros(_) => (),
+        | RiceAgentPoll::WaitUntilMicros(_)
+        | RiceAgentPoll::GatheringComplete(_) => (),
         RiceAgentPoll::AllocateSocket(mut connect) => {
             let mut from = core::ptr::null();
             core::mem::swap(&mut from, &mut connect.from);
             let _from = RiceAddress::from_c(from);
             let mut to = core::ptr::null();
             core::mem::swap(&mut to, &mut connect.to);
-            let _to = RiceAddress::from_c(connect.to);
+            let _to = RiceAddress::from_c(to);
         }
         RiceAgentPoll::SelectedPair(mut pair) => {
             let mut from = core::ptr::null();
@@ -525,6 +575,16 @@ pub unsafe extern "C" fn rice_agent_poll_clear(poll: *mut RiceAgentPoll) {
             let mut to = core::ptr::null();
             core::mem::swap(&mut to, &mut pair.to);
             let _to = RiceAddress::from_c(to);
+        }
+        RiceAgentPoll::GatheredCandidate(mut gathered) => {
+            let mut turn = core::ptr::null();
+            core::mem::swap(&mut turn, &mut const_override(gathered.gathered.turn_agent));
+            let turn_agent = if turn.is_null() {
+                None
+            } else {
+                Some(Box::from_raw(turn as *mut TurnClient))
+            };
+            rice_candidate_clear(&mut gathered.gathered.candidate);
         }
     }
 }
@@ -720,6 +780,35 @@ pub unsafe extern "C" fn rice_stream_get_id(stream: *mut RiceStream) -> usize {
     let ret = stream.stream_id;
     core::mem::forget(stream);
     ret
+}
+
+/// Notify success or failure to create a socket to the `RiceStream`.
+#[no_mangle]
+pub unsafe extern "C" fn rice_stream_handle_allocated_socket(
+    stream: *mut RiceStream,
+    component_id: usize,
+    transport: RiceTransportType,
+    from: *const RiceAddress,
+    to: *const RiceAddress,
+    socket_addr: *mut RiceAddress,
+) {
+    let stream = Arc::from_raw(stream);
+    let mut proto_agent = stream.proto_agent.lock().unwrap();
+    let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
+
+    let from = RiceAddress::from_c(from);                                                                         
+    let to = RiceAddress::from_c(to);
+    let socket = if socket_addr.is_null() {
+        Err(StunError::ResourceNotFound)
+    } else {
+        Ok(**RiceAddress::from_c(socket_addr))
+    };
+    proto_stream.allocated_socket(component_id, transport.into(), **from, **to, socket);
+
+    drop(proto_agent);
+    core::mem::forget(from);
+    core::mem::forget(to);
+    core::mem::forget(stream);
 }
 
 /// Get the current time in microseconds of the `RiceStream`.
@@ -1071,9 +1160,6 @@ pub unsafe extern "C" fn rice_candidate_free(candidate: *mut RiceCandidate) {
 }
 
 /// A local candidate that has been gathered.
-///
-/// Pass to `rice_stream_add_local_gathered_candidate()` or free with
-/// `rice_gathered_candidate_free()`.
 #[derive(Debug)]
 #[repr(C)]
 pub struct RiceGatheredCandidate {
@@ -1113,17 +1199,6 @@ impl From<GatheredCandidate> for RiceGatheredCandidate {
     }
 }
 
-/// Free a `RiceGatheredCandidate`.
-#[no_mangle]
-pub unsafe extern "C" fn rice_gathered_candidate_free(gathered: *mut RiceGatheredCandidate) {
-    let mut gathered = Box::from_raw(gathered);
-    rice_candidate_clear(&mut gathered.candidate);
-    // FIXME extensions
-    if !gathered.turn_agent.is_null() {
-        let _turn_agent = Box::from_raw(gathered.turn_agent as *mut TurnClient);
-    }
-}
-
 /// Add a local `RiceGatheredCandidate` to a `RiceStream`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_add_local_gathered_candidate(
@@ -1133,9 +1208,11 @@ pub unsafe extern "C" fn rice_stream_add_local_gathered_candidate(
     let stream = Arc::from_raw(stream);
     let mut proto_agent = stream.proto_agent.lock().unwrap();
     let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
-    let candidate = Box::from_raw(mut_override(candidate));
+    let gathered = Box::from_raw(mut_override(candidate));
 
-    proto_stream.add_local_gathered_candidate((*candidate).into());
+    proto_stream.add_local_gathered_candidate((*gathered).into());
+    (*candidate).turn_agent = core::ptr::null_mut();
+    rice_candidate_clear(&mut (*candidate).candidate);
     drop(proto_agent);
     core::mem::forget(stream);
 }
@@ -1187,201 +1264,13 @@ pub unsafe extern "C" fn rice_stream_end_of_remote_candidates(stream: *mut RiceS
     core::mem::forget(stream);
 }
 
-/// Return value of `rice_stream_gather_poll()`.
-#[derive(Debug)]
-#[repr(C)]
-pub enum RiceGatherPoll {
-    /// A socket needs to be allocated.
-    AllocateSocket(RiceGatherPollAllocateSocket),
-    /// Nothing to do, wait until the provided time and re-`poll()`.
-    WaitUntilMicros(u64),
-    /// A new candidate has been discovered.
-    NewCandidate(*mut RiceGatheredCandidate),
-    /// Gathering is complete. No further progress will be made.
-    Complete,
-}
-
-/// Initialize a `RiceGatherPoll`.
-#[no_mangle]
-pub unsafe extern "C" fn rice_gather_poll_init(poll: *mut MaybeUninit<RiceGatherPoll>) {
-    (*poll).write(RiceGatherPoll::Complete);
-}
-
-/// Clear a `RiceGatherPoll` of any allocated resources.
-///
-/// `rice_gather_poll_init()` must have been called for this `RiceGatherPoll`.
-#[no_mangle]
-pub unsafe extern "C" fn rice_gather_poll_clear(poll: *mut RiceGatherPoll) {
-    let mut other = RiceGatherPoll::Complete;
-    core::mem::swap(&mut other, &mut *poll);
-    match other {
-        RiceGatherPoll::Complete => (),
-        RiceGatherPoll::WaitUntilMicros(_instant) => (),
-        RiceGatherPoll::AllocateSocket(alloc) => alloc.clear_c(),
-        RiceGatherPoll::NewCandidate(candidate) => {
-            rice_gathered_candidate_free(candidate);
-        }
-    }
-}
-
-/// Request to allocate a socket for further processing.
-#[derive(Debug)]
-#[repr(C)]
-pub struct RiceGatherPollAllocateSocket {
-    /// The ICE stream id.
-    stream_id: usize,
-    /// The ICE component id.
-    component_id: usize,
-    /// The transport of the new socket.
-    transport: RiceTransportType,
-    /// The source address to allocate the socket with.
-    from: *const RiceAddress,
-    /// The destination address to allocate the socket with.
-    to: *const RiceAddress,
-}
-
-impl RiceGatherPollAllocateSocket {
-    fn from_rust(
-        stream_id: usize,
-        component_id: usize,
-        transport: TransportType,
-        from: SocketAddr,
-        to: SocketAddr,
-    ) -> Self {
-        Self {
-            stream_id,
-            component_id,
-            transport: transport.into(),
-            from: Box::into_raw(Box::new(RiceAddress::new(from))),
-            to: Box::into_raw(Box::new(RiceAddress::new(to))),
-        }
-    }
-
-    unsafe fn clear_c(self) {
-        let _from = RiceAddress::from_c(self.from);
-        let _to = RiceAddress::from_c(self.to);
-    }
-}
-
-impl RiceGatherPoll {
-    fn from_rust(value: GatherPoll, stream_id: usize, base_instant: Instant) -> Self {
-        match value {
-            GatherPoll::Complete => Self::Complete,
-            GatherPoll::WaitUntil(instant) => Self::WaitUntilMicros(
-                instant.saturating_duration_since(base_instant).as_micros() as u64,
-            ),
-            GatherPoll::AllocateSocket {
-                component_id,
-                transport,
-                local_addr: from,
-                remote_addr: to,
-            } => Self::AllocateSocket(RiceGatherPollAllocateSocket::from_rust(
-                stream_id,
-                component_id,
-                transport,
-                from,
-                to,
-            )),
-            GatherPoll::NewCandidate(gathered) => {
-                Self::NewCandidate(Box::into_raw(Box::new(gathered.into())))
-            }
-        }
-    }
-}
-
-/// Poll a `RiceStream` for gathering progress.
-///
-/// The filled `RiceGatherPoll` indicates what to do next.
-#[no_mangle]
-pub unsafe extern "C" fn rice_stream_gather_poll(
-    stream: *mut RiceStream,
-    now_micros: u64,
-    poll: *mut RiceGatherPoll,
-) {
-    let stream = Arc::from_raw(stream);
-    let mut proto_agent = stream.proto_agent.lock().unwrap();
-    let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
-    let now = stream.base_instant + Duration::from_micros(now_micros);
-
-    *poll = RiceGatherPoll::from_rust(
-        proto_stream.poll_gather(now),
-        stream.stream_id,
-        stream.base_instant,
-    );
-
-    drop(proto_agent);
-    core::mem::forget(stream);
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn rice_stream_gather_poll_transmit(
-    stream: *mut RiceStream,
-    now_micros: u64,
-    transmit: *mut RiceTransmit,
-) {
-    let stream = Arc::from_raw(stream);
-    let mut proto_agent = stream.proto_agent.lock().unwrap();
-    let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
-    let now = stream.base_instant + Duration::from_micros(now_micros);
-
-    if let Some(ret) = proto_stream.poll_gather_transmit(now) {
-        *transmit = crate::agent::AgentTransmit {
-            stream_id: stream.stream_id,
-            transmit: ret.1.into_owned(),
-        }
-        .into()
-    } else {
-        *transmit = RiceTransmit::default();
-    }
-
-    drop(proto_agent);
-    core::mem::forget(stream);
-}
-
-/// Answer a `RiceGatherPollAllocateSocket` with a provided local address of the newly allocated
-/// socket (or `NULL`).
-///
-/// The provided values must match exactly the values from the `RiceGatherPollAllocateSocket`.
-#[no_mangle]
-pub unsafe extern "C" fn rice_stream_allocated_gather_socket(
-    stream: *mut RiceStream,
-    component_id: usize,
-    transport: RiceTransportType,
-    from: *const RiceAddress,
-    to: *const RiceAddress,
-    socket: *mut RiceAddress,
-) {
-    let stream = Arc::from_raw(stream);
-    let mut proto_agent = stream.proto_agent.lock().unwrap();
-    let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
-
-    let from = RiceAddress::from_c(from);
-    let to = RiceAddress::from_c(to);
-
-    let socket = if socket.is_null() {
-        Err(StunError::ResourceNotFound)
-    } else {
-        Ok(**RiceAddress::from_c(socket))
-    };
-
-    proto_stream.allocated_gather_socket(component_id, transport.into(), **from, **to, socket);
-
-    drop(proto_agent);
-    core::mem::forget(from);
-    core::mem::forget(to);
-    core::mem::forget(stream);
-}
-
 /// Return value for `rice_stream_handle_incoming_data()`.
 #[derive(Debug)]
 #[repr(C)]
 pub struct RiceStreamIncomingData {
-    /// The gathering process handled the data. `rice_stream_gather_poll() should be called at the
-    /// next earlier opportunity.
-    gather_handled: bool,
-    /// The ICE connection process handled the data. `rice_agent_poll()` should be called at the
+    /// The data was handled internally. `rice_agent_poll()` should be called at the
     /// next earliest opportunity.
-    conncheck_handled: bool,
+    data_handled: bool,
     /// Number of data pointers provided.
     data_len: usize,
     /// The length of each data pointer.
@@ -1458,8 +1347,7 @@ pub unsafe extern "C" fn rice_stream_handle_incoming_data(
     drop(proto_agent);
     core::mem::forget(stream);
     Box::into_raw(Box::new(RiceStreamIncomingData {
-        gather_handled: ret.gather_handled,
-        conncheck_handled: ret.conncheck_handled,
+        data_handled: ret.data_handled,
         data,
         data_len,
         data_data_lens,
@@ -1897,39 +1785,40 @@ mod tests {
             rice_component_gather_candidates(component, 1, &mut_override(addr), &transport.into());
             rice_address_free(mut_override(addr));
 
-            let mut poll = RiceGatherPoll::Complete;
-            rice_stream_gather_poll(stream, 0, &mut poll);
-            let RiceGatherPoll::AllocateSocket(ref alloc) = poll else {
+            let mut poll = RiceAgentPoll::Closed;
+            rice_agent_poll(agent, 0, &mut poll);
+            let RiceAgentPoll::AllocateSocket(ref alloc) = poll else {
                 unreachable!()
             };
             let to = alloc.to;
             let from = alloc.from;
             let component_id = alloc.component_id;
-            rice_gather_poll_clear(&mut poll);
+            rice_agent_poll_clear(&mut poll);
 
-            let mut poll = RiceGatherPoll::Complete;
-            rice_stream_gather_poll(stream, 0, &mut poll);
-            let RiceGatherPoll::NewCandidate(_candidate) = poll else {
+            let mut poll = RiceAgentPoll::Closed;
+            rice_agent_poll(agent, 0, &mut poll);
+            let RiceAgentPoll::GatheredCandidate(ref _candidate) = poll else {
                 unreachable!()
             };
-            rice_gather_poll_clear(&mut poll);
+            rice_agent_poll_clear(&mut poll);
 
-            rice_stream_gather_poll(stream, 0, &mut poll);
-            let RiceGatherPoll::NewCandidate(_candidate) = poll else {
+            let mut poll = RiceAgentPoll::Closed;
+            rice_agent_poll(agent, 0, &mut poll);
+            let RiceAgentPoll::GatheredCandidate(ref _candidate) = poll else {
                 unreachable!()
             };
-            rice_gather_poll_clear(&mut poll);
+            rice_agent_poll_clear(&mut poll);
 
-            let mut poll = RiceGatherPoll::Complete;
-            rice_stream_gather_poll(stream, 0, &mut poll);
-            let RiceGatherPoll::WaitUntilMicros(_now) = poll else {
+            let mut poll = RiceAgentPoll::Closed;
+            rice_agent_poll(agent, 0, &mut poll);
+            let RiceAgentPoll::WaitUntilMicros(_now) = poll else {
                 unreachable!()
             };
-            rice_gather_poll_clear(&mut poll);
+            rice_agent_poll_clear(&mut poll);
 
             let tcp_from_addr = "192.168.200.4:3000".parse().unwrap();
             let tcp_from_addr = mut_override(RiceAddress::new(tcp_from_addr).to_c());
-            rice_stream_allocated_gather_socket(
+            rice_stream_handle_allocated_socket(
                 stream,
                 component_id,
                 RiceTransportType::Tcp,
@@ -1939,12 +1828,12 @@ mod tests {
             );
 
             let mut transmit = RiceTransmit::default();
-            rice_stream_gather_poll_transmit(stream, 0, &mut transmit);
+            rice_agent_poll_transmit(agent, 0, &mut transmit);
             rice_transmit_clear(&mut transmit);
 
-            let mut poll = RiceGatherPoll::Complete;
-            rice_stream_gather_poll(stream, 0, &mut poll);
-            rice_gather_poll_clear(&mut poll);
+            let mut poll = RiceAgentPoll::Closed;
+            rice_agent_poll(agent, 0, &mut poll);
+            rice_agent_poll_clear(&mut poll);
 
             let mut ret = RiceAgentPoll::Closed;
             rice_agent_poll(agent, 0, &mut ret);
@@ -1964,12 +1853,6 @@ mod tests {
 
             let mut transmit = RiceTransmit::default();
             rice_agent_poll_transmit(agent, 0, &mut transmit);
-            assert!(transmit.from.is_null());
-            assert!(transmit.to.is_null());
-            assert!(rice_data_ptr(&transmit.data).is_null());
-
-            let mut transmit = RiceTransmit::default();
-            rice_stream_gather_poll_transmit(stream, 0, &mut transmit);
             assert!(transmit.from.is_null());
             assert!(transmit.to.is_null());
             assert!(rice_data_ptr(&transmit.data).is_null());
