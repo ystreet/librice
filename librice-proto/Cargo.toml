@@ -29,6 +29,7 @@ turn-client-proto.workspace = true
 [dev-dependencies]
 tracing-subscriber.workspace = true
 turn-server-proto = "0.2"
+criterion.workspace = true
 
 [package.metadata.capi]
 min_version = "0.9.21"
@@ -45,3 +46,7 @@ rustflags = "-Cpanic=abort"
 [package.metadata.capi.pkg_config]
 name = "librice-proto"
 filename = "rice-proto"
+
+[[bench]]
+name = "sendrecv"
+harness = false
