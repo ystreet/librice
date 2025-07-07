@@ -601,6 +601,31 @@ impl ConnCheckList {
         (agent_id, self.agents.len() - 1)
     }
 
+    pub(crate) fn mut_agent_for_5tuple(
+        &mut self,
+        transport: TransportType,
+        local: SocketAddr,
+        remote: SocketAddr,
+    ) -> Option<(StunAgentId, &mut StunAgent)> {
+        self.agents.iter_mut().find_map(|a| {
+            let matched = match transport {
+                TransportType::Udp => {
+                    a.agent.local_addr() == local && a.agent.transport() == TransportType::Udp
+                }
+                TransportType::Tcp => {
+                    a.agent.local_addr() == local
+                        && a.agent.transport() == TransportType::Tcp
+                        && a.agent.remote_addr().unwrap() == remote
+                }
+            };
+            if matched {
+                Some((a.id, &mut a.agent))
+            } else {
+                None
+            }
+        })
+    }
+
     pub(crate) fn find_agent_for_5tuple(
         &self,
         transport: TransportType,
@@ -636,7 +661,7 @@ impl ConnCheckList {
         })
     }
 
-    fn mut_agent_by_id(&mut self, id: StunAgentId) -> Option<&mut StunAgent> {
+    pub(crate) fn mut_agent_by_id(&mut self, id: StunAgentId) -> Option<&mut StunAgent> {
         self.agents.iter_mut().find_map(|agent| {
             if id == agent.id {
                 Some(&mut agent.agent)

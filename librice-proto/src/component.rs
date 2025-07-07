@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use stun_proto::agent::{DelayedTransmitBuild, Transmit};
 use stun_proto::types::data::Data;
+use stun_proto::types::message::{Message, BINDING};
 
 use crate::candidate::{CandidatePair, CandidateType, TransportType};
 
@@ -121,21 +122,37 @@ impl<'a> ComponentMut<'a> {
             .checklistset
             .mut_list(checklist_id)
             .ok_or(AgentError::ResourceNotFound)?;
-        let agent_id = if let Some((agent_id, _agent)) = checklist.find_agent_for_5tuple(
+        let (agent_id, agent) = if let Some((agent_id, agent)) = checklist.mut_agent_for_5tuple(
             selected.local.transport_type,
             selected.local.base_address,
             selected.remote.address,
         ) {
-            agent_id
+            (agent_id, agent)
         } else {
-            checklist
+            let agent_id = checklist
                 .add_agent_for_5tuple(
                     selected.local.transport_type,
                     selected.local.base_address,
                     selected.remote.address,
                 )
-                .0
+                .0;
+            let agent = checklist.mut_agent_by_id(agent_id).unwrap();
+            (agent_id, agent)
         };
+        if !agent.is_validated_peer(selected.remote.address) {
+            // ensure that we can receive from the provided remote address.
+            let transmit = agent
+                .send_request(
+                    Message::builder_request(BINDING),
+                    selected.remote.address,
+                    Instant::now(),
+                )
+                .unwrap();
+            let msg = Message::from_bytes(&transmit.data).unwrap();
+            let response = Message::builder_success(&msg).build();
+            let response = Message::from_bytes(&response).unwrap();
+            agent.handle_stun(response, selected.remote.address);
+        }
 
         let selected_pair = SelectedPair::new(selected, agent_id);
         self.set_selected_pair_with_agent(selected_pair);

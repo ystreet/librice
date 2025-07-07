@@ -57,6 +57,8 @@ fn bench_sendrecv_udp(c: &mut Criterion) {
         group.throughput(criterion::Throughput::Bytes(size as u64));
         let data = vec![1; size];
         let now = Instant::now();
+        let transmit = component.send(data.clone(), now).unwrap();
+        assert_eq!(transmit.data.as_ref(), data.as_slice());
         group.bench_function(BenchmarkId::new("Send", size), |b| {
             b.iter_batched(
                 || data.clone(),
@@ -66,10 +68,13 @@ fn bench_sendrecv_udp(c: &mut Criterion) {
                 criterion::BatchSize::SmallInput,
             )
         });
+        let transmit = Transmit::new(&data, TransportType::Udp, remote_addr, local_addr);
+        let reply = stream.handle_incoming_data(1, transmit, now);
+        assert_eq!(&reply.data[0], &data);
         group.bench_function(BenchmarkId::new("Recv", size), |b| {
             b.iter(|| {
-                let data = Transmit::new(&data, TransportType::Udp, remote_addr, local_addr);
-                let _transmit = stream.handle_incoming_data(1, data, now);
+                let transmit = Transmit::new(&data, TransportType::Udp, remote_addr, local_addr);
+                let _reply = stream.handle_incoming_data(1, transmit, now);
             })
         });
     }
@@ -121,6 +126,8 @@ fn bench_sendrecv_tcp(c: &mut Criterion) {
         group.throughput(criterion::Throughput::Bytes(size as u64));
         let data = vec![1; size];
         let now = Instant::now();
+        let transmit = component.send(data.clone(), now).unwrap();
+        assert_eq!(&transmit.data.as_ref()[2..], data.as_slice());
         group.bench_function(BenchmarkId::new("Send", size), |b| {
             b.iter_batched(
                 || data.clone(),
@@ -134,10 +141,13 @@ fn bench_sendrecv_tcp(c: &mut Criterion) {
         framed[0] = ((size & 0xff00) >> 8) as u8;
         framed[1] = (size & 0xff) as u8;
         framed[2..].copy_from_slice(&data);
+        let transmit = Transmit::new(&framed, TransportType::Tcp, remote_addr, local_addr);
+        let reply = stream.handle_incoming_data(1, transmit, now);
+        assert_eq!(&reply.data[0], &framed[2..]);
         group.bench_function(BenchmarkId::new("Recv", size), |b| {
             b.iter(|| {
-                let data = Transmit::new(&framed, TransportType::Tcp, remote_addr, local_addr);
-                let _transmit = stream.handle_incoming_data(1, data, now);
+                let transmit = Transmit::new(&framed, TransportType::Tcp, remote_addr, local_addr);
+                let _reply = stream.handle_incoming_data(1, transmit, now);
             })
         });
     }
