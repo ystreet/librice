@@ -9,7 +9,7 @@
 //! Connectivity check module for checking a set of candidates for an appropriate candidate pair to
 //! transfer data with.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -303,13 +303,6 @@ pub(crate) enum CheckListState {
 static CONN_CHECK_LIST_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug)]
-struct CheckTcpBuffer {
-    remote_addr: SocketAddr,
-    local_addr: SocketAddr,
-    tcp_buffer: TcpBuffer,
-}
-
-#[derive(Debug)]
 struct CheckStunAgent {
     id: StunAgentId,
     agent: StunAgent,
@@ -337,7 +330,7 @@ pub struct ConnCheckList {
     events: VecDeque<ConnCheckEvent>,
     agents: Vec<CheckStunAgent>,
     turn_clients: Vec<(StunAgentId, TurnClient)>,
-    tcp_buffers: Vec<CheckTcpBuffer>,
+    tcp_buffers: HashMap<(SocketAddr, SocketAddr), TcpBuffer>,
     pending_turn_permissions: VecDeque<(StunAgentId, TransportType, IpAddr)>,
 }
 
@@ -475,7 +468,7 @@ impl ConnCheckList {
             events: VecDeque::new(),
             agents: vec![],
             turn_clients: vec![],
-            tcp_buffers: vec![],
+            tcp_buffers: HashMap::default(),
             pending_turn_permissions: VecDeque::new(),
         }
     }
@@ -2025,30 +2018,16 @@ impl ConnCheckListSet {
                 }
             },
             TransportType::Tcp => {
-                let tcp_buffer_idx = if let Some(tcp_buffer_idx) = self.checklists[checklist_i]
+                let mut tcp_buffer = self.checklists[checklist_i]
                     .tcp_buffers
-                    .iter_mut()
-                    .position(|tcp| {
-                        tcp.remote_addr == transmit.from && tcp.local_addr == transmit.to
-                    }) {
-                    tcp_buffer_idx
-                } else {
-                    self.checklists[checklist_i]
-                        .tcp_buffers
-                        .push(CheckTcpBuffer {
-                            local_addr: transmit.from,
-                            remote_addr: transmit.to,
-                            tcp_buffer: Default::default(),
-                        });
-                    self.checklists[checklist_i].tcp_buffers.len() - 1
-                };
-                self.checklists[checklist_i].tcp_buffers[tcp_buffer_idx]
-                    .tcp_buffer
-                    .push_data(transmit.data.as_ref());
-                while let Some(data) = self.checklists[checklist_i].tcp_buffers[tcp_buffer_idx]
-                    .tcp_buffer
-                    .pull_data()
-                {
+                    .entry((transmit.to, transmit.from))
+                    .or_default();
+                tcp_buffer.push_data(transmit.data.as_ref());
+
+                loop {
+                    let Some(data) = tcp_buffer.pull_data() else {
+                        break;
+                    };
                     match Message::from_bytes(&data) {
                         Ok(msg) => {
                             if let Some(reply) = self.handle_stun(
@@ -2070,6 +2049,10 @@ impl ConnCheckListSet {
                             }
                         }
                     }
+                    tcp_buffer = self.checklists[checklist_i]
+                        .tcp_buffers
+                        .get_mut(&(transmit.to, transmit.from))
+                        .unwrap();
                 }
             }
         }
