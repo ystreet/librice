@@ -61,19 +61,16 @@ fn bench_sendrecv_udp(c: &mut Criterion) {
             b.iter_batched(
                 || data.clone(),
                 |data| {
-                    let _transmit = component.send(data, now);
+                    let _transmit = component.send(data, now).unwrap();
                 },
                 criterion::BatchSize::SmallInput,
             )
         });
         group.bench_function(BenchmarkId::new("Recv", size), |b| {
-            b.iter_batched(
-                || Transmit::new(data.clone(), TransportType::Udp, remote_addr, local_addr),
-                |data| {
-                    let _transmit = stream.handle_incoming_data(1, data, now);
-                },
-                criterion::BatchSize::SmallInput,
-            )
+            b.iter(|| {
+                let data = Transmit::new(&data, TransportType::Udp, remote_addr, local_addr);
+                let _transmit = stream.handle_incoming_data(1, data, now);
+            })
         });
     }
     group.finish();
@@ -128,25 +125,20 @@ fn bench_sendrecv_tcp(c: &mut Criterion) {
             b.iter_batched(
                 || data.clone(),
                 |data| {
-                    let _transmit = component.send(data, now);
+                    let _transmit = component.send(data, now).unwrap();
                 },
                 criterion::BatchSize::SmallInput,
             )
         });
+        let mut framed = vec![0; data.len() + 2];
+        framed[0] = ((size & 0xff00) >> 8) as u8;
+        framed[1] = (size & 0xff) as u8;
+        framed[2..].copy_from_slice(&data);
         group.bench_function(BenchmarkId::new("Recv", size), |b| {
-            b.iter_batched(
-                || {
-                    let mut framed = vec![0; data.len() + 2];
-                    framed[0] = ((size & 0xff00) >> 8) as u8;
-                    framed[1] = (size & 0xff) as u8;
-                    framed[2..].copy_from_slice(&data);
-                    Transmit::new(data.clone(), TransportType::Udp, remote_addr, local_addr)
-                },
-                |data| {
-                    let _transmit = stream.handle_incoming_data(1, data, now);
-                },
-                criterion::BatchSize::SmallInput,
-            )
+            b.iter(|| {
+                let data = Transmit::new(&framed, TransportType::Tcp, remote_addr, local_addr);
+                let _transmit = stream.handle_incoming_data(1, data, now);
+            })
         });
     }
     group.finish();
