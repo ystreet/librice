@@ -53,35 +53,59 @@ impl StreamInner {
         from: SocketAddr,
         to: SocketAddr,
     ) -> Option<&StunChannel> {
-        self.sockets.iter().find(|socket| match transport {
-            TransportType::Udp => {
-                if socket.transport() != transport {
-                    return false;
-                }
-                if from != socket.local_addr().unwrap() {
-                    return false;
-                }
-                true
-            }
-            TransportType::Tcp => {
-                if socket.transport() != transport {
-                    return false;
-                }
-                if from != socket.local_addr().unwrap() {
-                    return false;
-                }
-                if to != socket.remote_addr().unwrap() {
-                    return false;
-                }
-                true
-            }
-        })
+        self.sockets
+            .iter()
+            .find(|socket| socket_matches(socket, transport, from, to))
+    }
+
+    fn remove_socket_for_5tuple(
+        &mut self,
+        transport: TransportType,
+        from: SocketAddr,
+        to: SocketAddr,
+    ) -> Option<StunChannel> {
+        let position = self
+            .sockets
+            .iter()
+            .position(|socket| socket_matches(socket, transport, from, to))?;
+        Some(self.sockets.swap_remove(position))
     }
 
     fn component(&self, component_id: usize) -> Option<&Component> {
         self.components
             .get(component_id - 1)
             .and_then(|c| c.as_ref())
+    }
+}
+
+fn socket_matches(
+    socket: &StunChannel,
+    transport: TransportType,
+    from: SocketAddr,
+    to: SocketAddr,
+) -> bool {
+    match transport {
+        TransportType::Udp => {
+            if socket.transport() != transport {
+                return false;
+            }
+            if from != socket.local_addr().unwrap() {
+                return false;
+            }
+            true
+        }
+        TransportType::Tcp => {
+            if socket.transport() != transport {
+                return false;
+            }
+            if from != socket.local_addr().unwrap() {
+                return false;
+            }
+            if to != socket.remote_addr().unwrap() {
+                return false;
+            }
+            true
+        }
     }
 }
 
@@ -459,6 +483,7 @@ impl Stream {
                                     Instant::now(),
                                 )
                             }
+                            debug!("receive task closed for udp socket {:?}", udp.local_addr());
                         });
                     }
                     GatherSocket::Tcp(tcp) => {
@@ -734,6 +759,30 @@ impl Stream {
                         Instant::now(),
                     )
                 }
+            }
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn handle_remove_socket(
+        weak_inner: Weak<Mutex<StreamInner>>,
+        transport: TransportType,
+        from: SocketAddr,
+        to: SocketAddr,
+    ) {
+        let Some(inner) = weak_inner.upgrade() else {
+            return;
+        };
+
+        let mut inner = inner.lock().unwrap();
+        let Some(channel) = inner.remove_socket_for_5tuple(transport, from, to) else {
+            warn!("no {transport} socket for {from} -> {to}");
+            return;
+        };
+        info!("removing {transport} socket for {from} -> {to}");
+        async_std::task::spawn(async move {
+            if let Err(e) = channel.close().await {
+                warn!("error on close() for {transport} socket for {from} -> {to}: {e:?}");
             }
         });
     }
