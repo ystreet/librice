@@ -157,10 +157,11 @@ pub unsafe extern "C" fn rice_agent_unref(agent: *mut RiceAgent) {
 /// `rice_agent_poll()`) and will only succesfully complete once `rice_agent_poll`() returns
 /// `Closed`.
 #[no_mangle]
-pub unsafe extern "C" fn rice_agent_close(agent: *mut RiceAgent) {
+pub unsafe extern "C" fn rice_agent_close(agent: *mut RiceAgent, now_micros: u64) {
     let agent = Arc::from_raw(agent);
     let mut proto_agent = agent.proto_agent.lock().unwrap();
-    proto_agent.close().unwrap();
+    let now = agent.base_instant + Duration::from_micros(now_micros);
+    proto_agent.close(now);
 
     drop(proto_agent);
     core::mem::forget(agent);
@@ -191,7 +192,10 @@ pub enum RiceAgentPoll {
     WaitUntilMicros(u64),
     /// Connect from the specified interface to the specified address.  Reply (success or failure)
     /// should be notified using [`rice_agent_allocated_socket`] with the same parameters.
-    AllocateSocket(RiceAgentAllocateSocket),
+    AllocateSocket(RiceAgentSocket),
+    /// It is posible to remove the specified 5-tuple. The socket will not be referenced any
+    /// further.
+    RemoveSocket(RiceAgentSocket),
     /// A new pair has been selected for a component.
     SelectedPair(RiceAgentSelectedPair),
     /// A [`Component`](crate::component::Component) has changed state.
@@ -210,6 +214,7 @@ impl RiceAgentPoll {
                 instant.saturating_duration_since(base_instant).as_micros() as u64,
             ),
             AgentPoll::AllocateSocket(connect) => Self::AllocateSocket(connect.into()),
+            AgentPoll::RemoveSocket(connect) => Self::RemoveSocket(connect.into()),
             AgentPoll::SelectedPair(pair) => Self::SelectedPair(pair.into()),
             AgentPoll::ComponentStateChange(state) => Self::ComponentStateChange(state.into()),
             AgentPoll::GatheredCandidate(gathered) => Self::GatheredCandidate(gathered.into()),
@@ -383,11 +388,10 @@ pub unsafe extern "C" fn rice_transmit_init(transmit: *mut MaybeUninit<RiceTrans
     (*transmit).write(RiceTransmit::default());
 }
 
-/// Connect from the specified interface to the specified address.  Reply (success or failure)
-/// should be notified using [`rice_agent_allocated_socket`] with the same parameters.
+/// A socket with the specified network 5-tuple.
 #[derive(Debug)]
 #[repr(C)]
-pub struct RiceAgentAllocateSocket {
+pub struct RiceAgentSocket {
     /// The ICE stream id.
     pub stream_id: usize,
     /// The ICE component id.
@@ -400,8 +404,8 @@ pub struct RiceAgentAllocateSocket {
     pub to: *const RiceAddress,
 }
 
-impl From<crate::agent::AgentAllocateSocket> for RiceAgentAllocateSocket {
-    fn from(value: crate::agent::AgentAllocateSocket) -> Self {
+impl From<crate::agent::AgentSocket> for RiceAgentSocket {
+    fn from(value: crate::agent::AgentSocket) -> Self {
         Self {
             stream_id: value.stream_id,
             component_id: value.component_id,
@@ -412,8 +416,8 @@ impl From<crate::agent::AgentAllocateSocket> for RiceAgentAllocateSocket {
     }
 }
 
-impl From<RiceAgentAllocateSocket> for crate::agent::AgentAllocateSocket {
-    fn from(value: RiceAgentAllocateSocket) -> Self {
+impl From<RiceAgentSocket> for crate::agent::AgentSocket {
+    fn from(value: RiceAgentSocket) -> Self {
         unsafe {
             Self {
                 stream_id: value.stream_id,
@@ -561,6 +565,14 @@ pub unsafe extern "C" fn rice_agent_poll_clear(poll: *mut RiceAgentPoll) {
         | RiceAgentPoll::WaitUntilMicros(_)
         | RiceAgentPoll::GatheringComplete(_) => (),
         RiceAgentPoll::AllocateSocket(mut connect) => {
+            let mut from = core::ptr::null();
+            core::mem::swap(&mut from, &mut connect.from);
+            let _from = RiceAddress::from_c(from);
+            let mut to = core::ptr::null();
+            core::mem::swap(&mut to, &mut connect.to);
+            let _to = RiceAddress::from_c(to);
+        }
+        RiceAgentPoll::RemoveSocket(mut connect) => {
             let mut from = core::ptr::null();
             core::mem::swap(&mut from, &mut connect.from);
             let _from = RiceAddress::from_c(from);

@@ -151,14 +151,12 @@ impl Agent {
     }
 
     /// Close the agent loop
-    pub fn close(&self) -> Result<(), AgentError> {
-        let ret = self.agent.lock().unwrap().close();
+    pub fn close(&self) {
+        self.agent.lock().unwrap().close(Instant::now());
         let mut inner = self.inner.lock().unwrap();
         if let Some(waker) = inner.waker.take() {
             waker.wake();
         }
-        // TODO: TURN close things
-        ret.map_err(AgentError::Proto)
     }
 
     /// The controlling state of this ICE agent.  This value may change throughout the ICE
@@ -254,6 +252,22 @@ impl futures::stream::Stream for AgentStream {
                             allocate.transport,
                             allocate.from,
                             allocate.to,
+                        );
+                    }
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                AgentPoll::RemoveSocket(remove) => {
+                    drop(agent);
+                    let inner = self.inner.lock().unwrap();
+                    if let Some(stream) = inner.streams.get(remove.stream_id) {
+                        let weak_stream = Arc::downgrade(&stream.inner);
+                        drop(inner);
+                        Stream::handle_remove_socket(
+                            weak_stream,
+                            remove.transport,
+                            remove.from,
+                            remove.to,
                         );
                     }
                     cx.waker().wake_by_ref();

@@ -189,8 +189,8 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     assert_eq!(data, received);
     trace!("remote sent local received");
 
-    lagent.close().unwrap();
-    ragent.close().unwrap();
+    lagent.close();
+    ragent.close();
     trace!("agents closed");
 
     udp_abort_handle.abort();

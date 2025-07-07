@@ -529,7 +529,7 @@ pub unsafe extern "C" fn rice_sockets_set_notify(
     core::mem::forget(sockets);
 }
 
-/// Add a `RiceUdpSocket` to this `RiceSockets.
+/// Add a `RiceUdpSocket` to this `RiceSockets`.
 ///
 /// This will cause the UDP socket to produce notifications when it is readable and has data.
 #[no_mangle]
@@ -684,6 +684,57 @@ pub unsafe extern "C" fn rice_sockets_add_tcp(
     drop(inner);
 
     core::mem::forget(sockets);
+    ret
+}
+
+/// Remove a TCP socket from this `RiceSockets.
+#[no_mangle]
+pub unsafe extern "C" fn rice_sockets_remove_tcp(
+    sockets: *mut RiceSockets,
+    local_addr: *const RiceAddress,
+    remote_addr: *const RiceAddress,
+) -> *mut RiceTcpSocket {
+    let sockets = Arc::from_raw(sockets);
+    let local_addr = RiceAddress::from_c(local_addr);
+    let remote_addr = RiceAddress::from_c(remote_addr);
+    let mut inner = sockets.inner.lock().unwrap();
+
+    let ret = if let Some(tcp_task) = inner.tcp_sockets.remove(&(**local_addr, **remote_addr)) {
+        drop(tcp_task.readable);
+        mut_override(Arc::into_raw(tcp_task.inner))
+    } else {
+        core::ptr::null_mut()
+    };
+
+    drop(inner);
+    core::mem::forget(sockets);
+    core::mem::forget(local_addr);
+    core::mem::forget(remote_addr);
+
+    ret
+}
+
+/// Remove a UDP socket from this `RiceSockets.
+#[no_mangle]
+pub unsafe extern "C" fn rice_sockets_remove_udp(
+    sockets: *mut RiceSockets,
+    local_addr: *const RiceAddress,
+) -> *mut RiceUdpSocket {
+    let sockets = Arc::from_raw(sockets);
+    let local_addr = RiceAddress::from_c(local_addr);
+    let mut inner = sockets.inner.lock().unwrap();
+
+    let ret = if let Some(udp_task) = inner.udp_sockets.remove(&*local_addr) {
+        drop(udp_task.readable);
+        mut_override(Arc::into_raw(udp_task.inner))
+    } else {
+        core::ptr::null_mut()
+    };
+
+    drop(inner);
+    core::mem::forget(sockets);
+    core::mem::forget(local_addr);
+
     ret
 }
 
@@ -995,6 +1046,26 @@ mod tests {
             assert_eq!(rice_address_cmp(io_data.to, local_addr2), 0);
             rice_io_data_clear(&mut io_data);
 
+            let udp1 = rice_sockets_remove_udp(sockets, local_addr1);
+            assert!(!udp1.is_null());
+            let addr = rice_udp_socket_local_addr(udp1);
+            assert_eq!(rice_address_cmp(addr, local_addr1), 0);
+            rice_address_free(addr);
+            let udp1 = Arc::from_raw(udp1);
+            drop(udp1);
+            let udp1 = rice_sockets_remove_udp(sockets, local_addr1);
+            assert!(udp1.is_null());
+
+            let udp2 = rice_sockets_remove_udp(sockets, local_addr2);
+            assert!(!udp2.is_null());
+            let addr = rice_udp_socket_local_addr(udp2);
+            assert_eq!(rice_address_cmp(addr, local_addr2), 0);
+            rice_address_free(addr);
+            let udp2 = Arc::from_raw(udp2);
+            drop(udp2);
+            let udp2 = rice_sockets_remove_udp(sockets, local_addr2);
+            assert!(udp2.is_null());
+
             rice_address_free(local_addr1);
             rice_address_free(local_addr2);
             rice_sockets_unref(sockets);
@@ -1164,6 +1235,21 @@ mod tests {
             assert_eq!(rice_address_cmp(io_data.from, local_addr), 0);
             assert_eq!(rice_address_cmp(io_data.to, remote_addr), 0);
             rice_io_data_clear(&mut io_data);
+
+            let tcp = rice_sockets_remove_tcp(
+                sockets.unwrap().ptr as *mut RiceSockets,
+                local_addr,
+                remote_addr,
+            );
+            assert!(!tcp.is_null());
+            let addr = rice_tcp_socket_local_addr(tcp);
+            assert_eq!(rice_address_cmp(addr, local_addr), 0);
+            rice_address_free(addr);
+            let addr = rice_tcp_socket_remote_addr(tcp);
+            assert_eq!(rice_address_cmp(addr, remote_addr), 0);
+            rice_address_free(addr);
+            let tcp = Arc::from_raw(tcp);
+            drop(tcp);
 
             rice_address_free(local_addr);
             rice_address_free(remote_addr);

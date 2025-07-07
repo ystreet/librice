@@ -96,7 +96,6 @@ impl From<StunParseError> for AgentError {
 #[derive(Debug)]
 pub struct Agent {
     id: usize,
-    closed: bool,
     pub(crate) checklistset: ConnCheckListSet,
     pub(crate) stun_servers: Vec<(TransportType, SocketAddr)>,
     pub(crate) turn_servers: Vec<(TransportType, SocketAddr, TurnCredentials)>,
@@ -132,7 +131,6 @@ impl AgentBuilder {
         let controlling = self.controlling;
         Agent {
             id,
-            closed: false,
             checklistset: ConnCheckListSet::builder(tie_breaker, controlling)
                 .trickle_ice(self.trickle_ice)
                 .build(),
@@ -197,11 +195,9 @@ impl Agent {
             ice.id = self.id
         )
     )]
-    pub fn close(&mut self) -> Result<(), AgentError> {
+    pub fn close(&mut self, now: Instant) {
         info!("closing agent");
-        self.closed = true;
-        // TODO: TURN close things
-        Ok(())
+        self.checklistset.close(now);
     }
 
     /// The controlling state of this ICE agent.  This value may change throughout the ICE
@@ -283,13 +279,11 @@ impl Agent {
         name = "agent_poll",
         ret
         skip(self)
+        fields(
+            id = self.id,
+        )
     )]
     pub fn poll(&mut self, now: Instant) -> AgentPoll {
-        if self.closed {
-            // TODO: wait for some sockets to be closed
-            return AgentPoll::Closed;
-        }
-
         let mut lowest_wait = None;
 
         for stream in self.streams.iter_mut() {
@@ -301,7 +295,7 @@ impl Agent {
                     local_addr,
                     remote_addr,
                 } => {
-                    return AgentPoll::AllocateSocket(AgentAllocateSocket {
+                    return AgentPoll::AllocateSocket(AgentSocket {
                         stream_id,
                         component_id,
                         transport,
@@ -336,7 +330,8 @@ impl Agent {
 
         loop {
             match self.checklistset.poll(now) {
-                CheckListSetPollRet::Completed => break,
+                CheckListSetPollRet::Closed => return AgentPoll::Closed,
+                CheckListSetPollRet::Completed => continue,
                 CheckListSetPollRet::WaitUntil(earliest_wait) => {
                     if let Some(check_wait) = lowest_wait {
                         if earliest_wait < check_wait {
@@ -357,7 +352,7 @@ impl Agent {
                     if let Some(stream) =
                         self.streams.iter().find(|s| s.checklist_id == checklist_id)
                     {
-                        return AgentPoll::AllocateSocket(AgentAllocateSocket {
+                        return AgentPoll::AllocateSocket(AgentSocket {
                             stream_id: stream.id(),
                             component_id: cid,
                             transport,
@@ -366,6 +361,27 @@ impl Agent {
                         });
                     } else {
                         warn!("did not find stream for allocate socket {from:?} -> {to:?}");
+                    }
+                }
+                CheckListSetPollRet::RemoveSocket {
+                    checklist_id,
+                    component_id: cid,
+                    transport,
+                    local_addr: from,
+                    remote_addr: to,
+                } => {
+                    if let Some(stream) =
+                        self.streams.iter().find(|s| s.checklist_id == checklist_id)
+                    {
+                        return AgentPoll::RemoveSocket(AgentSocket {
+                            stream_id: stream.id(),
+                            component_id: cid,
+                            transport,
+                            from,
+                            to,
+                        });
+                    } else {
+                        warn!("did not find stream for remove socket {from:?} -> {to:?}");
                     }
                 }
                 CheckListSetPollRet::Event {
@@ -451,7 +467,10 @@ pub enum AgentPoll {
     WaitUntil(Instant),
     /// Connect using the specified 5-tuple.  Reply (success or failure)
     /// should be notified using [`StreamMut::allocated_socket`] with the same parameters.
-    AllocateSocket(AgentAllocateSocket),
+    AllocateSocket(AgentSocket),
+    /// It is posible to remove the specified 5-tuple. The socket will not be referenced any
+    /// further.
+    RemoveSocket(AgentSocket),
     /// A new pair has been selected for a component.
     SelectedPair(AgentSelectedPair),
     /// A [`Component`](crate::component::Component) has changed state.
@@ -469,10 +488,9 @@ pub struct AgentTransmit {
     pub transmit: Transmit<Data<'static>>,
 }
 
-/// Connect from the specified interface to the specified address.  Reply (success or failure)
-/// should be notified using [`StreamMut::allocated_socket`] with the same parameters.
+/// A socket with the specified network 5-tuple.
 #[derive(Debug)]
-pub struct AgentAllocateSocket {
+pub struct AgentSocket {
     pub stream_id: usize,
     pub component_id: usize,
     pub transport: TransportType,
