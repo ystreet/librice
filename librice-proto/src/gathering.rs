@@ -620,7 +620,6 @@ impl StunGatherer {
         name = "gatherer_handle_data",
         level = "trace",
         ret,
-        err,
         skip(self, transmit)
         fields(
             transport = %transmit.transport,
@@ -632,7 +631,7 @@ impl StunGatherer {
         &mut self,
         transmit: &Transmit<T>,
         now: Instant,
-    ) -> Result<bool, StunError> {
+    ) -> bool {
         trace!(
             "received {} bytes over {}: {} -> {}",
             transmit.data.as_ref().len(),
@@ -669,12 +668,12 @@ impl StunGatherer {
                                 || ![BINDING, ALLOCATE].contains(&header.get_type().method())
                             {
                                 request.completed = true;
-                                return Ok(false);
+                                return false;
                             }
                         }
                         Err(StunParseError::NotStun) => {
                             request.completed = true;
-                            return Ok(false);
+                            return false;
                         }
                         _ => (),
                     }
@@ -685,7 +684,7 @@ impl StunGatherer {
                             else {
                                 // TODO: should signal closure of the TCP connection
                                 request.completed = true;
-                                return Ok(false);
+                                return false;
                             };
                             trace!("parsed STUN message {msg}");
                             let base_active_addr = SocketAddr::new(request.base_addr.ip(), 9);
@@ -698,7 +697,7 @@ impl StunGatherer {
                             {
                                 request.completed = true;
                                 let Ok(xor_addr) = response.attribute::<XorMappedAddress>() else {
-                                    return Ok(true);
+                                    return true;
                                 };
                                 let stun_addr = xor_addr.addr(response.transaction_id());
                                 for tcp_type in [TcpType::Active, TcpType::Passive] {
@@ -786,7 +785,7 @@ impl StunGatherer {
                                     let foundation = self.produced_i.to_string();
                                     let Ok(xor_addr) = response.attribute::<XorMappedAddress>()
                                     else {
-                                        return Ok(true);
+                                        return true;
                                     };
                                     let stun_addr = xor_addr.addr(response.transaction_id());
                                     if let Some(cand) = Self::handle_stun_response_address(
@@ -870,7 +869,7 @@ impl StunGatherer {
                 turn_agent: Some(client),
             });
         }
-        return Ok(handled);
+        handled
     }
 
     /// Provide a socket as requested through [`GatherPoll::AllocateSocket`].  The transport and address
@@ -990,7 +989,7 @@ mod tests {
         }
         let remote_addr = "192.168.1.2:2000".parse().unwrap();
         let transmit = Transmit::new([6; 10], TransportType::Udp, remote_addr, local_addr);
-        assert!(!gather.handle_data(&transmit, now).unwrap());
+        assert!(!gather.handle_data(&transmit, now));
 
         assert!(matches!(gather.poll(now), GatherPoll::Complete(_)));
         assert!(matches!(gather.poll(now), GatherPoll::Finished));
@@ -1077,7 +1076,7 @@ mod tests {
         assert_eq!(transmit.to, stun_addr);
         let response = respond_to_stun_binding(transmit, public_ip);
         assert!(matches!(gather.poll(now), GatherPoll::WaitUntil(_)));
-        gather.handle_data(&response, now).unwrap();
+        gather.handle_data(&response, now);
 
         let ret = gather.poll(now);
         if let GatherPoll::NewCandidate(cand) = ret {
@@ -1137,7 +1136,7 @@ mod tests {
         assert_eq!(transmit.to, stun_addr);
         let response = respond_to_stun_binding(transmit, public_ip);
         assert!(matches!(gather.poll(now), GatherPoll::WaitUntil(_)));
-        gather.handle_data(&response, now).unwrap();
+        gather.handle_data(&response, now);
 
         let ret = gather.poll(now);
         if let GatherPoll::NewCandidate(cand) = ret {
@@ -1199,7 +1198,7 @@ mod tests {
         let response = [4; 12];
         let response = Transmit::new(&response, transmit.transport, transmit.to, transmit.from);
         assert!(matches!(gather.poll(now), GatherPoll::WaitUntil(_)));
-        assert!(!gather.handle_data(&response, now).unwrap());
+        assert!(!gather.handle_data(&response, now));
 
         assert!(matches!(gather.poll(now), GatherPoll::Complete(_)));
         assert!(matches!(gather.poll(now), GatherPoll::Finished));
@@ -1237,7 +1236,7 @@ mod tests {
         assert_eq!(stun_transmit.to, turn_listen_addr);
         let response = respond_to_stun_binding(stun_transmit, public_ip);
         assert!(matches!(gather.poll(now), GatherPoll::WaitUntil(_)));
-        gather.handle_data(&response, now).unwrap();
+        gather.handle_data(&response, now);
 
         let ret = gather.poll(now);
         if let GatherPoll::NewCandidate(cand) = ret {
@@ -1260,7 +1259,7 @@ mod tests {
         assert_eq!(turn_transmit.from, local_addr);
         assert_eq!(turn_transmit.to, turn_listen_addr);
         let reply = turn_server.recv(turn_transmit, now).unwrap().unwrap();
-        assert!(gather.handle_data(&reply, now).unwrap());
+        assert!(gather.handle_data(&reply, now));
 
         // authenticated TURN ALLOCATE
         let turn_transmit = gather.poll_transmit(now).unwrap();
@@ -1283,7 +1282,7 @@ mod tests {
             now,
         );
         let reply = turn_server.poll_transmit(now).unwrap();
-        assert!(gather.handle_data(&reply, now).unwrap());
+        assert!(gather.handle_data(&reply, now));
         let ret = gather.poll(now);
         if let GatherPoll::NewCandidate(cand) = ret {
             assert!(cand.turn_agent.is_some());
@@ -1339,7 +1338,7 @@ mod tests {
         assert_eq!(stun_transmit.to, turn_listen_addr);
         let response = respond_to_stun_binding(stun_transmit, public_ip);
         assert!(matches!(gather.poll(now), GatherPoll::WaitUntil(_)));
-        gather.handle_data(&response, now).unwrap();
+        gather.handle_data(&response, now);
 
         let ret = gather.poll(now);
         if let GatherPoll::NewCandidate(cand) = ret {
@@ -1379,7 +1378,7 @@ mod tests {
         assert_eq!(turn_transmit.from, local_addr);
         assert_eq!(turn_transmit.to, turn_listen_addr);
         let reply = turn_server.recv(turn_transmit, now).unwrap().unwrap();
-        assert!(gather.handle_data(&reply, now).unwrap());
+        assert!(gather.handle_data(&reply, now));
 
         // authenticated TURN ALLOCATE
         let turn_transmit = gather.poll_transmit(now).unwrap();
@@ -1402,7 +1401,7 @@ mod tests {
             now,
         );
         let reply = turn_server.poll_transmit(now).unwrap();
-        assert!(gather.handle_data(&reply, now).unwrap());
+        assert!(gather.handle_data(&reply, now));
         let ret = gather.poll(now);
         if let GatherPoll::NewCandidate(cand) = ret {
             assert!(cand.turn_agent.is_some());
