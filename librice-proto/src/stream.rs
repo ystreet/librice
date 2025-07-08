@@ -353,19 +353,17 @@ impl<'a> StreamMut<'a> {
             transmit.from,
             transmit.to,
         );
-        if let Ok(replies) = self
+        let replies = self
             .agent
             .checklistset
-            .incoming_data(checklist_id, transmit, now)
-        {
-            for reply in replies {
-                match reply {
-                    HandleRecvReply::Data(data, _from) => {
-                        ret.data.push(data);
-                    }
-                    HandleRecvReply::Handled => {
-                        ret.data_handled = true;
-                    }
+            .incoming_data(checklist_id, transmit, now);
+        for reply in replies {
+            match reply {
+                HandleRecvReply::Data(data, _from) => {
+                    ret.data.push(data);
+                }
+                HandleRecvReply::Handled => {
+                    ret.data_handled = true;
                 }
             }
         }
@@ -587,16 +585,14 @@ impl StreamState {
         };
         // XXX: is this enough to successfully route to the gatherer over the
         // connection check or component received handling?
-        let Ok(wake) = gather.handle_data(transmit, now) else {
-            return StreamIncomingDataReply::default();
-        };
-        if wake {
-            return StreamIncomingDataReply {
+        if gather.handle_data(transmit, now) {
+            StreamIncomingDataReply {
                 data_handled: true,
                 ..Default::default()
-            };
+            }
+        } else {
+            StreamIncomingDataReply::default()
         }
-        StreamIncomingDataReply::default()
     }
 
     #[tracing::instrument(ret, level = "trace", skip(self))]
