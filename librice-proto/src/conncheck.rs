@@ -330,6 +330,7 @@ pub struct ConnCheckList {
     events: VecDeque<ConnCheckEvent>,
     agents: Vec<CheckStunAgent>,
     turn_clients: Vec<(StunAgentId, TurnClient)>,
+    pending_delete_turn_clients: Vec<(StunAgentId, TurnClient)>,
     tcp_buffers: HashMap<(SocketAddr, SocketAddr), TcpBuffer>,
     pending_turn_permissions: VecDeque<(StunAgentId, TransportType, IpAddr)>,
 }
@@ -468,6 +469,7 @@ impl ConnCheckList {
             events: VecDeque::new(),
             agents: vec![],
             turn_clients: vec![],
+            pending_delete_turn_clients: vec![],
             tcp_buffers: HashMap::default(),
             pending_turn_permissions: VecDeque::new(),
         }
@@ -712,7 +714,20 @@ impl ConnCheckList {
     fn mut_turn_client_by_id(&mut self, id: StunAgentId) -> Option<&mut TurnClient> {
         self.turn_clients
             .iter_mut()
+            .chain(self.pending_delete_turn_clients.iter_mut())
             .find_map(|(needle, client)| if id == *needle { Some(client) } else { None })
+    }
+
+    fn remove_turn_client_by_id(&mut self, id: StunAgentId) -> Option<TurnClient> {
+        if let Some(position) = self
+            .turn_clients
+            .iter()
+            .position(|(needle, _client)| id == *needle)
+        {
+            Some(self.turn_clients.remove(position).1)
+        } else {
+            None
+        }
     }
 
     fn turn_client_by_allocated_address(
@@ -739,18 +754,21 @@ impl ConnCheckList {
         transport: TransportType,
         allocated: SocketAddr,
     ) -> Option<(StunAgentId, &mut TurnClient)> {
-        self.turn_clients.iter_mut().find_map(|(id, client)| {
-            if client
-                .relayed_addresses()
-                .any(|(relayed_transport, relayed)| {
-                    relayed_transport == transport && relayed == allocated
-                })
-            {
-                Some((*id, client))
-            } else {
-                None
-            }
-        })
+        self.turn_clients
+            .iter_mut()
+            .chain(self.pending_delete_turn_clients.iter_mut())
+            .find_map(|(id, client)| {
+                if client
+                    .relayed_addresses()
+                    .any(|(relayed_transport, relayed)| {
+                        relayed_transport == transport && relayed == allocated
+                    })
+                {
+                    Some((*id, client))
+                } else {
+                    None
+                }
+            })
     }
 
     pub(crate) fn find_turn_client_for_5tuple(
@@ -759,16 +777,19 @@ impl ConnCheckList {
         local: SocketAddr,
         remote: SocketAddr,
     ) -> Option<(StunAgentId, &TurnClient)> {
-        self.turn_clients.iter().find_map(|(id, client)| {
-            if client.local_addr() == local
-                && client.transport() == transport
-                && client.remote_addr() == remote
-            {
-                Some((*id, client))
-            } else {
-                None
-            }
-        })
+        self.turn_clients
+            .iter()
+            .chain(self.pending_delete_turn_clients.iter())
+            .find_map(|(id, client)| {
+                if client.local_addr() == local
+                    && client.transport() == transport
+                    && client.remote_addr() == remote
+                {
+                    Some((*id, client))
+                } else {
+                    None
+                }
+            })
     }
 
     /// Add a local candidate to this checklist.
@@ -2867,39 +2888,49 @@ impl ConnCheckListSet {
                     return;
                 };
 
-                // TODO: remove permission for remote address here
-                warn!(
-                    "should remove {transport} permission from {local_addr} to {}",
-                    check.pair.remote.address.ip()
-                );
-
                 if self.checklists.iter().any(|checklist| {
                     checklist.pairs.iter().any(|pair| {
                         pair.pair.local.candidate_type == CandidateType::Relayed
                             && pair.pair.local.address == check.pair.local.address
                     })
                 }) {
+                    // TODO: remove permission for remote address here
+                    warn!(
+                        "should remove {transport} permission from {local_addr} to {}",
+                        check.pair.remote.address.ip()
+                    );
                     return;
                 }
                 let checklist = &mut self.checklists[checklist_i];
-                let turn_client = checklist.mut_turn_client_by_id(turn_id).unwrap();
-                turn_client.delete(now);
-                (
-                    turn_client.transport(),
-                    turn_client.local_addr(),
-                    Some(turn_client.remote_addr()),
-                )
+                let mut turn_client = checklist.remove_turn_client_by_id(turn_id).unwrap();
+                if let Some(transmit) = turn_client.delete(now) {
+                    self.pending_transmits.push_front(CheckListSetTransmit {
+                        checklist_id,
+                        transmit,
+                    });
+                }
+                let checklist = &mut self.checklists[checklist_i];
+                checklist
+                    .pending_delete_turn_clients
+                    .push((turn_id, turn_client));
+                // socket remove will occur when the delete reply is received, or on timeout
+                return;
             } else {
                 let checklist = &mut self.checklists[checklist_i];
-                if checklist.turn_clients.iter_mut().any(|(_id, turn_client)| {
-                    turn_client.transport() == transport
-                        && turn_client.local_addr() == local_addr
-                        && if transport == TransportType::Tcp {
-                            remote_addr == Some(turn_client.remote_addr())
-                        } else {
-                            true
-                        }
-                }) {
+                if checklist
+                    .turn_clients
+                    .iter()
+                    .chain(checklist.pending_delete_turn_clients.iter())
+                    .any(|(_id, turn_client)| {
+                        turn_client.transport() == transport
+                            && turn_client.local_addr() == local_addr
+                            && if transport == TransportType::Tcp {
+                                remote_addr == Some(turn_client.remote_addr())
+                            } else {
+                                true
+                            }
+                    })
+                {
                     return;
                 } else {
                     (transport, local_addr, remote_addr)
@@ -2961,7 +2992,7 @@ impl ConnCheckListSet {
             }
 
             let checklist = &mut self.checklists[self.checklist_i];
-            for (_id, client) in checklist.turn_clients.iter_mut() {
+            for (_turn_id, client) in checklist.turn_clients.iter_mut() {
                 while let Some(event) = client.poll_event() {
                     match event {
                         TurnEvent::AllocationCreated(_, _) => (),
@@ -2991,6 +3022,44 @@ impl ConnCheckListSet {
                         }
                     }
                 }
+            }
+            let mut idx = 0;
+            while let Some((_turn_id, client)) = checklist.pending_delete_turn_clients.get_mut(idx)
+            {
+                match client.poll(now) {
+                    TurnPollRet::Closed => {
+                        let client = checklist.pending_delete_turn_clients.remove(idx).1;
+                        let transport = client.transport();
+                        if checklist
+                            .find_agent_for_5tuple(
+                                transport,
+                                client.local_addr(),
+                                client.remote_addr(),
+                            )
+                            .is_none()
+                        {
+                            return CheckListSetPollRet::RemoveSocket {
+                                checklist_id: checklist.checklist_id,
+                                // FIXME; hardcoded component id
+                                component_id: 1,
+                                transport,
+                                local_addr: client.local_addr(),
+                                remote_addr: client.remote_addr(),
+                            };
+                        }
+                        continue;
+                    }
+                    TurnPollRet::WaitUntil(wait) => {
+                        all_turn_closed = false;
+                        if wait == now {
+                            return CheckListSetPollRet::WaitUntil(wait);
+                        }
+                        if wait < lowest_wait {
+                            lowest_wait = wait.max(now);
+                        }
+                    }
+                }
+                idx += 1;
             }
 
             if let Some(event) = checklist.poll_event() {
@@ -3234,6 +3303,18 @@ impl ConnCheckListSet {
             }
 
             for (_id, client) in checklist.turn_clients.iter_mut() {
+                let Some(transmit) = client.poll_transmit(now) else {
+                    continue;
+                };
+
+                self.last_send_time = now;
+                return Some(CheckListSetTransmit {
+                    checklist_id,
+                    transmit: transmit_send(&transmit),
+                });
+            }
+
+            for (_id, client) in checklist.pending_delete_turn_clients.iter_mut() {
                 let Some(transmit) = client.poll_transmit(now) else {
                     continue;
                 };
@@ -5869,6 +5950,46 @@ mod tests {
             state.local.checklist_set.poll(now),
             CheckListSetPollRet::Completed
         ));
+
+        state.local.checklist_set.close(now);
+
+        // no RemoveSocket until the TURN DELETE is handled
+        let CheckListSetPollRet::WaitUntil(_) = state.local.checklist_set.poll(now) else {
+            unreachable!();
+        };
+
+        let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
+            unreachable!();
+        };
+
+        let checklist_id = transmit.checklist_id;
+        let Some(transmit) = turn_server.recv(transmit.transmit, now).unwrap() else {
+            unreachable!()
+        };
+        let reply = state
+            .local
+            .checklist_set
+            .incoming_data(checklist_id, transmit, now)
+            .unwrap();
+        assert_eq!(reply.len(), 1);
+        assert!(matches!(reply[0], HandleRecvReply::Handled));
+
+        let CheckListSetPollRet::RemoveSocket {
+            checklist_id: _,
+            component_id: 1,
+            transport,
+            local_addr: remove_local_addr,
+            remote_addr: _,
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(transport, client_transport);
+        assert_eq!(remove_local_addr, local_addr);
+
+        let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
+            unreachable!();
+        };
     }
 
     #[test]
