@@ -31,9 +31,9 @@ fn udp_stund() {
         let stun_server = async_std::task::spawn(stun_server);
 
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let msg = Message::builder_request(BINDING);
-        socket.send_to(&msg.build(), stun_addr).await.unwrap();
+        let msg = Message::builder_request(BINDING, MessageWriteVec::new());
         debug!("sent to {:?}, {:?}", stun_addr, msg);
+        socket.send_to(&msg.finish(), stun_addr).await.unwrap();
 
         let mut buf = [0; 1500];
         let size = socket.recv(&mut buf).await.unwrap();
@@ -57,10 +57,10 @@ fn tcp_stund() {
         let stun_server = async_std::task::spawn(stun_server);
 
         let mut socket = TcpStream::connect(stun_addr).await.unwrap();
-        let msg = Message::builder_request(BINDING);
-        let msg_bytes = msg.build();
-        socket.write_all(&msg_bytes).await.unwrap();
+        let msg = Message::builder_request(BINDING, MessageWriteVec::new());
         debug!("sent to {:?}, {:?}", stun_addr, msg);
+        let msg_bytes = msg.finish();
+        socket.write_all(&msg_bytes).await.unwrap();
 
         let mut buf = [0; 1500];
         let mut read_position = 0;

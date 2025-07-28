@@ -63,31 +63,30 @@ where
     }
 }
 
-fn handle_binding_request<'a>(
-    msg: &Message,
-    from: SocketAddr,
-) -> Result<MessageBuilder<'a>, AgentError> {
-    if let Some(error_msg) = Message::check_attribute_types(msg, &[Fingerprint::TYPE], &[]) {
+fn handle_binding_request(msg: &Message, from: SocketAddr) -> Result<MessageWriteVec, AgentError> {
+    if let Some(error_msg) =
+        Message::check_attribute_types(msg, &[Fingerprint::TYPE], &[], MessageWriteVec::new())
+    {
         return Ok(error_msg);
     }
 
-    let mut response = Message::builder_success(msg);
+    let mut response = Message::builder_success(msg, MessageWriteVec::new());
     let xor_addr = XorMappedAddress::new(from, msg.transaction_id());
     response.add_attribute(&xor_addr).unwrap();
     response.add_fingerprint().unwrap();
-    Ok(response.into_owned())
+    Ok(response)
 }
 
-fn handle_incoming_data<'a>(
+fn handle_incoming_data(
     data: &[u8],
     from: SocketAddr,
     stun_agent: &mut StunAgent,
-) -> Option<(MessageBuilder<'a>, SocketAddr)> {
+) -> Option<(MessageWriteVec, SocketAddr)> {
     let msg = Message::from_bytes(data).ok()?;
     match stun_agent.handle_stun(msg, from) {
-        HandleStunReply::Drop => None,
+        HandleStunReply::Drop | HandleStunReply::UnvalidatedStunResponse(_) => None,
         // we don't send any stun request so should never receive any responses
-        HandleStunReply::StunResponse(_response) => {
+        HandleStunReply::ValidatedStunResponse(_response) => {
             error!("Received STUN response from {from}!");
             None
         }
@@ -102,10 +101,10 @@ fn handle_incoming_data<'a>(
                     Err(err) => warn!("error: {}", err),
                 }
             } else {
-                let mut response = Message::builder_error(&msg);
+                let mut response = Message::builder_error(&msg, MessageWriteVec::new());
                 let error = ErrorCode::new(400, "Bad Request").unwrap();
                 response.add_attribute(&error).unwrap();
-                return Some((response.into_owned(), from));
+                return Some((response, from));
             }
             None
         }
@@ -123,7 +122,7 @@ pub async fn stund_udp(udp_socket: UdpSocket) -> std::io::Result<()> {
         let (len, from) = warn_on_err(udp_socket.recv_from(&mut data).await, (0, local_addr));
         if let Some((response, to)) = handle_incoming_data(&data[..len], from, &mut udp_stun_agent)
         {
-            warn_on_err(udp_socket.send_to(&response.build(), to).await, 0);
+            warn_on_err(udp_socket.send_to(&response.finish(), to).await, 0);
         }
     }
 }
@@ -150,9 +149,8 @@ pub async fn stund_tcp(listener: TcpListener) -> std::io::Result<()> {
             if let Some((response, to)) =
                 handle_incoming_data(&data[..size], remote_addr, &mut tcp_stun_agent)
             {
-                if let Ok(transmit) = tcp_stun_agent.send(response, to, Instant::now()) {
-                    let data = transmit.data.build();
-                    warn_on_err(stream.write_all(&data).await, ());
+                if let Ok(transmit) = tcp_stun_agent.send(response.finish(), to, Instant::now()) {
+                    warn_on_err(stream.write_all(&transmit.data).await, ());
                 }
             }
             // XXX: Assumes that the stun packet arrives in a single packet
