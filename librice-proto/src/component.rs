@@ -11,9 +11,11 @@
 use std::net::SocketAddr;
 use std::time::Instant;
 
-use stun_proto::agent::{DelayedTransmitBuild, Transmit};
+use stun_proto::agent::Transmit;
 use stun_proto::types::data::Data;
-use stun_proto::types::message::{Message, BINDING};
+use stun_proto::types::message::{Message, MessageWriteVec, BINDING};
+use stun_proto::types::prelude::MessageWrite;
+use turn_client_proto::api::{DelayedTransmitBuild, TurnClientApi};
 
 use crate::candidate::{CandidatePair, CandidateType, TransportType};
 
@@ -143,13 +145,13 @@ impl<'a> ComponentMut<'a> {
             // ensure that we can receive from the provided remote address.
             let transmit = agent
                 .send_request(
-                    Message::builder_request(BINDING),
+                    Message::builder_request(BINDING, MessageWriteVec::new()).finish(),
                     selected.remote.address,
                     Instant::now(),
                 )
                 .unwrap();
             let msg = Message::from_bytes(&transmit.data).unwrap();
-            let response = Message::builder_success(&msg).build();
+            let response = Message::builder_success(&msg, MessageWriteVec::new()).finish();
             let response = Message::from_bytes(&response).unwrap();
             agent.handle_stun(response, selected.remote.address);
         }
@@ -195,7 +197,10 @@ impl<'a> ComponentMut<'a> {
                 .mut_turn_client_by_allocated_address(local_transport, local_addr)
                 .ok_or(AgentError::ResourceNotFound)?
                 .1;
-            let transmit = turn_client.send_to(local_transport, remote_addr, data, now)?;
+            let transmit = turn_client
+                .send_to(local_transport, remote_addr, data, now)
+                .map_err(|_| AgentError::ResourceNotFound)?
+                .unwrap();
             trace!(
                 "sending {} bytes from {} {} through TURN server {} with allocation {local_transport} {local_addr} to {remote_addr}",
                 data_len, transmit.transport, transmit.from, transmit.to,

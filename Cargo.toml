@@ -10,8 +10,8 @@ edition = "2021"
 rust-version = "1.68.2"
 
 [workspace.dependencies]
-stun-proto = "0.4.2"
-turn-client-proto = "0.2"
+stun-proto = "0.5"
+turn-client-proto = "0.3"
 arbitrary = { version = "1", features = ["derive"] }
 byteorder = "1"
 get_if_addrs = "0.5"
@@ -20,3 +20,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 librice-proto = { version = "0.0.5", path = "librice-proto" }
 criterion = "0.6"
+
+[profile.bench]
+codegen-units = 16
+lto = "thin"

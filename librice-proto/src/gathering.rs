@@ -16,10 +16,17 @@ use crate::candidate::{Candidate, TcpType, TransportType};
 use stun_proto::agent::{HandleStunReply, StunAgent, StunAgentPollRet, StunError, Transmit};
 use stun_proto::types::attribute::XorMappedAddress;
 use stun_proto::types::data::Data;
-use stun_proto::types::message::{Message, MessageHeader, StunParseError, TransactionId, BINDING};
+use stun_proto::types::message::{
+    Message, MessageHeader, MessageWriteVec, StunParseError, TransactionId, BINDING,
+};
+use stun_proto::types::prelude::{MessageWrite, MessageWriteExt};
+use turn_client_proto::api::{TurnEvent, TurnPollRet, TurnRecvRet};
+use turn_client_proto::client::TurnClient;
+use turn_client_proto::prelude::*;
+use turn_client_proto::tcp::TurnClientTcp;
 use turn_client_proto::types::message::ALLOCATE;
 use turn_client_proto::types::TurnCredentials;
-use turn_client_proto::{TurnClient, TurnEvent, TurnPollRet, TurnRecvRet};
+use turn_client_proto::udp::TurnClientUdp;
 
 fn address_is_ignorable(ip: IpAddr) -> bool {
     // TODO: add is_benchmarking() and is_documentation() when they become stable
@@ -101,12 +108,9 @@ impl PendingRequest {
                 }
             }
             Method::Turn(credentials) => {
-                let client = TurnClient::allocate(
-                    TransportType::Tcp,
-                    local_addr,
-                    self.server_addr,
-                    credentials.clone(),
-                );
+                let client =
+                    TurnClientTcp::allocate(local_addr, self.server_addr, credentials.clone())
+                        .into();
                 Request {
                     protocol: RequestProtocol::Tcp(None),
                     agent: StunOrTurnClient::Turn(Box::new(client)),
@@ -338,7 +342,7 @@ impl StunGatherer {
                     pending_request.completed = true;
                     let agent = match &pending_request.method {
                         Method::Stun => {
-                            let mut msg = Message::builder_request(BINDING);
+                            let mut msg = Message::builder_request(BINDING, MessageWriteVec::new());
                             msg.add_fingerprint().unwrap();
                             let mut agent =
                                 StunAgent::builder(TransportType::Udp, pending_request.local_addr)
@@ -351,19 +355,19 @@ impl StunGatherer {
                             );
                             self.pending_transmits.push_front(
                                 agent
-                                    .send_request(msg, pending_request.server_addr, now)
+                                    .send_request(msg.finish(), pending_request.server_addr, now)
                                     .unwrap()
                                     .into_owned(),
                             );
                             StunOrTurnClient::Stun(Box::new(agent))
                         }
                         Method::Turn(credentials) => {
-                            let client = TurnClient::allocate(
-                                pending_request.transport_type,
+                            let client = TurnClientUdp::allocate(
                                 pending_request.local_addr,
                                 pending_request.server_addr,
                                 credentials.clone(),
-                            );
+                            )
+                            .into();
                             StunOrTurnClient::Turn(Box::new(client))
                         }
                     };
@@ -514,10 +518,12 @@ impl StunGatherer {
                     if tcp.is_none() {
                         match &mut request.agent {
                             StunOrTurnClient::Stun(agent) => {
-                                let mut msg = Message::builder_request(BINDING);
+                                let mut msg =
+                                    Message::builder_request(BINDING, MessageWriteVec::new());
                                 msg.add_fingerprint().unwrap();
                                 *tcp = Some(msg.transaction_id());
-                                let Ok(transmit) = agent.send_request(msg, request.server, now)
+                                let Ok(transmit) =
+                                    agent.send_request(msg.finish(), request.server, now)
                                 else {
                                     continue;
                                 };
@@ -692,7 +698,7 @@ impl StunGatherer {
                             let other_preference = request.other_preference;
                             let component_id = request.component_id;
                             let server = request.server;
-                            if let HandleStunReply::StunResponse(response) =
+                            if let HandleStunReply::ValidatedStunResponse(response) =
                                 agent.handle_stun(msg, transmit.from)
                             {
                                 request.completed = true;
@@ -731,11 +737,7 @@ impl StunGatherer {
                         StunOrTurnClient::Turn(client) => {
                             let transmit = transmit_send_unframed(transmit);
                             match client.recv(transmit, now) {
-                                TurnRecvRet::PeerData {
-                                    data: _,
-                                    transport: _,
-                                    peer: _,
-                                } => handled = true,
+                                TurnRecvRet::PeerData(_peer) => handled = true,
                                 TurnRecvRet::Handled => {
                                     handled = true;
                                     if let Some(TurnEvent::AllocationCreated(
@@ -778,7 +780,7 @@ impl StunGatherer {
                         trace!("parsed STUN message {msg}, {request:?}");
                         match &mut request.agent {
                             StunOrTurnClient::Stun(agent) => {
-                                if let HandleStunReply::StunResponse(response) =
+                                if let HandleStunReply::ValidatedStunResponse(response) =
                                     agent.handle_stun(msg, transmit.from)
                                 {
                                     request.completed = true;
@@ -811,11 +813,7 @@ impl StunGatherer {
                             StunOrTurnClient::Turn(client) => {
                                 let transmit = transmit_send_unframed(transmit);
                                 match client.recv(transmit, now) {
-                                    TurnRecvRet::PeerData {
-                                        data: _,
-                                        transport: _,
-                                        peer: _,
-                                    } => {
+                                    TurnRecvRet::PeerData(_peer) => {
                                         handled = true;
                                     }
                                     TurnRecvRet::Handled => {
@@ -934,8 +932,11 @@ fn transmit_send_unframed<'a, T: AsRef<[u8]>>(transmit: &Transmit<T>) -> Transmi
 #[cfg(test)]
 mod tests {
     use crate::candidate::{CandidateType, TcpType};
-    use stun_proto::types::message::MessageClass;
-    use turn_server_proto::TurnServerPollRet;
+    use stun_proto::types::{
+        message::{MessageClass, MessageWriteVec},
+        prelude::{MessageWrite, MessageWriteExt},
+    };
+    use turn_server_proto::api::{TurnServerApi, TurnServerPollRet};
 
     use super::*;
 
@@ -1044,10 +1045,10 @@ mod tests {
         let msg = Message::from_bytes(&transmit.data).unwrap();
         assert!(msg.has_method(BINDING));
         assert!(msg.has_class(MessageClass::Request));
-        let mut response = Message::builder_success(&msg);
+        let mut response = Message::builder_success(&msg, MessageWriteVec::new());
         let xor_addr = XorMappedAddress::new(public_ip, response.transaction_id());
         response.add_attribute(&xor_addr).unwrap();
-        let response = response.build();
+        let response = response.finish();
         Transmit::new(
             response.into_boxed_slice().into(),
             transmit.transport,
@@ -1213,7 +1214,7 @@ mod tests {
         let public_ip = "192.168.1.3:3000".parse().unwrap();
         let turn_credentials = TurnCredentials::new("tuser", "tpass");
 
-        let mut turn_server = turn_server_proto::TurnServer::new(
+        let mut turn_server = turn_server_proto::server::TurnServer::new(
             TransportType::Udp,
             turn_listen_addr,
             "realm".to_string(),
@@ -1258,14 +1259,14 @@ mod tests {
         let turn_transmit = gather.poll_transmit(now).unwrap();
         assert_eq!(turn_transmit.from, local_addr);
         assert_eq!(turn_transmit.to, turn_listen_addr);
-        let reply = turn_server.recv(turn_transmit, now).unwrap().unwrap();
+        let reply = turn_server.recv(turn_transmit, now).unwrap();
         assert!(gather.handle_data(&reply, now));
 
         // authenticated TURN ALLOCATE
         let turn_transmit = gather.poll_transmit(now).unwrap();
         assert_eq!(turn_transmit.from, local_addr);
         assert_eq!(turn_transmit.to, turn_listen_addr);
-        assert!(turn_server.recv(turn_transmit, now).unwrap().is_none());
+        assert!(turn_server.recv(turn_transmit, now).is_none());
         let TurnServerPollRet::AllocateSocketUdp {
             transport,
             local_addr,
@@ -1312,7 +1313,7 @@ mod tests {
         let public_ip = "192.168.1.3:3000".parse().unwrap();
         let turn_credentials = TurnCredentials::new("tuser", "tpass");
 
-        let mut turn_server = turn_server_proto::TurnServer::new(
+        let mut turn_server = turn_server_proto::server::TurnServer::new(
             TransportType::Tcp,
             turn_listen_addr,
             "realm".to_string(),
@@ -1377,14 +1378,14 @@ mod tests {
         let turn_transmit = gather.poll_transmit(now).unwrap();
         assert_eq!(turn_transmit.from, local_addr);
         assert_eq!(turn_transmit.to, turn_listen_addr);
-        let reply = turn_server.recv(turn_transmit, now).unwrap().unwrap();
+        let reply = turn_server.recv(turn_transmit, now).unwrap();
         assert!(gather.handle_data(&reply, now));
 
         // authenticated TURN ALLOCATE
         let turn_transmit = gather.poll_transmit(now).unwrap();
         assert_eq!(turn_transmit.from, local_addr);
         assert_eq!(turn_transmit.to, turn_listen_addr);
-        assert!(turn_server.recv(turn_transmit, now).unwrap().is_none());
+        assert!(turn_server.recv(turn_transmit, now).is_none());
         let TurnServerPollRet::AllocateSocketUdp {
             transport,
             local_addr,

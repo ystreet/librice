@@ -82,6 +82,7 @@ impl From<StunError> for AgentError {
             StunError::WriteError(_) => AgentError::StunWrite,
             StunError::Aborted => AgentError::Aborted,
             StunError::AlreadyInProgress => AgentError::AlreadyInProgress,
+            _ => AgentError::Failed,
         }
     }
 }

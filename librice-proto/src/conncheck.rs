@@ -19,13 +19,16 @@ use crate::component::ComponentConnectionState;
 use crate::gathering::GatheredCandidate;
 use byteorder::{BigEndian, ByteOrder};
 use stun_proto::agent::{
-    DelayedTransmitBuild, HandleStunReply, StunAgent, StunAgentPollRet, StunError, TcpBuffer,
-    Transmit, TransmitBuild,
+    HandleStunReply, StunAgent, StunAgentPollRet, StunError, TcpBuffer, Transmit,
 };
 use stun_proto::types::attribute::*;
 use stun_proto::types::data::Data;
 use stun_proto::types::message::*;
-use turn_client_proto::{TurnClient, TurnEvent, TurnPollRet, TurnRecvRet};
+use turn_client_proto::api::{
+    DelayedTransmitBuild, TransmitBuild, TurnEvent, TurnPollRet, TurnRecvRet,
+};
+use turn_client_proto::client::TurnClient;
+use turn_client_proto::prelude::*;
 
 static STUN_AGENT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
@@ -257,18 +260,18 @@ impl ConnCheck {
         self.nominate
     }
 
-    fn generate_stun_request<'a>(
+    fn generate_stun_request(
         pair: &CandidatePair,
         nominate: bool,
         controlling: bool,
         tie_breaker: u64,
         local_credentials: Credentials,
         remote_credentials: Credentials,
-    ) -> Result<MessageBuilder<'a>, StunError> {
+    ) -> Result<MessageWriteVec, StunError> {
         let username = remote_credentials.ufrag.clone() + ":" + &local_credentials.ufrag;
 
         // XXX: this needs to be the priority as if the candidate was peer-reflexive
-        let mut msg = Message::builder_request(BINDING);
+        let mut msg = Message::builder_request(BINDING, MessageWriteVec::new());
         let priority = Priority::new(pair.local.priority);
         msg.add_attribute(&priority)?;
         let control = IceControlling::new(tie_breaker);
@@ -289,7 +292,7 @@ impl ConnCheck {
             IntegrityAlgorithm::Sha1,
         )?;
         msg.add_fingerprint()?;
-        Ok(msg.into_owned())
+        Ok(msg)
     }
 }
 
@@ -387,24 +390,23 @@ struct ConnCheckLocalCandidate {
     variant: LocalCandidateVariant,
 }
 
-fn response_add_credentials(
-    response: &mut MessageBuilder<'_>,
+fn response_add_credentials<O, B: MessageWrite<Output = O>>(
+    mut response: B,
     local_credentials: MessageIntegrityCredentials,
-) -> Result<(), StunError> {
+) -> Result<B, StunError> {
     response.add_message_integrity(&local_credentials, IntegrityAlgorithm::Sha1)?;
     response.add_fingerprint()?;
-    Ok(())
+    Ok(response)
 }
-fn binding_success_response<'a>(
+fn binding_success_response(
     msg: &Message<'_>,
     from: SocketAddr,
     local_credentials: MessageIntegrityCredentials,
-) -> MessageBuilder<'a> {
-    let mut response = Message::builder_success(msg);
+) -> MessageWriteVec {
+    let mut response = Message::builder_success(msg, MessageWriteVec::new());
     let xor_addr = XorMappedAddress::new(from, msg.transaction_id());
     response.add_attribute(&xor_addr).unwrap();
-    response_add_credentials(&mut response, local_credentials).unwrap();
-    response.into_owned()
+    response_add_credentials(response, local_credentials).unwrap()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1948,10 +1950,11 @@ impl ConnCheckListSet {
         let agent = self.checklists[checklist_i].mut_agent_by_id(agent_id)?;
         match agent.handle_stun(msg, transmit.from) {
             HandleStunReply::Drop => (),
-            HandleStunReply::StunResponse(response) => {
+            HandleStunReply::ValidatedStunResponse(response) => {
                 let remote_credentials = agent.remote_credentials()?;
                 self.handle_stun_response(checklist_i, response, transmit.from, remote_credentials);
             }
+            HandleStunReply::UnvalidatedStunResponse(_msg) => (),
             HandleStunReply::IncomingStun(request) => {
                 if request.has_method(BINDING) {
                     let local_credentials = agent.local_credentials()?;
@@ -1974,7 +1977,8 @@ impl ConnCheckListSet {
                     self.pending_messages.push_back(CheckListSetPendingMessage {
                         checklist_id,
                         agent_id,
-                        msg: response.into_owned(),
+                        is_request: false,
+                        msg: response.finish(),
                         to: transmit.from,
                         turn_id,
                     });
@@ -2150,18 +2154,15 @@ impl ConnCheckListSet {
                 TurnRecvRet::Ignored(ignored) => {
                     transmit = ignored;
                 }
-                TurnRecvRet::PeerData {
-                    data,
-                    transport,
-                    peer,
-                } => {
+                TurnRecvRet::PeerData(peer) => {
                     turn_client_id = Some((turn_id, turn_server_addr));
                     checklist_i = checklist_i2;
                     // FIXME: dual allocation TURN
                     transmit = Transmit::new(
-                        Data::from(data.into_boxed_slice()),
-                        transport,
-                        peer,
+                        // FIXME: remove this copy
+                        Data::from(peer.data().to_vec().into_boxed_slice()),
+                        peer.transport,
+                        peer.peer,
                         client.relayed_addresses().next().unwrap().1,
                     );
                 }
@@ -2172,7 +2173,7 @@ impl ConnCheckListSet {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn handle_binding_request<'a>(
+    fn handle_binding_request(
         &mut self,
         checklist_i: usize,
         local: &Candidate,
@@ -2180,7 +2181,7 @@ impl ConnCheckListSet {
         msg: &Message,
         from: SocketAddr,
         local_credentials: MessageIntegrityCredentials,
-    ) -> MessageBuilder<'a> {
+    ) -> MessageWriteVec {
         let checklist = &mut self.checklists[checklist_i];
         trace!("have request {}", msg);
 
@@ -2201,22 +2202,23 @@ impl ConnCheckListSet {
                 MessageIntegrity::TYPE,
                 Priority::TYPE,
             ],
+            MessageWriteVec::new(),
         ) {
             // failure -> send error response
             return error_msg;
         }
         if msg.validate_integrity(&local_credentials).is_err() {
             let code = ErrorCode::builder(ErrorCode::UNAUTHORIZED).build().unwrap();
-            let mut response = Message::builder_error(msg);
+            let mut response = Message::builder_error(msg, MessageWriteVec::new());
             response.add_attribute(&code).unwrap();
-            return response.into_owned();
+            return response;
         }
         let peer_nominating = if let Some(use_candidate_raw) = msg.raw_attribute(UseCandidate::TYPE)
         {
             if UseCandidate::from_raw(use_candidate_raw).is_ok() {
                 true
             } else {
-                return Message::bad_request(msg);
+                return Message::bad_request(msg, MessageWriteVec::new());
             }
         } else {
             false
@@ -2225,7 +2227,7 @@ impl ConnCheckListSet {
         let priority = match msg.attribute::<Priority>() {
             Ok(p) => p.priority(),
             Err(_) => {
-                return Message::bad_request(msg);
+                return Message::bad_request(msg, MessageWriteVec::new());
             }
         };
 
@@ -2236,14 +2238,14 @@ impl ConnCheckListSet {
         if let Ok(username) = msg.attribute::<Username>() {
             if !validate_username(username, &checklist.local_credentials) {
                 warn!("binding request failed username validation -> UNAUTHORIZED");
-                let mut response = Message::builder_error(msg);
+                let mut response = Message::builder_error(msg, MessageWriteVec::new());
                 let error = ErrorCode::builder(ErrorCode::UNAUTHORIZED).build().unwrap();
                 response.add_attribute(&error).unwrap();
-                return response.into_owned();
+                return response;
             }
         } else {
             // existence is checked above so can only fail when the username is invalid
-            return Message::bad_request(msg);
+            return Message::bad_request(msg, MessageWriteVec::new());
         }
 
         // Deal with role conflicts
@@ -2259,13 +2261,12 @@ impl ConnCheckListSet {
                     //    contents of the ICE-CONTROLLING attribute, the agent generates
                     //    a Binding error response and includes an ERROR-CODE attribute
                     //    with a value of 487 (Role Conflict) but retains its role.
-                    let mut response = Message::builder_error(msg);
+                    let mut response = Message::builder_error(msg, MessageWriteVec::new());
                     let error = ErrorCode::builder(ErrorCode::ROLE_CONFLICT)
                         .build()
                         .unwrap();
                     response.add_attribute(&error).unwrap();
-                    response_add_credentials(&mut response, local_credentials).unwrap();
-                    return response.into_owned();
+                    return response_add_credentials(response, local_credentials).unwrap();
                 } else {
                     debug!("role conflict detected, updating controlling state to false");
                     // *  If the agent's tiebreaker value is less than the contents of
@@ -2297,13 +2298,12 @@ impl ConnCheckListSet {
                     //    the ICE-CONTROLLED attribute, the agent generates a Binding
                     //    error response and includes an ERROR-CODE attribute with a
                     //    value of 487 (Role Conflict) but retains its role.
-                    let mut response = Message::builder_error(msg);
+                    let mut response = Message::builder_error(msg, MessageWriteVec::new());
                     let error = ErrorCode::builder(ErrorCode::ROLE_CONFLICT)
                         .build()
                         .unwrap();
                     response.add_attribute(&error).unwrap();
-                    response_add_credentials(&mut response, local_credentials).unwrap();
-                    return response.into_owned();
+                    return response_add_credentials(response, local_credentials).unwrap();
                 }
             }
         }
@@ -2735,7 +2735,8 @@ impl ConnCheckListSet {
                 checklist_id,
                 agent_id: *agent_id,
                 turn_id,
-                msg: stun_request.into_owned(),
+                is_request: true,
+                msg: stun_request.finish(),
                 to: remote_addr,
             });
         Ok(None)
@@ -2891,12 +2892,7 @@ impl ConnCheckListSet {
                 }
                 let checklist = &mut self.checklists[checklist_i];
                 let mut turn_client = checklist.remove_turn_client_by_id(turn_id).unwrap();
-                if let Some(transmit) = turn_client.delete(now) {
-                    self.pending_transmits.push_front(CheckListSetTransmit {
-                        checklist_id,
-                        transmit,
-                    });
-                }
+                let _ = turn_client.delete(now);
                 let checklist = &mut self.checklists[checklist_i];
                 checklist
                     .pending_delete_turn_clients
@@ -2988,13 +2984,32 @@ impl ConnCheckListSet {
                         TurnEvent::PermissionCreated(transport, peer_addr) => {
                             for idx in 0..checklist.pairs.len() {
                                 let check = &mut checklist.pairs[idx];
-                                if !matches!(
-                                    check.state,
-                                    CandidatePairState::Failed | CandidatePairState::Succeeded
-                                ) {}
+                                if check.pair.local.candidate_type != CandidateType::Relayed
+                                    || check.pair.local.address.ip() != peer_addr
+                                    || check.pair.local.transport_type != transport
+                                    || !matches!(
+                                        check.state,
+                                        CandidatePairState::Failed | CandidatePairState::Succeeded
+                                    )
+                                {
+                                    continue;
+                                }
                             }
                         }
-                        TurnEvent::PermissionCreateFailed(transport, peer_addr) => (),
+                        TurnEvent::PermissionCreateFailed(transport, peer_addr) => {
+                            for idx in 0..checklist.pairs.len() {
+                                let check = &mut checklist.pairs[idx];
+                                if check.pair.local.candidate_type != CandidateType::Relayed
+                                    || check.pair.local.address.ip() != peer_addr
+                                    || check.pair.local.transport_type != transport
+                                {
+                                    continue;
+                                }
+                                check.set_state(CandidatePairState::Failed);
+                            }
+                        }
+                        TurnEvent::ChannelCreated(_transport, peer_addr) => (),
+                        TurnEvent::ChannelCreateFailed(_transport, addr) => (),
                     }
                 }
 
@@ -3003,10 +3018,15 @@ impl ConnCheckListSet {
                     TurnPollRet::WaitUntil(wait) => {
                         all_turn_closed = false;
                         if wait == now {
-                            return CheckListSetPollRet::WaitUntil(wait);
+                            return CheckListSetPollRet::WaitUntil(
+                                wait.max(self.last_send_time + Self::MINIMUM_SET_TICK)
+                                    .max(now),
+                            );
                         }
                         if wait < lowest_wait {
-                            lowest_wait = wait.max(now);
+                            lowest_wait = wait
+                                .max(self.last_send_time + Self::MINIMUM_SET_TICK)
+                                .max(now);
                         }
                     }
                 }
@@ -3040,10 +3060,15 @@ impl ConnCheckListSet {
                     TurnPollRet::WaitUntil(wait) => {
                         all_turn_closed = false;
                         if wait == now {
-                            return CheckListSetPollRet::WaitUntil(wait);
+                            return CheckListSetPollRet::WaitUntil(
+                                wait.max(self.last_send_time + Self::MINIMUM_SET_TICK)
+                                    .max(now),
+                            );
                         }
                         if wait < lowest_wait {
-                            lowest_wait = wait.max(now);
+                            lowest_wait = wait
+                                .max(self.last_send_time + Self::MINIMUM_SET_TICK)
+                                .max(now);
                         }
                     }
                 }
@@ -3094,7 +3119,8 @@ impl ConnCheckListSet {
                                 }
                                 StunAgentPollRet::WaitUntil(wait) => {
                                     if wait < lowest_wait {
-                                        lowest_wait = wait.max(now + Self::MINIMUM_SET_TICK);
+                                        lowest_wait =
+                                            wait.max(self.last_send_time + Self::MINIMUM_SET_TICK);
                                     }
                                 }
                             }
@@ -3102,7 +3128,8 @@ impl ConnCheckListSet {
                             match client.poll(now) {
                                 TurnPollRet::WaitUntil(wait) => {
                                     if wait < lowest_wait {
-                                        lowest_wait = wait.max(now + Self::MINIMUM_SET_TICK);
+                                        lowest_wait =
+                                            wait.max(self.last_send_time + Self::MINIMUM_SET_TICK);
                                     }
                                 }
                                 TurnPollRet::Closed => (),
@@ -3173,17 +3200,11 @@ impl ConnCheckListSet {
                     continue;
                 };
 
-                match client.create_permission(transport, remote_ip, now) {
-                    Err(e) => warn!(
+                if let Err(e) = client.create_permission(transport, remote_ip, now) {
+                    warn!(
                         "received error trying to create a permission to {:?}: {e}",
                         remote_ip
-                    ),
-                    Ok(transmit) => {
-                        return Some(CheckListSetTransmit {
-                            checklist_id: checklist.checklist_id,
-                            transmit,
-                        });
-                    }
+                    );
                 }
             }
         }
@@ -3198,7 +3219,7 @@ impl ConnCheckListSet {
             let Some(agent) = checklist.mut_agent_by_id(pending.agent_id) else {
                 continue;
             };
-            if pending.msg.has_class(MessageClass::Request) {
+            if pending.is_request {
                 debug!("Sending request {:?} to {:?}", pending.msg, pending.to);
                 let to = if let Some((_turn_id, turn_to)) = pending.turn_id {
                     turn_to
@@ -3216,10 +3237,12 @@ impl ConnCheckListSet {
                             };
                             match client.send_to(transport, pending.to, data, now) {
                                 Ok(transmit) => {
-                                    return Some(CheckListSetTransmit {
-                                        checklist_id: pending.checklist_id,
-                                        transmit: transmit_send_build_unframed(transmit),
-                                    })
+                                    if let Some(transmit) = transmit {
+                                        return Some(CheckListSetTransmit {
+                                            checklist_id: pending.checklist_id,
+                                            transmit: transmit_send_build_unframed(transmit),
+                                        });
+                                    }
                                 }
                                 Err(e) => warn!("error sending: {e}"),
                             }
@@ -3243,24 +3266,24 @@ impl ConnCheckListSet {
                     Ok(transmit) => {
                         if let Some((turn_id, _turn_to)) = pending.turn_id {
                             let transport = transmit.transport;
-                            // FIXME: try to avoid this copy
-                            let data = transmit.data.build();
                             let Some(client) = checklist.mut_turn_client_by_id(turn_id) else {
                                 continue;
                             };
-                            match client.send_to(transport, pending.to, data, now) {
+                            match client.send_to(transport, pending.to, transmit.data, now) {
                                 Ok(transmit) => {
-                                    return Some(CheckListSetTransmit {
-                                        checklist_id: pending.checklist_id,
-                                        transmit: transmit_send_build_unframed(transmit),
-                                    })
+                                    if let Some(transmit) = transmit {
+                                        return Some(CheckListSetTransmit {
+                                            checklist_id: pending.checklist_id,
+                                            transmit: transmit_send_build_unframed(transmit),
+                                        });
+                                    }
                                 }
                                 Err(e) => warn!("error sending: {e}"),
                             }
                         } else {
                             return Some(CheckListSetTransmit {
                                 checklist_id: pending.checklist_id,
-                                transmit: transmit_send_build_framed(transmit),
+                                transmit: transmit_send(&transmit),
                             });
                         }
                     }
@@ -3274,9 +3297,6 @@ impl ConnCheckListSet {
         }
 
         for checklist in self.checklists.iter_mut() {
-            if checklist.state() != CheckListState::Running {
-                continue;
-            }
             let checklist_id = checklist.checklist_id;
             for check_agent in checklist.agents.iter_mut() {
                 let Some(transmit) = check_agent.agent.poll_transmit(now) else {
@@ -3298,7 +3318,7 @@ impl ConnCheckListSet {
                 self.last_send_time = now;
                 return Some(CheckListSetTransmit {
                     checklist_id,
-                    transmit: transmit_send(&transmit),
+                    transmit,
                 });
             }
 
@@ -3310,7 +3330,7 @@ impl ConnCheckListSet {
                 self.last_send_time = now;
                 return Some(CheckListSetTransmit {
                     checklist_id,
-                    transmit: transmit_send(&transmit),
+                    transmit,
                 });
             }
         }
@@ -3415,7 +3435,8 @@ impl ConnCheckListSet {
                         .push_front(CheckListSetPendingMessage {
                             checklist_id,
                             agent_id,
-                            msg: stun_request.into_owned(),
+                            is_request: true,
+                            msg: stun_request.finish(),
                             to,
                             turn_id: None,
                         });
@@ -3519,7 +3540,8 @@ pub struct CheckListSetTransmit {
 struct CheckListSetPendingMessage {
     checklist_id: usize,
     agent_id: StunAgentId,
-    msg: MessageBuilder<'static>,
+    is_request: bool,
+    msg: Vec<u8>,
     turn_id: Option<(StunAgentId, SocketAddr)>,
     to: SocketAddr,
 }
@@ -3634,7 +3656,7 @@ pub(crate) fn transmit_send<'a, T: AsRef<[u8]>>(transmit: &Transmit<T>) -> Trans
     }
 }
 
-fn transmit_send_build_unframed<'a, T: DelayedTransmitBuild>(
+fn transmit_send_build_unframed<'a, T: DelayedTransmitBuild + std::fmt::Debug>(
     transmit: TransmitBuild<T>,
 ) -> Transmit<Data<'a>> {
     let data = transmit.data.build().into_boxed_slice();
@@ -3647,43 +3669,18 @@ fn transmit_send_build_unframed<'a, T: DelayedTransmitBuild>(
     .into_owned()
 }
 
-fn transmit_send_build_framed<'a, T: DelayedTransmitBuild>(
-    transmit: TransmitBuild<T>,
-) -> Transmit<Data<'a>> {
-    match transmit.transport {
-        TransportType::Udp => {
-            let data = transmit.data.build().into_boxed_slice();
-            Transmit::new(
-                Data::from(data),
-                transmit.transport,
-                transmit.from,
-                transmit.to,
-            )
-            .into_owned()
-        }
-        TransportType::Tcp => {
-            let len = transmit.data.len();
-            let mut data = Vec::with_capacity(2 + transmit.data.len());
-            data.resize(2 + len, 0);
-            BigEndian::write_u16(&mut data, len as u16);
-            transmit.data.write_into(&mut data[2..]);
-            Transmit::new(
-                Data::from(data.into_boxed_slice()),
-                transmit.transport,
-                transmit.from,
-                transmit.to,
-            )
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use turn_client_proto::types::{
-        message::{ALLOCATE, CREATE_PERMISSION},
-        TurnCredentials,
+    use turn_client_proto::{
+        tcp::TurnClientTcp,
+        types::{
+            message::{ALLOCATE, CREATE_PERMISSION},
+            TurnCredentials,
+        },
+        udp::TurnClientUdp,
     };
-    use turn_server_proto::{TurnServer, TurnServerPollRet};
+    use turn_server_proto::api::{TurnServerApi, TurnServerPollRet};
+    use turn_server_proto::server::TurnServer;
 
     use super::*;
     use crate::candidate::*;
@@ -3891,14 +3888,14 @@ mod tests {
     // simplified version of ConnCheckList handle_binding_request that doesn't
     // update any state like ConnCheckList or even do peer-reflexive candidate
     // things
-    fn handle_binding_request<'a>(
+    fn handle_binding_request(
         agent: &StunAgent,
         local_credentials: &Credentials,
         msg: &Message,
         from: SocketAddr,
         error_response: Option<u16>,
         response_address: Option<SocketAddr>,
-    ) -> Result<MessageBuilder<'a>, StunError> {
+    ) -> Result<Vec<u8>, StunError> {
         let local_stun_credentials = agent.local_credentials().unwrap();
 
         if let Some(error_msg) = Message::check_attribute_types(
@@ -3918,16 +3915,17 @@ mod tests {
                 MessageIntegrity::TYPE,
                 Priority::TYPE,
             ],
+            MessageWriteVec::new(),
         ) {
             // failure -> send error response
-            return Ok(error_msg);
+            return Ok(error_msg.finish());
         }
 
         if msg.validate_integrity(&local_stun_credentials).is_err() {
             let code = ErrorCode::builder(ErrorCode::UNAUTHORIZED).build().unwrap();
-            let mut response = Message::builder_error(msg);
+            let mut response = Message::builder_error(msg, MessageWriteVec::new());
             response.add_attribute(&code).unwrap();
-            return Ok(response.into_owned());
+            return Ok(response.finish());
         }
 
         let ice_controlling = msg.attribute::<IceControlling>();
@@ -3939,31 +3937,31 @@ mod tests {
 
         let mut response = if ice_controlling.is_err() && ice_controlled.is_err() {
             warn!("missing ice controlled/controlling attribute");
-            let mut response = Message::builder_error(msg);
+            let mut response = Message::builder_error(msg, MessageWriteVec::new());
             let error = ErrorCode::builder(ErrorCode::BAD_REQUEST).build()?;
             response.add_attribute(&error)?;
-            response.into_owned()
+            response
         } else if !valid_username {
-            let mut response = Message::builder_error(msg);
+            let mut response = Message::builder_error(msg, MessageWriteVec::new());
             let error = ErrorCode::builder(ErrorCode::UNAUTHORIZED).build()?;
             response.add_attribute(&error)?;
-            response.into_owned()
+            response
         } else if let Some(error_code) = error_response {
             info!("responding with error {}", error_code);
-            let mut response = Message::builder_error(msg);
+            let mut response = Message::builder_error(msg, MessageWriteVec::new());
             let error = ErrorCode::builder(error_code).build()?;
             response.add_attribute(&error)?;
-            response.into_owned()
+            response
         } else {
-            let mut response = Message::builder_success(msg);
+            let mut response = Message::builder_success(msg, MessageWriteVec::new());
             let xor_addr =
                 XorMappedAddress::new(response_address.unwrap_or(from), msg.transaction_id());
             response.add_attribute(&xor_addr).unwrap();
-            response.into_owned()
+            response
         };
         response.add_message_integrity(&local_stun_credentials, IntegrityAlgorithm::Sha1)?;
         response.add_fingerprint()?;
-        Ok(response.into_owned())
+        Ok(response.finish())
     }
 
     fn reply_to_conncheck<'b, T: AsRef<[u8]>>(
@@ -3999,7 +3997,7 @@ mod tests {
                             now,
                         )
                         .unwrap();
-                    return Some(transmit_send_build_framed(transmit));
+                    return Some(transmit_send(&transmit));
                 }
             }
         }
@@ -4364,7 +4362,6 @@ mod tests {
             send_next_check_and_response(&self.local.peer, &self.remote)
                 .perform(&mut self.local.checklist_set, now);
 
-            error!("nominated id {check_id:?}");
             let nominate_check = self.local_list().check_by_id(check_id).unwrap();
             assert_eq!(nominate_check.state(), CandidatePairState::Succeeded);
 
@@ -4436,7 +4433,13 @@ mod tests {
 
             // send a response (success or some kind of error like role-conflict)
             if let Some(turn) = self.turn_server.as_mut() {
-                transmit = turn.recv(transmit, now).unwrap().unwrap();
+                let transmit2 = turn.recv(transmit, now).unwrap();
+                transmit = Transmit::new(
+                    Data::from(transmit2.data.into_boxed_slice()),
+                    transmit2.transport,
+                    transmit2.from,
+                    transmit2.to,
+                );
             }
             let mut remote_agent = self.remote_peer.stun_agent();
             let mut reply = reply_to_conncheck(
@@ -4451,7 +4454,13 @@ mod tests {
             info!("reply: {reply:?}");
 
             if let Some(turn) = self.turn_server.as_mut() {
-                reply = turn.recv(reply, now).unwrap().unwrap();
+                let transmit = turn.recv(reply, now).unwrap();
+                reply = Transmit::new(
+                    Data::from(transmit.data.into_boxed_slice()),
+                    transmit.transport,
+                    transmit.from,
+                    transmit.to,
+                );
             }
 
             let checklist_id = set
@@ -4864,7 +4873,11 @@ mod tests {
                 state.local.checklist_id,
                 transmit_send(
                     &remote_agent
-                        .send_request(request, state.local.peer.candidate.base_address, now)
+                        .send_request(
+                            request.finish(),
+                            state.local.peer.candidate.base_address,
+                            now
+                        )
                         .unwrap()
                 ),
                 now,
@@ -5018,7 +5031,7 @@ mod tests {
     ) -> Transmit<Data<'a>> {
         // send a request from some unknown to the local agent address to produce a peer
         // reflexive candidate on the local agent
-        let mut request = Message::builder_request(BINDING);
+        let mut request = Message::builder_request(BINDING, MessageWriteVec::new());
         let priority = Priority::new(remote_peer.candidate.priority);
         request.add_attribute(&priority).unwrap();
         let ice = IceControlled::new(200);
@@ -5040,7 +5053,9 @@ mod tests {
             .unwrap();
         request.add_fingerprint().unwrap();
 
-        remote_agent.send_request(request, to, now).unwrap()
+        remote_agent
+            .send_request(request.finish(), to, now)
+            .unwrap()
     }
 
     #[test]
@@ -5084,7 +5099,7 @@ mod tests {
         };
 
         let response = Message::from_bytes(&transmit.transmit.data).unwrap();
-        let HandleStunReply::StunResponse(response) =
+        let HandleStunReply::ValidatedStunResponse(response) =
             remote_agent.handle_stun(response, transmit.transmit.from)
         else {
             unreachable!();
@@ -5769,14 +5784,14 @@ mod tests {
         let transmit = client.poll_transmit(now).unwrap();
         let msg = Message::from_bytes(&transmit.data).unwrap();
         assert!(msg.has_method(ALLOCATE));
-        let transmit = server.recv(transmit, now).unwrap().unwrap();
+        let transmit = server.recv(transmit, now).unwrap();
         let ret = client.recv(transmit, now);
         assert!(matches!(ret, TurnRecvRet::Handled));
         client.poll(now);
         let transmit = client.poll_transmit(now).unwrap();
         let msg = Message::from_bytes(&transmit.data).unwrap();
         assert!(msg.has_method(ALLOCATE));
-        server.recv(transmit, now).unwrap();
+        assert!(server.recv(transmit, now).is_none());
         let TurnServerPollRet::AllocateSocketUdp {
             transport,
             local_addr,
@@ -5796,25 +5811,31 @@ mod tests {
         set: &mut ConnCheckListSet,
         turn_server: &mut TurnServer,
         now: Instant,
-    ) {
-        match set.poll(now) {
-            CheckListSetPollRet::WaitUntil(_) => (),
-            ret => {
-                error!("{ret:?}");
-                unreachable!()
-            }
-        }
+    ) -> Instant {
         let Some(transmit) = set.poll_transmit(now) else {
             unreachable!()
         };
         let msg = Message::from_bytes(&transmit.transmit.data).unwrap();
         assert_eq!(msg.method(), CREATE_PERMISSION);
         let checklist_id = transmit.checklist_id;
-        let transmit = turn_server.recv(transmit.transmit, now).unwrap().unwrap();
+        let transmit = turn_server.recv(transmit.transmit, now).unwrap();
         let msg = Message::from_bytes(&transmit.data).unwrap();
         assert_eq!(msg.method(), CREATE_PERMISSION);
 
+        let transmit = Transmit::new(
+            Data::from(transmit.data.as_slice()),
+            transmit.transport,
+            transmit.from,
+            transmit.to,
+        );
         set.incoming_data(checklist_id, transmit, now);
+        match set.poll(now) {
+            CheckListSetPollRet::WaitUntil(now) => now,
+            ret => {
+                error!("{ret:?}");
+                unreachable!()
+            }
+        }
     }
 
     fn turn_allocate_udp(client_transport: TransportType) {
@@ -5845,8 +5866,14 @@ mod tests {
             turn_credentials.username().to_owned(),
             turn_credentials.password().to_owned(),
         );
-        let mut turn_client =
-            TurnClient::allocate(client_transport, local_addr, turn_addr, turn_credentials);
+        let mut turn_client = match client_transport {
+            TransportType::Udp => {
+                TurnClientUdp::allocate(local_addr, turn_addr, turn_credentials).into()
+            }
+            TransportType::Tcp => {
+                TurnClientTcp::allocate(local_addr, turn_addr, turn_credentials).into()
+            }
+        };
         turn_allocate(&mut turn_client, &mut turn_server, turn_alloc_addr, now);
 
         let remote_candidate = state.remote.candidate.clone();
@@ -5860,7 +5887,7 @@ mod tests {
             });
         assert_eq!(state.local.component_id, 1);
 
-        set_handle_permission(&mut state.local.checklist_set, &mut turn_server, now);
+        let now = set_handle_permission(&mut state.local.checklist_set, &mut turn_server, now);
 
         let CheckListSetPollRet::Event {
             checklist_id: _,
@@ -5934,7 +5961,7 @@ mod tests {
         state.local.checklist_set.close(now);
 
         // no RemoveSocket until the TURN DELETE is handled
-        let CheckListSetPollRet::WaitUntil(_) = state.local.checklist_set.poll(now) else {
+        let CheckListSetPollRet::WaitUntil(now) = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
 
@@ -5943,9 +5970,13 @@ mod tests {
         };
 
         let checklist_id = transmit.checklist_id;
-        let Some(transmit) = turn_server.recv(transmit.transmit, now).unwrap() else {
-            unreachable!()
-        };
+        let transmit = turn_server.recv(transmit.transmit, now).unwrap();
+        let transmit = Transmit::new(
+            Data::from(transmit.data.as_slice()),
+            transmit.transport,
+            transmit.from,
+            transmit.to,
+        );
         let reply = state
             .local
             .checklist_set
@@ -6014,7 +6045,7 @@ mod tests {
             turn_credentials.password().to_owned(),
         );
         let mut turn_client =
-            TurnClient::allocate(TransportType::Udp, local_addr, turn_addr, turn_credentials);
+            TurnClientUdp::allocate(local_addr, turn_addr, turn_credentials).into();
         turn_allocate(&mut turn_client, &mut turn_server, turn_alloc_addr, now);
 
         let remote_candidate = state.remote.candidate.clone();
@@ -6027,14 +6058,6 @@ mod tests {
                 turn_agent: Some(Box::new(turn_client)),
             });
         assert_eq!(state.local.component_id, 1);
-
-        match state.local.checklist_set.poll(now) {
-            CheckListSetPollRet::WaitUntil(_) => (),
-            ret => {
-                error!("{ret:?}");
-                unreachable!()
-            }
-        }
 
         let pair = CandidatePair::new(
             state.local.peer.candidate.clone(),
@@ -6053,14 +6076,20 @@ mod tests {
         let msg = Message::from_bytes(&transmit.transmit.data).unwrap();
         assert_eq!(msg.method(), CREATE_PERMISSION);
         let checklist_id = transmit.checklist_id;
-        let transmit = turn_server.recv(transmit.transmit, now).unwrap().unwrap();
+        let transmit = turn_server.recv(transmit.transmit, now).unwrap();
         let msg = Message::from_bytes(&transmit.data).unwrap();
         assert_eq!(msg.method(), CREATE_PERMISSION);
 
-        let CheckListSetPollRet::WaitUntil(_wait) = state.local.checklist_set.poll(now) else {
+        let CheckListSetPollRet::WaitUntil(now) = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
 
+        let transmit = Transmit::new(
+            Data::from(transmit.data.as_slice()),
+            transmit.transport,
+            transmit.from,
+            transmit.to,
+        );
         state
             .local
             .checklist_set

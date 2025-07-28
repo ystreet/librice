@@ -29,7 +29,7 @@ use crate::gathering::GatheredCandidate;
 use crate::stream::Credentials;
 use stun_proto::agent::{StunError, Transmit};
 use stun_proto::types::data::{Data, DataOwned, DataSlice};
-use turn_client_proto::TurnClient;
+use turn_client_proto::client::TurnClient;
 
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::Layer;
@@ -591,7 +591,7 @@ pub unsafe extern "C" fn rice_agent_poll_clear(poll: *mut RiceAgentPoll) {
         RiceAgentPoll::GatheredCandidate(mut gathered) => {
             let mut turn = core::ptr::null();
             core::mem::swap(&mut turn, &mut const_override(gathered.gathered.turn_agent));
-            let turn_agent = if turn.is_null() {
+            let _turn_agent = if turn.is_null() {
                 None
             } else {
                 Some(Box::from_raw(turn as *mut TurnClient))

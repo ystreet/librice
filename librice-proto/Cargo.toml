@@ -28,7 +28,7 @@ turn-client-proto.workspace = true
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
-turn-server-proto = "0.2"
+turn-server-proto = "0.3"
 criterion.workspace = true
 
 [package.metadata.capi]
