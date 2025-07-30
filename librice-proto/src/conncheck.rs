@@ -114,6 +114,15 @@ pub enum HandleRecvReply {
     Data(Vec<u8>, SocketAddr),
 }
 
+impl std::fmt::Display for HandleRecvReply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Handled => write!(f, "Handled"),
+            Self::Data(data, from) => write!(f, "{} bytes from {from}", data.len()),
+        }
+    }
+}
+
 /// Events that can be produced during the connectivity check process
 #[derive(Debug)]
 pub enum ConnCheckEvent {
@@ -1157,13 +1166,13 @@ impl ConnCheckList {
                 || triggered.state() == CandidatePairState::Failed
             {
                 let existing = self.triggered.remove(idx).unwrap();
-                debug!("removing existing triggered {:?}", existing);
+                debug!("removing existing triggered {}", existing);
             } else {
                 debug!("not adding duplicate triggered check");
                 return;
             }
         }
-        debug!("adding triggered check {:?}", check);
+        debug!("adding triggered check {}", check.conncheck_id);
         self.triggered.push_front(check.conncheck_id)
     }
 
@@ -1313,7 +1322,10 @@ impl ConnCheckList {
         }*/
 
         for (turn_id, pair) in turn_checks {
-            debug!("Adding turn permission for {pair:?}");
+            debug!(
+                "Adding turn permission for {} using TURN allocation {} {}",
+                pair.remote.address, pair.local.transport_type, pair.local.address
+            );
             self.pending_turn_permissions.push_front((
                 turn_id,
                 pair.local.transport_type,
@@ -1372,11 +1384,30 @@ impl ConnCheckList {
         }
     }
 
-    #[tracing::instrument(level = "trace", ret, skip(self, pair))]
+    #[tracing::instrument(
+        level = "trace",
+        skip(self, pair),
+        fields(
+            ttype = ?pair.local.transport_type,
+            local.address = ?pair.local.address,
+            remote.address = ?pair.remote.address,
+            local.ctype = ?pair.local.candidate_type,
+            remote.ctype = ?pair.remote.candidate_type,
+            foundation = %pair.foundation(),
+        )
+    )]
     fn matching_check(&self, pair: &CandidatePair, nominate: Nominate) -> Option<&ConnCheck> {
-        self.pairs
+        let ret = self
+            .pairs
             .iter()
-            .find(|&check| Self::check_is_equal(check, pair, nominate))
+            .find(|&check| Self::check_is_equal(check, pair, nominate));
+        if let Some(check) = ret {
+            trace!("found check {}", check.conncheck_id);
+            Some(check)
+        } else {
+            trace!("could not find check");
+            None
+        }
     }
 
     fn add_check_if_not_duplicate(&mut self, check: ConnCheck) -> bool {
@@ -1404,7 +1435,7 @@ impl ConnCheckList {
     }
 
     fn add_check(&mut self, check: ConnCheck) {
-        trace!("adding check {:?}", check);
+        trace!("adding check {}", check.conncheck_id);
 
         let idx = self
             .pairs
@@ -1417,6 +1448,7 @@ impl ConnCheckList {
             })
             .unwrap_or_else(|x| x);
         self.pairs.insert(idx, check);
+        self.dump_check_state();
     }
 
     fn set_controlling(&mut self, controlling: bool) {
@@ -1436,10 +1468,9 @@ impl ConnCheckList {
 
     #[tracing::instrument(
         level = "debug",
-        skip(self),
+        skip(self, pair),
         fields(
             checklist_id = self.checklist_id,
-            pair = ?pair,
         )
     )]
     fn add_valid(&mut self, conncheck_id: ConnCheckId, pair: &CandidatePair) {
@@ -1447,9 +1478,17 @@ impl ConnCheckList {
             && pair.local.tcp_type == Some(TcpType::Passive)
             && pair.local.address.port() == 9
         {
-            trace!("not adding local passive tcp candidate without a valid port");
+            warn!("not adding local passive tcp candidate without a valid port");
         }
-        trace!("adding {:?}", pair);
+        trace!(
+            ttype = ?pair.local.transport_type,
+            local.address = ?pair.local.address,
+            remote.address = ?pair.remote.address,
+            local.ctype = ?pair.local.candidate_type,
+            remote.ctype = ?pair.remote.candidate_type,
+            foundation = %pair.foundation(),
+            "adding valid {conncheck_id}"
+        );
         self.valid.push(conncheck_id);
     }
 
@@ -1690,7 +1729,7 @@ impl ConnCheckList {
                             self.remote_credentials.clone(),
                         );
                         check.set_state(CandidatePairState::Waiting);
-                        debug!("attempting nomination with check {:?}", check);
+                        debug!("attempting nomination with check {}", check.conncheck_id);
                         Some(check)
                     }
                 })
@@ -1727,7 +1766,7 @@ impl ConnCheckList {
 
     fn check_response_failure(&mut self, conncheck_id: ConnCheckId) {
         let conncheck = self.mut_check_by_id(conncheck_id).unwrap();
-        warn!("conncheck failure: {:?}", conncheck);
+        warn!("conncheck failure for id {conncheck_id}");
         conncheck.set_state(CandidatePairState::Failed);
         let pair = conncheck.pair.clone();
         if conncheck.nominate() {
@@ -1947,6 +1986,7 @@ impl ConnCheckListSet {
         agent_id: StunAgentId,
         turn_id: Option<(StunAgentId, SocketAddr)>,
     ) -> Option<HandleRecvReply> {
+        debug!("received STUN message {msg}");
         let agent = self.checklists[checklist_i].mut_agent_by_id(agent_id)?;
         match agent.handle_stun(msg, transmit.from) {
             HandleStunReply::Drop => (),
@@ -2108,12 +2148,12 @@ impl ConnCheckListSet {
     #[tracing::instrument(
         name = "conncheck_incoming_data",
         level = "trace",
-        ret,
         skip(self, transmit)
         fields(
             transport = %transmit.transport,
             from = %transmit.from,
             to = %transmit.to,
+            len = transmit.data.len(),
         )
     )]
     pub fn incoming_data(
@@ -2127,6 +2167,7 @@ impl ConnCheckListSet {
             .iter()
             .position(|cl| cl.checklist_id == checklist_id)
         else {
+            warn!("no such checklist with id {checklist_id}");
             return vec![];
         };
 
@@ -2149,6 +2190,7 @@ impl ConnCheckListSet {
             match client.recv(transmit, now) {
                 TurnRecvRet::Handled => {
                     // TODO: maybe handle turn events here?
+                    trace!("TURN client handled the incoming data");
                     return vec![HandleRecvReply::Handled];
                 }
                 TurnRecvRet::Ignored(ignored) => {
@@ -2169,7 +2211,16 @@ impl ConnCheckListSet {
             }
         }
 
-        self.incoming_data_or_stun(checklist_i, transmit, turn_client_id)
+        let ret = self.incoming_data_or_stun(checklist_i, transmit, turn_client_id);
+        let mut s = String::from("[");
+        for val in ret.iter() {
+            if s.len() > 1 {
+                s.push_str(", ");
+            }
+            s.push_str(&format!("{val}"));
+        }
+        trace!("returning {s}]");
+        ret
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2571,10 +2622,9 @@ impl ConnCheckListSet {
     }
 
     #[tracing::instrument(
-        skip(self, response),
+        skip(self, response, remote_credentials),
         fields(
             checklist_id = self.checklists[checklist_i].checklist_id,
-            %response
         ),
     )]
     fn handle_stun_response(
@@ -2616,7 +2666,6 @@ impl ConnCheckListSet {
 
         // if response error -> fail TODO: might be a recoverable error!
         if response.has_class(MessageClass::Error) {
-            warn!("error response {}", response);
             if let Ok(err) = response.attribute::<ErrorCode>() {
                 if err.code() == ErrorCode::ROLE_CONFLICT {
                     info!("Role conflict received {}", response);
@@ -2648,6 +2697,7 @@ impl ConnCheckListSet {
                 }
             }
             // FIXME: some failures are recoverable
+            warn!("error response {}", response);
             self.checklists[checklist_i].check_response_failure(conncheck_id);
         }
 
@@ -2698,7 +2748,7 @@ impl ConnCheckListSet {
         }
         let conncheck = checklist.mut_check_by_id(conncheck_id).unwrap();
 
-        trace!("performing connectivity {:?}", &conncheck);
+        debug!("starting connectivity check {}", conncheck.conncheck_id);
         if conncheck.stun_request.is_some() {
             panic!("Attempt was made to start an already started check");
         }
@@ -3220,7 +3270,13 @@ impl ConnCheckListSet {
                 continue;
             };
             if pending.is_request {
-                debug!("Sending request {:?} to {:?}", pending.msg, pending.to);
+                debug!(
+                    "Sending request {:?} to {:?} using agent: {:?} and turn id {:?}",
+                    MessageHeader::from_bytes(&pending.msg).unwrap(),
+                    pending.to,
+                    pending.agent_id,
+                    pending.turn_id
+                );
                 let to = if let Some((_turn_id, turn_to)) = pending.turn_id {
                     turn_to
                 } else {

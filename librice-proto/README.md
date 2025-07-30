@@ -20,7 +20,7 @@ more scenarios is part of the near and long term future roadmap.
 
 ## Why sans-io?
 
-A few of reasons: reusability, testability, and composability.
+A few reasons: reusability, testability, and composability.
 
 Without being bogged down in the details of how IO happens, the same sans-IO
 implementation can be used without prescribing the IO pattern that an application
