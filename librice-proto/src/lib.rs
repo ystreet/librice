@@ -12,8 +12,8 @@ extern crate tracing;
 pub mod agent;
 pub mod candidate;
 pub mod component;
-pub(crate) mod conncheck;
-pub mod gathering;
+mod conncheck;
+mod gathering;
 pub mod stream;
 
 #[cfg(feature = "capi")]

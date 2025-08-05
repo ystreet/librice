@@ -25,10 +25,9 @@ jobs:
           override: true
 
       - name: Install cargo-fuzz
-        uses: actions-rs/cargo@v1
+        uses: taiki-e/cache-cargo-install-action@v2
         with:
-          command: 'install'
-          args: 'cargo-fuzz'
+          tool: cargo-fuzz
 
       - name: Run cargo-fuzz
         uses: actions-rs/cargo@v1
