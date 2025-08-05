@@ -10,40 +10,38 @@
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Instant;
 
 use async_std::net::TcpStream;
 use futures::StreamExt;
-use librice_proto::gathering::GatheredCandidate;
-use stun_proto::agent::Transmit;
-use stun_proto::types::data::Data;
-use stun_proto::types::TransportType;
+use librice_c::Address;
 
 use crate::agent::{AgentError, AgentInner};
 use crate::component::{Component, ComponentInner};
 use crate::gathering::{iface_sockets, GatherSocket};
-use crate::socket::{StunChannel, TcpChannel};
+use crate::socket::{StunChannel, TcpChannel, Transmit};
 
-use librice_proto::agent::AgentError as ProtoAgentError;
-use librice_proto::candidate::{Candidate, CandidatePair};
+use librice_c::agent::{AgentError as ProtoAgentError, AgentTransmit};
+use librice_c::candidate::{Candidate, TransportType};
+use librice_c::stream::GatheredCandidate;
 //use crate::turn::agent::TurnCredentials;
 
-pub use librice_proto::stream::Credentials;
+pub use librice_c::stream::Credentials;
 
 /// An ICE [`Stream`]
 #[derive(Debug, Clone)]
 pub struct Stream {
-    weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
+    weak_proto_agent: Weak<Mutex<librice_c::agent::Agent>>,
+    proto_stream: librice_c::stream::Stream,
     pub(crate) id: usize,
     weak_agent_inner: Weak<Mutex<AgentInner>>,
-    transmit_send: async_std::channel::Sender<Transmit<Data<'static>>>,
+    transmit_send: async_std::channel::Sender<AgentTransmit>,
     pub(crate) inner: Arc<Mutex<StreamInner>>,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct StreamInner {
     sockets: Vec<StunChannel>,
-    components: Vec<Option<Component>>,
+    components: Vec<Component>,
 }
 
 impl StreamInner {
@@ -72,9 +70,7 @@ impl StreamInner {
     }
 
     fn component(&self, component_id: usize) -> Option<&Component> {
-        self.components
-            .get(component_id - 1)
-            .and_then(|c| c.as_ref())
+        self.components.get(component_id - 1)
     }
 }
 
@@ -111,39 +107,42 @@ fn socket_matches(
 
 impl Stream {
     pub(crate) fn new(
-        weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
+        weak_proto_agent: Weak<Mutex<librice_c::agent::Agent>>,
         weak_agent_inner: Weak<Mutex<AgentInner>>,
+        proto_stream: librice_c::stream::Stream,
         id: usize,
     ) -> Self {
         let inner = Arc::new(Mutex::new(StreamInner::default()));
-        let (transmit_send, mut transmit_recv) =
-            async_std::channel::bounded::<Transmit<Data<'static>>>(16);
+        let (transmit_send, mut transmit_recv) = async_std::channel::bounded::<AgentTransmit>(16);
         let weak_inner = Arc::downgrade(&inner);
         async_std::task::spawn(async move {
             while let Some(transmit) = transmit_recv.next().await {
                 let Some(inner) = weak_inner.upgrade() else {
                     break;
                 };
+                let from = transmit.from.as_socket();
+                let to = transmit.to.as_socket();
                 let socket = {
                     let inner = inner.lock().unwrap();
                     inner
-                        .socket_for_5tuple(transmit.transport, transmit.from, transmit.to)
+                        .socket_for_5tuple(transmit.transport, from, to)
                         .cloned()
                 };
                 if let Some(socket) = socket {
-                    if let Err(e) = socket.send_to(&transmit.data, transmit.to).await {
+                    if let Err(e) = socket.send_to(transmit.data, to).await {
                         warn!("failed to send: {e:?}");
                     }
                 } else {
                     warn!(
-                        "Could not find socket for transmit {} from {} to {}",
-                        transmit.transport, transmit.from, transmit.to
+                        "Could not find socket for transmit {} from {from} to {to}",
+                        transmit.transport,
                     );
                 }
             }
         });
         Self {
             weak_proto_agent,
+            proto_stream,
             id,
             weak_agent_inner,
             transmit_send,
@@ -172,20 +171,11 @@ impl Stream {
     /// assert_eq!(component.id(), component::RTP);
     /// ```
     pub fn add_component(&self) -> Result<Component, AgentError> {
-        let proto_agent = self
-            .weak_proto_agent
-            .upgrade()
-            .ok_or(AgentError::Proto(ProtoAgentError::ResourceNotFound))?;
-        let mut proto_agent = proto_agent.lock().unwrap();
-        let mut proto_stream = proto_agent.mut_stream(self.id).unwrap();
-        let index = proto_stream.add_component()? - 1;
+        let component = self.proto_stream.add_component();
 
+        let component = Component::new(self.weak_proto_agent.clone(), self.id, component);
         let mut inner = self.inner.lock().unwrap();
-        while inner.components.len() <= index {
-            inner.components.push(None);
-        }
-        let component = Component::new(self.weak_proto_agent.clone(), self.id, index + 1);
-        inner.components[index] = Some(component.clone());
+        inner.components.push(component.clone());
         Ok(component)
     }
 
@@ -222,12 +212,7 @@ impl Stream {
             return None;
         }
         let inner = self.inner.lock().unwrap();
-        inner
-            .components
-            .get(index - 1)
-            .unwrap_or(&None)
-            .as_ref()
-            .cloned()
+        inner.components.get(index - 1).cloned()
     }
 
     /// Set local ICE credentials for this `Stream`.
@@ -240,16 +225,11 @@ impl Stream {
     /// # use std::sync::Arc;
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
-    /// let credentials = Credentials {ufrag: "1".to_owned(), passwd: "2".to_owned()};
-    /// stream.set_local_credentials(credentials);
+    /// let credentials = Credentials::new("user", "pass");
+    /// stream.set_local_credentials(&credentials);
     /// ```
-    pub fn set_local_credentials(&self, credentials: Credentials) {
-        let Some(proto_agent) = self.weak_proto_agent.upgrade() else {
-            return;
-        };
-        let mut proto_agent = proto_agent.lock().unwrap();
-        let mut proto_stream = proto_agent.mut_stream(self.id).unwrap();
-        proto_stream.set_local_credentials(credentials)
+    pub fn set_local_credentials(&self, credentials: &Credentials) {
+        self.proto_stream.set_local_credentials(credentials)
     }
 
     /// Retreive the previouly set local ICE credentials for this `Stream`.
@@ -261,15 +241,12 @@ impl Stream {
     /// # use librice::stream::Credentials;
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
-    /// let credentials = Credentials {ufrag: "1".to_owned(), passwd: "2".to_owned()};
-    /// stream.set_local_credentials(credentials.clone());
+    /// let credentials = Credentials::new("user", "pass");
+    /// stream.set_local_credentials(&credentials);
     /// assert_eq!(stream.local_credentials(), Some(credentials));
     /// ```
     pub fn local_credentials(&self) -> Option<Credentials> {
-        let proto_agent = self.weak_proto_agent.upgrade()?;
-        let proto_agent = proto_agent.lock().unwrap();
-        let proto_stream = proto_agent.stream(self.id)?;
-        proto_stream.local_credentials()
+        self.proto_stream.local_credentials()
     }
 
     /// Set remote ICE credentials for this `Stream`.
@@ -282,16 +259,11 @@ impl Stream {
     /// # use std::sync::Arc;
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
-    /// let credentials = Credentials {ufrag: "1".to_owned(), passwd: "2".to_owned()};
-    /// stream.set_remote_credentials(credentials);
+    /// let credentials = Credentials::new("user", "pass");
+    /// stream.set_remote_credentials(&credentials);
     /// ```
-    pub fn set_remote_credentials(&self, credentials: Credentials) {
-        let Some(proto_agent) = self.weak_proto_agent.upgrade() else {
-            return;
-        };
-        let mut proto_agent = proto_agent.lock().unwrap();
-        let mut proto_stream = proto_agent.mut_stream(self.id).unwrap();
-        proto_stream.set_remote_credentials(credentials)
+    pub fn set_remote_credentials(&self, credentials: &Credentials) {
+        self.proto_stream.set_remote_credentials(credentials)
     }
 
     /// Retreive the previouly set remote ICE credentials for this `Stream`.
@@ -303,15 +275,12 @@ impl Stream {
     /// # use librice::stream::Credentials;
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
-    /// let credentials = Credentials {ufrag: "1".to_owned(), passwd: "2".to_owned()};
-    /// stream.set_remote_credentials(credentials.clone());
+    /// let credentials = Credentials::new("user", "pass");
+    /// stream.set_remote_credentials(&credentials);
     /// assert_eq!(stream.remote_credentials(), Some(credentials));
     /// ```
     pub fn remote_credentials(&self) -> Option<Credentials> {
-        let proto_agent = self.weak_proto_agent.upgrade()?;
-        let proto_agent = proto_agent.lock().unwrap();
-        let proto_stream = proto_agent.stream(self.id)?;
-        proto_stream.remote_credentials()
+        self.proto_stream.remote_credentials()
     }
 
     /// Add a remote candidate for connection checks for use with this stream
@@ -320,7 +289,7 @@ impl Stream {
     ///
     /// ```
     /// # use librice::agent::Agent;
-    /// # use librice_proto::candidate::*;
+    /// # use librice::candidate::{Candidate, CandidateType, TransportType};
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
     /// let component = stream.add_component().unwrap();
@@ -336,14 +305,7 @@ impl Stream {
     /// stream.add_remote_candidate(candidate);
     /// ```
     pub fn add_remote_candidate(&self, cand: Candidate) {
-        {
-            let Some(proto_agent) = self.weak_proto_agent.upgrade() else {
-                return;
-            };
-            let mut proto_agent = proto_agent.lock().unwrap();
-            let mut proto_stream = proto_agent.mut_stream(self.id).unwrap();
-            proto_stream.add_remote_candidate(cand)
-        };
+        self.proto_stream.add_remote_candidate(cand);
 
         if let Some(agent) = self.weak_agent_inner.upgrade() {
             let mut agent = agent.lock().unwrap();
@@ -363,13 +325,12 @@ impl Stream {
         )
     )]
     fn handle_incoming_data<T: AsRef<[u8]> + std::fmt::Debug>(
-        weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
+        weak_proto_agent: Weak<Mutex<librice_c::agent::Agent>>,
         weak_agent_inner: Weak<Mutex<AgentInner>>,
         weak_component: Weak<Mutex<ComponentInner>>,
         stream_id: usize,
         component_id: usize,
         transmit: Transmit<T>,
-        now: Instant,
     ) {
         trace!(
             "incoming data of {} bytes from {} to {} via {}",
@@ -381,17 +342,29 @@ impl Stream {
         let Some(proto_agent) = weak_proto_agent.upgrade() else {
             return;
         };
-        let mut proto_agent = proto_agent.lock().unwrap();
-        let mut proto_stream = proto_agent.mut_stream(stream_id).unwrap();
+        let proto_agent = proto_agent.lock().unwrap();
+        let proto_stream = proto_agent.stream(stream_id).unwrap();
 
-        let reply = proto_stream.handle_incoming_data(component_id, transmit, now);
+        let reply = proto_stream.handle_incoming_data(
+            component_id,
+            transmit.transport,
+            Address::from(transmit.from),
+            Address::from(transmit.to),
+            transmit.data.as_ref(),
+            proto_agent.now(),
+        );
 
         let Some(component) = weak_component.upgrade() else {
             return;
         };
         let mut component = component.lock().unwrap();
-        for data in reply.data {
-            component.handle_incoming_data(data);
+        if let Some(data) = reply.data {
+            component.handle_incoming_data(data.to_vec().into());
+        }
+        if reply.have_more_data {
+            while let Some(data) = proto_stream.poll_recv() {
+                component.handle_incoming_data(data.data.into());
+            }
         }
         drop(proto_agent);
         drop(component);
@@ -414,10 +387,10 @@ impl Stream {
     /// # use librice::stream::Credentials;
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
-    /// let local_credentials = Credentials {ufrag: "luser".to_owned(), passwd: "lpass".to_owned()};
-    /// stream.set_local_credentials(local_credentials);
-    /// let remote_credentials = Credentials {ufrag: "ruser".to_owned(), passwd: "rpass".to_owned()};
-    /// stream.set_remote_credentials(remote_credentials);
+    /// let local_credentials = Credentials::new("luser", "lpass");
+    /// stream.set_local_credentials(&local_credentials);
+    /// let remote_credentials = Credentials::new("ruser", "rpass");
+    /// stream.set_remote_credentials(&remote_credentials);
     /// let component = stream.add_component().unwrap();
     /// async_std::task::block_on(async move {
     ///     stream.gather_candidates().await.unwrap();
@@ -428,16 +401,7 @@ impl Stream {
             .weak_proto_agent
             .upgrade()
             .ok_or(AgentError::Proto(ProtoAgentError::ResourceNotFound))?;
-        let (stun_servers, turn_servers, component_ids) = {
-            let proto_agent = proto_agent.lock().unwrap();
-            let proto_stream = proto_agent.stream(self.id).unwrap();
-            let component_ids = proto_stream.component_ids_iter().collect::<Vec<_>>();
-            (
-                proto_agent.stun_servers().clone(),
-                proto_agent.turn_servers().clone(),
-                component_ids,
-            )
-        };
+        let component_ids = self.proto_stream.component_ids();
         let weak_inner = Arc::downgrade(&self.inner);
 
         for component_id in component_ids {
@@ -449,7 +413,7 @@ impl Stream {
                 .await;
             let proto_sockets = sockets
                 .iter()
-                .map(|s| (s.transport(), s.local_addr()))
+                .map(|s| (s.transport(), s.local_addr().into()))
                 .collect::<Vec<_>>();
 
             for socket in sockets {
@@ -480,7 +444,6 @@ impl Stream {
                                         from,
                                         local_addr,
                                     ),
-                                    Instant::now(),
                                 )
                             }
                             debug!("receive task closed for udp socket {:?}", udp.local_addr());
@@ -523,7 +486,6 @@ impl Stream {
                                                 from,
                                                 local_addr,
                                             ),
-                                            Instant::now(),
                                         )
                                     }
                                 });
@@ -533,14 +495,10 @@ impl Stream {
                 }
             }
             {
-                let mut proto_agent = proto_agent.lock().unwrap();
-                let mut proto_stream = proto_agent.mut_stream(self.id).unwrap();
-                let mut component = proto_stream.mut_component(component_id).unwrap();
-                component.gather_candidates(
-                    proto_sockets,
-                    stun_servers.clone(),
-                    turn_servers.clone(),
-                )?;
+                let proto_agent = proto_agent.lock().unwrap();
+                let proto_stream = proto_agent.stream(self.id).unwrap();
+                let component = proto_stream.component(component_id).unwrap();
+                component.gather_candidates(proto_sockets)?;
             }
         }
         Ok(())
@@ -601,50 +559,40 @@ impl Stream {
 
         Ok(())
     }*/
+    /*
+        /// Retrieve previously gathered local candidates
+        pub fn local_candidates(&self) -> Vec<Candidate> {
+            self.proto_stream.local_candidates()
+        }
 
-    /// Retrieve previously gathered local candidates
-    pub fn local_candidates(&self) -> Vec<Candidate> {
-        let Some(proto_agent) = self.weak_proto_agent.upgrade() else {
-            return vec![];
-        };
-        let proto_agent = proto_agent.lock().unwrap();
-        let proto_stream = proto_agent.stream(self.id).unwrap();
-        proto_stream.local_candidates()
-    }
-
-    /// Retrieve previously set remote candidates for connection checks from this stream
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use librice::agent::Agent;
-    /// # use librice_proto::candidate::*;
-    /// let agent = Agent::default();
-    /// let stream = agent.add_stream();
-    /// let component = stream.add_component().unwrap();
-    /// let addr = "127.0.0.1:9999".parse().unwrap();
-    /// let candidate = Candidate::builder(
-    ///     0,
-    ///     CandidateType::Host,
-    ///     TransportType::Udp,
-    ///     "0",
-    ///     addr
-    /// )
-    /// .build();
-    /// stream.add_remote_candidate(candidate.clone());
-    /// let remote_cands = stream.remote_candidates();
-    /// assert_eq!(remote_cands.len(), 1);
-    /// assert_eq!(remote_cands[0], candidate);
-    /// ```
-    pub fn remote_candidates(&self) -> Vec<Candidate> {
-        let Some(proto_agent) = self.weak_proto_agent.upgrade() else {
-            return vec![];
-        };
-        let proto_agent = proto_agent.lock().unwrap();
-        let proto_stream = proto_agent.stream(self.id).unwrap();
-        proto_stream.remote_candidates()
-    }
-
+        /// Retrieve previously set remote candidates for connection checks from this stream
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// # use librice::agent::Agent;
+        /// # use librice_proto::candidate::*;
+        /// let agent = Agent::default();
+        /// let stream = agent.add_stream();
+        /// let component = stream.add_component().unwrap();
+        /// let addr = "127.0.0.1:9999".parse().unwrap();
+        /// let candidate = Candidate::builder(
+        ///     0,
+        ///     CandidateType::Host,
+        ///     TransportType::Udp,
+        ///     "0",
+        ///     addr
+        /// )
+        /// .build();
+        /// stream.add_remote_candidate(candidate.clone());
+        /// let remote_cands = stream.remote_candidates();
+        /// assert_eq!(remote_cands.len(), 1);
+        /// assert_eq!(remote_cands[0], candidate);
+        /// ```
+        pub fn remote_candidates(&self) -> Vec<Candidate> {
+            self.proto_stream.remote_candidates()
+        }
+    */
     /// Indicate that no more candidates are expected from the peer.  This may allow the ICE
     /// process to complete.
     #[tracing::instrument(
@@ -654,26 +602,12 @@ impl Stream {
         )
     )]
     pub fn end_of_remote_candidates(&self) {
-        // FIXME: how to deal with ice restarts?
-        let Some(proto_agent) = self.weak_proto_agent.upgrade() else {
-            return;
-        };
-        let mut proto_agent = proto_agent.lock().unwrap();
-        let mut proto_stream = proto_agent.mut_stream(self.id).unwrap();
-        proto_stream.end_of_remote_candidates()
+        self.proto_stream.end_of_remote_candidates()
     }
 
-    pub(crate) fn handle_transmit<T: AsRef<[u8]>>(
-        &self,
-        transmit: Transmit<T>,
-    ) -> Option<Transmit<Data<'static>>> {
+    pub(crate) fn handle_transmit(&self, transmit: AgentTransmit) -> Option<AgentTransmit> {
         if let Err(async_std::channel::TrySendError::Full(transmit)) =
-            self.transmit_send.try_send(Transmit::new(
-                Data::from(transmit.data.as_ref()).into_owned(),
-                transmit.transport,
-                transmit.from,
-                transmit.to,
-            ))
+            self.transmit_send.try_send(transmit)
         {
             return Some(transmit);
         }
@@ -683,20 +617,20 @@ impl Stream {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn handle_allocate_socket(
         weak_inner: Weak<Mutex<StreamInner>>,
-        weak_proto_agent: Weak<Mutex<librice_proto::agent::Agent>>,
+        weak_proto_agent: Weak<Mutex<librice_c::agent::Agent>>,
         weak_agent_inner: Weak<Mutex<AgentInner>>,
         stream_id: usize,
         component_id: usize,
         transport: TransportType,
-        from: SocketAddr,
-        to: SocketAddr,
+        from: Address,
+        to: Address,
     ) {
         if transport != TransportType::Tcp {
             unreachable!();
         }
 
         async_std::task::spawn(async move {
-            let stream = TcpStream::connect(to).await;
+            let stream = TcpStream::connect(to.as_socket()).await;
             let mut weak_component = None;
             let channel = match stream {
                 Ok(stream) => {
@@ -711,24 +645,24 @@ impl Stream {
                     ));
                     Ok(channel)
                 }
-                Err(_e) => Err(stun_proto::agent::StunError::ResourceNotFound),
+                Err(_e) => Err(librice_c::agent::AgentError::ResourceNotFound),
             };
             let Some(proto_agent) = weak_proto_agent.upgrade() else {
                 return;
             };
 
             let channel = {
-                let mut proto_agent = proto_agent.lock().unwrap();
+                let proto_agent = proto_agent.lock().unwrap();
                 let (local_addr, channel) = match channel {
                     Ok(channel) => {
                         let local_addr = channel.local_addr().unwrap();
-                        (Ok(local_addr), Some(channel))
+                        (Some(Address::from(local_addr)), Some(channel))
                     }
-                    Err(e) => (Err(e), None),
+                    Err(_) => (None, None),
                 };
 
-                let mut proto_stream = proto_agent.mut_stream(stream_id).unwrap();
-                proto_stream.allocated_socket(component_id, transport, from, to, local_addr);
+                let proto_stream = proto_agent.stream(stream_id).unwrap();
+                proto_stream.allocated_socket(component_id, transport, &from, &to, local_addr);
                 channel
             };
 
@@ -756,7 +690,6 @@ impl Stream {
                             from,
                             local_addr,
                         ),
-                        Instant::now(),
                     )
                 }
             }
@@ -767,13 +700,15 @@ impl Stream {
     pub(crate) fn handle_remove_socket(
         weak_inner: Weak<Mutex<StreamInner>>,
         transport: TransportType,
-        from: SocketAddr,
-        to: SocketAddr,
+        from: Address,
+        to: Address,
     ) {
         let Some(inner) = weak_inner.upgrade() else {
             return;
         };
 
+        let from = from.as_socket();
+        let to = to.as_socket();
         let mut inner = inner.lock().unwrap();
         let Some(channel) = inner.remove_socket_for_5tuple(transport, from, to) else {
             warn!("no {transport} socket for {from} -> {to}");
@@ -787,24 +722,23 @@ impl Stream {
         });
     }
 
-    pub(crate) fn socket_for_pair(&self, pair: &CandidatePair) -> Option<StunChannel> {
+    pub(crate) fn socket_for_pair(
+        &self,
+        local: &Candidate,
+        remote: &Candidate,
+    ) -> Option<StunChannel> {
         let inner = self.inner.lock().unwrap();
         inner
             .socket_for_5tuple(
-                pair.local.transport_type,
-                pair.local.base_address,
-                pair.remote.address,
+                local.transport(),
+                local.base_address().as_socket(),
+                remote.address().as_socket(),
             )
             .cloned()
     }
 
     pub(crate) fn add_local_gathered_candidates(&self, gathered: GatheredCandidate) -> bool {
-        let Some(proto_agent) = self.weak_proto_agent.upgrade() else {
-            return false;
-        };
-        let mut proto_agent = proto_agent.lock().unwrap();
-        let mut proto_stream = proto_agent.mut_stream(self.id).unwrap();
-        proto_stream.add_local_gathered_candidate(gathered)
+        self.proto_stream.add_local_gathered_candidate(gathered)
     }
 }
 
@@ -822,8 +756,8 @@ mod tests {
         init();
         let agent = Arc::new(Agent::default());
         let s = agent.add_stream();
-        s.set_local_credentials(Credentials::new("luser".into(), "lpass".into()));
-        s.set_remote_credentials(Credentials::new("ruser".into(), "rpass".into()));
+        s.set_local_credentials(&Credentials::new("luser", "lpass"));
+        s.set_remote_credentials(&Credentials::new("ruser", "rpass"));
         let _c = s.add_component().unwrap();
         async_std::task::block_on(async move {
             s.gather_candidates().await.unwrap();
@@ -836,11 +770,13 @@ mod tests {
                     break;
                 }
             }
-            let local_cands = s.local_candidates();
-            info!("gathered local candidates {:?}", local_cands);
-            assert!(!local_cands.is_empty());
+            //let local_cands = s.local_candidates();
+            //info!("gathered local candidates {:?}", local_cands);
+            //assert!(!local_cands.is_empty());
+            let ret = s.gather_candidates().await;
+            error!("ret: {ret:?}");
             assert!(matches!(
-                s.gather_candidates().await,
+                ret,
                 Err(AgentError::Proto(ProtoAgentError::AlreadyInProgress))
             ));
         });
@@ -849,8 +785,8 @@ mod tests {
     #[test]
     fn getters_setters() {
         init();
-        let lcreds = Credentials::new("luser".into(), "lpass".into());
-        let rcreds = Credentials::new("ruser".into(), "rpass".into());
+        let lcreds = Credentials::new("luser", "lpass");
+        let rcreds = Credentials::new("ruser", "rpass");
 
         let agent = Agent::default();
         let stream = agent.add_stream();
@@ -859,9 +795,9 @@ mod tests {
         let comp = stream.add_component().unwrap();
         assert_eq!(comp.id(), stream.component(comp.id()).unwrap().id());
 
-        stream.set_local_credentials(lcreds.clone());
+        stream.set_local_credentials(&lcreds);
         assert_eq!(stream.local_credentials().unwrap(), lcreds);
-        stream.set_remote_credentials(rcreds.clone());
+        stream.set_remote_credentials(&rcreds);
         assert_eq!(stream.remote_credentials().unwrap(), rcreds);
     }
 }

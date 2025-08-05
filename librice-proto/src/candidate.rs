@@ -99,7 +99,7 @@ impl Error for ParseTcpTypeError {}
 
 impl std::fmt::Display for ParseTcpTypeError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
@@ -114,7 +114,7 @@ impl Error for ParseCandidateTypeError {}
 
 impl std::fmt::Display for ParseCandidateTypeError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.pad(&format!("{:?}", self))
+        f.pad(&format!("{self:?}"))
     }
 }
 

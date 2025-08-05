@@ -70,7 +70,7 @@ fn bench_sendrecv_udp(c: &mut Criterion) {
         });
         let transmit = Transmit::new(&data, TransportType::Udp, remote_addr, local_addr);
         let reply = stream.handle_incoming_data(1, transmit, now);
-        assert_eq!(&reply.data[0], &data);
+        assert_eq!(reply.data.unwrap().as_ref(), &data);
         group.bench_function(BenchmarkId::new("Recv", size), |b| {
             b.iter(|| {
                 let transmit = Transmit::new(&data, TransportType::Udp, remote_addr, local_addr);
@@ -143,11 +143,14 @@ fn bench_sendrecv_tcp(c: &mut Criterion) {
         framed[2..].copy_from_slice(&data);
         let transmit = Transmit::new(&framed, TransportType::Tcp, remote_addr, local_addr);
         let reply = stream.handle_incoming_data(1, transmit, now);
-        assert_eq!(&reply.data[0], &framed[2..]);
+        assert!(reply.data.is_none());
+        let reply = stream.poll_recv().unwrap();
+        assert_eq!(&reply.data, &framed[2..]);
         group.bench_function(BenchmarkId::new("Recv", size), |b| {
             b.iter(|| {
                 let transmit = Transmit::new(&framed, TransportType::Tcp, remote_addr, local_addr);
                 let _reply = stream.handle_incoming_data(1, transmit, now);
+                let _reply = stream.poll_recv().unwrap();
             })
         });
     }

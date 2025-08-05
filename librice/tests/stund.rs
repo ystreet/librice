@@ -12,7 +12,7 @@ use async_std::net::{TcpListener, TcpStream};
 use futures::future::{AbortHandle, Abortable, Aborted};
 use futures::{AsyncReadExt, AsyncWriteExt};
 
-use librice::stun::message::*;
+use stun_proto::types::message::*;
 
 #[macro_use]
 extern crate tracing;

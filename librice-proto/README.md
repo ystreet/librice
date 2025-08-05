@@ -80,3 +80,22 @@ For other examples of sans-IO implementations, take a look at:
 - RFC6156
 - RFC7675
 - RFC8656
+
+## Building
+
+In order to build a C API, we use [cargo-c](https://crates.io/crates/cargo-c)
+to build and install to a relevant installation prefix.
+
+Once `cargo-c` has been installed with:
+
+```sh
+cargo install cargo-c
+```
+
+Installation can be performed using:
+
+```sh
+cargo cinstall --prefix $PREFIX
+```
+
+And be used by e.g. `librice-c` for exposing a rust API of the C ABI.

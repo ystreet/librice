@@ -1,0 +1,26 @@
+[package]
+name = "librice-c"
+description = "ICE (RFC8445) implementation protocol"
+version.workspace = true
+authors = ["Matthew Waters <matthew@centricular.com>"]
+license = "MIT OR Apache-2.0"
+keywords = ["STUN", "ICE"]
+categories = ["network-programming", ]
+documentation = "https://docs.rs/librice-proto"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+workspace = ".."
+
+[build-dependencies]
+system-deps = "6.0"
+bindgen = "0.72"
+
+[dependencies]
+tracing.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+
+[package.metadata.system-deps]
+rice-proto = "0.0.5"

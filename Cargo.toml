@@ -1,6 +1,6 @@
 [workspace]
-members = ["librice-proto", "librice", "librice-io", "fuzz"]
-default-members = ["librice", "librice-proto"]
+members = ["librice-proto", "librice", "librice-io", "librice-c", "fuzz"]
+default-members = ["librice", "librice-proto", "librice-c"]
 resolver = "2"
 
 [workspace.package]
@@ -19,6 +19,7 @@ rand = "0.9"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 librice-proto = { version = "0.0.5", path = "librice-proto" }
+librice-c = { version = "0.0.5", path = "librice-c" }
 criterion = "0.6"
 
 [profile.bench]

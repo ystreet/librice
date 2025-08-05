@@ -11,18 +11,19 @@
 use std::net::SocketAddr;
 use std::time::Instant;
 
-use crate::gathering::{GatherPoll, GatheredCandidate};
+use crate::gathering::GatherPoll;
 use stun_proto::agent::{StunError, Transmit};
 use stun_proto::types::data::Data;
 
 use crate::agent::{Agent, AgentError};
 use crate::component::{Component, ComponentMut, ComponentState, GatherProgress};
-use crate::conncheck::HandleRecvReply;
+use crate::conncheck::{HandleRecvReply, PendingRecv};
 
 use crate::candidate::{Candidate, TransportType};
 //use crate::turn::agent::TurnCredentials;
 
 pub use crate::conncheck::Credentials;
+pub use crate::gathering::GatheredCandidate;
 
 /// An ICE [`Stream`]
 #[derive(Debug, Clone)]
@@ -334,12 +335,12 @@ impl<'a> StreamMut<'a> {
         component_id: usize,
         transmit: Transmit<T>,
         now: Instant,
-    ) -> StreamIncomingDataReply {
+    ) -> HandleRecvReply<T> {
         let stream_state = self.agent.mut_stream_state(self.id).unwrap();
         let checklist_id = stream_state.checklist_id;
         // first try to provide the incoming data to the gathering process if it exist
-        let mut ret = stream_state.handle_incoming_data(component_id, &transmit, now);
-        if ret.data_handled {
+        let ret = stream_state.handle_incoming_data(component_id, &transmit, now);
+        if ret.handled {
             return ret;
         }
         if stream_state.component_state(component_id).is_none() {
@@ -347,28 +348,22 @@ impl<'a> StreamMut<'a> {
         };
 
         // or, provide the data to the connection check component for further processing
-        let transmit = Transmit::new(
-            Data::from(transmit.data.as_ref()),
-            transmit.transport,
-            transmit.from,
-            transmit.to,
-        );
-        let replies = self
-            .agent
+        self.agent
             .checklistset
-            .incoming_data(checklist_id, transmit, now);
-        for reply in replies {
-            match reply {
-                HandleRecvReply::Data(data, _from) => {
-                    ret.data.push(data);
-                }
-                HandleRecvReply::Handled => {
-                    ret.data_handled = true;
-                }
-            }
-        }
+            .incoming_data(checklist_id, component_id, transmit, now)
+    }
 
-        ret
+    /// Poll for any received data.
+    ///
+    /// Must be called after `handle_incoming_data` if `have_more_data` is `true`.
+    pub fn poll_recv(&mut self) -> Option<PendingRecv> {
+        let stream_state = self.agent.mut_stream_state(self.id).unwrap();
+        let checklist_id = stream_state.checklist_id;
+
+        self.agent
+            .checklistset
+            .mut_list(checklist_id)
+            .and_then(|s| s.poll_recv())
     }
 
     /// Indicate that no more candidates are expected from the peer.  This may allow the ICE
@@ -456,17 +451,6 @@ pub(crate) struct StreamState {
     components: Vec<Option<ComponentState>>,
     local_credentials: Option<Credentials>,
     remote_credentials: Option<Credentials>,
-}
-
-/// Reply information to [`StreamMut::handle_incoming_data`]
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct StreamIncomingDataReply {
-    /// The data was handled internally.  [`Agent::poll`] may be able to make further progress
-    /// and should be woken.
-    pub data_handled: bool,
-    /// A list of unhandled data blocks that were received and should be handled by the
-    /// application.
-    pub data: Vec<Vec<u8>>,
 }
 
 impl StreamState {
@@ -573,25 +557,25 @@ impl StreamState {
         component_id: usize,
         transmit: &Transmit<T>,
         now: Instant,
-    ) -> StreamIncomingDataReply {
+    ) -> HandleRecvReply<T> {
         let Some(component) = self.mut_component_state(component_id) else {
-            return StreamIncomingDataReply::default();
+            return HandleRecvReply::default();
         };
         if component.gather_state != GatherProgress::InProgress {
-            return StreamIncomingDataReply::default();
+            return HandleRecvReply::default();
         }
         let Some(gather) = component.gatherer.as_mut() else {
-            return StreamIncomingDataReply::default();
+            return HandleRecvReply::default();
         };
         // XXX: is this enough to successfully route to the gatherer over the
         // connection check or component received handling?
         if gather.handle_data(transmit, now) {
-            StreamIncomingDataReply {
-                data_handled: true,
+            HandleRecvReply {
+                handled: true,
                 ..Default::default()
             }
         } else {
-            StreamIncomingDataReply::default()
+            HandleRecvReply::default()
         }
     }
 

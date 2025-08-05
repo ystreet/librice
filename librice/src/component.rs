@@ -12,13 +12,11 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, Weak};
 
 use std::task::{Poll, Waker};
-use std::time::Instant;
 
-use librice_proto::candidate::CandidatePair;
+use librice_c::candidate::CandidatePair;
 
-pub use librice_proto::component::ComponentConnectionState;
-use stun_proto::agent::Transmit;
-use stun_proto::types::data::Data;
+pub use librice_c::component::ComponentConnectionState;
+use librice_c::stream::RecvData as CRecvData;
 
 use crate::agent::AgentError;
 use crate::socket::StunChannel;
@@ -31,7 +29,9 @@ pub const RTCP: usize = 2;
 /// A [`Component`] within an ICE [`Stream`](crate::stream::Stream`)
 #[derive(Debug, Clone)]
 pub struct Component {
-    weak_agent: Weak<Mutex<librice_proto::agent::Agent>>,
+    weak_agent: Weak<Mutex<librice_c::agent::Agent>>,
+    proto: librice_c::component::Component,
+    #[allow(dead_code)]
     stream_id: usize,
     pub(crate) id: usize,
     pub(crate) inner: Arc<Mutex<ComponentInner>>,
@@ -39,14 +39,15 @@ pub struct Component {
 
 impl Component {
     pub(crate) fn new(
-        weak_agent: Weak<Mutex<librice_proto::agent::Agent>>,
+        weak_agent: Weak<Mutex<librice_c::agent::Agent>>,
         stream_id: usize,
-        id: usize,
+        proto: librice_c::component::Component,
     ) -> Self {
         Self {
             weak_agent,
             stream_id,
-            id,
+            id: proto.id(),
+            proto,
             inner: Arc::new(Mutex::new(ComponentInner::new())),
         }
     }
@@ -72,76 +73,50 @@ impl Component {
     /// assert_eq!(component.state(), ComponentConnectionState::New);
     /// ```
     pub fn state(&self) -> ComponentConnectionState {
-        let Some(agent) = self.weak_agent.upgrade() else {
-            return ComponentConnectionState::Failed;
-        };
-        let agent = agent.lock().unwrap();
-        if let Some(stream) = agent.stream(self.stream_id) {
-            stream
-                .component(self.id)
-                .map(|component| component.state())
-                .unwrap_or(ComponentConnectionState::Failed)
-        } else {
-            ComponentConnectionState::Failed
-        }
+        self.proto.state()
     }
 
     /// Send data to the peer using the established communication channel.  This will not succeed
     /// until the component is in the [`Connected`](ComponentConnectionState::Connected) state.
     pub async fn send(&self, data: &[u8]) -> Result<(), AgentError> {
-        let transmit: Transmit<Data<'_>>;
+        let transmit;
         let (channel, to) = {
             let inner = self.inner.lock().unwrap();
             let selected_pair = inner.selected_pair.as_ref().ok_or(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "No selected pair",
             ))?;
-            let to = selected_pair.pair.remote.address;
+            let to = selected_pair.pair.remote.address();
             (selected_pair.socket.clone(), to)
         };
 
         {
             let agent = self.weak_agent.upgrade().ok_or(AgentError::Proto(
-                librice_proto::agent::AgentError::ResourceNotFound,
+                librice_c::agent::AgentError::ResourceNotFound,
             ))?;
-            let mut agent = agent.lock().unwrap();
-            let mut stream = agent
-                .mut_stream(self.stream_id)
-                .ok_or(librice_proto::agent::AgentError::ResourceNotFound)?;
-            let mut component = stream
-                .mut_component(self.id)
-                .ok_or(librice_proto::agent::AgentError::ResourceNotFound)?;
+            let agent = agent.lock().unwrap();
 
-            transmit = component.send(data, Instant::now())?;
+            transmit = self.proto.send(data, agent.now())?;
         }
 
-        trace!("sending {} bytes to {}", data.len(), to);
-        channel.send_to(&transmit.data, transmit.to).await?;
+        trace!("sending {} bytes to {:?}", data.len(), to);
+        channel
+            .send_to(&transmit.data, transmit.to.as_socket())
+            .await?;
 
         Ok(())
     }
 
     /// A stream that provides the data that has been sent from the peer to this component.
-    pub fn recv(&self) -> impl Stream<Item = Vec<u8>> {
+    pub fn recv(&self) -> impl Stream<Item = RecvData> {
         ComponentRecv {
             inner: self.inner.clone(),
         }
     }
 
     pub(crate) fn set_selected_pair(&self, selected: SelectedPair) -> Result<(), AgentError> {
-        let agent = self.weak_agent.upgrade().ok_or(AgentError::Proto(
-            librice_proto::agent::AgentError::ResourceNotFound,
-        ))?;
-        let mut agent = agent.lock().unwrap();
-        let mut stream = agent
-            .mut_stream(self.stream_id)
-            .ok_or(librice_proto::agent::AgentError::ResourceNotFound)?;
-        let mut component = stream
-            .mut_component(self.id)
-            .ok_or(librice_proto::agent::AgentError::ResourceNotFound)?;
-
         let mut inner = self.inner.lock().unwrap();
-        component.set_selected_pair(selected.pair.clone())?;
+        self.proto.set_selected_pair(selected.pair.clone())?;
         inner.selected_pair = Some(selected);
 
         Ok(())
@@ -162,7 +137,7 @@ impl Component {
 #[derive(Debug)]
 pub(crate) struct ComponentInner {
     selected_pair: Option<SelectedPair>,
-    received_data: VecDeque<Vec<u8>>,
+    received_data: VecDeque<RecvData>,
     recv_waker: Option<Waker>,
 }
 
@@ -182,10 +157,39 @@ impl ComponentInner {
             data.len = data.len()
         )
     )]
-    pub(crate) fn handle_incoming_data(&mut self, data: Vec<u8>) {
+    pub(crate) fn handle_incoming_data(&mut self, data: RecvData) {
         self.received_data.push_back(data);
         if let Some(waker) = self.recv_waker.take() {
             waker.wake();
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum RecvData {
+    Vec(Vec<u8>),
+    Proto(CRecvData),
+}
+
+impl From<Vec<u8>> for RecvData {
+    fn from(value: Vec<u8>) -> Self {
+        Self::Vec(value)
+    }
+}
+
+impl From<CRecvData> for RecvData {
+    fn from(value: CRecvData) -> Self {
+        Self::Proto(value)
+    }
+}
+
+impl core::ops::Deref for RecvData {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Vec(vec) => vec,
+            Self::Proto(proto) => proto.deref(),
         }
     }
 }
@@ -196,7 +200,7 @@ pub struct ComponentRecv {
 }
 
 impl futures::Stream for ComponentRecv {
-    type Item = Vec<u8>;
+    type Item = RecvData;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
@@ -213,12 +217,12 @@ impl futures::Stream for ComponentRecv {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SelectedPair {
-    pair: librice_proto::candidate::CandidatePair,
+    pair: librice_c::candidate::CandidatePair,
     socket: StunChannel,
 }
 
 impl SelectedPair {
-    pub(crate) fn new(pair: librice_proto::candidate::CandidatePair, socket: StunChannel) -> Self {
+    pub(crate) fn new(pair: librice_c::candidate::CandidatePair, socket: StunChannel) -> Self {
         Self { pair, socket }
     }
 }
@@ -226,8 +230,7 @@ impl SelectedPair {
 #[cfg(test)]
 mod tests {
     use async_std::net::UdpSocket;
-    use librice_proto::candidate::{Candidate, CandidateType};
-    use stun_proto::types::TransportType;
+    use librice_c::candidate::{Candidate, CandidateType, TransportType};
 
     use super::*;
     use crate::{agent::Agent, socket::UdpSocketChannel};
@@ -258,12 +261,22 @@ mod tests {
             let remote_addr = remote_socket.local_addr().unwrap();
             let local_channel = StunChannel::Udp(UdpSocketChannel::new(local_socket));
 
-            let local_cand =
-                Candidate::builder(0, CandidateType::Host, TransportType::Udp, "0", local_addr)
-                    .build();
-            let remote_cand =
-                Candidate::builder(0, CandidateType::Host, TransportType::Udp, "0", remote_addr)
-                    .build();
+            let local_cand = Candidate::builder(
+                1,
+                CandidateType::Host,
+                TransportType::Udp,
+                "0",
+                local_addr.into(),
+            )
+            .build();
+            let remote_cand = Candidate::builder(
+                1,
+                CandidateType::Host,
+                TransportType::Udp,
+                "0",
+                remote_addr.into(),
+            )
+            .build();
             let candidate_pair = CandidatePair::new(local_cand, remote_cand);
             let selected_pair = SelectedPair::new(candidate_pair, local_channel);
 
