@@ -17,23 +17,39 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v2
 
-      - name: Install stable toolchain
+      - name: Install nightly toolchain
         uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
           override: true
 
       - name: Install cargo-tarpaulin
-        uses: actions-rs/cargo@v1
+        uses: taiki-e/cache-cargo-install-action@v2
         with:
-          command: install
-          args: '--version 0.30.0 cargo-tarpaulin'
+          tool: cargo-tarpaulin@0.30
 
-      - name: Run cargo-tarpaulin
+      - name: Install cargo-c
+        uses: taiki-e/cache-cargo-install-action@v2
+        with:
+          tool: cargo-c
+
+      - name: Run cargo-tarpaulin (librice-proto)
         uses: actions-rs/cargo@v1
         with:
           command: 'tarpaulin'
-          args: '--out Xml --lib --tests --doc -- --test-threads 1'
+          args: '-p librice-proto --out Xml --lib --tests --doc --output-dir coverage-librice-proto -- --test-threads 1'
+
+      - name: Run cargo-tarpaulin (librice-c)
+        uses: actions-rs/cargo@v1
+        with:
+          command: 'tarpaulin'
+          args: '-p librice-c --out Xml --lib --tests --output-dir coverage-librice-c -- --test-threads 1'
+
+      - name: Run cargo-tarpaulin (librice)
+        uses: actions-rs/cargo@v1
+        with:
+          command: 'tarpaulin'
+          args: '-p librice --out Xml --lib --tests --output-dir coverage-librice -- --test-threads 1'
 
       - name: Upload to codecov.io
         uses: codecov/codecov-action@v3.1.1

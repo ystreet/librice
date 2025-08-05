@@ -16,8 +16,8 @@ use futures::{SinkExt, StreamExt};
 
 use librice::agent::{Agent, AgentMessage};
 use librice::candidate::TransportType;
+use librice::component::ComponentConnectionState;
 use librice::stream::Credentials;
-use librice_proto::component::ComponentConnectionState;
 
 #[macro_use]
 extern crate tracing;
@@ -77,17 +77,17 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
         ragent.add_stun_server(TransportType::Tcp, tcp_stun_addr);
     }
 
-    let lcreds = Credentials::new("luser".into(), "lpass".into());
-    let rcreds = Credentials::new("ruser".into(), "rpass".into());
+    let lcreds = Credentials::new("luser", "lpass");
+    let rcreds = Credentials::new("ruser", "rpass");
 
     let lstream = lagent.add_stream();
-    lstream.set_local_credentials(lcreds.clone());
-    lstream.set_remote_credentials(rcreds.clone());
+    lstream.set_local_credentials(&lcreds);
+    lstream.set_remote_credentials(&rcreds);
     let lcomp = lstream.add_component().unwrap();
 
     let rstream = ragent.add_stream();
-    rstream.set_local_credentials(rcreds);
-    rstream.set_remote_credentials(lcreds);
+    rstream.set_local_credentials(&rcreds);
+    rstream.set_remote_credentials(&lcreds);
     let rcomp = rstream.add_component().unwrap();
 
     lstream.gather_candidates().await.unwrap();
@@ -106,7 +106,7 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
             while let Some(msg) = lmessages.next().await {
                 match msg {
                     AgentMessage::GatheredCandidate(_stream, candidate) => {
-                        if config.remote.transports.contains(&candidate.transport_type) {
+                        if config.remote.transports.contains(&candidate.transport()) {
                             rstream.add_remote_candidate(candidate);
                         }
                     }
@@ -134,7 +134,7 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
             while let Some(msg) = rmessages.next().await {
                 match msg {
                     AgentMessage::GatheredCandidate(_stream, candidate) => {
-                        if config.local.transports.contains(&candidate.transport_type) {
+                        if config.local.transports.contains(&candidate.transport()) {
                             lstream.add_remote_candidate(candidate);
                         }
                     }
@@ -177,7 +177,7 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     trace!("local sent");
     futures::pin_mut!(rcomp_recv_stream);
     let received = rcomp_recv_stream.next().await.unwrap();
-    assert_eq!(data, received);
+    assert_eq!(&data, &*received);
     trace!("local sent remote received");
 
     let lcomp_recv_stream = lcomp.recv();
@@ -186,7 +186,7 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     trace!("remote sent");
     futures::pin_mut!(lcomp_recv_stream);
     let received = lcomp_recv_stream.next().await.unwrap();
-    assert_eq!(data, received);
+    assert_eq!(&data, &*received);
     trace!("remote sent local received");
 
     lagent.close();

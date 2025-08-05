@@ -12,7 +12,6 @@ use std::net::SocketAddr;
 use std::time::Instant;
 
 use stun_proto::agent::Transmit;
-use stun_proto::types::data::Data;
 use stun_proto::types::message::{Message, MessageWriteVec, BINDING};
 use stun_proto::types::prelude::MessageWrite;
 use turn_client_proto::api::{DelayedTransmitBuild, TurnClientApi};
@@ -29,6 +28,7 @@ pub const RTP: usize = 1;
 pub const RTCP: usize = 2;
 
 /// A [`Component`] in an ICE [`Stream`](crate::stream::Stream)
+#[repr(C)]
 pub struct Component<'a> {
     agent: &'a Agent,
     stream_id: usize,
@@ -85,10 +85,19 @@ impl<'a> Component<'a> {
 }
 
 /// A mutable component in an ICE [`Stream`](crate::stream::Stream)
+#[repr(C)]
 pub struct ComponentMut<'a> {
     agent: &'a mut Agent,
     stream_id: usize,
     component_id: usize,
+}
+
+impl<'a> std::ops::Deref for ComponentMut<'a> {
+    type Target = Component<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { std::mem::transmute(self) }
+    }
 }
 
 impl<'a> ComponentMut<'a> {
@@ -173,7 +182,7 @@ impl<'a> ComponentMut<'a> {
         &mut self,
         data: T,
         now: Instant,
-    ) -> Result<Transmit<Data<'static>>, AgentError> {
+    ) -> Result<Transmit<Box<[u8]>>, AgentError> {
         // TODO: store statistics about bytes/packets sent
         let stream = self.agent.stream_state(self.stream_id).unwrap();
         let checklist_id = stream.checklist_id;
@@ -205,9 +214,8 @@ impl<'a> ComponentMut<'a> {
                 "sending {} bytes from {} {} through TURN server {} with allocation {local_transport} {local_addr} to {remote_addr}",
                 data_len, transmit.transport, transmit.from, transmit.to,
             );
-            let data = Data::from(transmit.data.build().into_boxed_slice());
             Ok(Transmit::new(
-                data,
+                transmit.data.build().into_boxed_slice(),
                 transmit.transport,
                 transmit.from,
                 transmit.to,
@@ -221,7 +229,8 @@ impl<'a> ComponentMut<'a> {
                 data_len
             );
             let transmit = stun_agent.send_data(data, remote_addr);
-            Ok(transmit_send(&transmit))
+            let transport = transmit.transport;
+            Ok(transmit.reinterpret_data(|data| transmit_send(transport, data.as_ref())))
         }
     }
 }
@@ -305,6 +314,7 @@ impl ComponentState {
 mod tests {
     use super::*;
     use crate::agent::Agent;
+    use crate::candidate::Candidate;
 
     #[test]
     fn initial_state_new() {
@@ -315,5 +325,77 @@ mod tests {
         let cid = s.add_component().unwrap();
         let c = s.component(cid).unwrap();
         assert_eq!(c.state(), ComponentConnectionState::New);
+    }
+
+    #[test]
+    fn send_recv() {
+        let _log = crate::tests::test_init_log();
+        let mut agent = Agent::builder().controlling(false).build();
+        let stream_id = agent.add_stream();
+        let mut stream = agent.mut_stream(stream_id).unwrap();
+        let send_id = stream.add_component().unwrap();
+        let local_addr = "127.0.0.1:1000".parse().unwrap();
+        let remote_addr = "127.0.0.1:2000".parse().unwrap();
+        let now = Instant::now();
+
+        let local_cand = Candidate::builder(
+            send_id,
+            CandidateType::Host,
+            TransportType::Udp,
+            "0",
+            local_addr,
+        )
+        .build();
+        let remote_cand = Candidate::builder(
+            send_id,
+            CandidateType::Host,
+            TransportType::Udp,
+            "0",
+            remote_addr,
+        )
+        .build();
+        let candidate_pair = CandidatePair::new(local_cand, remote_cand);
+
+        let mut send = stream.mut_component(send_id).unwrap();
+        send.set_selected_pair(candidate_pair.clone()).unwrap();
+        assert_eq!(send.selected_pair().unwrap(), &candidate_pair);
+
+        let data = vec![3; 4];
+        let transmit = send.send(&data, now).unwrap();
+        assert_eq!(transmit.transport, TransportType::Udp);
+        assert_eq!(transmit.from, local_addr);
+        assert_eq!(transmit.to, remote_addr);
+        assert_eq!(transmit.data.as_ref(), data.as_slice());
+
+        let recved_data = vec![7; 6];
+        let ret = stream.handle_incoming_data(
+            send_id,
+            Transmit::new(
+                recved_data.clone(),
+                TransportType::Udp,
+                remote_addr,
+                local_addr,
+            ),
+            now,
+        );
+        assert_eq!(recved_data.as_slice(), ret.data.unwrap().as_ref());
+        assert!(!ret.handled);
+        assert!(!ret.have_more_data);
+
+        // Unknown remote is ignored
+        let recved_data2 = vec![9; 12];
+        let ret = stream.handle_incoming_data(
+            send_id,
+            Transmit::new(
+                recved_data2,
+                TransportType::Udp,
+                local_addr,
+                local_addr,
+            ),
+            now,
+        );
+        assert!(ret.data.is_none());
+        assert!(!ret.handled);
+        assert!(!ret.have_more_data);
     }
 }

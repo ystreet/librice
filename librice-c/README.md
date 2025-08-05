@@ -1,26 +1,14 @@
 [![Build status](https://github.com/ystreet/librice/workflows/Build/badge.svg?branch=main)](https://github.com/ystreet/librice/actions)
 [![codecov](https://codecov.io/gh/ystreet/librice/branch/main/graph/badge.svg)](https://codecov.io/gh/ystreet/librice)
 [![Dependencies](https://deps.rs/repo/github/ystreet/librice/status.svg)](https://deps.rs/repo/github/ystreet/librice)
-[![crates.io](https://img.shields.io/crates/v/librice.svg)](https://crates.io/crates/librice)
-[![docs.rs](https://docs.rs/librice/badge.svg)](https://docs.rs/librice)
+[![crates.io](https://img.shields.io/crates/v/librice-c.svg)](https://crates.io/crates/librice-c)
+[![docs.rs](https://docs.rs/librice-c/badge.svg)](https://docs.rs/librice-c)
 
-# librice
+# librice-c
 
-Repository containing an async implementation of the ICE (RFC8445) protocol
-written in the [Rust programming language](https://www.rust-lang.org/).
-This async implementation is based on the sans-IO crate `librice-proto` in
-the same repository.  See the [librice-proto
-README](https://github.com/ystreet/librice/tree/main/librice-proto) for some
-details as to why use the sans-IO design.
-
-## Current status
-
-The current status is that there is enough of the implementation to sucessfully
-communicate with STUN/TURN servers and/or a browser (Chrome or Firefox) in a WebRTC
-scenario. The STUN implementation is relatively mature. More work is needed on
-the ICE layer for efficiency and API experience. Initial TURN support has been
-implemented and some TURN-related RFCs are currently in progress. Supporting
-more scenarios is part of the near and long term future roadmap.
+Repository containing Rust bindings to the C API version of librice-proto. This
+would typically be needed when using librice-proto from multiple independent
+libraries/application and shared access to the same `Agent` is required.
 
 ## Relevant standards
 
@@ -63,9 +51,23 @@ more scenarios is part of the near and long term future roadmap.
 
 ## Building
 
-`librice` depends on `librice-c` and thus has the same build requirements as
-outlined in [its README](https://github.com/ystreet/librice/tree/main/librice-c).
+If building `librice-c` as part of this repository, then `cargo-c` is required
+and can be installed using:
+```sh
+cargo install cargo-c
+```
+`librice-c` will then build a local copy of `librice-proto` for use.
 
-Specifically, that either `cargo-c` must be installed if building from source
-using the `librice` repository for development, or the the `librice-proto` C API
-must be available in the build environment through pkg-config.
+Otherwise, this crate requires a pre-existing installation of the C library
+`librice-proto` that can be found using `pkg-config` (through `system-deps`).
+Running the following command will indicate whether your environment contains
+`librice-proto`.
+```
+pkg-config --modversion librice-proto
+```
+
+If you need to build `librice-proto` with the C API, have a look at [the
+README](https://github.com/ystreet/librice/tree/main/librice-proto).
+
+Once the the prerequisite is handled, you can build `librice-c` using a
+regular `cargo build` invocation.

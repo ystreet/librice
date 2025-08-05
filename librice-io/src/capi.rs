@@ -695,11 +695,11 @@ pub unsafe extern "C" fn rice_sockets_remove_tcp(
     remote_addr: *const RiceAddress,
 ) -> *mut RiceTcpSocket {
     let sockets = Arc::from_raw(sockets);
-    let local_addr = RiceAddress::from_c(local_addr);
-    let remote_addr = RiceAddress::from_c(remote_addr);
+    let local_addr = RiceAddress::from_c_none(local_addr);
+    let remote_addr = RiceAddress::from_c_none(remote_addr);
     let mut inner = sockets.inner.lock().unwrap();
 
-    let ret = if let Some(tcp_task) = inner.tcp_sockets.remove(&(**local_addr, **remote_addr)) {
+    let ret = if let Some(tcp_task) = inner.tcp_sockets.remove(&(*local_addr, *remote_addr)) {
         drop(tcp_task.readable);
         mut_override(Arc::into_raw(tcp_task.inner))
     } else {
@@ -708,8 +708,6 @@ pub unsafe extern "C" fn rice_sockets_remove_tcp(
 
     drop(inner);
     core::mem::forget(sockets);
-    core::mem::forget(local_addr);
-    core::mem::forget(remote_addr);
 
     ret
 }
@@ -721,7 +719,7 @@ pub unsafe extern "C" fn rice_sockets_remove_udp(
     local_addr: *const RiceAddress,
 ) -> *mut RiceUdpSocket {
     let sockets = Arc::from_raw(sockets);
-    let local_addr = RiceAddress::from_c(local_addr);
+    let local_addr = RiceAddress::from_c_none(local_addr);
     let mut inner = sockets.inner.lock().unwrap();
 
     let ret = if let Some(udp_task) = inner.udp_sockets.remove(&*local_addr) {
@@ -733,7 +731,6 @@ pub unsafe extern "C" fn rice_sockets_remove_udp(
 
     drop(inner);
     core::mem::forget(sockets);
-    core::mem::forget(local_addr);
 
     ret
 }
@@ -778,7 +775,7 @@ pub unsafe extern "C" fn rice_interfaces(ret_len: *mut usize) -> *mut *mut RiceA
 pub unsafe extern "C" fn rice_addresses_free(addresses: *mut *mut RiceAddress, len: usize) {
     let addresses = Box::from_raw(core::slice::from_raw_parts_mut(addresses, len));
     for i in 0..len {
-        let _addr = RiceAddress::from_c(addresses[i]);
+        let _addr = RiceAddress::from_c_full(addresses[i]);
     }
 }
 
@@ -795,12 +792,8 @@ pub unsafe extern "C" fn rice_sockets_send(
     len: usize,
 ) -> RiceError {
     let sockets = Arc::from_raw(sockets);
-    let from_addr = RiceAddress::from_c(mut_override(from));
-    let from = **from_addr;
-    core::mem::forget(from_addr);
-    let to_addr = RiceAddress::from_c(mut_override(to));
-    let to = **to_addr;
-    core::mem::forget(to_addr);
+    let from = *RiceAddress::from_c_none(mut_override(from));
+    let to = *RiceAddress::from_c_none(mut_override(to));
     let data = core::slice::from_raw_parts(data, len);
     let inner = sockets.inner.lock().unwrap();
     let ret = match transport {
@@ -812,7 +805,7 @@ pub unsafe extern "C" fn rice_sockets_send(
                     RiceError::Success
                 }
             } else {
-                RiceError::NotFound
+                RiceError::ResourceNotFound
             }
         }
         RiceTransportType::Tcp => {
@@ -824,7 +817,7 @@ pub unsafe extern "C" fn rice_sockets_send(
                     RiceError::Success
                 }
             } else {
-                RiceError::NotFound
+                RiceError::ResourceNotFound
             }
         }
     };
@@ -844,9 +837,9 @@ pub struct RiceIoData {
 }
 
 unsafe fn rice_io_data_clear(data: &mut RiceIoData) {
-    let _from = RiceAddress::from_c(data.from);
+    let _from = RiceAddress::from_c_full(data.from);
     data.from = core::ptr::null_mut();
-    let _to = RiceAddress::from_c(data.to);
+    let _to = RiceAddress::from_c_full(data.to);
     data.to = core::ptr::null_mut();
 }
 
@@ -877,8 +870,8 @@ pub unsafe extern "C" fn rice_recv_clear(recv: *mut RiceIoRecv) {
             rice_io_data_clear(data);
         }
         RiceIoRecv::Closed(closed) => {
-            let _from = RiceAddress::from_c(closed.from);
-            let _to = RiceAddress::from_c(closed.to);
+            let _from = RiceAddress::from_c_full(closed.from);
+            let _to = RiceAddress::from_c_full(closed.to);
         }
         RiceIoRecv::WouldBlock => (),
     }

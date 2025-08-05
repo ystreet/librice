@@ -16,17 +16,29 @@ jobs:
 
     steps:
     - uses: actions/checkout@v2
+    - name: Install cargo-c
+      uses: taiki-e/cache-cargo-install-action@v2
+      with:
+        tool: cargo-c
     - name: Build
       run: cargo build --verbose
   test:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
+    - name: Install cargo-c
+      uses: taiki-e/cache-cargo-install-action@v2
+      with:
+        tool: cargo-c
     - name: Run tests
       run: cargo test --verbose
   clippy:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
+    - name: Install cargo-c
+      uses: taiki-e/cache-cargo-install-action@v2
+      with:
+        tool: cargo-c
     - name: clippy
       run: cargo clippy --verbose

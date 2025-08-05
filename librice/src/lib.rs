@@ -16,9 +16,7 @@ pub mod socket;
 pub mod stream;
 mod utils;
 
-pub use librice_proto::candidate;
-
-pub use stun_proto::types as stun;
+pub use librice_c::candidate;
 
 #[cfg(test)]
 pub(crate) mod tests {
