@@ -10,6 +10,8 @@ use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use stun_proto::agent::HandleStunReply;
 use stun_proto::agent::StunAgent;
+use stun_proto::types::attribute::*;
+use stun_proto::types::message::*;
 
 use std::fmt::Display;
 use std::net::SocketAddr;
@@ -21,8 +23,6 @@ use async_std::net::{TcpListener, UdpSocket};
 use futures::StreamExt;
 
 use librice::agent::*;
-use librice::stun::attribute::*;
-use librice::stun::message::*;
 
 pub fn debug_init() {
     use tracing_subscriber::layer::SubscriberExt;

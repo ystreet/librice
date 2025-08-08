@@ -19,7 +19,25 @@ use tracing_futures::Instrument;
 
 use crate::utils::DebugWrapper;
 
-use librice_proto::candidate::TransportType;
+use librice_c::candidate::TransportType;
+
+pub(crate) struct Transmit<T: AsRef<[u8]> + std::fmt::Debug> {
+    pub transport: TransportType,
+    pub from: SocketAddr,
+    pub to: SocketAddr,
+    pub data: T,
+}
+
+impl<T: AsRef<[u8]> + std::fmt::Debug> Transmit<T> {
+    pub fn new(data: T, transport: TransportType, from: SocketAddr, to: SocketAddr) -> Self {
+        Self {
+            data,
+            transport,
+            from,
+            to,
+        }
+    }
+}
 
 const MAX_STUN_MESSAGE_SIZE: usize = 1500 * 2;
 

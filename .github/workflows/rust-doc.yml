@@ -19,6 +19,10 @@ jobs:
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
+      - name: Install cargo-c
+        uses: taiki-e/cache-cargo-install-action@v2
+        with:
+          tool: cargo-c
       - uses: actions-rs/cargo@v1
         with:
           command: doc

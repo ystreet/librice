@@ -15,10 +15,9 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: Install cargo-c
-      uses: actions-rs/cargo@v1
+      uses: taiki-e/cache-cargo-install-action@v2 
       with:
-        command: install
-        args: 'cargo-c'
+        tool: cargo-c
     - name: CBuild librice-proto
       run: cargo cbuild -p librice-proto --verbose
     - name: CBuild librice-io
@@ -28,10 +27,9 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: Install cargo-c
-      uses: actions-rs/cargo@v1
+      uses: taiki-e/cache-cargo-install-action@v2 
       with:
-        command: install
-        args: 'cargo-c'
+        tool: cargo-c
     - name: CTest librice-proto
       run: cargo ctest -p librice-proto --verbose
     - name: CTest librice-io

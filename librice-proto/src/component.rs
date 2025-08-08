@@ -12,7 +12,6 @@ use std::net::SocketAddr;
 use std::time::Instant;
 
 use stun_proto::agent::Transmit;
-use stun_proto::types::data::Data;
 use stun_proto::types::message::{Message, MessageWriteVec, BINDING};
 use stun_proto::types::prelude::MessageWrite;
 use turn_client_proto::api::{DelayedTransmitBuild, TurnClientApi};
@@ -173,7 +172,7 @@ impl<'a> ComponentMut<'a> {
         &mut self,
         data: T,
         now: Instant,
-    ) -> Result<Transmit<Data<'static>>, AgentError> {
+    ) -> Result<Transmit<Box<[u8]>>, AgentError> {
         // TODO: store statistics about bytes/packets sent
         let stream = self.agent.stream_state(self.stream_id).unwrap();
         let checklist_id = stream.checklist_id;
@@ -205,9 +204,8 @@ impl<'a> ComponentMut<'a> {
                 "sending {} bytes from {} {} through TURN server {} with allocation {local_transport} {local_addr} to {remote_addr}",
                 data_len, transmit.transport, transmit.from, transmit.to,
             );
-            let data = Data::from(transmit.data.build().into_boxed_slice());
             Ok(Transmit::new(
-                data,
+                transmit.data.build().into_boxed_slice(),
                 transmit.transport,
                 transmit.from,
                 transmit.to,
@@ -221,7 +219,8 @@ impl<'a> ComponentMut<'a> {
                 data_len
             );
             let transmit = stun_agent.send_data(data, remote_addr);
-            Ok(transmit_send(&transmit))
+            let transport = transmit.transport;
+            Ok(transmit.reinterpret_data(|data| transmit_send(transport, data.as_ref())))
         }
     }
 }

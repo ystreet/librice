@@ -12,15 +12,15 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use librice_proto::agent::{AgentError as ProtoAgentError, AgentPoll, AgentTransmit};
-use librice_proto::component::ComponentConnectionState;
+use librice_c::agent::{AgentError as ProtoAgentError, AgentPoll, AgentTransmit};
+use librice_c::component::ComponentConnectionState;
 
 use crate::component::{Component, SelectedPair};
 use crate::stream::Stream;
-pub use librice_proto::agent::TurnCredentials;
-use librice_proto::candidate::{Candidate, TransportType};
+pub use librice_c::agent::TurnCredentials;
+use librice_c::candidate::{Candidate, CandidatePair, TransportType};
 
 /// Errors that can be returned as a result of agent operations.
 #[derive(Debug)]
@@ -50,7 +50,9 @@ impl std::fmt::Display for AgentError {
 /// An ICE agent as specified in RFC 8445
 #[derive(Debug)]
 pub struct Agent {
-    agent: Arc<Mutex<librice_proto::agent::Agent>>,
+    agent: Arc<Mutex<librice_c::agent::Agent>>,
+    base_instant: Instant,
+    base_micros: u64,
     inner: Arc<Mutex<AgentInner>>,
 }
 
@@ -77,14 +79,18 @@ impl AgentBuilder {
 
     /// Construct a new [`Agent`]
     pub fn build(self) -> Agent {
-        let agent = Arc::new(Mutex::new(
-            librice_proto::agent::Agent::builder()
-                .trickle_ice(self.trickle_ice)
-                .controlling(self.controlling)
-                .build(),
-        ));
+        let agent = librice_c::agent::Agent::builder()
+            .trickle_ice(self.trickle_ice)
+            .controlling(self.controlling)
+            .build();
+        let base_instant = Instant::now();
+        let base_micros = agent.now();
+
+        let agent = Arc::new(Mutex::new(agent));
         Agent {
             agent,
+            base_instant,
+            base_micros,
             inner: Arc::new(Mutex::new(AgentInner::default())),
         }
     }
@@ -102,7 +108,7 @@ impl Agent {
         AgentBuilder::default()
     }
 
-    fn id(&self) -> usize {
+    fn id(&self) -> u64 {
         self.agent.lock().unwrap().id()
     }
 
@@ -112,6 +118,8 @@ impl Agent {
         AgentStream {
             agent: self.agent.clone(),
             timer: None,
+            base_micros: self.base_micros,
+            base_instant: self.base_instant,
             pending_transmit: None,
             inner: self.inner.clone(),
         }
@@ -136,11 +144,16 @@ impl Agent {
         )
     )]
     pub fn add_stream(&self) -> Stream {
-        let stream_id = self.agent.lock().unwrap().add_stream();
+        let proto_stream = self.agent.lock().unwrap().add_stream();
         let weak_proto_agent = Arc::downgrade(&self.agent);
         let weak_inner = Arc::downgrade(&self.inner);
-        let ret = crate::stream::Stream::new(weak_proto_agent, weak_inner, stream_id);
         let mut inner = self.inner.lock().unwrap();
+        let ret = crate::stream::Stream::new(
+            weak_proto_agent,
+            weak_inner,
+            proto_stream,
+            inner.streams.len(),
+        );
         inner.streams.push(ret.clone());
         ret
     }
@@ -152,7 +165,9 @@ impl Agent {
 
     /// Close the agent loop
     pub fn close(&self) {
-        self.agent.lock().unwrap().close(Instant::now());
+        let now = Instant::now();
+        let now_micros = (now - self.base_instant).as_micros() as u64 + self.base_micros;
+        self.agent.lock().unwrap().close(now_micros);
         let mut inner = self.inner.lock().unwrap();
         if let Some(waker) = inner.waker.take() {
             waker.wake();
@@ -167,7 +182,10 @@ impl Agent {
 
     /// Add a STUN server by address and transport to use for gathering potential candidates
     pub fn add_stun_server(&self, transport: TransportType, addr: SocketAddr) {
-        self.agent.lock().unwrap().add_stun_server(transport, addr)
+        self.agent
+            .lock()
+            .unwrap()
+            .add_stun_server(transport, addr.into())
     }
 
     /// Add a TURN server by address and transport to use for gathering potential candidates
@@ -180,7 +198,7 @@ impl Agent {
         self.agent
             .lock()
             .unwrap()
-            .add_turn_server(transport, addr, credentials)
+            .add_turn_server(transport, addr.into(), credentials)
         // TODO: propagate towards the gatherer as required
     }
 }
@@ -203,7 +221,9 @@ pub enum AgentMessage {
 
 #[derive(Debug)]
 struct AgentStream {
-    agent: Arc<Mutex<librice_proto::agent::Agent>>,
+    agent: Arc<Mutex<librice_c::agent::Agent>>,
+    base_instant: Instant,
+    base_micros: u64,
     inner: Arc<Mutex<AgentInner>>,
     timer: Option<Pin<Box<async_io::Timer>>>,
     pending_transmit: Option<AgentTransmit>,
@@ -213,14 +233,13 @@ impl futures::stream::Stream for AgentStream {
     type Item = AgentMessage;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if let Some(mut transmit) = self.pending_transmit.take() {
+        if let Some(transmit) = self.pending_transmit.take() {
             let mut inner = self.inner.lock().unwrap();
             inner.waker = Some(cx.waker().clone());
             if let Some(stream) = inner.streams.get(transmit.stream_id) {
-                if let Some(retry) = stream.handle_transmit(transmit.transmit) {
-                    transmit.transmit = retry;
+                if let Some(retry) = stream.handle_transmit(transmit) {
                     drop(inner);
-                    self.as_mut().pending_transmit = Some(transmit);
+                    self.as_mut().pending_transmit = Some(retry);
                     return Poll::Pending;
                 }
             }
@@ -231,13 +250,14 @@ impl futures::stream::Stream for AgentStream {
 
         let weak_proto_agent = Arc::downgrade(&self.agent);
         let weak_agent_inner = Arc::downgrade(&self.inner);
-        let mut agent = self.agent.lock().unwrap();
+        let agent = self.agent.lock().unwrap();
         let now = Instant::now();
+        let now_micros = (now - self.base_instant).as_micros() as u64 + self.base_micros;
 
         let wait = {
-            let wait = match agent.poll(now) {
+            let wait = match agent.poll(now_micros) {
                 AgentPoll::Closed => return Poll::Ready(None),
-                AgentPoll::AllocateSocket(allocate) => {
+                AgentPoll::AllocateSocket(ref allocate) => {
                     drop(agent);
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(allocate.stream_id) {
@@ -250,14 +270,14 @@ impl futures::stream::Stream for AgentStream {
                             allocate.stream_id,
                             allocate.component_id,
                             allocate.transport,
-                            allocate.from,
-                            allocate.to,
+                            allocate.from.clone(),
+                            allocate.to.clone(),
                         );
                     }
                     cx.waker().wake_by_ref();
                     return Poll::Pending;
                 }
-                AgentPoll::RemoveSocket(remove) => {
+                AgentPoll::RemoveSocket(ref remove) => {
                     drop(agent);
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(remove.stream_id) {
@@ -266,24 +286,23 @@ impl futures::stream::Stream for AgentStream {
                         Stream::handle_remove_socket(
                             weak_stream,
                             remove.transport,
-                            remove.from,
-                            remove.to,
+                            remove.from.clone(),
+                            remove.to.clone(),
                         );
                     }
                     cx.waker().wake_by_ref();
                     return Poll::Pending;
                 }
-                AgentPoll::WaitUntil(time) => Some(time),
-                AgentPoll::SelectedPair(pair) => {
+                AgentPoll::WaitUntilMicros(time) => Some(time),
+                AgentPoll::SelectedPair(ref pair) => {
                     drop(agent);
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(pair.stream_id) {
                         if let Some(component) = stream.component(pair.component_id) {
-                            if let Some(socket) =
-                                stream.socket_for_pair(pair.selected.candidate_pair())
+                            if let Some(socket) = stream.socket_for_pair(&pair.local, &pair.remote)
                             {
                                 if let Err(e) = component.set_selected_pair(SelectedPair::new(
-                                    pair.selected.candidate_pair().clone(),
+                                    CandidatePair::new(pair.local.clone(), pair.remote.clone()),
                                     socket,
                                 )) {
                                     warn!("Failed setting the selected pair: {e:?}");
@@ -294,7 +313,7 @@ impl futures::stream::Stream for AgentStream {
                     cx.waker().wake_by_ref();
                     return Poll::Pending;
                 }
-                AgentPoll::ComponentStateChange(state) => {
+                AgentPoll::ComponentStateChange(ref state) => {
                     drop(agent);
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(state.stream_id) {
@@ -308,12 +327,12 @@ impl futures::stream::Stream for AgentStream {
                     cx.waker().wake_by_ref();
                     return Poll::Pending;
                 }
-                AgentPoll::GatheredCandidate(gathered) => {
+                AgentPoll::GatheredCandidate(ref mut gathered) => {
                     drop(agent);
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(gathered.stream_id) {
-                        let candidate = gathered.gathered.candidate.clone();
-                        if stream.add_local_gathered_candidates(gathered.gathered) {
+                        let candidate = gathered.gathered.candidate();
+                        if stream.add_local_gathered_candidates(gathered.gathered.take()) {
                             return Poll::Ready(Some(AgentMessage::GatheredCandidate(
                                 stream.clone(),
                                 candidate,
@@ -323,7 +342,7 @@ impl futures::stream::Stream for AgentStream {
                     cx.waker().wake_by_ref();
                     return Poll::Pending;
                 }
-                AgentPoll::GatheringComplete(complete) => {
+                AgentPoll::GatheringComplete(ref complete) => {
                     drop(agent);
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(complete.stream_id) {
@@ -338,15 +357,13 @@ impl futures::stream::Stream for AgentStream {
                 }
             };
 
-            if let Some(mut transmit) = agent.poll_transmit(now) {
+            if let Some(transmit) = agent.poll_transmit(now_micros) {
                 drop(agent);
                 let inner = self.inner.lock().unwrap();
                 if let Some(stream) = inner.streams.get(transmit.stream_id) {
-                    if let Some(retry) = stream.handle_transmit(transmit.transmit) {
-                        transmit.transmit = retry;
-
+                    if let Some(retry) = stream.handle_transmit(transmit) {
                         drop(inner);
-                        self.as_mut().pending_transmit = Some(transmit);
+                        self.as_mut().pending_transmit = Some(retry);
                         return Poll::Pending;
                     }
                 }
@@ -358,9 +375,10 @@ impl futures::stream::Stream for AgentStream {
         drop(agent);
 
         if let Some(wait) = wait {
+            let wait_instant = self.base_instant + Duration::from_micros(wait - self.base_micros);
             match self.as_mut().timer.as_mut() {
-                Some(timer) => timer.set_at(wait),
-                None => self.as_mut().timer = Some(Box::pin(async_io::Timer::at(wait))),
+                Some(timer) => timer.set_at(wait_instant),
+                None => self.as_mut().timer = Some(Box::pin(async_io::Timer::at(wait_instant))),
             }
             if core::future::Future::poll(self.as_mut().timer.as_mut().unwrap().as_mut(), cx)
                 .is_pending()

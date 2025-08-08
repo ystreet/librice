@@ -11,7 +11,7 @@
 use std::error::Error;
 use std::fmt::Display;
 use std::net::SocketAddr;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 
 use rand::prelude::*;
@@ -62,7 +62,7 @@ impl Error for AgentError {}
 
 impl Display for AgentError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
@@ -96,7 +96,7 @@ impl From<StunParseError> for AgentError {
 /// An ICE agent as specified in RFC 8445
 #[derive(Debug)]
 pub struct Agent {
-    id: usize,
+    id: u64,
     pub(crate) checklistset: ConnCheckListSet,
     pub(crate) stun_servers: Vec<(TransportType, SocketAddr)>,
     pub(crate) turn_servers: Vec<(TransportType, SocketAddr, TurnCredentials)>,
@@ -142,7 +142,7 @@ impl AgentBuilder {
     }
 }
 
-static AGENT_COUNT: AtomicUsize = AtomicUsize::new(0);
+static AGENT_COUNT: AtomicU64 = AtomicU64::new(0);
 
 impl Default for Agent {
     fn default() -> Self {
@@ -157,7 +157,7 @@ impl Agent {
     }
 
     /// The identifier for this [`Agent`]
-    pub fn id(&self) -> usize {
+    pub fn id(&self) -> u64 {
         self.id
     }
 
@@ -433,10 +433,7 @@ impl Agent {
         for stream in self.streams.iter_mut() {
             let stream_id = stream.id();
             if let Some((_component_id, transmit)) = stream.poll_gather_transmit(now) {
-                return Some(AgentTransmit {
-                    stream_id,
-                    transmit: transmit.into_owned(),
-                });
+                return Some(AgentTransmit::from_data(stream_id, transmit));
             }
         }
         let transmit = self.checklistset.poll_transmit(now)?;
@@ -486,7 +483,21 @@ pub enum AgentPoll {
 #[derive(Debug)]
 pub struct AgentTransmit {
     pub stream_id: usize,
-    pub transmit: Transmit<Data<'static>>,
+    pub transmit: Transmit<Box<[u8]>>,
+}
+
+impl AgentTransmit {
+    fn from_data(stream_id: usize, transmit: Transmit<Data<'_>>) -> Self {
+        Self {
+            stream_id,
+            transmit: transmit.reinterpret_data(|data| {
+                let Data::Owned(owned) = data.into_owned() else {
+                    unreachable!();
+                };
+                owned.take()
+            }),
+        }
+    }
 }
 
 /// A socket with the specified network 5-tuple.

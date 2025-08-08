@@ -1,0 +1,178 @@
+// Copyright (C) 2025 Matthew Waters <matthew@centricular.com>
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
+
+#![deny(missing_debug_implementations)]
+//#![deny(missing_docs)]
+
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+pub mod ffi;
+
+pub mod agent;
+pub mod candidate;
+pub mod component;
+pub mod stream;
+
+pub struct Address {
+    ffi: *mut crate::ffi::RiceAddress,
+}
+
+unsafe impl Send for Address {}
+unsafe impl Sync for Address {}
+
+impl core::fmt::Debug for Address {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.ffi.is_null() {
+            f.debug_struct("Address").field("ffi", &self.ffi).finish()
+        } else {
+            f.debug_struct("Address")
+                .field("ffi", &self.ffi)
+                .field("value", &self.as_socket())
+                .finish()
+        }
+    }
+}
+
+impl Clone for Address {
+    fn clone(&self) -> Self {
+        Self {
+            ffi: unsafe { crate::ffi::rice_address_copy(self.ffi) },
+        }
+    }
+}
+
+impl Drop for Address {
+    fn drop(&mut self) {
+        unsafe { crate::ffi::rice_address_free(self.ffi) }
+    }
+}
+
+impl Address {
+    pub(crate) fn as_c(&self) -> *mut crate::ffi::RiceAddress {
+        self.ffi
+    }
+
+    pub(crate) fn into_c_full(self) -> *mut crate::ffi::RiceAddress {
+        let ret = self.ffi;
+        core::mem::forget(self);
+        ret
+    }
+
+    pub(crate) fn from_c_none(ffi: *const crate::ffi::RiceAddress) -> Self {
+        Self {
+            ffi: unsafe { crate::ffi::rice_address_copy(ffi) },
+        }
+    }
+
+    pub(crate) fn from_c_full(ffi: *mut crate::ffi::RiceAddress) -> Self {
+        Self { ffi }
+    }
+
+    pub fn as_socket(&self) -> SocketAddr {
+        self.into()
+    }
+}
+
+impl From<SocketAddr> for Address {
+    fn from(addr: SocketAddr) -> Self {
+        match addr.ip() {
+            IpAddr::V4(v4) => Self {
+                ffi: unsafe {
+                    crate::ffi::rice_address_new_from_bytes(
+                        crate::ffi::RICE_ADDRESS_FAMILY_IPV4,
+                        v4.octets().as_ptr(),
+                        addr.port(),
+                    )
+                },
+            },
+            IpAddr::V6(v6) => Self {
+                ffi: unsafe {
+                    crate::ffi::rice_address_new_from_bytes(
+                        crate::ffi::RICE_ADDRESS_FAMILY_IPV6,
+                        v6.octets().as_ptr(),
+                        addr.port(),
+                    )
+                },
+            },
+        }
+    }
+}
+
+impl From<&Address> for SocketAddr {
+    fn from(value: &Address) -> Self {
+        unsafe {
+            let port = crate::ffi::rice_address_get_port(value.ffi);
+            let ip = match crate::ffi::rice_address_get_family(value.ffi) {
+                crate::ffi::RICE_ADDRESS_FAMILY_IPV4 => {
+                    let mut octets = [0; 4];
+                    crate::ffi::rice_address_get_address_bytes(value.ffi, octets.as_mut_ptr());
+                    IpAddr::V4(Ipv4Addr::from(octets))
+                }
+                crate::ffi::RICE_ADDRESS_FAMILY_IPV6 => {
+                    let mut octets = [0; 16];
+                    crate::ffi::rice_address_get_address_bytes(value.ffi, octets.as_mut_ptr());
+                    IpAddr::V6(Ipv6Addr::from(octets))
+                }
+                val => panic!("Unknown address family value {val:x?}"),
+            };
+            SocketAddr::new(ip, port)
+        }
+    }
+}
+
+impl std::str::FromStr for Address {
+    type Err = std::net::AddrParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let addr: SocketAddr = s.parse()?;
+        Ok(Self::from(addr))
+    }
+}
+
+impl PartialEq<Address> for Address {
+    fn eq(&self, other: &Address) -> bool {
+        unsafe { crate::ffi::rice_address_cmp(self.ffi, other.ffi) == 0 }
+    }
+}
+
+fn mut_override<T>(val: *const T) -> *mut T {
+    val as *mut T
+}
+
+fn const_override<T>(val: *mut T) -> *const T {
+    val as *const T
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use tracing::subscriber::DefaultGuard;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::Layer;
+
+    use super::*;
+
+    pub fn test_init_log() -> DefaultGuard {
+        let level_filter = std::env::var("RICE_LOG")
+            .or(std::env::var("RUST_LOG"))
+            .ok()
+            .and_then(|var| var.parse::<tracing_subscriber::filter::Targets>().ok())
+            .unwrap_or(
+                tracing_subscriber::filter::Targets::new().with_default(tracing::Level::TRACE),
+            );
+        let registry = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .with_file(true)
+                .with_line_number(true)
+                .with_level(true)
+                .with_target(false)
+                .with_test_writer()
+                .with_filter(level_filter),
+        );
+        tracing::subscriber::set_default(registry)
+    }
+}
