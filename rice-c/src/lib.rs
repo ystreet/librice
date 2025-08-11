@@ -18,6 +18,11 @@ pub mod candidate;
 pub mod component;
 pub mod stream;
 
+/// Prelude module.
+pub mod prelude {
+    pub use crate::candidate::CandidateApi;
+}
+
 /// A network address.
 pub struct Address {
     ffi: *mut crate::ffi::RiceAddress,

@@ -3138,8 +3138,8 @@ impl ConnCheckListSet {
                                 check.set_state(CandidatePairState::Failed);
                             }
                         }
-                        TurnEvent::ChannelCreated(_transport, peer_addr) => (),
-                        TurnEvent::ChannelCreateFailed(_transport, addr) => (),
+                        TurnEvent::ChannelCreated(_transport, _peer_addr) => (),
+                        TurnEvent::ChannelCreateFailed(_transport, _addr) => (),
                     }
                 }
 

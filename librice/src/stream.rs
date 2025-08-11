@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use async_std::net::TcpStream;
 use futures::StreamExt;
+use rice_c::prelude::*;
 use rice_c::Address;
 
 use crate::agent::{AgentError, AgentInner};

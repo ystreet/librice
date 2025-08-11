@@ -252,14 +252,11 @@ impl AgentPoll {
                 crate::ffi::RICE_AGENT_POLL_SELECTED_PAIR => {
                     let mut ty =
                         core::mem::ManuallyDrop::into_inner(ffi.field1.field4).selected_pair;
-                    let local = crate::candidate::Candidate::from_c_full(
-                        crate::ffi::rice_candidate_copy(&ty.local),
-                    );
-                    let remote = crate::candidate::Candidate::from_c_full(
-                        crate::ffi::rice_candidate_copy(&ty.remote),
-                    );
+                    let local = crate::candidate::Candidate::from_c_none(&ty.local);
+                    let remote = crate::candidate::Candidate::from_c_none(&ty.remote);
                     crate::ffi::rice_candidate_clear(&mut ty.local);
                     crate::ffi::rice_candidate_clear(&mut ty.remote);
+                    ffi.tag = crate::ffi::RICE_AGENT_POLL_CLOSED;
                     Self::SelectedPair(AgentSelectedPair {
                         stream_id: ty.stream_id,
                         component_id: ty.component_id,
@@ -313,7 +310,10 @@ impl Drop for AgentPoll {
                             crate::ffi::RiceAgentPoll__bindgen_ty_1__bindgen_ty_6 {
                                 gathered_candidate: crate::ffi::RiceAgentGatheredCandidate {
                                     stream_id: gathered.stream_id,
-                                    gathered: core::mem::take(&mut gathered.gathered.ffi),
+                                    gathered: crate::stream::GatheredCandidate::take(
+                                        &mut gathered.gathered,
+                                    )
+                                    .ffi,
                                 },
                             },
                         ),

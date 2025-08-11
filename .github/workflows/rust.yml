@@ -41,4 +41,4 @@ jobs:
       with:
         tool: cargo-c
     - name: clippy
-      run: cargo clippy --verbose
+      run: cargo clippy --verbose -- -Dwarnings

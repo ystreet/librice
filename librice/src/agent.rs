@@ -43,7 +43,7 @@ impl From<std::io::Error> for AgentError {
 
 impl std::fmt::Display for AgentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
@@ -303,7 +303,10 @@ impl futures::stream::Stream for AgentStream {
                             if let Some(socket) = stream.socket_for_pair(&pair.local, &pair.remote)
                             {
                                 if let Err(e) = component.set_selected_pair(SelectedPair::new(
-                                    CandidatePair::new(pair.local.clone(), pair.remote.clone()),
+                                    CandidatePair::new(
+                                        pair.local.to_owned(),
+                                        pair.remote.to_owned(),
+                                    ),
                                     socket,
                                 )) {
                                     warn!("Failed setting the selected pair: {e:?}");
@@ -333,9 +336,9 @@ impl futures::stream::Stream for AgentStream {
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(gathered.stream_id) {
                         let candidate = gathered.gathered.candidate();
-                        if stream
-                            .add_local_gathered_candidates(core::mem::take(&mut gathered.gathered))
-                        {
+                        if stream.add_local_gathered_candidates(
+                            rice_c::stream::GatheredCandidate::take(&mut gathered.gathered),
+                        ) {
                             return Poll::Ready(Some(AgentMessage::GatheredCandidate(
                                 stream.clone(),
                                 candidate,

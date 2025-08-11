@@ -52,17 +52,17 @@ impl RiceData {
     }
 }
 
-impl Default for RiceGatheredCandidate {
-    fn default() -> Self {
+impl RiceGatheredCandidate {
+    pub(crate) unsafe fn zeroed() -> Self {
         RiceGatheredCandidate {
-            candidate: RiceCandidate::default(),
+            candidate: RiceCandidate::zeroed(),
             turn_agent: core::ptr::null_mut(),
         }
     }
 }
 
-impl Default for RiceCandidate {
-    fn default() -> Self {
+impl RiceCandidate {
+    pub(crate) unsafe fn zeroed() -> Self {
         RiceCandidate {
             component_id: 1,
             candidate_type: RICE_CANDIDATE_TYPE_HOST,
