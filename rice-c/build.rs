@@ -32,6 +32,8 @@ fn main() {
         && rice_proto_exists
     {
         env::set_var("SYSTEM_DEPS_RICE_PROTO_BUILD_INTERNAL", "auto");
+        // use static linking for `cargo tarpaulin` to be able to run doc tests correctly.
+        env::set_var("SYSTEM_DEPS_RICE_PROTO_LINK", "static");
     }
     let config = system_deps::Config::new()
         .add_build_internal("rice-proto", move |lib, version| {
