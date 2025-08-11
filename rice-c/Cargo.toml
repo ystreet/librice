@@ -24,3 +24,8 @@ tracing-subscriber.workspace = true
 
 [package.metadata.system-deps]
 rice-proto = "0.0.5"
+
+[package.metadata.docs.rs]
+all-features = true
+rustc-args = ["--cfg", "docsrs"]
+rustdoc-args = ["--cfg", "docsrs", "--generate-link-to-definition"]
