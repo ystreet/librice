@@ -14,6 +14,8 @@ use async_std::net::{TcpListener, UdpSocket};
 use futures::future::{AbortHandle, Abortable, Aborted};
 use futures::{SinkExt, StreamExt};
 
+use rice_c::prelude::*;
+
 use librice::agent::{Agent, AgentMessage};
 use librice::candidate::TransportType;
 use librice::component::ComponentConnectionState;

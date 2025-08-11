@@ -495,7 +495,7 @@ impl StunGatherer {
 
     /// Poll the gatherer for transmission.  Should be called repeatedly until None is returned.
     #[tracing::instrument(name = "gatherer_poll_transmit", level = "trace", skip(self))]
-    pub(crate) fn poll_transmit(&mut self, now: Instant) -> Option<Transmit<Data>> {
+    pub(crate) fn poll_transmit(&mut self, now: Instant) -> Option<Transmit<Data<'_>>> {
         if let Some(transmit) = self.pending_transmits.pop_back() {
             trace!(
                 "returning {:?} byte {} transmission from {} -> {}",

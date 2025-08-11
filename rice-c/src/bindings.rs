@@ -700,6 +700,13 @@ unsafe extern "C" {
     ) -> *mut RiceCandidate;
 }
 unsafe extern "C" {
+    #[doc = " Construct a `RiceCandidate` from a string as formatted in an SDP and specified in RFC5245\n Section 15.1.\n\n Takes the form 'a=candidate:foundation 1 UDP 12345 127.0.0.1 23456 typ host'."]
+    pub fn rice_candidate_init_from_sdp_string(
+        candidate: *mut RiceCandidate,
+        cand_str: *const ::core::ffi::c_char,
+    ) -> RiceError;
+}
+unsafe extern "C" {
     #[doc = " Return a SDP candidate string as specified in RFC5245 Section 15.1."]
     pub fn rice_candidate_to_sdp_string(
         candidate: *const RiceCandidate,
@@ -718,6 +725,17 @@ unsafe extern "C" {
         foundation: *const ::core::ffi::c_char,
         address: *mut RiceAddress,
     ) -> *mut RiceCandidate;
+}
+unsafe extern "C" {
+    #[doc = " Construct a new `RiceCandidate` with the provided values."]
+    pub fn rice_candidate_init(
+        candidate: *mut RiceCandidate,
+        component_id: usize,
+        ctype: RiceCandidateType,
+        ttype: RiceTransportType,
+        foundation: *const ::core::ffi::c_char,
+        address: *mut RiceAddress,
+    ) -> RiceError;
 }
 unsafe extern "C" {
     #[doc = " Set the base address of a `RiceCandidate`."]
@@ -744,6 +762,10 @@ unsafe extern "C" {
 unsafe extern "C" {
     #[doc = " Perform a deep copy of a `RiceCandidate`."]
     pub fn rice_candidate_copy(candidate: *const RiceCandidate) -> *mut RiceCandidate;
+}
+unsafe extern "C" {
+    #[doc = " Perform a deep copy of a `RiceCandidate`."]
+    pub fn rice_candidate_copy_into(candidate: *const RiceCandidate, ret: *mut RiceCandidate);
 }
 unsafe extern "C" {
     #[doc = " Clear any resources allocated within a `RiceCandidate`.\n\n Useful for stack-allocated `RiceCandidate`s or when embedded in other structures.\n\n This function is NULL safe."]

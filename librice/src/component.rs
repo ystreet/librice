@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::task::{Poll, Waker};
 
 use rice_c::candidate::CandidatePair;
+use rice_c::prelude::*;
 
 pub use rice_c::component::ComponentConnectionState;
 use rice_c::stream::RecvData as CRecvData;
@@ -101,7 +102,7 @@ impl Component {
 
         trace!("sending {} bytes to {:?}", data.len(), to);
         channel
-            .send_to(&transmit.data, transmit.to.as_socket())
+            .send_to(transmit.data, transmit.to.as_socket())
             .await?;
 
         Ok(())
@@ -278,7 +279,7 @@ mod tests {
                 remote_addr.into(),
             )
             .build();
-            let candidate_pair = CandidatePair::new(local_cand, remote_cand);
+            let candidate_pair = CandidatePair::new(local_cand.to_owned(), remote_cand.to_owned());
             let selected_pair = SelectedPair::new(candidate_pair, local_channel);
 
             send.set_selected_pair(selected_pair.clone()).unwrap();

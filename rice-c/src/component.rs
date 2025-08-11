@@ -59,19 +59,15 @@ impl Component {
     /// be valid until the [`Component`] has reached [`ComponentConnectionState::Connected`]
     pub fn selected_pair(&self) -> Option<CandidatePair> {
         unsafe {
-            let mut local = crate::ffi::RiceCandidate::default();
-            let mut remote = crate::ffi::RiceCandidate::default();
+            let mut local = crate::ffi::RiceCandidate::zeroed();
+            let mut remote = crate::ffi::RiceCandidate::zeroed();
             crate::ffi::rice_component_selected_pair(self.ffi, &mut local, &mut remote);
             if local.address.is_null() || remote.address.is_null() {
                 None
             } else {
                 Some(crate::candidate::CandidatePair::new(
-                    crate::candidate::Candidate::from_c_full(crate::ffi::rice_candidate_copy(
-                        &local,
-                    )),
-                    crate::candidate::Candidate::from_c_full(crate::ffi::rice_candidate_copy(
-                        &remote,
-                    )),
+                    crate::candidate::Candidate::from_c_full(local).to_owned(),
+                    crate::candidate::Candidate::from_c_full(remote).to_owned(),
                 ))
             }
         }

@@ -329,7 +329,7 @@ impl Drop for Credentials {
 }
 
 /// A locally gathered candidate.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct GatheredCandidate {
     pub(crate) ffi: crate::ffi::RiceGatheredCandidate,
 }
@@ -339,17 +339,21 @@ impl GatheredCandidate {
         Self { ffi }
     }
 
-    pub(crate) fn into_c_full(self) -> crate::ffi::RiceGatheredCandidate {
-        self.ffi
+    pub fn take(&mut self) -> Self {
+        unsafe {
+            let mut ffi = crate::ffi::RiceGatheredCandidate {
+                candidate: crate::ffi::RiceCandidate::zeroed(),
+                turn_agent: self.ffi.turn_agent,
+            };
+            crate::ffi::rice_candidate_copy_into(&self.ffi.candidate, &mut ffi.candidate);
+            self.ffi.turn_agent = core::ptr::null_mut();
+            Self { ffi }
+        }
     }
 
     /// The [`Candidate`](crate::candidate::Candidate).
     pub fn candidate(&self) -> crate::candidate::Candidate {
-        unsafe {
-            crate::candidate::Candidate::from_c_full(crate::ffi::rice_candidate_copy(
-                &self.ffi.candidate,
-            ))
-        }
+        unsafe { crate::candidate::Candidate::from_c_none(&self.ffi.candidate) }
     }
 }
 

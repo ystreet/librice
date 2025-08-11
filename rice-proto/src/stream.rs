@@ -69,7 +69,7 @@ impl<'a> Stream<'a> {
     /// let stream = agent.stream(stream_id).unwrap();
     /// assert!(stream.component(component::RTP).is_none());
     /// ```
-    pub fn component(&self, index: usize) -> Option<Component> {
+    pub fn component(&self, index: usize) -> Option<Component<'_>> {
         if index < 1 {
             return None;
         }
@@ -619,7 +619,10 @@ impl StreamState {
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
-    pub(crate) fn poll_gather_transmit(&mut self, now: Instant) -> Option<(usize, Transmit<Data>)> {
+    pub(crate) fn poll_gather_transmit(
+        &mut self,
+        now: Instant,
+    ) -> Option<(usize, Transmit<Data<'_>>)> {
         for component in self.components.iter_mut() {
             let Some(component) = component else {
                 continue;

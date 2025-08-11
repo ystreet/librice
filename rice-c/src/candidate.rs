@@ -10,46 +10,110 @@
 
 use std::ffi::{CStr, CString};
 
+use crate::agent::AgentError;
+
+pub trait CandidateApi: sealed::CandidateAsC {
+    /// The component
+    fn component_id(&self) -> usize {
+        unsafe { (*self.as_c()).component_id }
+    }
+    /// The type of the Candidate
+    fn candidate_type(&self) -> CandidateType {
+        unsafe { (*self.as_c()).candidate_type.into() }
+    }
+    /// The network transport
+    fn transport(&self) -> TransportType {
+        unsafe { (*self.as_c()).transport_type.into() }
+    }
+
+    /// The (unique) foundation
+    fn foundation(&self) -> String {
+        unsafe {
+            CStr::from_ptr((*self.as_c()).foundation)
+                .to_str()
+                .unwrap()
+                .to_owned()
+        }
+    }
+    /// The priority
+    fn priority(&self) -> u32 {
+        unsafe { (*self.as_c()).priority }
+    }
+    /// The address to send to
+    fn address(&self) -> crate::Address {
+        unsafe { crate::Address::from_c_none((*self.as_c()).address) }
+    }
+    /// The address to send from
+    fn base_address(&self) -> crate::Address {
+        unsafe { crate::Address::from_c_none((*self.as_c()).base_address) }
+    }
+    /// Any related address that generated this candidate, e.g. STUN/TURN server
+    fn related_address(&self) -> Option<crate::Address> {
+        unsafe {
+            let related = (*self.as_c()).related_address;
+            if related.is_null() {
+                None
+            } else {
+                Some(crate::Address::from_c_none(related))
+            }
+        }
+    }
+    /// The type of TCP candidate
+    fn tcp_type(&self) -> TcpType {
+        unsafe { (*self.as_c()).tcp_type.into() }
+    }
+    // TODO: extensions
+}
+
+mod sealed {
+    pub trait CandidateAsC {
+        fn as_c(&self) -> *const crate::ffi::RiceCandidate;
+    }
+}
+
 /// An ICE candidate.
-#[derive(Eq)]
+#[derive(Debug)]
 pub struct Candidate {
-    ffi: *mut crate::ffi::RiceCandidate,
+    ffi: crate::ffi::RiceCandidate,
 }
 
 unsafe impl Send for Candidate {}
 unsafe impl Sync for Candidate {}
 
-impl core::fmt::Debug for Candidate {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        unsafe {
-            let mut dbg = f.debug_struct("Candidate");
-            let dbg2 = &mut dbg;
-            dbg2.field("ffi", &self.ffi);
-            if !self.ffi.is_null() {
-                dbg2.field("value", &*self.ffi);
-            }
-            dbg.finish()
-        }
+impl PartialEq<Candidate> for Candidate {
+    fn eq(&self, other: &Candidate) -> bool {
+        unsafe { crate::ffi::rice_candidate_eq(&self.ffi, &other.ffi) }
     }
 }
 
-impl PartialEq<Candidate> for Candidate {
-    fn eq(&self, other: &Candidate) -> bool {
-        unsafe { crate::ffi::rice_candidate_eq(self.ffi, other.ffi) }
+impl PartialEq<CandidateOwned> for Candidate {
+    fn eq(&self, other: &CandidateOwned) -> bool {
+        unsafe { crate::ffi::rice_candidate_eq(&self.ffi, other.ffi) }
     }
 }
 
 impl Clone for Candidate {
     fn clone(&self) -> Self {
-        Self {
-            ffi: unsafe { crate::ffi::rice_candidate_copy(self.ffi) },
+        unsafe {
+            let mut ret = Self {
+                ffi: crate::ffi::RiceCandidate::zeroed(),
+            };
+            crate::ffi::rice_candidate_copy_into(&self.ffi, &mut ret.ffi);
+            ret
         }
+    }
+}
+
+impl CandidateApi for Candidate {}
+impl sealed::CandidateAsC for Candidate {
+    fn as_c(&self) -> *const crate::ffi::RiceCandidate {
+        &self.ffi
     }
 }
 
 impl Drop for Candidate {
     fn drop(&mut self) {
-        unsafe { crate::ffi::rice_candidate_free(self.ffi) }
+        unsafe { crate::ffi::rice_candidate_clear(&mut self.ffi) }
     }
 }
 
@@ -82,28 +146,153 @@ impl Candidate {
     ) -> CandidateBuilder {
         unsafe {
             let foundation = CString::new(foundation).unwrap();
-            CandidateBuilder {
-                ffi: crate::ffi::rice_candidate_new(
-                    component_id,
-                    ctype.into(),
-                    ttype.into(),
-                    foundation.as_ptr(),
-                    address.into_c_full(),
-                ),
+            let mut ret = CandidateBuilder {
+                ffi: crate::ffi::RiceCandidate::zeroed(),
+            };
+            let address = address.into_c_full();
+            let res = crate::ffi::rice_candidate_init(
+                &mut ret.ffi,
+                component_id,
+                ctype.into(),
+                ttype.into(),
+                foundation.as_ptr(),
+                address,
+            );
+            if res != crate::ffi::RICE_ERROR_SUCCESS {
+                let _address = crate::Address::from_c_full(address);
+                panic!("Failed to crate ICE candidate!");
+            }
+            ret
+        }
+    }
+
+    pub(crate) fn as_c(&self) -> *const crate::ffi::RiceCandidate {
+        &self.ffi
+    }
+
+    pub(crate) unsafe fn from_c_none(candidate: *const crate::ffi::RiceCandidate) -> Self {
+        let mut ret = Self {
+            ffi: crate::ffi::RiceCandidate::zeroed(),
+        };
+        crate::ffi::rice_candidate_copy_into(candidate, &mut ret.ffi);
+        ret
+    }
+
+    pub(crate) fn from_c_full(candidate: crate::ffi::RiceCandidate) -> Self {
+        Self { ffi: candidate }
+    }
+
+    pub fn to_owned(&self) -> CandidateOwned {
+        unsafe {
+            CandidateOwned {
+                ffi: crate::ffi::rice_candidate_copy(&self.ffi),
             }
         }
     }
 
-    pub(crate) fn from_c_full(ffi: *mut crate::ffi::RiceCandidate) -> Self {
-        Self { ffi }
+    /// Serialize this candidate to a string for use in SDP
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rice_c::candidate::*;
+    /// # use rice_c::Address;
+    /// let addr: Address = "127.0.0.1:2345".parse().unwrap();
+    /// let candidate = Candidate::builder(
+    ///     1,
+    ///     CandidateType::Host,
+    ///     TransportType::Udp,
+    ///     "foundation",
+    ///     addr,
+    /// )
+    /// .priority(1234)
+    /// .build();
+    /// assert_eq!(candidate.to_sdp_string(), "a=candidate:foundation 1 UDP 1234 127.0.0.1 2345 typ host")
+    /// ```
+    pub fn to_sdp_string(&self) -> String {
+        unsafe {
+            let res = crate::ffi::rice_candidate_to_sdp_string(&self.ffi);
+            let s = CStr::from_ptr(res);
+            let ret = s.to_str().unwrap().to_owned();
+            crate::ffi::rice_string_free(res);
+            ret
+        }
     }
 
-    fn into_c_full(self) -> *mut crate::ffi::RiceCandidate {
-        let ret = self.ffi;
-        core::mem::forget(self);
-        ret
+    // FIXME: proper error type
+    /// Parse an SDP candidate string into a candidate.
+    pub fn from_sdp_string(s: &str) -> Result<Candidate, AgentError> {
+        let cand_str = std::ffi::CString::new(s).unwrap();
+        unsafe {
+            let mut ret = Candidate {
+                ffi: crate::ffi::RiceCandidate::zeroed(),
+            };
+            let res =
+                crate::ffi::rice_candidate_init_from_sdp_string(&mut ret.ffi, cand_str.as_ptr());
+            AgentError::from_c(res)?;
+            Ok(ret)
+        }
     }
+}
 
+#[derive(Eq)]
+pub struct CandidateOwned {
+    ffi: *mut crate::ffi::RiceCandidate,
+}
+
+unsafe impl Send for CandidateOwned {}
+unsafe impl Sync for CandidateOwned {}
+
+impl core::fmt::Debug for CandidateOwned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        unsafe {
+            let mut dbg = f.debug_struct("Candidate");
+            let dbg2 = &mut dbg;
+            dbg2.field("ffi", &self.ffi);
+            if !self.ffi.is_null() {
+                dbg2.field("value", &*self.ffi);
+            }
+            dbg.finish()
+        }
+    }
+}
+
+impl PartialEq<CandidateOwned> for CandidateOwned {
+    fn eq(&self, other: &CandidateOwned) -> bool {
+        unsafe { crate::ffi::rice_candidate_eq(self.ffi, other.ffi) }
+    }
+}
+
+impl PartialEq<Candidate> for CandidateOwned {
+    fn eq(&self, other: &Candidate) -> bool {
+        unsafe { crate::ffi::rice_candidate_eq(self.ffi, &other.ffi) }
+    }
+}
+
+impl Clone for CandidateOwned {
+    fn clone(&self) -> Self {
+        unsafe {
+            Self {
+                ffi: crate::ffi::rice_candidate_copy(self.ffi),
+            }
+        }
+    }
+}
+
+impl Drop for CandidateOwned {
+    fn drop(&mut self) {
+        unsafe { crate::ffi::rice_candidate_free(self.ffi) }
+    }
+}
+
+impl CandidateApi for CandidateOwned {}
+impl sealed::CandidateAsC for CandidateOwned {
+    fn as_c(&self) -> *const crate::ffi::RiceCandidate {
+        self.ffi
+    }
+}
+
+impl CandidateOwned {
     pub(crate) fn as_c(&self) -> *const crate::ffi::RiceCandidate {
         self.ffi
     }
@@ -136,113 +325,39 @@ impl Candidate {
             ret
         }
     }
-
-    // FIXME: proper error type
-    /// Parse an SDP candidate string into a candidate.
-    pub fn from_sdp_string(s: &str) -> Result<Candidate, ()> {
-        let cand_str = std::ffi::CString::new(s).unwrap();
-        unsafe {
-            let ret = crate::ffi::rice_candidate_new_from_sdp_string(cand_str.as_ptr());
-            if ret.is_null() {
-                return Err(());
-            }
-            Ok(Self::from_c_full(ret))
-        }
-    }
-
-    /// The component
-    pub fn component_id(&self) -> usize {
-        unsafe { (*self.ffi).component_id }
-    }
-
-    /// The type of the Candidate
-    pub fn candidate_type(&self) -> CandidateType {
-        unsafe { (*self.ffi).candidate_type.into() }
-    }
-
-    /// The network transport
-    pub fn transport(&self) -> TransportType {
-        unsafe { (*self.ffi).transport_type.into() }
-    }
-
-    /// The (unique) foundation
-    pub fn foundation(&self) -> String {
-        unsafe {
-            CStr::from_ptr((*self.ffi).foundation)
-                .to_str()
-                .unwrap()
-                .to_owned()
-        }
-    }
-
-    /// The priority
-    pub fn priority(&self) -> u32 {
-        unsafe { (*self.ffi).priority }
-    }
-
-    /// The address to send to
-    pub fn address(&self) -> crate::Address {
-        unsafe { crate::Address::from_c_none((*self.ffi).address) }
-    }
-
-    /// The address to send from
-    pub fn base_address(&self) -> crate::Address {
-        unsafe { crate::Address::from_c_none((*self.ffi).base_address) }
-    }
-
-    /// Any related address that generated this candidate, e.g. STUN/TURN server
-    pub fn related_address(&self) -> Option<crate::Address> {
-        unsafe {
-            let related = (*self.ffi).related_address;
-            if related.is_null() {
-                None
-            } else {
-                Some(crate::Address::from_c_none(related))
-            }
-        }
-    }
-
-    /// The type of TCP candidate
-    pub fn tcp_type(&self) -> TcpType {
-        unsafe { (*self.ffi).tcp_type.into() }
-    }
-
-    // TODO: extensions
 }
 
 /// A builder for a [`Candidate`]
 #[derive(Debug)]
 pub struct CandidateBuilder {
-    ffi: *mut crate::ffi::RiceCandidate,
+    ffi: crate::ffi::RiceCandidate,
 }
 
 impl CandidateBuilder {
-    pub fn build(mut self) -> Candidate {
-        let ret = Candidate { ffi: self.ffi };
-        self.ffi = core::ptr::null_mut();
-        ret
+    pub fn build(self) -> Candidate {
+        Candidate { ffi: self.ffi }
     }
 
     /// Specify the priority of the to be built candidate
-    pub fn priority(self, priority: u32) -> Self {
+    pub fn priority(mut self, priority: u32) -> Self {
         unsafe {
-            crate::ffi::rice_candidate_set_priority(self.ffi, priority);
+            crate::ffi::rice_candidate_set_priority(&mut self.ffi, priority);
             self
         }
     }
 
     /// Specify the base address of the to be built candidate
-    pub fn base_address(self, base: crate::Address) -> Self {
+    pub fn base_address(mut self, base: crate::Address) -> Self {
         unsafe {
-            crate::ffi::rice_candidate_set_base_address(self.ffi, base.into_c_full());
+            crate::ffi::rice_candidate_set_base_address(&mut self.ffi, base.into_c_full());
             self
         }
     }
 
     /// Specify the related address of the to be built candidate
-    pub fn related_address(self, related: crate::Address) -> Self {
+    pub fn related_address(mut self, related: crate::Address) -> Self {
         unsafe {
-            crate::ffi::rice_candidate_set_related_address(self.ffi, related.into_c_full());
+            crate::ffi::rice_candidate_set_related_address(&mut self.ffi, related.into_c_full());
             self
         }
     }
@@ -252,12 +367,12 @@ impl CandidateBuilder {
     /// - This will panic at build() time if the transport type is not [`TransportType::Tcp`].
     /// - This will panic at build() time if this function is not called but the
     ///   transport type is [`TransportType::Tcp`]
-    pub fn tcp_type(self, typ: TcpType) -> Self {
+    pub fn tcp_type(mut self, typ: TcpType) -> Self {
         unsafe {
-            if (*self.ffi).transport_type != TransportType::Tcp.into() && typ != TcpType::None {
+            if self.ffi.transport_type != TransportType::Tcp.into() && typ != TcpType::None {
                 panic!("Attempt made to set the TcpType of a non-TCP candidate");
             }
-            crate::ffi::rice_candidate_set_tcp_type(self.ffi, typ.into());
+            crate::ffi::rice_candidate_set_tcp_type(&mut self.ffi, typ.into());
             self
         }
     }
@@ -378,14 +493,14 @@ impl From<TransportType> for crate::ffi::RiceTransportType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidatePair {
     /// The local [`Candidate`]
-    pub local: Candidate,
+    pub local: CandidateOwned,
     /// The remote [`Candidate`]
-    pub remote: Candidate,
+    pub remote: CandidateOwned,
 }
 
 impl CandidatePair {
     /// Create a new [`CandidatePair`]
-    pub fn new(local: Candidate, remote: Candidate) -> Self {
+    pub fn new(local: CandidateOwned, remote: CandidateOwned) -> Self {
         Self { local, remote }
     }
 }

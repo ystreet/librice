@@ -261,7 +261,7 @@ impl Agent {
     }
 
     /// Get a [`StreamMut`] by id.  If the stream does not exist, then `None` will be returned.
-    pub fn mut_stream(&mut self, id: usize) -> Option<StreamMut> {
+    pub fn mut_stream(&mut self, id: usize) -> Option<StreamMut<'_>> {
         if self.streams.get_mut(id).is_some() {
             Some(StreamMut::from_agent(self, id))
         } else {
