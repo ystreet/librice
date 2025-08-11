@@ -301,9 +301,9 @@ impl Stream {
     ///     addr
     /// )
     /// .build();
-    /// stream.add_remote_candidate(candidate);
+    /// stream.add_remote_candidate(&candidate);
     /// ```
-    pub fn add_remote_candidate(&self, cand: Candidate) {
+    pub fn add_remote_candidate(&self, cand: &Candidate) {
         self.proto_stream.add_remote_candidate(cand);
 
         if let Some(agent) = self.weak_agent_inner.upgrade() {

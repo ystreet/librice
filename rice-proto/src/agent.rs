@@ -245,7 +245,9 @@ impl Agent {
         &self.turn_servers
     }
 
-    /// Get a [`Stream`] by id.  If the stream does not exist, then `None` will be returned.
+    /// Get a [`Stream`] by id.
+    ///
+    /// If the stream does not exist, then `None` will be returned.
     pub fn stream(&self, id: usize) -> Option<crate::stream::Stream<'_>> {
         if self.streams.get(id).is_some() {
             Some(Stream::from_agent(self, id))
@@ -429,6 +431,10 @@ impl Agent {
         AgentPoll::WaitUntil(lowest_wait.unwrap_or_else(|| now + Duration::from_secs(600)))
     }
 
+    /// Poll for a transmission to be performed.
+    ///
+    /// If not-None, then the provided data must be sent to the peer from the provided socket
+    /// address.
     pub fn poll_transmit(&mut self, now: Instant) -> Option<AgentTransmit> {
         for stream in self.streams.iter_mut() {
             let stream_id = stream.id();

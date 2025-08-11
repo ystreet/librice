@@ -18,6 +18,7 @@ pub mod candidate;
 pub mod component;
 pub mod stream;
 
+/// A network address.
 pub struct Address {
     ffi: *mut crate::ffi::RiceAddress,
 }
@@ -73,6 +74,7 @@ impl Address {
         Self { ffi }
     }
 
+    /// Convert this [`Address`] into a `SocketAddr`.
     pub fn as_socket(&self) -> SocketAddr {
         self.into()
     }
