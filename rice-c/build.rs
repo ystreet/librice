@@ -1,8 +1,13 @@
-use std::env;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+// avoid linking/regenerating when running on docs.rs
+#[cfg(docsrs)]
+fn main() {}
 
+#[cfg(not(docsrs))]
 fn main() {
+    use std::env;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let destdir = Path::new(&out_dir).join("rice-proto-cbuild");
