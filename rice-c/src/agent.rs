@@ -59,7 +59,7 @@ impl Agent {
     /// Add a `Stream`
     ///
     /// ```
-    /// # use librice_c::agent::Agent;
+    /// # use rice_c::agent::Agent;
     /// let agent = Agent::default();
     /// let s = agent.add_stream();
     /// ```

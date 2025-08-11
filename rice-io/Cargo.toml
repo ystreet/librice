@@ -1,19 +1,19 @@
 [package]
-name = "librice-io"
+name = "rice-io"
 description = "ICE (RFC8445) implementation protocol"
 version.workspace = true
 authors = ["Matthew Waters <matthew@centricular.com>"]
 license = "MIT OR Apache-2.0"
 keywords = ["STUN", "ICE"]
 categories = ["network-programming", ]
-#documentation = "https://docs.rs/librice-proto"
+#documentation = "https://docs.rs/rice-io"
 edition.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 workspace = ".."
 
 [features]
-capi = ["get_if_addrs", "libc", "librice-proto/capi", "tracing-subscriber", "async-lock", "async-io", "async-task", "flume", "futures-lite"]
+capi = ["get_if_addrs", "libc", "rice-proto/capi", "tracing-subscriber", "async-lock", "async-io", "async-task", "flume", "futures-lite"]
 
 [dependencies]
 arbitrary = { workspace = true, optional = true }
@@ -25,7 +25,7 @@ flume = { version = "0.11", optional = true }
 futures-lite = {version = "2", optional = true }
 get_if_addrs = { workspace = true, optional = true }
 libc = { version = "0.2", optional = true }
-librice-proto.workspace = true
+rice-proto.workspace = true
 stun-proto.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, optional = true }
@@ -46,6 +46,6 @@ version_suffix_components = 1
 rustflags = "-Cpanic=abort"
 
 [package.metadata.capi.pkg_config]
-name = "librice-io"
+name = "rice-io"
 filename = "rice-io"
 requires = "rice-proto"

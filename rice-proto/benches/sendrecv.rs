@@ -9,8 +9,8 @@
 use std::time::Instant;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use librice_proto::agent::Agent;
-use librice_proto::candidate::{Candidate, CandidatePair};
+use rice_proto::agent::Agent;
+use rice_proto::candidate::{Candidate, CandidatePair};
 use stun_proto::agent::Transmit;
 use stun_proto::types::TransportType;
 
@@ -18,7 +18,7 @@ fn bench_sendrecv_udp(c: &mut Criterion) {
     let local_addr = "192.168.1.1:1000".parse().unwrap();
     let local_candidate = Candidate::builder(
         1,
-        librice_proto::candidate::CandidateType::Host,
+        rice_proto::candidate::CandidateType::Host,
         stun_proto::types::TransportType::Udp,
         "1",
         local_addr,
@@ -29,7 +29,7 @@ fn bench_sendrecv_udp(c: &mut Criterion) {
     let remote_addr = "192.168.1.2:2000".parse().unwrap();
     let remote_candidate = Candidate::builder(
         1,
-        librice_proto::candidate::CandidateType::Host,
+        rice_proto::candidate::CandidateType::Host,
         stun_proto::types::TransportType::Udp,
         "1",
         remote_addr,
@@ -85,26 +85,26 @@ fn bench_sendrecv_tcp(c: &mut Criterion) {
     let local_addr = "192.168.1.1:1000".parse().unwrap();
     let local_candidate = Candidate::builder(
         1,
-        librice_proto::candidate::CandidateType::Host,
+        rice_proto::candidate::CandidateType::Host,
         stun_proto::types::TransportType::Tcp,
         "1",
         local_addr,
     )
     .base_address(local_addr)
     .priority(1000)
-    .tcp_type(librice_proto::candidate::TcpType::Active)
+    .tcp_type(rice_proto::candidate::TcpType::Active)
     .build();
     let remote_addr = "192.168.1.2:2000".parse().unwrap();
     let remote_candidate = Candidate::builder(
         1,
-        librice_proto::candidate::CandidateType::Host,
+        rice_proto::candidate::CandidateType::Host,
         stun_proto::types::TransportType::Tcp,
         "1",
         remote_addr,
     )
     .base_address(local_addr)
     .priority(1000)
-    .tcp_type(librice_proto::candidate::TcpType::Passive)
+    .tcp_type(rice_proto::candidate::TcpType::Passive)
     .build();
 
     let mut agent = Agent::builder().trickle_ice(true).controlling(true).build();

@@ -8,7 +8,8 @@
 
 Repository containing an (sans-IO) implementation of ICE (RFC8445) protocol written in
 the [Rust programming language](https://www.rust-lang.org/). A C API interface is
-currently also provided for `librice-proto` and `librice-io`.
+currently also provided for `rice-proto` and `rice-io`. The `C interface can
+also be accessed from Rust using `rice-c`.
 
 ## Current status
 
@@ -77,17 +78,24 @@ For other examples of sans-IO implementations, take a look at:
 
 ## Structure
 
-### [librice-proto](https://github.com/ystreet/librice/tree/main/librice-proto)
+### [rice-proto](https://github.com/ystreet/librice/tree/main/rice-proto)
 
 The sans-IO implementation of the ICE (RFC8445) protocol. Contains no IO code
 whatsover.
 
+### [rice-c](https://github.com/ystreet/librice/tree/main/rice-c)
+
+A library fo accessing `rice-proto` using the provided C API interface.
+Typically useful when exposing the ICE agent across library/application
+boundaries for accessing the same ICE agent. If your application does not have
+such a requirement (e.g. entirely in Rust), then `rice-c` is not needed.
+
 ### [librice](https://github.com/ystreet/librice/tree/main/librice)
 
-An async implementation of ICE (RFC8445) built using `librice-proto`. Currently
-uses async-std however a tokio (or mio) implementation is planned.
+An async implementation of ICE (RFC8445) built using `rice-proto`. Currently
+uses async-std however a tokio (and/or mio) implementation is planned.
 
-### [librice-io](https://github.com/ystreet/librice/tree/main/librice-io)
+### [rice-io](https://github.com/ystreet/librice/tree/main/rice-io)
 
 An optional library exposing a C interface for handling IO using Rust's network
 primitives `UdpSocket`, and `TcpStream`. Uses a single dedicated thread for

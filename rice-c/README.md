@@ -1,13 +1,13 @@
 [![Build status](https://github.com/ystreet/librice/workflows/Build/badge.svg?branch=main)](https://github.com/ystreet/librice/actions)
 [![codecov](https://codecov.io/gh/ystreet/librice/branch/main/graph/badge.svg)](https://codecov.io/gh/ystreet/librice)
 [![Dependencies](https://deps.rs/repo/github/ystreet/librice/status.svg)](https://deps.rs/repo/github/ystreet/librice)
-[![crates.io](https://img.shields.io/crates/v/librice-c.svg)](https://crates.io/crates/librice-c)
-[![docs.rs](https://docs.rs/librice-c/badge.svg)](https://docs.rs/librice-c)
+[![crates.io](https://img.shields.io/crates/v/rice-c.svg)](https://crates.io/crates/rice-c)
+[![docs.rs](https://docs.rs/rice-c/badge.svg)](https://docs.rs/rice-c)
 
-# librice-c
+# rice-c
 
-Repository containing Rust bindings to the C API version of librice-proto. This
-would typically be needed when using librice-proto from multiple independent
+Repository containing Rust bindings to the C API version of `rice-proto`. This
+would be needed when using `rice-proto` from multiple independent
 libraries/application and shared access to the same `Agent` is required.
 
 ## Relevant standards
@@ -51,23 +51,23 @@ libraries/application and shared access to the same `Agent` is required.
 
 ## Building
 
-If building `librice-c` as part of this repository, then `cargo-c` is required
+If building `rice-c` as part of this repository, then `cargo-c` is required
 and can be installed using:
 ```sh
 cargo install cargo-c
 ```
-`librice-c` will then build a local copy of `librice-proto` for use.
+`rice-c` will then build a local copy of `rice-proto` for use.
 
 Otherwise, this crate requires a pre-existing installation of the C library
-`librice-proto` that can be found using `pkg-config` (through `system-deps`).
+`rice-proto` that can be found using `pkg-config` (through `system-deps`).
 Running the following command will indicate whether your environment contains
-`librice-proto`.
+`rice-proto`.
 ```
-pkg-config --modversion librice-proto
+pkg-config --modversion rice-proto
 ```
 
-If you need to build `librice-proto` with the C API, have a look at [the
-README](https://github.com/ystreet/librice/tree/main/librice-proto).
+If you need to build `rice-proto` with the C API, have a look at [the
+README](https://github.com/ystreet/librice/tree/main/rice-proto).
 
-Once the the prerequisite is handled, you can build `librice-c` using a
+Once the the prerequisite is handled, you can build `rice-c` using a
 regular `cargo build` invocation.

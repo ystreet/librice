@@ -33,17 +33,17 @@ jobs:
         with:
           tool: cargo-c
 
-      - name: Run cargo-tarpaulin (librice-proto)
+      - name: Run cargo-tarpaulin (rice-proto)
         uses: actions-rs/cargo@v1
         with:
           command: 'tarpaulin'
-          args: '-p librice-proto --out Xml --lib --tests --doc --output-dir coverage-librice-proto -- --test-threads 1'
+          args: '-p rice-proto --out Xml --lib --tests --doc --output-dir coverage-rice-proto -- --test-threads 1'
 
-      - name: Run cargo-tarpaulin (librice-c)
+      - name: Run cargo-tarpaulin (rice-c)
         uses: actions-rs/cargo@v1
         with:
           command: 'tarpaulin'
-          args: '-p librice-c --out Xml --lib --tests --output-dir coverage-librice-c -- --test-threads 1'
+          args: '-p rice-c --out Xml --lib --tests --output-dir coverage-rice-c -- --test-threads 1'
 
       - name: Run cargo-tarpaulin (librice)
         uses: actions-rs/cargo@v1
@@ -60,4 +60,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: code-coverage-report
-          path: cobertura.xml
+          path: /**/cobertura.xml

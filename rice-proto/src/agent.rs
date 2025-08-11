@@ -168,7 +168,7 @@ impl Agent {
     /// Add a `Stream`
     ///
     /// ```
-    /// # use librice_proto::agent::Agent;
+    /// # use rice_proto::agent::Agent;
     /// let mut agent = Agent::default();
     /// let s = agent.add_stream();
     /// ```

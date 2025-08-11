@@ -7,39 +7,39 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let destdir = Path::new(&out_dir).join("rice-proto-cbuild");
     let pkgconfigdir = destdir.clone().join("lib").join("pkgconfig");
-    let librice_proto_dir = manifest_dir.join("../librice-proto");
+    let rice_proto_dir = manifest_dir.join("../rice-proto");
 
-    let librice_proto_exists = std::fs::File::open(librice_proto_dir.as_path()).is_ok();
-    if librice_proto_exists {
+    let rice_proto_exists = std::fs::File::open(rice_proto_dir.as_path()).is_ok();
+    if rice_proto_exists {
         println!(
             "cargo:rerun-if-changed={}",
-            librice_proto_dir.to_str().unwrap()
+            rice_proto_dir.to_str().unwrap()
         );
         println!(
             "cargo:rerun-if-changed={}",
-            librice_proto_dir.join("src").to_str().unwrap()
+            rice_proto_dir.join("src").to_str().unwrap()
         );
         println!(
             "cargo:rerun-if-changed={}",
-            librice_proto_dir.join("src").join("capi").to_str().unwrap()
+            rice_proto_dir.join("src").join("capi").to_str().unwrap()
         );
     }
 
-    // Default to building the internal module if not already configured and the librice-proto
+    // Default to building the internal module if not already configured and the rice-proto
     // project exists.
     if env::var_os("SYSTEM_DEPS_RICE_PROTO_BUILD_INTERNAL").is_none()
         && env::var_os("SYSTEM_DEPS_BUILD_INTERNAL").is_none()
-        && librice_proto_exists
+        && rice_proto_exists
     {
         env::set_var("SYSTEM_DEPS_RICE_PROTO_BUILD_INTERNAL", "auto");
     }
     let config = system_deps::Config::new()
         .add_build_internal("rice-proto", move |lib, version| {
-            if librice_proto_exists {
+            if rice_proto_exists {
                 let target = env::var("TARGET").unwrap();
                 let mut cmd = Command::new("cargo");
                 cmd.stderr(std::process::Stdio::piped())
-                    .args(["cinstall", "-p", "librice-proto", "--prefix"])
+                    .args(["cinstall", "-p", "rice-proto", "--prefix"])
                     .arg(&destdir)
                     .args(["--libdir", "lib"])
                     .args(["--target", &target])
@@ -54,12 +54,12 @@ fn main() {
                 let status = cmd
                     .stderr(std::process::Stdio::piped())
                     .spawn()
-                    .expect("Failed to build internal copy of librice-proto");
+                    .expect("Failed to build internal copy of rice-proto");
                 let output = status.wait_with_output().unwrap();
                 let stderr = String::from_utf8(output.stderr).unwrap();
                 if !output.status.success() {
                     eprintln!("stderr: {stderr}");
-                    panic!("Could not build librice-proto");
+                    panic!("Could not build rice-proto");
                 }
             }
             system_deps::Library::from_internal_pkg_config(pkgconfigdir, lib, version)
@@ -97,7 +97,7 @@ fn main() {
         .generate()
         .unwrap();
 
-    if librice_proto_exists {
+    if rice_proto_exists {
         // only update the bindings if we are building from a local checkout.
         bindings
             .write_to_file(manifest_dir.join("src").join("bindings.rs"))

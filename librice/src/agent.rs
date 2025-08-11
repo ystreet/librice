@@ -14,13 +14,13 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
-use librice_c::agent::{AgentError as ProtoAgentError, AgentPoll, AgentTransmit};
-use librice_c::component::ComponentConnectionState;
+use rice_c::agent::{AgentError as ProtoAgentError, AgentPoll, AgentTransmit};
+use rice_c::component::ComponentConnectionState;
 
 use crate::component::{Component, SelectedPair};
 use crate::stream::Stream;
-pub use librice_c::agent::TurnCredentials;
-use librice_c::candidate::{Candidate, CandidatePair, TransportType};
+pub use rice_c::agent::TurnCredentials;
+use rice_c::candidate::{Candidate, CandidatePair, TransportType};
 
 /// Errors that can be returned as a result of agent operations.
 #[derive(Debug)]
@@ -50,7 +50,7 @@ impl std::fmt::Display for AgentError {
 /// An ICE agent as specified in RFC 8445
 #[derive(Debug)]
 pub struct Agent {
-    agent: Arc<Mutex<librice_c::agent::Agent>>,
+    agent: Arc<Mutex<rice_c::agent::Agent>>,
     base_instant: Instant,
     base_micros: u64,
     inner: Arc<Mutex<AgentInner>>,
@@ -79,7 +79,7 @@ impl AgentBuilder {
 
     /// Construct a new [`Agent`]
     pub fn build(self) -> Agent {
-        let agent = librice_c::agent::Agent::builder()
+        let agent = rice_c::agent::Agent::builder()
             .trickle_ice(self.trickle_ice)
             .controlling(self.controlling)
             .build();
@@ -221,7 +221,7 @@ pub enum AgentMessage {
 
 #[derive(Debug)]
 struct AgentStream {
-    agent: Arc<Mutex<librice_c::agent::Agent>>,
+    agent: Arc<Mutex<rice_c::agent::Agent>>,
     base_instant: Instant,
     base_micros: u64,
     inner: Arc<Mutex<AgentInner>>,

@@ -1,6 +1,6 @@
 [workspace]
-members = ["librice-proto", "librice", "librice-io", "librice-c", "fuzz"]
-default-members = ["librice", "librice-proto", "librice-c"]
+members = ["rice-proto", "librice", "rice-io", "rice-c", "fuzz"]
+default-members = ["librice", "rice-proto", "rice-c"]
 resolver = "2"
 
 [workspace.package]
@@ -18,8 +18,8 @@ get_if_addrs = "0.5"
 rand = "0.9"
 tracing = "0.1"
 tracing-subscriber = "0.3"
-librice-proto = { version = "0.0.5", path = "librice-proto" }
-librice-c = { version = "0.0.5", path = "librice-c" }
+rice-proto = { version = "0.0.5", path = "rice-proto" }
+rice-c = { version = "0.0.5", path = "rice-c" }
 criterion = "0.6"
 
 [profile.bench]

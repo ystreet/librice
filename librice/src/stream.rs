@@ -13,25 +13,24 @@ use std::sync::{Arc, Mutex, Weak};
 
 use async_std::net::TcpStream;
 use futures::StreamExt;
-use librice_c::Address;
+use rice_c::Address;
 
 use crate::agent::{AgentError, AgentInner};
 use crate::component::{Component, ComponentInner};
 use crate::gathering::{iface_sockets, GatherSocket};
 use crate::socket::{StunChannel, TcpChannel, Transmit};
 
-use librice_c::agent::{AgentError as ProtoAgentError, AgentTransmit};
-use librice_c::candidate::{Candidate, TransportType};
-use librice_c::stream::GatheredCandidate;
-//use crate::turn::agent::TurnCredentials;
+use rice_c::agent::{AgentError as ProtoAgentError, AgentTransmit};
+use rice_c::candidate::{Candidate, TransportType};
+use rice_c::stream::GatheredCandidate;
 
-pub use librice_c::stream::Credentials;
+pub use rice_c::stream::Credentials;
 
 /// An ICE [`Stream`]
 #[derive(Debug, Clone)]
 pub struct Stream {
-    weak_proto_agent: Weak<Mutex<librice_c::agent::Agent>>,
-    proto_stream: librice_c::stream::Stream,
+    weak_proto_agent: Weak<Mutex<rice_c::agent::Agent>>,
+    proto_stream: rice_c::stream::Stream,
     pub(crate) id: usize,
     weak_agent_inner: Weak<Mutex<AgentInner>>,
     transmit_send: async_std::channel::Sender<AgentTransmit>,
@@ -107,9 +106,9 @@ fn socket_matches(
 
 impl Stream {
     pub(crate) fn new(
-        weak_proto_agent: Weak<Mutex<librice_c::agent::Agent>>,
+        weak_proto_agent: Weak<Mutex<rice_c::agent::Agent>>,
         weak_agent_inner: Weak<Mutex<AgentInner>>,
-        proto_stream: librice_c::stream::Stream,
+        proto_stream: rice_c::stream::Stream,
         id: usize,
     ) -> Self {
         let inner = Arc::new(Mutex::new(StreamInner::default()));
@@ -325,7 +324,7 @@ impl Stream {
         )
     )]
     fn handle_incoming_data<T: AsRef<[u8]> + std::fmt::Debug>(
-        weak_proto_agent: Weak<Mutex<librice_c::agent::Agent>>,
+        weak_proto_agent: Weak<Mutex<rice_c::agent::Agent>>,
         weak_agent_inner: Weak<Mutex<AgentInner>>,
         weak_component: Weak<Mutex<ComponentInner>>,
         stream_id: usize,
@@ -571,7 +570,7 @@ impl Stream {
         ///
         /// ```
         /// # use librice::agent::Agent;
-        /// # use librice_proto::candidate::*;
+        /// # use librice::candidate::*;
         /// let agent = Agent::default();
         /// let stream = agent.add_stream();
         /// let component = stream.add_component().unwrap();
@@ -617,7 +616,7 @@ impl Stream {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn handle_allocate_socket(
         weak_inner: Weak<Mutex<StreamInner>>,
-        weak_proto_agent: Weak<Mutex<librice_c::agent::Agent>>,
+        weak_proto_agent: Weak<Mutex<rice_c::agent::Agent>>,
         weak_agent_inner: Weak<Mutex<AgentInner>>,
         stream_id: usize,
         component_id: usize,
@@ -645,7 +644,7 @@ impl Stream {
                     ));
                     Ok(channel)
                 }
-                Err(_e) => Err(librice_c::agent::AgentError::ResourceNotFound),
+                Err(_e) => Err(rice_c::agent::AgentError::ResourceNotFound),
             };
             let Some(proto_agent) = weak_proto_agent.upgrade() else {
                 return;

@@ -16,7 +16,7 @@ pub mod socket;
 pub mod stream;
 mod utils;
 
-pub use librice_c::candidate;
+pub use rice_c::candidate;
 
 #[cfg(test)]
 pub(crate) mod tests {
