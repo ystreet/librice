@@ -15,7 +15,7 @@ use std::error::Error;
 use std::net::SocketAddr;
 use std::str::FromStr;
 
-/// An ICE candidate
+/// An ICE candidate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
     /// The component

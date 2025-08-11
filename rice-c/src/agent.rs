@@ -6,10 +6,13 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+//! ICE Agent implementation as specified in RFC 8445
+
 use crate::{mut_override, stream::Stream};
 
 pub use crate::stream::Credentials as TurnCredentials;
 
+/// An ICE agent as specified in RFC 8445
 #[derive(Debug)]
 pub struct Agent {
     ffi: *mut crate::ffi::RiceAgent,
@@ -44,10 +47,12 @@ impl Agent {
         AgentBuilder::default()
     }
 
+    /// A process-unique identifier for this agent.
     pub fn id(&self) -> u64 {
         unsafe { crate::ffi::rice_agent_id(self.ffi) }
     }
 
+    /// The current time in microseconds.
     pub fn now(&self) -> u64 {
         unsafe { crate::ffi::rice_agent_now(self.ffi) }
     }
@@ -67,6 +72,7 @@ impl Agent {
         unsafe { Stream::from_c_full(crate::ffi::rice_agent_add_stream(self.ffi)) }
     }
 
+    /// Retrieve a [`Stream`] by its ID from this [`Agent`].
     pub fn stream(&self, id: usize) -> Option<crate::stream::Stream> {
         let ret = unsafe { crate::ffi::rice_agent_get_stream(self.ffi, id) };
         if ret.is_null() {
@@ -114,6 +120,9 @@ impl Agent {
         }
     }
 
+    /// Poll the [`Agent`] for further progress to be made.
+    ///
+    /// The returned value indicates what the application needs to do.
     pub fn poll(&self, now_micros: u64) -> AgentPoll {
         let mut ret = crate::ffi::RiceAgentPoll {
             tag: crate::ffi::RICE_AGENT_POLL_CLOSED,
@@ -134,6 +143,10 @@ impl Agent {
         AgentPoll::from_c_full(ret)
     }
 
+    /// Poll for a transmission to be performed.
+    ///
+    /// If not-None, then the provided data must be sent to the peer from the provided socket
+    /// address.
     pub fn poll_transmit(&self, now_micros: u64) -> Option<AgentTransmit> {
         let mut ret = crate::ffi::RiceTransmit {
             stream_id: 0,
@@ -183,6 +196,7 @@ impl AgentBuilder {
     }
 }
 
+/// Indicates what the caller should do after calling [`Agent::poll`]
 #[derive(Debug, Default)]
 pub enum AgentPoll {
     /// The Agent is closed.  No further progress will be made.
@@ -314,10 +328,15 @@ impl Drop for AgentPoll {
 /// Transmit the data using the specified 5-tuple.
 #[derive(Debug)]
 pub struct AgentTransmit {
+    /// The ICE stream id.
     pub stream_id: usize,
+    /// The socket to send the data from.
     pub from: crate::Address,
+    /// The network address to send the data to.
     pub to: crate::Address,
+    /// The transport to send the data over.
     pub transport: crate::candidate::TransportType,
+    /// The data to send.
     pub data: &'static [u8],
 }
 
@@ -356,10 +375,15 @@ impl Drop for AgentTransmit {
 /// A socket with the specified network 5-tuple.
 #[derive(Debug)]
 pub struct AgentSocket {
+    /// The ICE stream id.
     pub stream_id: usize,
+    /// The ICE component id.
     pub component_id: usize,
+    /// The transport.
     pub transport: crate::candidate::TransportType,
+    /// The socket source address.
     pub from: crate::Address,
+    /// The socket destination address.
     pub to: crate::Address,
 }
 
@@ -376,8 +400,11 @@ pub struct AgentSelectedPair {
 #[derive(Debug)]
 #[repr(C)]
 pub struct AgentComponentStateChange {
+    /// The ICE stream id.
     pub stream_id: usize,
+    /// The ICE component id.
     pub component_id: usize,
+    /// The new state of the component.
     pub state: crate::component::ComponentConnectionState,
 }
 
@@ -385,7 +412,9 @@ pub struct AgentComponentStateChange {
 #[derive(Debug)]
 #[repr(C)]
 pub struct AgentGatheredCandidate {
+    /// The ICE stream id.
     pub stream_id: usize,
+    /// The gathered candidate.
     pub gathered: crate::stream::GatheredCandidate,
 }
 
@@ -393,10 +422,13 @@ pub struct AgentGatheredCandidate {
 #[derive(Debug)]
 #[repr(C)]
 pub struct AgentGatheringComplete {
+    /// The ICE stream id.
     pub stream_id: usize,
+    /// The ICE component id.
     pub component_id: usize,
 }
 
+/// Errors that can be returned as a result of agent operations.
 #[derive(Debug)]
 #[repr(i32)]
 pub enum AgentError {

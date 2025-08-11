@@ -706,6 +706,10 @@ unsafe extern "C" {
     ) -> *mut ::core::ffi::c_char;
 }
 unsafe extern "C" {
+    #[doc = " Free an allocated string."]
+    pub fn rice_string_free(string: *mut ::core::ffi::c_char);
+}
+unsafe extern "C" {
     #[doc = " Construct a new `RiceCandidate` with the provided values.\n\n Will return NULL on error."]
     pub fn rice_candidate_new(
         component_id: usize,
@@ -714,6 +718,10 @@ unsafe extern "C" {
         foundation: *const ::core::ffi::c_char,
         address: *mut RiceAddress,
     ) -> *mut RiceCandidate;
+}
+unsafe extern "C" {
+    #[doc = " Set the base address of a `RiceCandidate`."]
+    pub fn rice_candidate_set_priority(candidate: *mut RiceCandidate, priority: u32);
 }
 unsafe extern "C" {
     #[doc = " Set the base address of a `RiceCandidate`."]
@@ -822,6 +830,14 @@ unsafe extern "C" {
     pub fn rice_component_get_state(
         component: *const RiceComponent,
     ) -> RiceComponentConnectionState;
+}
+unsafe extern "C" {
+    #[doc = " Retrieve the component id of the `RiceComponent`."]
+    pub fn rice_component_selected_pair(
+        component: *const RiceComponent,
+        local: *mut RiceCandidate,
+        remote: *mut RiceCandidate,
+    );
 }
 unsafe extern "C" {
     #[doc = " Retrieve a previously added `RiceComponent`.\n\n If the `RiceComponent` does not exist, `NULL` is returned."]

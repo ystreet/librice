@@ -107,7 +107,7 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
                 match msg {
                     AgentMessage::GatheredCandidate(_stream, candidate) => {
                         if config.remote.transports.contains(&candidate.transport()) {
-                            rstream.add_remote_candidate(candidate);
+                            rstream.add_remote_candidate(&candidate);
                         }
                     }
                     AgentMessage::GatheringComplete(_component) => {
@@ -135,7 +135,7 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
                 match msg {
                     AgentMessage::GatheredCandidate(_stream, candidate) => {
                         if config.local.transports.contains(&candidate.transport()) {
-                            lstream.add_remote_candidate(candidate);
+                            lstream.add_remote_candidate(&candidate);
                         }
                     }
                     AgentMessage::GatheringComplete(_component) => {

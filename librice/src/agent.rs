@@ -158,6 +158,7 @@ impl Agent {
         ret
     }
 
+    /// Retrieve a [`Stream`] by its ID from this [`Agent`].
     pub fn stream(&self, id: usize) -> Option<Stream> {
         let inner = self.inner.lock().unwrap();
         inner.streams.get(id).cloned()
@@ -332,7 +333,9 @@ impl futures::stream::Stream for AgentStream {
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(gathered.stream_id) {
                         let candidate = gathered.gathered.candidate();
-                        if stream.add_local_gathered_candidates(gathered.gathered.take()) {
+                        if stream
+                            .add_local_gathered_candidates(core::mem::take(&mut gathered.gathered))
+                        {
                             return Poll::Ready(Some(AgentMessage::GatheredCandidate(
                                 stream.clone(),
                                 candidate,

@@ -6,8 +6,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+//! ICE Candidates
+
 use std::ffi::{CStr, CString};
 
+/// An ICE candidate.
 #[derive(Eq)]
 pub struct Candidate {
     ffi: *mut crate::ffi::RiceCandidate,
@@ -51,6 +54,25 @@ impl Drop for Candidate {
 }
 
 impl Candidate {
+    /// Builds the candidate
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rice_c::candidate::*;
+    /// # use rice_c::Address;
+    /// let addr: Address = "127.0.0.1:2345".parse().unwrap();
+    /// let candidate = Candidate::builder(
+    ///     1,
+    ///     CandidateType::Host,
+    ///     TransportType::Udp,
+    ///     "foundation",
+    ///     addr,
+    /// )
+    /// .priority(1234)
+    /// .build();
+    /// assert_eq!(candidate.to_sdp_string(), "a=candidate:foundation 1 UDP 1234 127.0.0.1 2345 typ host")
+    /// ```
     pub fn builder(
         component_id: usize,
         ctype: CandidateType,
@@ -86,7 +108,37 @@ impl Candidate {
         self.ffi
     }
 
+    /// Serialize this candidate to a string for use in SDP
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rice_c::candidate::*;
+    /// # use rice_c::Address;
+    /// let addr: Address = "127.0.0.1:2345".parse().unwrap();
+    /// let candidate = Candidate::builder(
+    ///     1,
+    ///     CandidateType::Host,
+    ///     TransportType::Udp,
+    ///     "foundation",
+    ///     addr,
+    /// )
+    /// .priority(1234)
+    /// .build();
+    /// assert_eq!(candidate.to_sdp_string(), "a=candidate:foundation 1 UDP 1234 127.0.0.1 2345 typ host")
+    /// ```
+    pub fn to_sdp_string(&self) -> String {
+        unsafe {
+            let res = crate::ffi::rice_candidate_to_sdp_string(self.ffi);
+            let s = CStr::from_ptr(res);
+            let ret = s.to_str().unwrap().to_owned();
+            crate::ffi::rice_string_free(res);
+            ret
+        }
+    }
+
     // FIXME: proper error type
+    /// Parse an SDP candidate string into a candidate.
     pub fn from_sdp_string(s: &str) -> Result<Candidate, ()> {
         let cand_str = std::ffi::CString::new(s).unwrap();
         unsafe {
@@ -98,18 +150,22 @@ impl Candidate {
         }
     }
 
+    /// The component
     pub fn component_id(&self) -> usize {
         unsafe { (*self.ffi).component_id }
     }
 
+    /// The type of the Candidate
     pub fn candidate_type(&self) -> CandidateType {
         unsafe { (*self.ffi).candidate_type.into() }
     }
 
+    /// The network transport
     pub fn transport(&self) -> TransportType {
         unsafe { (*self.ffi).transport_type.into() }
     }
 
+    /// The (unique) foundation
     pub fn foundation(&self) -> String {
         unsafe {
             CStr::from_ptr((*self.ffi).foundation)
@@ -119,14 +175,22 @@ impl Candidate {
         }
     }
 
+    /// The priority
+    pub fn priority(&self) -> u32 {
+        unsafe { (*self.ffi).priority }
+    }
+
+    /// The address to send to
     pub fn address(&self) -> crate::Address {
         unsafe { crate::Address::from_c_none((*self.ffi).address) }
     }
 
+    /// The address to send from
     pub fn base_address(&self) -> crate::Address {
         unsafe { crate::Address::from_c_none((*self.ffi).base_address) }
     }
 
+    /// Any related address that generated this candidate, e.g. STUN/TURN server
     pub fn related_address(&self) -> Option<crate::Address> {
         unsafe {
             let related = (*self.ffi).related_address;
@@ -138,11 +202,15 @@ impl Candidate {
         }
     }
 
+    /// The type of TCP candidate
     pub fn tcp_type(&self) -> TcpType {
         unsafe { (*self.ffi).tcp_type.into() }
     }
+
+    // TODO: extensions
 }
 
+/// A builder for a [`Candidate`]
 #[derive(Debug)]
 pub struct CandidateBuilder {
     ffi: *mut crate::ffi::RiceCandidate,
@@ -155,6 +223,15 @@ impl CandidateBuilder {
         ret
     }
 
+    /// Specify the priority of the to be built candidate
+    pub fn priority(self, priority: u32) -> Self {
+        unsafe {
+            crate::ffi::rice_candidate_set_priority(self.ffi, priority);
+            self
+        }
+    }
+
+    /// Specify the base address of the to be built candidate
     pub fn base_address(self, base: crate::Address) -> Self {
         unsafe {
             crate::ffi::rice_candidate_set_base_address(self.ffi, base.into_c_full());
@@ -162,6 +239,7 @@ impl CandidateBuilder {
         }
     }
 
+    /// Specify the related address of the to be built candidate
     pub fn related_address(self, related: crate::Address) -> Self {
         unsafe {
             crate::ffi::rice_candidate_set_related_address(self.ffi, related.into_c_full());
@@ -169,6 +247,11 @@ impl CandidateBuilder {
         }
     }
 
+    /// Specify the type of TCP connection of the to be built candidate
+    ///
+    /// - This will panic at build() time if the transport type is not [`TransportType::Tcp`].
+    /// - This will panic at build() time if this function is not called but the
+    ///   transport type is [`TransportType::Tcp`]
     pub fn tcp_type(self, typ: TcpType) -> Self {
         unsafe {
             if (*self.ffi).transport_type != TransportType::Tcp.into() && typ != TcpType::None {
@@ -178,6 +261,8 @@ impl CandidateBuilder {
             self
         }
     }
+
+    // TODO: extensions
 }
 
 /// The type of the candidate
@@ -217,6 +302,7 @@ impl From<CandidateType> for crate::ffi::RiceCandidateType {
     }
 }
 
+/// The type of TCP candidate
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u32)]
 pub enum TcpType {
@@ -254,9 +340,12 @@ impl From<TcpType> for crate::ffi::RiceTcpType {
     }
 }
 
+/// The transport type.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum TransportType {
+    /// UDP transport.
     Udp,
+    /// TCP transport.
     Tcp,
 }
 
@@ -285,13 +374,17 @@ impl From<TransportType> for crate::ffi::RiceTransportType {
     }
 }
 
+/// Paired local and remote candidate
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidatePair {
+    /// The local [`Candidate`]
     pub local: Candidate,
+    /// The remote [`Candidate`]
     pub remote: Candidate,
 }
 
 impl CandidatePair {
+    /// Create a new [`CandidatePair`]
     pub fn new(local: Candidate, remote: Candidate) -> Self {
         Self { local, remote }
     }

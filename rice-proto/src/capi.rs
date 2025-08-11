@@ -1208,11 +1208,17 @@ pub unsafe extern "C" fn rice_candidate_to_sdp_string(
     candidate: *const RiceCandidate,
 ) -> *mut c_char {
     let candidate = Box::from_raw(mut_override(candidate));
-    let cand = (&(*candidate)).from_c_none();
+    let cand = (*candidate).from_c_none();
     let ret = CString::new(cand.to_sdp_string()).unwrap();
     core::mem::forget(candidate);
     // FIXME: need to provide a way to free this c string
     ret.into_raw()
+}
+
+/// Free an allocated string.
+#[no_mangle]
+pub unsafe extern "C" fn rice_string_free(string: *mut c_char) {
+    let _s = CString::from_raw(string);
 }
 
 /// Construct a new `RiceCandidate` with the provided values.
@@ -1251,6 +1257,14 @@ pub unsafe extern "C" fn rice_candidate_new(
         extensions: core::ptr::null_mut(),
         extensions_len: 0,
     }))
+}
+
+/// Set the base address of a `RiceCandidate`.
+#[no_mangle]
+pub unsafe extern "C" fn rice_candidate_set_priority(candidate: *mut RiceCandidate, priority: u32) {
+    let mut candidate = Box::from_raw(candidate);
+    (*candidate).priority = priority;
+    core::mem::forget(candidate);
 }
 
 /// Set the base address of a `RiceCandidate`.
@@ -1715,6 +1729,30 @@ pub unsafe extern "C" fn rice_component_get_state(
     drop(proto_agent);
     core::mem::forget(component);
     ret
+}
+
+/// Retrieve the component id of the `RiceComponent`.
+#[no_mangle]
+pub unsafe extern "C" fn rice_component_selected_pair(
+    component: *const RiceComponent,
+    local: *mut RiceCandidate,
+    remote: *mut RiceCandidate,
+) {
+    let component = Arc::from_raw(mut_override(component));
+    let proto_agent = component.proto_agent.lock().unwrap();
+    let proto_stream = proto_agent.stream(component.stream_id).unwrap();
+    let proto_component = proto_stream.component(component.component_id).unwrap();
+    if let Some(pair) = proto_component.selected_pair().cloned() {
+        *local = RiceCandidate::into_c_full(pair.local);
+        *remote = RiceCandidate::into_c_full(pair.remote);
+    } else {
+        *local = RiceCandidate::zero();
+        *remote = RiceCandidate::zero();
+    };
+    drop(proto_component);
+    drop(proto_stream);
+    drop(proto_agent);
+    core::mem::forget(component);
 }
 
 /// Retrieve a previously added `RiceComponent`.

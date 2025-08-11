@@ -165,6 +165,7 @@ impl ComponentInner {
     }
 }
 
+/// Data that has been received from a peer.
 #[derive(Debug)]
 pub enum RecvData {
     Vec(Vec<u8>),
