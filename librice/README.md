@@ -8,9 +8,9 @@
 
 Repository containing an async implementation of the ICE (RFC8445) protocol
 written in the [Rust programming language](https://www.rust-lang.org/).
-This async implementation is based on the sans-IO crate `librice-proto` in
-the same repository.  See the [librice-proto
-README](https://github.com/ystreet/librice/tree/main/librice-proto) for some
+This async implementation is based on the sans-IO crate `rice-proto` in
+the same repository.  See the [rice-proto
+README](https://github.com/ystreet/librice/tree/main/rice-proto) for some
 details as to why use the sans-IO design.
 
 ## Current status
@@ -63,9 +63,9 @@ more scenarios is part of the near and long term future roadmap.
 
 ## Building
 
-`librice` depends on `librice-c` and thus has the same build requirements as
-outlined in [its README](https://github.com/ystreet/librice/tree/main/librice-c).
+`librice` depends on `rice-c` and thus has the same build requirements as
+outlined in [its README](https://github.com/ystreet/librice/tree/main/rice-c).
 
 Specifically, that either `cargo-c` must be installed if building from source
-using the `librice` repository for development, or the the `librice-proto` C API
+using the `librice` repository for development, or the the `rice-proto` C API
 must be available in the build environment through pkg-config.

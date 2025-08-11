@@ -1,10 +1,10 @@
 [![Build status](https://github.com/ystreet/librice/workflows/Build/badge.svg?branch=main)](https://github.com/ystreet/librice/actions)
 [![codecov](https://codecov.io/gh/ystreet/librice/branch/main/graph/badge.svg)](https://codecov.io/gh/ystreet/librice)
 [![Dependencies](https://deps.rs/repo/github/ystreet/librice/status.svg)](https://deps.rs/repo/github/ystreet/librice)
-[![crates.io](https://img.shields.io/crates/v/librice-proto.svg)](https://crates.io/crates/librice-proto)
-[![docs.rs](https://docs.rs/librice-proto/badge.svg)](https://docs.rs/librice-proto)
+[![crates.io](https://img.shields.io/crates/v/rice-proto.svg)](https://crates.io/crates/rice-proto)
+[![docs.rs](https://docs.rs/rice-proto/badge.svg)](https://docs.rs/rice-proto)
 
-# librice-proto
+# rice-proto
 
 Repository containing an (sans-IO) implementation of ICE (RFC8445) protocol written in
 the [Rust programming language](https://www.rust-lang.org/).
@@ -98,4 +98,4 @@ Installation can be performed using:
 cargo cinstall --prefix $PREFIX
 ```
 
-And be used by e.g. `librice-c` for exposing a rust API of the C ABI.
+And be used e.g. by `rice-c` for exposing a rust API of the C ABI.

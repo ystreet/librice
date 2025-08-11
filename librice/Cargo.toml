@@ -13,7 +13,7 @@ rust-version.workspace = true
 workspace = ".."
 
 [dependencies]
-librice-c.workspace = true
+rice-c.workspace = true
 async-std = "1"
 async-io = "2"
 byteorder.workspace = true

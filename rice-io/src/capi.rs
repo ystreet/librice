@@ -25,7 +25,7 @@ use async_io::Async;
 use async_task::{Runnable, Task};
 use futures_lite::stream::StreamExt;
 
-use librice_proto::capi::{RiceAddress, RiceError, RiceTransportType};
+use rice_proto::capi::{RiceAddress, RiceError, RiceTransportType};
 
 static TRACING: Once = Once::new();
 
@@ -950,7 +950,7 @@ fn const_override<T>(val: *mut T) -> *const T {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use librice_proto::capi::*;
+    use rice_proto::capi::*;
     use tracing::debug;
 
     #[test]

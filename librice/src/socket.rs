@@ -19,7 +19,7 @@ use tracing_futures::Instrument;
 
 use crate::utils::DebugWrapper;
 
-use librice_c::candidate::TransportType;
+use rice_c::candidate::TransportType;
 
 pub(crate) struct Transmit<T: AsRef<[u8]> + std::fmt::Debug> {
     pub transport: TransportType,

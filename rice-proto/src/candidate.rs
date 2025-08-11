@@ -163,7 +163,7 @@ impl CandidateBuilder {
     /// # Examples
     ///
     /// ```
-    /// # use librice_proto::candidate::*;
+    /// # use rice_proto::candidate::*;
     /// # use std::net::SocketAddr;
     /// let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
     /// let candidate = Candidate::builder(
@@ -250,7 +250,7 @@ impl Candidate {
     /// # Examples
     ///
     /// ```
-    /// # use librice_proto::candidate::*;
+    /// # use rice_proto::candidate::*;
     /// # use std::net::SocketAddr;
     /// let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
     /// let candidate = Candidate::builder(
@@ -290,7 +290,7 @@ impl Candidate {
     /// # Examples
     ///
     /// ```
-    /// # use librice_proto::candidate::*;
+    /// # use rice_proto::candidate::*;
     /// # use std::net::SocketAddr;
     /// let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
     /// let candidate = Candidate::builder(
@@ -617,7 +617,7 @@ impl CandidatePair {
     /// # Examples
     ///
     /// ```
-    /// # use librice_proto::candidate::*;
+    /// # use rice_proto::candidate::*;
     /// # use std::net::SocketAddr;
     /// let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
     /// let candidate = Candidate::builder(

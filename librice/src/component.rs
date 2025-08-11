@@ -13,10 +13,10 @@ use std::sync::{Arc, Mutex, Weak};
 
 use std::task::{Poll, Waker};
 
-use librice_c::candidate::CandidatePair;
+use rice_c::candidate::CandidatePair;
 
-pub use librice_c::component::ComponentConnectionState;
-use librice_c::stream::RecvData as CRecvData;
+pub use rice_c::component::ComponentConnectionState;
+use rice_c::stream::RecvData as CRecvData;
 
 use crate::agent::AgentError;
 use crate::socket::StunChannel;
@@ -29,8 +29,8 @@ pub const RTCP: usize = 2;
 /// A [`Component`] within an ICE [`Stream`](crate::stream::Stream`)
 #[derive(Debug, Clone)]
 pub struct Component {
-    weak_agent: Weak<Mutex<librice_c::agent::Agent>>,
-    proto: librice_c::component::Component,
+    weak_agent: Weak<Mutex<rice_c::agent::Agent>>,
+    proto: rice_c::component::Component,
     #[allow(dead_code)]
     stream_id: usize,
     pub(crate) id: usize,
@@ -39,9 +39,9 @@ pub struct Component {
 
 impl Component {
     pub(crate) fn new(
-        weak_agent: Weak<Mutex<librice_c::agent::Agent>>,
+        weak_agent: Weak<Mutex<rice_c::agent::Agent>>,
         stream_id: usize,
-        proto: librice_c::component::Component,
+        proto: rice_c::component::Component,
     ) -> Self {
         Self {
             weak_agent,
@@ -92,7 +92,7 @@ impl Component {
 
         {
             let agent = self.weak_agent.upgrade().ok_or(AgentError::Proto(
-                librice_c::agent::AgentError::ResourceNotFound,
+                rice_c::agent::AgentError::ResourceNotFound,
             ))?;
             let agent = agent.lock().unwrap();
 
@@ -217,12 +217,12 @@ impl futures::Stream for ComponentRecv {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SelectedPair {
-    pair: librice_c::candidate::CandidatePair,
+    pair: rice_c::candidate::CandidatePair,
     socket: StunChannel,
 }
 
 impl SelectedPair {
-    pub(crate) fn new(pair: librice_c::candidate::CandidatePair, socket: StunChannel) -> Self {
+    pub(crate) fn new(pair: rice_c::candidate::CandidatePair, socket: StunChannel) -> Self {
         Self { pair, socket }
     }
 }
@@ -230,7 +230,7 @@ impl SelectedPair {
 #[cfg(test)]
 mod tests {
     use async_std::net::UdpSocket;
-    use librice_c::candidate::{Candidate, CandidateType, TransportType};
+    use rice_c::candidate::{Candidate, CandidateType, TransportType};
 
     use super::*;
     use crate::{agent::Agent, socket::UdpSocketChannel};

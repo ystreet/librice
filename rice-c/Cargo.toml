@@ -1,12 +1,12 @@
 [package]
-name = "librice-c"
+name = "rice-c"
 description = "ICE (RFC8445) implementation protocol"
 version.workspace = true
 authors = ["Matthew Waters <matthew@centricular.com>"]
 license = "MIT OR Apache-2.0"
 keywords = ["STUN", "ICE"]
 categories = ["network-programming", ]
-documentation = "https://docs.rs/librice-proto"
+documentation = "https://docs.rs/rice-c"
 edition.workspace = true
 repository.workspace = true
 rust-version.workspace = true

@@ -46,9 +46,9 @@ impl<'a> Stream<'a> {
     /// Remove a `Component`
     ///
     /// ```
-    /// # use librice_proto::agent::Agent;
-    /// # use librice_proto::component;
-    /// # use librice_proto::component::Component;
+    /// # use rice_proto::agent::Agent;
+    /// # use rice_proto::component;
+    /// # use rice_proto::component::Component;
     /// let mut agent = Agent::default();
     /// let stream_id = agent.add_stream();
     /// let mut stream = agent.mut_stream(stream_id).unwrap();
@@ -61,9 +61,9 @@ impl<'a> Stream<'a> {
     /// Retrieving a `Component` that doesn't exist will return `None`
     ///
     /// ```
-    /// # use librice_proto::agent::Agent;
-    /// # use librice_proto::component;
-    /// # use librice_proto::component::Component;
+    /// # use rice_proto::agent::Agent;
+    /// # use rice_proto::component;
+    /// # use rice_proto::component::Component;
     /// let mut agent = Agent::default();
     /// let stream_id = agent.add_stream();
     /// let stream = agent.stream(stream_id).unwrap();
@@ -86,8 +86,8 @@ impl<'a> Stream<'a> {
     /// # Examples
     ///
     /// ```
-    /// # use librice_proto::agent::Agent;
-    /// # use librice_proto::stream::Credentials;
+    /// # use rice_proto::agent::Agent;
+    /// # use rice_proto::stream::Credentials;
     /// let mut agent = Agent::default();
     /// let stream_id = agent.add_stream();
     /// let mut stream = agent.mut_stream(stream_id).unwrap();
@@ -105,8 +105,8 @@ impl<'a> Stream<'a> {
     /// # Examples
     ///
     /// ```
-    /// # use librice_proto::agent::Agent;
-    /// # use librice_proto::stream::Credentials;
+    /// # use rice_proto::agent::Agent;
+    /// # use rice_proto::stream::Credentials;
     /// let mut agent = Agent::default();
     /// let stream_id = agent.add_stream();
     /// let mut stream = agent.mut_stream(stream_id).unwrap();
@@ -135,8 +135,8 @@ impl<'a> Stream<'a> {
     /// # Examples
     ///
     /// ```
-    /// # use librice_proto::agent::Agent;
-    /// # use librice_proto::candidate::*;
+    /// # use rice_proto::agent::Agent;
+    /// # use rice_proto::candidate::*;
     /// let mut agent = Agent::default();
     /// let stream_id = agent.add_stream();
     /// let mut stream = agent.mut_stream(stream_id).unwrap();
@@ -202,9 +202,9 @@ impl<'a> StreamMut<'a> {
     /// Add a `Component`
     ///
     /// ```
-    /// # use librice_proto::agent::Agent;
-    /// # use librice_proto::component;
-    /// # use librice_proto::component::Component;
+    /// # use rice_proto::agent::Agent;
+    /// # use rice_proto::component;
+    /// # use rice_proto::component::Component;
     /// let mut agent = Agent::default();
     /// let stream_id = agent.add_stream();
     /// let mut stream = agent.mut_stream(stream_id).unwrap();
@@ -243,8 +243,8 @@ impl<'a> StreamMut<'a> {
     /// # Examples
     ///
     /// ```
-    /// # use librice_proto::agent::Agent;
-    /// # use librice_proto::stream::Credentials;
+    /// # use rice_proto::agent::Agent;
+    /// # use rice_proto::stream::Credentials;
     /// let mut agent = Agent::default();
     /// let stream_id = agent.add_stream();
     /// let mut stream = agent.mut_stream(stream_id).unwrap();
@@ -264,8 +264,8 @@ impl<'a> StreamMut<'a> {
     /// # Examples
     ///
     /// ```
-    /// # use librice_proto::agent::Agent;
-    /// # use librice_proto::stream::Credentials;
+    /// # use rice_proto::agent::Agent;
+    /// # use rice_proto::stream::Credentials;
     /// let mut agent = Agent::default();
     /// let stream_id = agent.add_stream();
     /// let mut stream = agent.mut_stream(stream_id).unwrap();
@@ -285,8 +285,8 @@ impl<'a> StreamMut<'a> {
     /// # Examples
     ///
     /// ```
-    /// # use librice_proto::agent::Agent;
-    /// # use librice_proto::candidate::*;
+    /// # use rice_proto::agent::Agent;
+    /// # use rice_proto::candidate::*;
     /// let mut agent = Agent::default();
     /// let stream_id = agent.add_stream();
     /// let mut stream = agent.mut_stream(stream_id).unwrap();

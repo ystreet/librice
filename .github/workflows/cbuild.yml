@@ -18,10 +18,10 @@ jobs:
       uses: taiki-e/cache-cargo-install-action@v2 
       with:
         tool: cargo-c
-    - name: CBuild librice-proto
-      run: cargo cbuild -p librice-proto --verbose
-    - name: CBuild librice-io
-      run: cargo cbuild -p librice-io --verbose
+    - name: CBuild rice-proto
+      run: cargo cbuild -p rice-proto --verbose
+    - name: CBuild rice-io
+      run: cargo cbuild -p rice-io --verbose
   test:
     runs-on: ubuntu-latest
     steps:
@@ -30,7 +30,7 @@ jobs:
       uses: taiki-e/cache-cargo-install-action@v2 
       with:
         tool: cargo-c
-    - name: CTest librice-proto
-      run: cargo ctest -p librice-proto --verbose
-    - name: CTest librice-io
-      run: cargo ctest -p librice-io --verbose
+    - name: CTest rice-proto
+      run: cargo ctest -p rice-proto --verbose
+    - name: CTest rice-io
+      run: cargo ctest -p rice-io --verbose

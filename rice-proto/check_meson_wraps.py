@@ -18,16 +18,16 @@ def parse_cargo_tree_line(line):
 CRATES_URL_TEMPL = "https://crates.io/api/v1/crates/{name}/{version}/download"
 
 def main():
-    crates_features = subprocess.run(["cargo", "tree", "-f", "{p} {f}", "-p", "librice-proto", "-e", "normal", "--prefix", "depth"], capture_output=True, check=True, text=True).stdout
+    crates_features = subprocess.run(["cargo", "tree", "-f", "{p} {f}", "-p", "rice-proto", "-e", "normal", "--prefix", "depth"], capture_output=True, check=True, text=True).stdout
     crates = {}
     for line in crates_features.splitlines():
         (name, version, features) = parse_cargo_tree_line(line)
-        if name != 'librice-proto':
+        if name != 'rice-proto':
             if name in crates:
                 assert(crates[name] == (version, features))
                 continue
             crates[name] = (version, features)
-            wrap_file = pathlib.Path('..') / 'librice-proto' / 'subprojects' / (name + '.wrap')
+            wrap_file = pathlib.Path('..') / 'rice-proto' / 'subprojects' / (name + '.wrap')
             with wrap_file.open(mode="r") as f:
                 wrap = configparser.ConfigParser()
                 wrap.read_file(f)

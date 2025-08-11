@@ -5,7 +5,7 @@ use libfuzzer_sys::fuzz_target;
 extern crate tracing;
 use tracing_subscriber::EnvFilter;
 
-use librice_proto::candidate::*;
+use rice_proto::candidate::*;
 
 use std::{str::FromStr, sync::Once};
 

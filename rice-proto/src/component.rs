@@ -56,9 +56,9 @@ impl<'a> Component<'a> {
     /// The initial state is `ComponentState::New`
     ///
     /// ```
-    /// # use librice_proto::component::{Component, ComponentConnectionState};
-    /// # use librice_proto::agent::Agent;
-    /// # use librice_proto::stream::Stream;
+    /// # use rice_proto::component::{Component, ComponentConnectionState};
+    /// # use rice_proto::agent::Agent;
+    /// # use rice_proto::stream::Stream;
     /// let mut agent = Agent::default();
     /// let stream_id = agent.add_stream();
     /// let mut stream = agent.mut_stream(stream_id).unwrap();
@@ -386,12 +386,7 @@ mod tests {
         let recved_data2 = vec![9; 12];
         let ret = stream.handle_incoming_data(
             send_id,
-            Transmit::new(
-                recved_data2,
-                TransportType::Udp,
-                local_addr,
-                local_addr,
-            ),
+            Transmit::new(recved_data2, TransportType::Udp, local_addr, local_addr),
             now,
         );
         assert!(ret.data.is_none());

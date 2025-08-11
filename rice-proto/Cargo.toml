@@ -1,19 +1,23 @@
 [package]
-name = "librice-proto"
+name = "rice-proto"
 description = "ICE (RFC8445) implementation protocol"
 version.workspace = true
 authors = ["Matthew Waters <matthew@centricular.com>"]
 license = "MIT OR Apache-2.0"
 keywords = ["STUN", "ICE"]
 categories = ["network-programming", ]
-documentation = "https://docs.rs/librice-proto"
+documentation = "https://docs.rs/rice-proto"
 edition.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 workspace = ".."
 
 [features]
+default = ["capi"]
 capi = ["libc", "tracing-subscriber"]
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
 
 [dependencies]
 arbitrary = { workspace = true, optional = true }
@@ -44,7 +48,7 @@ version_suffix_components = 1
 rustflags = "-Cpanic=abort"
 
 [package.metadata.capi.pkg_config]
-name = "librice-proto"
+name = "rice-proto"
 filename = "rice-proto"
 
 [[bench]]
