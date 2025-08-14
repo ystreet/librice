@@ -534,6 +534,10 @@ const _: () = {
         [::core::mem::offset_of!(RiceStreamIncomingData, data) - 8usize];
 };
 unsafe extern "C" {
+    #[doc = " Query the built version of `rice-proto`."]
+    pub fn rice_version(major: *mut u32, minor: *mut u32, patch: *mut u32);
+}
+unsafe extern "C" {
     #[doc = " Create a new ICE Agent."]
     pub fn rice_agent_new(controlling: bool, trickle_ice: bool) -> *mut RiceAgent;
 }
