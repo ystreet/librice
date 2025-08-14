@@ -4,7 +4,7 @@ default-members = ["librice", "rice-proto", "rice-c"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 repository = "https://github.com/ystreet/librice"
 edition = "2021"
 rust-version = "1.68.2"
@@ -18,8 +18,8 @@ get_if_addrs = "0.5"
 rand = "0.9"
 tracing = "0.1"
 tracing-subscriber = "0.3"
-rice-proto = { version = "0.1.0", path = "rice-proto" }
-rice-c = { version = "0.1.0", path = "rice-c" }
+rice-proto = { version = "0.1.1", path = "rice-proto" }
+rice-c = { version = "0.1.1", path = "rice-c" }
 criterion = "0.6"
 
 [profile.bench]
