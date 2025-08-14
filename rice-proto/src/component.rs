@@ -28,6 +28,7 @@ pub const RTP: usize = 1;
 pub const RTCP: usize = 2;
 
 /// A [`Component`] in an ICE [`Stream`](crate::stream::Stream)
+#[derive(Debug)]
 #[repr(C)]
 pub struct Component<'a> {
     agent: &'a Agent,
@@ -85,6 +86,7 @@ impl<'a> Component<'a> {
 }
 
 /// A mutable component in an ICE [`Stream`](crate::stream::Stream)
+#[derive(Debug)]
 #[repr(C)]
 pub struct ComponentMut<'a> {
     agent: &'a mut Agent,

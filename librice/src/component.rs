@@ -196,6 +196,7 @@ impl core::ops::Deref for RecvData {
     }
 }
 
+#[derive(Debug)]
 #[doc(hidden)]
 pub struct ComponentRecv {
     inner: Arc<Mutex<ComponentInner>>,

@@ -1994,6 +1994,7 @@ pub unsafe extern "C" fn rice_address_new_from_string(string: *const c_char) -> 
 }
 
 /// The address family.
+#[derive(Debug)]
 #[repr(u32)]
 pub enum RiceAddressFamily {
     Ipv4 = 1,
