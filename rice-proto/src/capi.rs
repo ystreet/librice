@@ -57,6 +57,20 @@ fn init_logs() {
     });
 }
 
+/// Query the built version of `rice-proto`.
+#[no_mangle]
+pub unsafe extern "C" fn rice_version(major: *mut u32, minor: *mut u32, patch: *mut u32) {
+    if !major.is_null() {
+        *major = env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap();
+    }
+    if !minor.is_null() {
+        *minor = env!("CARGO_PKG_VERSION_MINOR").parse().unwrap();
+    }
+    if !patch.is_null() {
+        *patch = env!("CARGO_PKG_VERSION_PATCH").parse().unwrap();
+    }
+}
+
 #[repr(i32)]
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum RiceError {
@@ -2109,6 +2123,17 @@ fn const_override<T>(val: *mut T) -> *const T {
 mod tests {
     use super::*;
     use crate::candidate::{Candidate, TcpType};
+
+    #[test]
+    fn test_rice_version() {
+        unsafe {
+            let mut major = 0;
+            let mut minor = 0;
+            let mut patch = 0;
+            rice_version(&mut major, &mut minor, &mut patch);
+            eprintln!("Rice version: {major}.{minor}.{patch}");
+        }
+    }
 
     #[test]
     fn rice_address() {
