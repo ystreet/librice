@@ -144,6 +144,7 @@ impl std::fmt::Display for CandidateType {
 }
 
 /// A builder for a [`Candidate`]
+#[derive(Debug)]
 pub struct CandidateBuilder {
     component_id: usize,
     ctype: CandidateType,

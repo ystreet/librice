@@ -6,5 +6,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![deny(missing_debug_implementations)]
+
 #[cfg(feature = "capi")]
 mod capi;

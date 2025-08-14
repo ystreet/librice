@@ -211,6 +211,7 @@ pub(crate) struct AgentInner {
 }
 
 /// Events that users might like to know
+#[derive(Debug)]
 pub enum AgentMessage {
     /// A [`Component`] has changed state.
     ComponentStateChange(Component, ComponentConnectionState),
