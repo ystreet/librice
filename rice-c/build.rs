@@ -8,6 +8,10 @@ fn main() {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
+    if env::var("DOCS_RS").is_ok() {
+        return;
+    }
+
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let destdir = Path::new(&out_dir).join("rice-proto-cbuild");
