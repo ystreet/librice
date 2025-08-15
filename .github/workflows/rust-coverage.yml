@@ -26,7 +26,7 @@ jobs:
       - name: Install cargo-tarpaulin
         uses: taiki-e/cache-cargo-install-action@v2
         with:
-          tool: cargo-tarpaulin@0.30
+          tool: cargo-tarpaulin@0.32
 
       - name: Install cargo-c
         uses: taiki-e/cache-cargo-install-action@v2
@@ -40,7 +40,7 @@ jobs:
           args: '--out Xml --lib --tests --doc -- --test-threads 1'
 
       - name: Upload to codecov.io
-        uses: codecov/codecov-action@v3.1.1
+        uses: codecov/codecov-action@v5
         with:
           token: ${{secrets.CODECOV_TOKEN}}
 
