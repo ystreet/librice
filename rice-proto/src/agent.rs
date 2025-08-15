@@ -30,6 +30,7 @@ pub use turn_client_proto::types::TurnCredentials;
 /// Errors that can be returned as a result of agent operations.
 #[derive(Debug)]
 pub enum AgentError {
+    /// Failed for an unspecified reason.
     Failed,
     /// The specified resource already exists and cannot be added.
     AlreadyExists,
@@ -39,18 +40,15 @@ pub enum AgentError {
     NotInProgress,
     /// Could not find the specified resource.
     ResourceNotFound,
-    /// Too little data provided.
-    NotEnoughData,
-    InvalidSize,
+    /// The data provided was not in the correct format.
     Malformed,
-    NotStun,
+    /// This data is not handled by this implementation.
     WrongImplementation,
-    TooBig,
+    /// The connection to the remote has been closed.
     ConnectionClosed,
-    IntegrityCheckFailed,
-    Aborted,
-    TimedOut,
+    /// Parsing the STUN message failed.
     StunParse,
+    /// Writing the STUN message failed.
     StunWrite,
     /// Parsing the candidate failed.
     CandidateParse(ParseCandidateError),
@@ -76,11 +74,9 @@ impl From<StunError> for AgentError {
     fn from(e: StunError) -> Self {
         match e {
             StunError::ResourceNotFound => AgentError::ResourceNotFound,
-            StunError::TimedOut => AgentError::TimedOut,
             StunError::ProtocolViolation => AgentError::ProtocolViolation,
             StunError::ParseError(_) => AgentError::StunParse,
             StunError::WriteError(_) => AgentError::StunWrite,
-            StunError::Aborted => AgentError::Aborted,
             StunError::AlreadyInProgress => AgentError::AlreadyInProgress,
             _ => AgentError::Failed,
         }
@@ -224,6 +220,8 @@ impl Agent {
         &self.stun_servers
     }
 
+    /// Add a TURN server by address, transport, and credentials to use for gathering potential
+    /// candidates.
     #[tracing::instrument(
         name = "ice_add_turn_server",
         skip(self)
@@ -488,7 +486,9 @@ pub enum AgentPoll {
 /// Transmit the data using the specified 5-tuple.
 #[derive(Debug)]
 pub struct AgentTransmit {
+    /// The ICE stream id within the agent.
     pub stream_id: usize,
+    /// The network 5-tuple and data to send.
     pub transmit: Transmit<Box<[u8]>>,
 }
 
@@ -509,18 +509,26 @@ impl AgentTransmit {
 /// A socket with the specified network 5-tuple.
 #[derive(Debug)]
 pub struct AgentSocket {
+    /// The ICE stream id within the agent.
     pub stream_id: usize,
+    /// The ICE component id within the stream.
     pub component_id: usize,
+    /// The transport for the socket.
     pub transport: TransportType,
+    /// The source address of the socket.
     pub from: SocketAddr,
+    /// The destination address of the socket.
     pub to: SocketAddr,
 }
 
 /// A new pair has been selected for a component.
 #[derive(Debug)]
 pub struct AgentSelectedPair {
+    /// The ICE stream id within the agent.
     pub stream_id: usize,
+    /// The ICE component id within the stream.
     pub component_id: usize,
+    /// The selceted pair.
     pub selected: Box<SelectedPair>,
 }
 
@@ -528,8 +536,11 @@ pub struct AgentSelectedPair {
 #[derive(Debug)]
 #[repr(C)]
 pub struct AgentComponentStateChange {
+    /// The ICE stream id within the agent.
     pub stream_id: usize,
+    /// The ICE component id within the stream.
     pub component_id: usize,
+    /// The new state of the component.
     pub state: ComponentConnectionState,
 }
 
@@ -537,7 +548,9 @@ pub struct AgentComponentStateChange {
 #[derive(Debug)]
 #[repr(C)]
 pub struct AgentGatheredCandidate {
+    /// The ICE stream id within the agent.
     pub stream_id: usize,
+    /// The gathered candidate.
     pub gathered: GatheredCandidate,
 }
 
@@ -545,7 +558,9 @@ pub struct AgentGatheredCandidate {
 #[derive(Debug)]
 #[repr(C)]
 pub struct AgentGatheringComplete {
+    /// The ICE stream id within the agent.
     pub stream_id: usize,
+    /// The ICE component id within the stream.
     pub component_id: usize,
 }
 

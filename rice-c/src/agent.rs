@@ -390,9 +390,13 @@ pub struct AgentSocket {
 /// A new pair has been selected for a component.
 #[derive(Debug)]
 pub struct AgentSelectedPair {
+    /// The ICE stream id within the agent.
     pub stream_id: usize,
+    /// The ICE component id within the stream.
     pub component_id: usize,
+    /// The local candidate that has been selected.
     pub local: crate::candidate::Candidate,
+    /// The remote candidate that has been selected.
     pub remote: crate::candidate::Candidate,
 }
 
@@ -432,8 +436,11 @@ pub struct AgentGatheringComplete {
 #[derive(Debug)]
 #[repr(i32)]
 pub enum AgentError {
+    /// The operation failed for an unspecified reason.
     Failed = crate::ffi::RICE_ERROR_FAILED,
+    /// A required resource was not found.
     ResourceNotFound = crate::ffi::RICE_ERROR_RESOURCE_NOT_FOUND,
+    /// The operation is already in progress.
     AlreadyInProgress = crate::ffi::RICE_ERROR_ALREADY_IN_PROGRESS,
 }
 

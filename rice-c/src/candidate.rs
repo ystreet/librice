@@ -12,6 +12,7 @@ use std::ffi::{CStr, CString};
 
 use crate::agent::AgentError;
 
+/// ICE candidate.
 pub trait CandidateApi: sealed::CandidateAsC {
     /// The component
     fn component_id(&self) -> usize {
@@ -182,6 +183,7 @@ impl Candidate {
         Self { ffi: candidate }
     }
 
+    /// Copy this candidate into a heap allocated [`CandidateOwned`].
     pub fn to_owned(&self) -> CandidateOwned {
         unsafe {
             CandidateOwned {
@@ -235,6 +237,9 @@ impl Candidate {
     }
 }
 
+/// An ICE candidate.
+///
+/// Backed inside a heap allocation.
 #[derive(Eq)]
 pub struct CandidateOwned {
     ffi: *mut crate::ffi::RiceCandidate,
@@ -334,6 +339,7 @@ pub struct CandidateBuilder {
 }
 
 impl CandidateBuilder {
+    /// Consume this builder a construct a new [`Candidate`].
     pub fn build(self) -> Candidate {
         Candidate { ffi: self.ffi }
     }

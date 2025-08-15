@@ -44,7 +44,9 @@ const MAX_STUN_MESSAGE_SIZE: usize = 1500 * 2;
 /// A combined socket interface for both UDP and TCP
 #[derive(Debug, Clone)]
 pub enum StunChannel {
+    /// A UDP socket.
     Udp(UdpSocketChannel),
+    /// A TCP socket.
     Tcp(TcpChannel),
 }
 

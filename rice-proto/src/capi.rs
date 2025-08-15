@@ -10,6 +10,30 @@
 #![allow(clippy::missing_safety_doc)]
 #![deny(improper_ctypes_definitions)]
 
+//! # C API
+//!
+//! The C API for `rice-proto`.
+//!
+//! ## Conventions
+//!
+//! 1. All refcounted objects (`_ref()` and `_unref()` functions are available for the type)
+//!    are `Send+Sync` and contain interior mutability.
+//! 2. All non-refcounted objects are `Send`, but not `Sync`.
+//!
+//! ### Lifetime
+//!
+//! 1. Any function that takes a `*const _` does not take ownership of the provided pointer.
+//! 2. For functions that take a `*mut _` argument,
+//!    1. If the argument is a refcounted type then by default no reference is consumed unless
+//!       specified otherwise. As an exception, `_unref()` and `_free()` functions always
+//!       consume the provided reference.
+//!    2. Otherwise, the argument consumes the reference.
+//!
+//! ### Allocations
+//!
+//! All heap allocated resources allocated by `rice-proto` must also be freed by a `rice-proto`
+//! function in order to correctly match the allocation with the correct allocator.
+
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
 
@@ -71,12 +95,17 @@ pub unsafe extern "C" fn rice_version(major: *mut u32, minor: *mut u32, patch: *
     }
 }
 
+/// Errors when processing an operation.
 #[repr(i32)]
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum RiceError {
+    /// Not an error. The operation was completed successfully.
     Success = 0,
+    /// The operation failed for an unspecified reason.
     Failed = -1,
+    /// A required resource was not found.
     ResourceNotFound = -2,
+    /// The operation is already in progress.
     AlreadyInProgress = -3,
 }
 
@@ -152,9 +181,9 @@ pub unsafe extern "C" fn rice_agent_new(controlling: bool, trickle_ice: bool) ->
 ///
 /// This function is multi-threading safe.
 #[no_mangle]
-pub unsafe extern "C" fn rice_agent_ref(agent: *mut RiceAgent) -> *mut RiceAgent {
+pub unsafe extern "C" fn rice_agent_ref(agent: *const RiceAgent) -> *mut RiceAgent {
     Arc::increment_strong_count(agent);
-    agent
+    mut_override(agent)
 }
 
 /// Decrease the reference count of the `RiceAgent`.
@@ -173,7 +202,7 @@ pub unsafe extern "C" fn rice_agent_unref(agent: *mut RiceAgent) {
 /// `rice_agent_poll()`) and will only succesfully complete once `rice_agent_poll`() returns
 /// `Closed`.
 #[no_mangle]
-pub unsafe extern "C" fn rice_agent_close(agent: *mut RiceAgent, now_micros: u64) {
+pub unsafe extern "C" fn rice_agent_close(agent: *const RiceAgent, now_micros: u64) {
     let agent = Arc::from_raw(agent);
     let mut proto_agent = agent.proto_agent.lock().unwrap();
     let now = agent.base_instant + Duration::from_micros(now_micros);
@@ -185,7 +214,7 @@ pub unsafe extern "C" fn rice_agent_close(agent: *mut RiceAgent, now_micros: u64
 
 /// Return the process-local unique id for this agent.
 #[no_mangle]
-pub unsafe extern "C" fn rice_agent_id(agent: *mut RiceAgent) -> u64 {
+pub unsafe extern "C" fn rice_agent_id(agent: *const RiceAgent) -> u64 {
     let agent = Arc::from_raw(agent);
     let proto_agent = agent.proto_agent.lock().unwrap();
     let ret = proto_agent.id();
@@ -200,7 +229,7 @@ pub unsafe extern "C" fn rice_agent_id(agent: *mut RiceAgent) -> u64 {
 /// A return value of `true` indicates the `RiceAgent` is in controlling mode, false the controlled
 /// mode.  This value can change during ICE processing.
 #[no_mangle]
-pub unsafe extern "C" fn rice_agent_get_controlling(agent: *mut RiceAgent) -> bool {
+pub unsafe extern "C" fn rice_agent_get_controlling(agent: *const RiceAgent) -> bool {
     let agent = Arc::from_raw(agent);
     let proto_agent = agent.proto_agent.lock().unwrap();
     let ret = proto_agent.controlling();
@@ -654,7 +683,7 @@ pub unsafe extern "C" fn rice_agent_poll_transmit(
 /// Add a STUN server to this `RiceAgent`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_agent_add_stun_server(
-    agent: *mut RiceAgent,
+    agent: *const RiceAgent,
     transport: RiceTransportType,
     addr: *const RiceAddress,
 ) {
@@ -670,7 +699,7 @@ pub unsafe extern "C" fn rice_agent_add_stun_server(
 /// Add a TURN server to this `RiceAgent`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_agent_add_turn_server(
-    agent: *mut RiceAgent,
+    agent: *const RiceAgent,
     transport: RiceTransportType,
     addr: *const RiceAddress,
     credentials: *const RiceCredentials,
@@ -697,7 +726,7 @@ pub unsafe extern "C" fn rice_agent_add_turn_server(
 ///
 /// This value is the same as `rice_stream_now()`.
 #[no_mangle]
-pub unsafe extern "C" fn rice_agent_now(agent: *mut RiceAgent) -> u64 {
+pub unsafe extern "C" fn rice_agent_now(agent: *const RiceAgent) -> u64 {
     let agent = Arc::from_raw(agent);
     let ret = Instant::now()
         .saturating_duration_since(agent.base_instant)
@@ -749,7 +778,7 @@ pub unsafe extern "C" fn rice_agent_add_stream(agent: *mut RiceAgent) -> *mut Ri
 /// Will return `NULL` if the stream does not exist.
 #[no_mangle]
 pub unsafe extern "C" fn rice_agent_get_stream(
-    agent: *mut RiceAgent,
+    agent: *const RiceAgent,
     stream_id: usize,
 ) -> *mut RiceStream {
     let agent = Arc::from_raw(agent);
@@ -769,9 +798,9 @@ pub unsafe extern "C" fn rice_agent_get_stream(
 ///
 /// This function is multi-threading safe.
 #[no_mangle]
-pub unsafe extern "C" fn rice_stream_ref(stream: *mut RiceStream) -> *mut RiceStream {
+pub unsafe extern "C" fn rice_stream_ref(stream: *const RiceStream) -> *mut RiceStream {
     Arc::increment_strong_count(stream);
-    stream
+    mut_override(stream)
 }
 
 /// Decrease the reference count of the `RiceStream`.
@@ -787,7 +816,7 @@ pub unsafe extern "C" fn rice_stream_unref(stream: *mut RiceStream) {
 
 /// Retrieve the stream id of the `RiceStream`.
 #[no_mangle]
-pub unsafe extern "C" fn rice_stream_get_id(stream: *mut RiceStream) -> usize {
+pub unsafe extern "C" fn rice_stream_get_id(stream: *const RiceStream) -> usize {
     let stream = Arc::from_raw(stream);
     let ret = stream.stream_id;
     core::mem::forget(stream);
@@ -829,7 +858,7 @@ pub unsafe extern "C" fn rice_stream_handle_allocated_socket(
 ///
 /// This value produces the same values as `rice_agent_now()`.
 #[no_mangle]
-pub unsafe extern "C" fn rice_stream_now(stream: *mut RiceStream) -> u64 {
+pub unsafe extern "C" fn rice_stream_now(stream: *const RiceStream) -> u64 {
     let stream = Arc::from_raw(stream);
     let ret = Instant::now()
         .saturating_duration_since(stream.base_instant)
@@ -907,7 +936,7 @@ fn credentials_to_c(credentials: Credentials) -> *mut RiceCredentials {
 /// Retrieve the local ICE credentials currently set on the `RiceStream`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_get_local_credentials(
-    stream: *mut RiceStream,
+    stream: *const RiceStream,
 ) -> *mut RiceCredentials {
     let stream = Arc::from_raw(stream);
     let proto_agent = stream.proto_agent.lock().unwrap();
@@ -927,7 +956,7 @@ pub unsafe extern "C" fn rice_stream_get_local_credentials(
 /// Retrieve the remote ICE credentials currently set on the `RiceStream`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_get_remote_credentials(
-    stream: *mut RiceStream,
+    stream: *const RiceStream,
 ) -> *mut RiceCredentials {
     let stream = Arc::from_raw(stream);
     let proto_agent = stream.proto_agent.lock().unwrap();
@@ -1570,7 +1599,9 @@ pub struct RiceStreamIncomingData {
     handled: bool,
     /// Whether there is more data to pull using `rice_stream_poll_recv()`.
     have_more_data: bool,
-    /// The data pointer.
+    /// The data pointer. If non-NULL, this is the same value as provided to
+    /// `rice_stream_handle_incoming_data()` and has the same lifetime contraints as that original
+    /// data pointer.
     data: RiceDataImpl,
 }
 
@@ -1737,9 +1768,9 @@ pub unsafe extern "C" fn rice_stream_add_component(stream: *mut RiceStream) -> *
 ///
 /// This function is multi-threading safe.
 #[no_mangle]
-pub unsafe extern "C" fn rice_component_ref(component: *mut RiceComponent) -> *mut RiceComponent {
+pub unsafe extern "C" fn rice_component_ref(component: *const RiceComponent) -> *mut RiceComponent {
     Arc::increment_strong_count(component);
-    component
+    mut_override(component)
 }
 
 /// Decrease the reference count of the `RiceComponent`.
@@ -1804,7 +1835,7 @@ pub unsafe extern "C" fn rice_component_selected_pair(
 /// If the `RiceComponent` does not exist, `NULL` is returned.
 #[no_mangle]
 pub unsafe extern "C" fn rice_stream_get_component(
-    stream: *mut RiceStream,
+    stream: *const RiceStream,
     component_id: usize,
 ) -> *mut RiceComponent {
     if component_id < 1 {
@@ -1953,18 +1984,25 @@ pub unsafe extern "C" fn rice_component_set_selected_pair(
 pub struct RiceAddress(SocketAddr);
 
 impl RiceAddress {
+    /// Create a new `RiceAddress`.
     pub fn new(addr: SocketAddr) -> Self {
         Self(addr)
     }
 
+    /// Convert this `RiceAddress` into it's C API equivalent.
+    ///
+    /// The returned value should be converted back into the Rust equivalent using
+    /// `RiceAddress::into_rust_full()` in order to free the resource.
     pub fn into_c_full(self) -> *const RiceAddress {
         const_override(Box::into_raw(Box::new(self)))
     }
 
+    /// Consume a C representation of a `RiceAddress` into the Rust equivalent.
     pub unsafe fn into_rice_full(value: *const RiceAddress) -> Box<Self> {
         Box::from_raw(mut_override(value))
     }
 
+    /// Copy a C representation of a `RiceAddress` into the Rust equivalent.
     pub unsafe fn into_rice_none(value: *const RiceAddress) -> Self {
         let boxed = Box::from_raw(mut_override(value));
         let ret = *boxed;
@@ -1997,7 +2035,9 @@ pub unsafe extern "C" fn rice_address_new_from_string(string: *const c_char) -> 
 #[derive(Debug)]
 #[repr(u32)]
 pub enum RiceAddressFamily {
+    /// IP version 4.
     Ipv4 = 1,
+    /// IP version 6.
     Ipv6,
 }
 

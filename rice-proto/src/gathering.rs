@@ -154,9 +154,12 @@ struct GatherTcpBuffer {
     tcp_buffer: Vec<u8>,
 }
 
+/// A candidate that has been gathered.
 #[derive(Debug)]
 pub struct GatheredCandidate {
+    /// The [`Candidate`].
     pub candidate: Candidate,
+    /// An optional TURN agent associated with the candidate.
     pub turn_agent: Option<Box<TurnClient>>,
 }
 

@@ -7,7 +7,33 @@
 // except according to those terms.
 
 #![deny(missing_debug_implementations)]
-//#![deny(missing_docs)]
+#![deny(missing_docs)]
+
+//! # rice-c
+//!
+//! Bindings for the [rice-proto] C API.
+//!
+//! ## When to use
+//!
+//! The `rice-c` crate is useful when you have two separate components written in different
+//! languages that need to access and modify the same ICE resources. If your application stack is
+//! entirely in rust, then using only [rice-proto] may be sufficient and `rice-c` may not be needed.
+//!
+//! ## Building
+//!
+//! `rice-c` requires a pre-existing installation of the [rice-proto] C API that can be found using
+//! `pkg-config`. This detection is performed using [system-deps] and there are some environment
+//! variables that [system-deps] can use to influence the detection of a [rice-proto]
+//! installation.
+//!
+//! You can check if [rice-proto] is available in your build environment with:
+//!
+//! ```sh
+//! pkg-config --modversion rice-proto
+//! ```
+//!
+//! [rice-proto]: https://docs.rs/rice-proto
+//! [system-deps]: https://docs.rs/system-deps
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -160,8 +186,6 @@ pub(crate) mod tests {
     use tracing::subscriber::DefaultGuard;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::Layer;
-
-    use super::*;
 
     pub fn test_init_log() -> DefaultGuard {
         let level_filter = std::env::var("RICE_LOG")

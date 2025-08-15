@@ -420,14 +420,23 @@ mod parse {
     /// Errors produced when parsing a candidate
     #[derive(Debug)]
     pub enum ParseCandidateError {
+        /// Not a candidate message.
         NotCandidate,
+        /// Invalid foundation value.
         BadFoundation,
+        /// Invalid component id.
         BadComponentId,
+        /// Invalid transport type.
         BadTransportType,
+        /// Invalid priority value.
         BadPriority,
+        /// Invalid network address.
         BadAddress,
+        /// Invalid candidate type.
         BadCandidateType,
+        /// Invalid extension format.
         BadExtension,
+        /// Data is not well formed.
         Malformed,
     }
 
@@ -643,10 +652,12 @@ impl CandidatePair {
         Self { local, remote }
     }
 
+    /// The foundation of the pair.
     pub fn foundation(&self) -> String {
         self.local.foundation.to_string() + ":" + &self.remote.foundation
     }
 
+    /// Calculate the priority of the pair.
     pub fn priority(&self, are_controlling: bool) -> u64 {
         let (controlling_priority, controlled_priority) = if are_controlling {
             (self.local.priority as u64, self.remote.priority as u64)

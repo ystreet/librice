@@ -8,7 +8,7 @@
 
 Repository containing an (sans-IO) implementation of ICE (RFC8445) protocol written in
 the [Rust programming language](https://www.rust-lang.org/). A C API interface is
-currently also provided for `rice-proto` and `rice-io`. The `C interface can
+currently also provided for `rice-proto` and `rice-io`. The C interface can
 also be accessed from Rust using `rice-c`.
 
 ## Current status
