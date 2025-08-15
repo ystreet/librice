@@ -24,7 +24,9 @@ pub use crate::conncheck::SelectedPair;
 use crate::gathering::StunGatherer;
 use turn_client_proto::types::TurnCredentials;
 
+/// The component id for RTP streaming (and general data).
 pub const RTP: usize = 1;
+/// The component id for RTCP streaming (if rtcp-mux is not in use).
 pub const RTCP: usize = 2;
 
 /// A [`Component`] in an ICE [`Stream`](crate::stream::Stream)

@@ -13,7 +13,9 @@ pub const RICE_COMPONENT_CONNECTION_STATE_CONNECTED: RiceComponentConnectionStat
 pub const RICE_COMPONENT_CONNECTION_STATE_FAILED: RiceComponentConnectionState = 3;
 #[doc = " The state of a component"]
 pub type RiceComponentConnectionState = ::core::ffi::c_uint;
+#[doc = " IP version 4."]
 pub const RICE_ADDRESS_FAMILY_IPV4: RiceAddressFamily = 1;
+#[doc = " IP version 6."]
 pub const RICE_ADDRESS_FAMILY_IPV6: RiceAddressFamily = 2;
 pub type RiceAddressFamily = u32;
 #[doc = " The candidate is a local network interface"]
@@ -25,9 +27,13 @@ pub const RICE_CANDIDATE_TYPE_SERVER_REFLEXIVE: RiceCandidateType = 2;
 #[doc = " The candidate will relay all data through an external server (TURN)."]
 pub const RICE_CANDIDATE_TYPE_RELAYED: RiceCandidateType = 3;
 pub type RiceCandidateType = u32;
+#[doc = " Not an error. The operation was completed successfully."]
 pub const RICE_ERROR_SUCCESS: RiceError = 0;
+#[doc = " The operation failed for an unspecified reason."]
 pub const RICE_ERROR_FAILED: RiceError = -1;
+#[doc = " A required resource was not found."]
 pub const RICE_ERROR_RESOURCE_NOT_FOUND: RiceError = -2;
+#[doc = " The operation is already in progress."]
 pub const RICE_ERROR_ALREADY_IN_PROGRESS: RiceError = -3;
 pub type RiceError = i32;
 #[doc = " Not a TCP candidate."]
@@ -518,7 +524,7 @@ pub struct RiceStreamIncomingData {
     pub handled: bool,
     #[doc = " Whether there is more data to pull using `rice_stream_poll_recv()`."]
     pub have_more_data: bool,
-    #[doc = " The data pointer."]
+    #[doc = " The data pointer. If non-NULL, this is the same value as provided to\n `rice_stream_handle_incoming_data()` and has the same lifetime contraints as that original\n data pointer."]
     pub data: RiceDataImpl,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
@@ -543,7 +549,7 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[doc = " Increase the reference count of the `RiceAgent`.\n\n This function is multi-threading safe."]
-    pub fn rice_agent_ref(agent: *mut RiceAgent) -> *mut RiceAgent;
+    pub fn rice_agent_ref(agent: *const RiceAgent) -> *mut RiceAgent;
 }
 unsafe extern "C" {
     #[doc = " Decrease the reference count of the `RiceAgent`.\n\n If this is the last reference, then the `RiceAgent` is freed.\n\n This function is multi-threading safe."]
@@ -551,15 +557,15 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[doc = " Close the `RiceAgent`.\n\n Closure does involve closing network resources (signalled through calls to\n `rice_agent_poll()`) and will only succesfully complete once `rice_agent_poll`() returns\n `Closed`."]
-    pub fn rice_agent_close(agent: *mut RiceAgent, now_micros: u64);
+    pub fn rice_agent_close(agent: *const RiceAgent, now_micros: u64);
 }
 unsafe extern "C" {
     #[doc = " Return the process-local unique id for this agent."]
-    pub fn rice_agent_id(agent: *mut RiceAgent) -> u64;
+    pub fn rice_agent_id(agent: *const RiceAgent) -> u64;
 }
 unsafe extern "C" {
     #[doc = " Get the controlling state of the `RiceAgent`.\n\n A return value of `true` indicates the `RiceAgent` is in controlling mode, false the controlled\n mode.  This value can change during ICE processing."]
-    pub fn rice_agent_get_controlling(agent: *mut RiceAgent) -> bool;
+    pub fn rice_agent_get_controlling(agent: *const RiceAgent) -> bool;
 }
 unsafe extern "C" {
     #[doc = " The number of bytes in a `RiceData`."]
@@ -600,7 +606,7 @@ unsafe extern "C" {
 unsafe extern "C" {
     #[doc = " Add a STUN server to this `RiceAgent`."]
     pub fn rice_agent_add_stun_server(
-        agent: *mut RiceAgent,
+        agent: *const RiceAgent,
         transport: RiceTransportType,
         addr: *const RiceAddress,
     );
@@ -608,7 +614,7 @@ unsafe extern "C" {
 unsafe extern "C" {
     #[doc = " Add a TURN server to this `RiceAgent`."]
     pub fn rice_agent_add_turn_server(
-        agent: *mut RiceAgent,
+        agent: *const RiceAgent,
         transport: RiceTransportType,
         addr: *const RiceAddress,
         credentials: *const RiceCredentials,
@@ -616,7 +622,7 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[doc = " Get the current time in microseconds of the `RiceAgent`.\n\n The returned value can be passed to functions that require the current time.\n\n This value is the same as `rice_stream_now()`."]
-    pub fn rice_agent_now(agent: *mut RiceAgent) -> u64;
+    pub fn rice_agent_now(agent: *const RiceAgent) -> u64;
 }
 unsafe extern "C" {
     #[doc = " Add an ICE stream to the `RiceAgent`."]
@@ -624,11 +630,11 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[doc = " Retrieve a previously added stream from the `RiceAgent`.\n\n Will return `NULL` if the stream does not exist."]
-    pub fn rice_agent_get_stream(agent: *mut RiceAgent, stream_id: usize) -> *mut RiceStream;
+    pub fn rice_agent_get_stream(agent: *const RiceAgent, stream_id: usize) -> *mut RiceStream;
 }
 unsafe extern "C" {
     #[doc = " Increase the reference count of the `RiceStream`.\n\n This function is multi-threading safe."]
-    pub fn rice_stream_ref(stream: *mut RiceStream) -> *mut RiceStream;
+    pub fn rice_stream_ref(stream: *const RiceStream) -> *mut RiceStream;
 }
 unsafe extern "C" {
     #[doc = " Decrease the reference count of the `RiceStream`.\n\n If this is the last reference, then the `RiceStream` is freed (but will still be referenced by\n the `RiceAgent`).\n\n This function is multi-threading safe."]
@@ -636,7 +642,7 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[doc = " Retrieve the stream id of the `RiceStream`."]
-    pub fn rice_stream_get_id(stream: *mut RiceStream) -> usize;
+    pub fn rice_stream_get_id(stream: *const RiceStream) -> usize;
 }
 unsafe extern "C" {
     #[doc = " Notify success or failure to create a socket to the `RiceStream`.\n\n `socket_addr` can be `NULL` to indicate failure."]
@@ -651,7 +657,7 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[doc = " Get the current time in microseconds of the `RiceStream`.\n\n The returned value can be passed to functions that require the current time.\n\n This value produces the same values as `rice_agent_now()`."]
-    pub fn rice_stream_now(stream: *mut RiceStream) -> u64;
+    pub fn rice_stream_now(stream: *const RiceStream) -> u64;
 }
 unsafe extern "C" {
     #[doc = " Construct a new set of ICE/TURN credentials."]
@@ -677,11 +683,11 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[doc = " Retrieve the local ICE credentials currently set on the `RiceStream`."]
-    pub fn rice_stream_get_local_credentials(stream: *mut RiceStream) -> *mut RiceCredentials;
+    pub fn rice_stream_get_local_credentials(stream: *const RiceStream) -> *mut RiceCredentials;
 }
 unsafe extern "C" {
     #[doc = " Retrieve the remote ICE credentials currently set on the `RiceStream`."]
-    pub fn rice_stream_get_remote_credentials(stream: *mut RiceStream) -> *mut RiceCredentials;
+    pub fn rice_stream_get_remote_credentials(stream: *const RiceStream) -> *mut RiceCredentials;
 }
 unsafe extern "C" {
     #[doc = " Set the local credentials to use for this `RiceStream`."]
@@ -841,7 +847,7 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[doc = " Increase the reference count of the `RiceComponent`.\n\n This function is multi-threading safe."]
-    pub fn rice_component_ref(component: *mut RiceComponent) -> *mut RiceComponent;
+    pub fn rice_component_ref(component: *const RiceComponent) -> *mut RiceComponent;
 }
 unsafe extern "C" {
     #[doc = " Decrease the reference count of the `RiceComponent`.\n\n If this is the last reference, then the `RiceComponent` is freed (but will still be referenced by\n the `RiceStream`).\n\n This function is multi-threading safe."]
@@ -868,7 +874,7 @@ unsafe extern "C" {
 unsafe extern "C" {
     #[doc = " Retrieve a previously added `RiceComponent`.\n\n If the `RiceComponent` does not exist, `NULL` is returned."]
     pub fn rice_stream_get_component(
-        stream: *mut RiceStream,
+        stream: *const RiceStream,
         component_id: usize,
     ) -> *mut RiceComponent;
 }

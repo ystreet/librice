@@ -24,7 +24,9 @@ use crate::socket::StunChannel;
 
 use futures::prelude::*;
 
+/// The component id for RTP streaming (and general data).
 pub const RTP: usize = 1;
+/// The component id for RTCP streaming (if rtcp-mux is not in use).
 pub const RTCP: usize = 2;
 
 /// A [`Component`] within an ICE [`Stream`](crate::stream::Stream`)
@@ -169,7 +171,9 @@ impl ComponentInner {
 /// Data that has been received from a peer.
 #[derive(Debug)]
 pub enum RecvData {
+    /// Rust allocated Vec.
     Vec(Vec<u8>),
+    /// C allocated data.
     Proto(CRecvData),
 }
 

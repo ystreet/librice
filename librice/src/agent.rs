@@ -25,7 +25,9 @@ use rice_c::candidate::{Candidate, CandidatePair, TransportType};
 /// Errors that can be returned as a result of agent operations.
 #[derive(Debug)]
 pub enum AgentError {
+    /// An ICE protocol error.
     Proto(ProtoAgentError),
+    /// An IO error.
     IoError(std::io::Error),
 }
 

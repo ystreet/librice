@@ -12,6 +12,7 @@
 #![allow(non_upper_case_globals)]
 #![allow(unused)]
 #![allow(missing_debug_implementations)]
+#![allow(missing_docs)]
 
 use crate::mut_override;
 

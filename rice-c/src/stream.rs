@@ -38,6 +38,7 @@ impl Stream {
         Self { ffi: stream }
     }
 
+    /// An agent-global unique identifier for the ICE stream.
     pub fn id(&self) -> usize {
         unsafe { crate::ffi::rice_stream_get_id(self.ffi) }
     }
@@ -245,7 +246,9 @@ impl Stream {
 /// Data that should be sent to a peer as a result of calling [`Stream::poll_recv()`].
 #[derive(Debug)]
 pub struct PollRecv {
+    /// The component id that the data was received for.
     pub component_id: usize,
+    /// The received data.
     pub data: RecvData,
 }
 
@@ -339,6 +342,10 @@ impl GatheredCandidate {
         Self { ffi }
     }
 
+    /// Consume the contents of the mutable reference without leaving an invalid invariant.
+    ///
+    /// THis is useful when handling
+    /// [`AgentGatheredCandidate`](crate::agent::AgentGatheredCandidate).
     pub fn take(&mut self) -> Self {
         unsafe {
             let mut ffi = crate::ffi::RiceGatheredCandidate {

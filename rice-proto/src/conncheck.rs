@@ -59,7 +59,9 @@ impl std::fmt::Display for StunAgentId {
 /// ICE Credentials
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Credentials {
+    /// The username fragment.
     pub ufrag: String,
+    /// The password.
     pub passwd: String,
 }
 
