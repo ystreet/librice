@@ -1212,6 +1212,48 @@ impl PartialEq<RiceCandidate> for RiceCandidate {
     }
 }
 
+/// Errors produced when parsing a candidate
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[repr(i32)]
+pub enum RiceParseCandidateError {
+    /// No error.
+    Success = 0,
+    /// Not a candidate message.
+    NotCandidate = -1,
+    /// Invalid foundation value.
+    BadFoundation = -2,
+    /// Invalid component id.
+    BadComponentId = -3,
+    /// Invalid transport type.
+    BadTransportType = -4,
+    /// Invalid priority value.
+    BadPriority = -5,
+    /// Invalid network address.
+    BadAddress = -6,
+    /// Invalid candidate type.
+    BadCandidateType = -7,
+    /// Invalid extension format.
+    BadExtension = -8,
+    /// Data is not well formed.
+    Malformed = -9,
+}
+
+impl From<crate::candidate::ParseCandidateError> for RiceParseCandidateError {
+    fn from(value: crate::candidate::ParseCandidateError) -> Self {
+        match value {
+            crate::candidate::ParseCandidateError::NotCandidate => Self::NotCandidate,
+            crate::candidate::ParseCandidateError::BadFoundation => Self::BadFoundation,
+            crate::candidate::ParseCandidateError::BadComponentId => Self::BadComponentId,
+            crate::candidate::ParseCandidateError::BadTransportType => Self::BadTransportType,
+            crate::candidate::ParseCandidateError::BadPriority => Self::BadPriority,
+            crate::candidate::ParseCandidateError::BadAddress => Self::BadAddress,
+            crate::candidate::ParseCandidateError::BadCandidateType => Self::BadCandidateType,
+            crate::candidate::ParseCandidateError::BadExtension => Self::BadExtension,
+            crate::candidate::ParseCandidateError::Malformed => Self::Malformed,
+        }
+    }
+}
+
 /// Construct a `RiceCandidate` from a string as formatted in an SDP and specified in RFC5245
 /// Section 15.1.
 ///
@@ -1222,7 +1264,7 @@ pub unsafe extern "C" fn rice_candidate_new_from_sdp_string(
 ) -> *mut RiceCandidate {
     let candidate = mut_override(Box::into_raw(Box::new(RiceCandidate::zero())));
     let ret = rice_candidate_init_from_sdp_string(candidate, cand_str);
-    if ret == RiceError::Success {
+    if ret == RiceParseCandidateError::Success {
         candidate
     } else {
         let _candidate = Box::from_raw(candidate);
@@ -1238,15 +1280,16 @@ pub unsafe extern "C" fn rice_candidate_new_from_sdp_string(
 pub unsafe extern "C" fn rice_candidate_init_from_sdp_string(
     candidate: *mut RiceCandidate,
     cand_str: *const c_char,
-) -> RiceError {
+) -> RiceParseCandidateError {
     let Ok(cand_str) = CStr::from_ptr(cand_str).to_str() else {
-        return RiceError::Failed;
+        return RiceParseCandidateError::Malformed;
     };
-    let Ok(r_candidate) = Candidate::from_str(cand_str) else {
-        return RiceError::Failed;
+    let r_candidate = match Candidate::from_str(cand_str) {
+        Ok(c) => c,
+        Err(e) => return e.into(),
     };
     *candidate = RiceCandidate::into_c_full(r_candidate);
-    RiceError::Success
+    RiceParseCandidateError::Success
 }
 
 /// Return a SDP candidate string as specified in RFC5245 Section 15.1.

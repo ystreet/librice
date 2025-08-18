@@ -10,8 +10,6 @@
 
 use std::ffi::{CStr, CString};
 
-use crate::agent::AgentError;
-
 /// ICE candidate.
 pub trait CandidateApi: sealed::CandidateAsC {
     /// The component
@@ -64,6 +62,66 @@ pub trait CandidateApi: sealed::CandidateAsC {
         unsafe { (*self.as_c()).tcp_type.into() }
     }
     // TODO: extensions
+}
+
+/// Errors produced when parsing a candidate
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[repr(i32)]
+pub enum ParseCandidateError {
+    /// Not a candidate message.
+    NotCandidate = -1,
+    /// Invalid foundation value.
+    BadFoundation = -2,
+    /// Invalid component id.
+    BadComponentId = -3,
+    /// Invalid transport type.
+    BadTransportType = -4,
+    /// Invalid priority value.
+    BadPriority = -5,
+    /// Invalid network address.
+    BadAddress = -6,
+    /// Invalid candidate type.
+    BadCandidateType = -7,
+    /// Invalid extension format.
+    BadExtension = -8,
+    /// Data is not well formed.
+    Malformed = -9,
+}
+
+impl ParseCandidateError {
+    pub(crate) fn from_c(
+        value: crate::ffi::RiceParseCandidateError,
+    ) -> Result<(), ParseCandidateError> {
+        match value {
+            crate::ffi::RICE_PARSE_CANDIDATE_ERROR_SUCCESS => Ok(()),
+            crate::ffi::RICE_PARSE_CANDIDATE_ERROR_NOT_CANDIDATE => {
+                Err(ParseCandidateError::NotCandidate)
+            }
+            crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_FOUNDATION => {
+                Err(ParseCandidateError::BadFoundation)
+            }
+            crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_COMPONENT_ID => {
+                Err(ParseCandidateError::BadComponentId)
+            }
+            crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_TRANSPORT_TYPE => {
+                Err(ParseCandidateError::BadTransportType)
+            }
+            crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_PRIORITY => {
+                Err(ParseCandidateError::BadPriority)
+            }
+            crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_ADDRESS => {
+                Err(ParseCandidateError::BadAddress)
+            }
+            crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_CANDIDATE_TYPE => {
+                Err(ParseCandidateError::BadCandidateType)
+            }
+            crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_EXTENSION => {
+                Err(ParseCandidateError::BadExtension)
+            }
+            crate::ffi::RICE_PARSE_CANDIDATE_ERROR_MALFORMED => Err(ParseCandidateError::Malformed),
+            val => panic!("Unknown RiceParseCandidateError value {val:x?}"),
+        }
+    }
 }
 
 mod sealed {
@@ -221,9 +279,8 @@ impl Candidate {
         }
     }
 
-    // FIXME: proper error type
     /// Parse an SDP candidate string into a candidate.
-    pub fn from_sdp_string(s: &str) -> Result<Candidate, AgentError> {
+    pub fn from_sdp_string(s: &str) -> Result<Candidate, ParseCandidateError> {
         let cand_str = std::ffi::CString::new(s).unwrap();
         unsafe {
             let mut ret = Candidate {
@@ -231,7 +288,7 @@ impl Candidate {
             };
             let res =
                 crate::ffi::rice_candidate_init_from_sdp_string(&mut ret.ffi, cand_str.as_ptr());
-            AgentError::from_c(res)?;
+            ParseCandidateError::from_c(res)?;
             Ok(ret)
         }
     }

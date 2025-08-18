@@ -433,7 +433,7 @@ pub struct AgentGatheringComplete {
 }
 
 /// Errors that can be returned as a result of agent operations.
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(i32)]
 pub enum AgentError {
     /// The operation failed for an unspecified reason.
