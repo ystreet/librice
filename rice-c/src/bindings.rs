@@ -36,6 +36,27 @@ pub const RICE_ERROR_RESOURCE_NOT_FOUND: RiceError = -2;
 #[doc = " The operation is already in progress."]
 pub const RICE_ERROR_ALREADY_IN_PROGRESS: RiceError = -3;
 pub type RiceError = i32;
+#[doc = " No error."]
+pub const RICE_PARSE_CANDIDATE_ERROR_SUCCESS: RiceParseCandidateError = 0;
+#[doc = " Not a candidate message."]
+pub const RICE_PARSE_CANDIDATE_ERROR_NOT_CANDIDATE: RiceParseCandidateError = -1;
+#[doc = " Invalid foundation value."]
+pub const RICE_PARSE_CANDIDATE_ERROR_BAD_FOUNDATION: RiceParseCandidateError = -2;
+#[doc = " Invalid component id."]
+pub const RICE_PARSE_CANDIDATE_ERROR_BAD_COMPONENT_ID: RiceParseCandidateError = -3;
+#[doc = " Invalid transport type."]
+pub const RICE_PARSE_CANDIDATE_ERROR_BAD_TRANSPORT_TYPE: RiceParseCandidateError = -4;
+#[doc = " Invalid priority value."]
+pub const RICE_PARSE_CANDIDATE_ERROR_BAD_PRIORITY: RiceParseCandidateError = -5;
+#[doc = " Invalid network address."]
+pub const RICE_PARSE_CANDIDATE_ERROR_BAD_ADDRESS: RiceParseCandidateError = -6;
+#[doc = " Invalid candidate type."]
+pub const RICE_PARSE_CANDIDATE_ERROR_BAD_CANDIDATE_TYPE: RiceParseCandidateError = -7;
+#[doc = " Invalid extension format."]
+pub const RICE_PARSE_CANDIDATE_ERROR_BAD_EXTENSION: RiceParseCandidateError = -8;
+#[doc = " Data is not well formed."]
+pub const RICE_PARSE_CANDIDATE_ERROR_MALFORMED: RiceParseCandidateError = -9;
+pub type RiceParseCandidateError = i32;
 #[doc = " Not a TCP candidate."]
 pub const RICE_TCP_TYPE_NONE: RiceTcpType = 0;
 #[doc = " The candidate address will connect to a remote address."]
@@ -714,7 +735,7 @@ unsafe extern "C" {
     pub fn rice_candidate_init_from_sdp_string(
         candidate: *mut RiceCandidate,
         cand_str: *const ::core::ffi::c_char,
-    ) -> RiceError;
+    ) -> RiceParseCandidateError;
 }
 unsafe extern "C" {
     #[doc = " Return a SDP candidate string as specified in RFC5245 Section 15.1."]
