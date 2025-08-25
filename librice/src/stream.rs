@@ -11,10 +11,11 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, Weak};
 
-use async_std::net::TcpStream;
 use futures::StreamExt;
 use rice_c::prelude::*;
 use rice_c::Address;
+use smol::net::TcpStream;
+use tracing::{debug, info, trace, warn};
 
 use crate::agent::{AgentError, AgentInner};
 use crate::component::{Component, ComponentInner};
@@ -34,7 +35,7 @@ pub struct Stream {
     proto_stream: rice_c::stream::Stream,
     pub(crate) id: usize,
     weak_agent_inner: Weak<Mutex<AgentInner>>,
-    transmit_send: async_std::channel::Sender<AgentTransmit>,
+    transmit_send: smol::channel::Sender<AgentTransmit>,
     pub(crate) inner: Arc<Mutex<StreamInner>>,
 }
 
@@ -113,9 +114,10 @@ impl Stream {
         id: usize,
     ) -> Self {
         let inner = Arc::new(Mutex::new(StreamInner::default()));
-        let (transmit_send, mut transmit_recv) = async_std::channel::bounded::<AgentTransmit>(16);
+        let (transmit_send, transmit_recv) = smol::channel::bounded::<AgentTransmit>(16);
         let weak_inner = Arc::downgrade(&inner);
-        async_std::task::spawn(async move {
+        smol::spawn(async move {
+            smol::pin!(transmit_recv);
             while let Some(transmit) = transmit_recv.next().await {
                 let Some(inner) = weak_inner.upgrade() else {
                     break;
@@ -139,7 +141,8 @@ impl Stream {
                     );
                 }
             }
-        });
+        })
+        .detach();
         Self {
             weak_proto_agent,
             proto_stream,
@@ -392,7 +395,7 @@ impl Stream {
     /// let remote_credentials = Credentials::new("ruser", "rpass");
     /// stream.set_remote_credentials(&remote_credentials);
     /// let component = stream.add_component().unwrap();
-    /// async_std::task::block_on(async move {
+    /// smol::block_on(async move {
     ///     stream.gather_candidates().await.unwrap();
     /// });
     /// ```
@@ -428,7 +431,7 @@ impl Stream {
                     GatherSocket::Udp(udp) => {
                         let mut inner = self.inner.lock().unwrap();
                         inner.sockets.push(StunChannel::Udp(udp.clone()));
-                        async_std::task::spawn(async move {
+                        smol::spawn(async move {
                             let recv = udp.recv();
                             let mut recv = core::pin::pin!(recv);
                             while let Some((data, from)) = recv.next().await {
@@ -447,11 +450,12 @@ impl Stream {
                                 )
                             }
                             debug!("receive task closed for udp socket {:?}", udp.local_addr());
-                        });
+                        })
+                        .detach();
                     }
                     GatherSocket::Tcp(tcp) => {
                         let weak_inner = weak_inner.clone();
-                        async_std::task::spawn(async move {
+                        smol::spawn(async move {
                             while let Some(stream) = tcp.incoming().next().await {
                                 let Ok(stream) = stream else {
                                     continue;
@@ -460,7 +464,7 @@ impl Stream {
                                 let weak_agent_inner = weak_agent_inner.clone();
                                 let weak_component = weak_component.clone();
                                 let weak_inner = weak_inner.clone();
-                                async_std::task::spawn(async move {
+                                smol::spawn(async move {
                                     let Some(inner) = weak_inner.upgrade() else {
                                         return;
                                     };
@@ -488,9 +492,11 @@ impl Stream {
                                             ),
                                         )
                                     }
-                                });
+                                })
+                                .detach();
                             }
-                        });
+                        })
+                        .detach();
                     }
                 }
             }
@@ -606,7 +612,7 @@ impl Stream {
     }
 
     pub(crate) fn handle_transmit(&self, transmit: AgentTransmit) -> Option<AgentTransmit> {
-        if let Err(async_std::channel::TrySendError::Full(transmit)) =
+        if let Err(smol::channel::TrySendError::Full(transmit)) =
             self.transmit_send.try_send(transmit)
         {
             return Some(transmit);
@@ -629,7 +635,7 @@ impl Stream {
             unreachable!();
         }
 
-        async_std::task::spawn(async move {
+        smol::spawn(async move {
             let stream = TcpStream::connect(to.as_socket()).await;
             let mut weak_component = None;
             let channel = match stream {
@@ -693,7 +699,8 @@ impl Stream {
                     )
                 }
             }
-        });
+        })
+        .detach();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -715,11 +722,12 @@ impl Stream {
             return;
         };
         info!("removing {transport} socket for {from} -> {to}");
-        async_std::task::spawn(async move {
+        smol::spawn(async move {
             if let Err(e) = channel.close().await {
                 warn!("error on close() for {transport} socket for {from} -> {to}: {e:?}");
             }
-        });
+        })
+        .detach();
     }
 
     pub(crate) fn socket_for_pair(
@@ -744,6 +752,8 @@ impl Stream {
 
 #[cfg(test)]
 mod tests {
+    use tracing::error;
+
     use super::*;
     use crate::agent::{Agent, AgentMessage};
 
@@ -759,7 +769,7 @@ mod tests {
         s.set_local_credentials(&Credentials::new("luser", "lpass"));
         s.set_remote_credentials(&Credentials::new("ruser", "rpass"));
         let _c = s.add_component().unwrap();
-        async_std::task::block_on(async move {
+        smol::block_on(async move {
             s.gather_candidates().await.unwrap();
             let mut messages = agent.messages();
             loop {

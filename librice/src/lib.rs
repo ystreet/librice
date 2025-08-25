@@ -53,9 +53,6 @@
 //! [rice-proto]: <https://docs.rs/rice-proto>
 //! [rice-c]: <https://docs.rs/rice-c>
 
-#[macro_use]
-extern crate tracing;
-
 pub mod agent;
 pub mod component;
 mod gathering;

@@ -6,8 +6,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use async_std::net::UdpSocket;
-use async_std::net::{TcpListener, TcpStream};
+use smol::net::UdpSocket;
+use smol::net::{TcpListener, TcpStream};
 
 use futures::future::{AbortHandle, Abortable, Aborted};
 use futures::{AsyncReadExt, AsyncWriteExt};
@@ -22,13 +22,13 @@ mod common;
 #[test]
 fn udp_stund() {
     common::debug_init();
-    async_std::task::block_on(async move {
+    smol::block_on(async move {
         let stun_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let stun_addr = stun_socket.local_addr().unwrap();
         debug!("stun bound to {:?}", stun_addr);
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
         let stun_server = Abortable::new(common::stund_udp(stun_socket), abort_registration);
-        let stun_server = async_std::task::spawn(stun_server);
+        let stun_server = smol::spawn(stun_server);
 
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let msg = Message::builder_request(BINDING, MessageWriteVec::new());
@@ -48,13 +48,13 @@ fn udp_stund() {
 #[test]
 fn tcp_stund() {
     common::debug_init();
-    async_std::task::block_on(async move {
+    smol::block_on(async move {
         let stun_socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let stun_addr = stun_socket.local_addr().unwrap();
         debug!("stun bound to {:?}", stun_addr);
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
         let stun_server = Abortable::new(common::stund_tcp(stun_socket), abort_registration);
-        let stun_server = async_std::task::spawn(stun_server);
+        let stun_server = smol::spawn(stun_server);
 
         let mut socket = TcpStream::connect(stun_addr).await.unwrap();
         let msg = Message::builder_request(BINDING, MessageWriteVec::new());
