@@ -18,7 +18,7 @@ use std::net::SocketAddr;
 use std::sync::Once;
 use std::time::Instant;
 
-use async_std::net::{TcpListener, UdpSocket};
+use smol::net::{TcpListener, UdpSocket};
 
 use futures::StreamExt;
 
@@ -133,7 +133,7 @@ pub async fn stund_tcp(listener: TcpListener) -> std::io::Result<()> {
     let local_addr = listener.local_addr()?;
     while let Some(Ok(mut stream)) = incoming.next().await {
         debug!("stund incoming tcp connection");
-        async_std::task::spawn(async move {
+        smol::spawn(async move {
             let remote_addr = stream.peer_addr().unwrap();
             let mut tcp_stun_agent =
                 StunAgent::builder(stun_proto::types::TransportType::Tcp, local_addr)
@@ -155,7 +155,8 @@ pub async fn stund_tcp(listener: TcpListener) -> std::io::Result<()> {
             }
             // XXX: Assumes that the stun packet arrives in a single packet
             stream.shutdown(std::net::Shutdown::Read).unwrap();
-        });
+        })
+        .detach();
     }
     Ok(())
 }

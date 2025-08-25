@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use rice_c::agent::{AgentError as ProtoAgentError, AgentPoll, AgentTransmit};
 use rice_c::component::ComponentConnectionState;
+use tracing::warn;
 
 use crate::component::{Component, SelectedPair};
 use crate::stream::Stream;

@@ -11,10 +11,11 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use async_std::net::{TcpStream, UdpSocket};
+use smol::net::{TcpStream, UdpSocket};
 
 use futures::prelude::*;
 
+use tracing::{debug_span, info, trace, warn};
 use tracing_futures::Instrument;
 
 use crate::utils::DebugWrapper;
@@ -197,17 +198,18 @@ impl UdpSocketChannel {
 #[derive(Debug, Clone)]
 pub struct TcpChannel {
     stream: DebugWrapper<TcpStream>,
-    sender_channel: async_std::channel::Sender<Vec<u8>>,
-    sender_task: Arc<async_std::sync::Mutex<Option<async_std::task::JoinHandle<()>>>>,
+    sender_channel: smol::channel::Sender<Vec<u8>>,
+    sender_task: Arc<smol::lock::Mutex<Option<smol::Task<()>>>>,
 }
 
 impl TcpChannel {
     /// Create a TCP socket from an existing TcpStream
     pub fn new(stream: TcpStream) -> Self {
-        let (tx, mut rx) = async_std::channel::bounded::<Vec<u8>>(1);
-        let sender_task = async_std::task::spawn({
+        let (tx, rx) = smol::channel::bounded::<Vec<u8>>(1);
+        let sender_task = smol::spawn({
             let mut stream = stream.clone();
             async move {
+                smol::pin!(rx);
                 while let Some(data) = rx.next().await {
                     /*
                     let mut header_len = [0, 0];
@@ -226,7 +228,7 @@ impl TcpChannel {
         Self {
             stream: DebugWrapper::wrap(stream, "..."),
             sender_channel: tx,
-            sender_task: Arc::new(async_std::sync::Mutex::new(Some(sender_task))),
+            sender_task: Arc::new(smol::lock::Mutex::new(Some(sender_task))),
         }
     }
 

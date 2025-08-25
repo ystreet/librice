@@ -8,8 +8,6 @@
 
 use librice::agent::{Agent, AgentMessage};
 
-use async_std::task;
-
 use std::io;
 
 use futures::prelude::*;
@@ -39,7 +37,7 @@ fn init_logs() {
 
 fn main() -> io::Result<()> {
     init_logs();
-    task::block_on(async move {
+    smol::block_on(async move {
         // non-existent
         //let stun_servers = ["192.168.1.200:3000".parse().unwrap()].to_vec();
         let stun_servers = ["127.0.0.1:3478".parse().unwrap()];

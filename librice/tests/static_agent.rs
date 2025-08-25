@@ -9,7 +9,7 @@
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
-use async_std::net::{TcpListener, UdpSocket};
+use smol::net::{TcpListener, UdpSocket};
 
 use futures::future::{AbortHandle, Abortable, Aborted};
 use futures::{SinkExt, StreamExt};
@@ -45,13 +45,13 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     let udp_stun_addr = udp_stun_socket.local_addr().unwrap();
     let (udp_abort_handle, abort_registration) = AbortHandle::new_pair();
     let udp_stun_server = Abortable::new(common::stund_udp(udp_stun_socket), abort_registration);
-    let udp_stun_server = async_std::task::spawn(udp_stun_server);
+    let udp_stun_server = smol::spawn(udp_stun_server);
 
     let tcp_stun_socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let tcp_stun_addr = tcp_stun_socket.local_addr().unwrap();
     let (tcp_abort_handle, abort_registration) = AbortHandle::new_pair();
     let tcp_stun_server = Abortable::new(common::stund_tcp(tcp_stun_socket), abort_registration);
-    let tcp_stun_server = async_std::task::spawn(tcp_stun_server);
+    let tcp_stun_server = smol::spawn(tcp_stun_server);
 
     let lagent = Arc::new(
         Agent::builder()
@@ -100,7 +100,7 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     let mut lmessages = lagent.messages();
     let mut rmessages = ragent.messages();
     let (lgath_send, mut lgathered) = futures::channel::mpsc::channel(1);
-    let lloop = async_std::task::spawn({
+    let lloop = smol::spawn({
         let n_completed = n_completed.clone();
         let complete_send = complete_send.clone();
         let lgath_send = lgath_send.clone();
@@ -129,7 +129,7 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     });
 
     let (rgath_send, mut rgathered) = futures::channel::mpsc::channel(1);
-    let rloop = async_std::task::spawn({
+    let rloop = smol::spawn({
         let rgath_send = rgath_send.clone();
         let n_completed = n_completed.clone();
         async move {
@@ -209,7 +209,7 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
 #[test]
 fn agent_static_connection_none_controlling_udp() {
     common::debug_init();
-    async_std::task::block_on(agent_static_connection_test(AgentStaticTestConfig {
+    smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
         local: AgentConfig {
             controlling: false,
             trickle_ice: false,
@@ -226,7 +226,7 @@ fn agent_static_connection_none_controlling_udp() {
 #[test]
 fn agent_static_connection_both_controlling_udp() {
     common::debug_init();
-    async_std::task::block_on(agent_static_connection_test(AgentStaticTestConfig {
+    smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
         local: AgentConfig {
             controlling: true,
             trickle_ice: false,
@@ -243,7 +243,7 @@ fn agent_static_connection_both_controlling_udp() {
 #[test]
 fn agent_static_connection_remote_controlling_udp() {
     common::debug_init();
-    async_std::task::block_on(agent_static_connection_test(AgentStaticTestConfig {
+    smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
         local: AgentConfig {
             controlling: false,
             trickle_ice: false,
@@ -260,7 +260,7 @@ fn agent_static_connection_remote_controlling_udp() {
 #[test]
 fn agent_static_connection_local_controlling_udp() {
     common::debug_init();
-    async_std::task::block_on(agent_static_connection_test(AgentStaticTestConfig {
+    smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
         local: AgentConfig {
             controlling: true,
             trickle_ice: false,
@@ -277,7 +277,7 @@ fn agent_static_connection_local_controlling_udp() {
 #[test]
 fn agent_static_connection_local_controlling_udp_both_trickle() {
     common::debug_init();
-    async_std::task::block_on(agent_static_connection_test(AgentStaticTestConfig {
+    smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
         local: AgentConfig {
             controlling: true,
             trickle_ice: true,
@@ -294,7 +294,7 @@ fn agent_static_connection_local_controlling_udp_both_trickle() {
 #[test]
 fn agent_static_connection_local_controlling_udp_local_trickle() {
     common::debug_init();
-    async_std::task::block_on(agent_static_connection_test(AgentStaticTestConfig {
+    smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
         local: AgentConfig {
             controlling: true,
             trickle_ice: true,
@@ -311,7 +311,7 @@ fn agent_static_connection_local_controlling_udp_local_trickle() {
 #[test]
 fn agent_static_connection_local_controlling_tcp() {
     common::debug_init();
-    async_std::task::block_on(agent_static_connection_test(AgentStaticTestConfig {
+    smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
         local: AgentConfig {
             controlling: true,
             trickle_ice: false,

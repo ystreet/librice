@@ -18,6 +18,7 @@ use rice_c::prelude::*;
 
 pub use rice_c::component::ComponentConnectionState;
 use rice_c::stream::RecvData as CRecvData;
+use tracing::trace;
 
 use crate::agent::AgentError;
 use crate::socket::StunChannel;
@@ -236,8 +237,8 @@ impl SelectedPair {
 
 #[cfg(test)]
 mod tests {
-    use async_std::net::UdpSocket;
     use rice_c::candidate::{Candidate, CandidateType, TransportType};
+    use smol::net::UdpSocket;
 
     use super::*;
     use crate::{agent::Agent, socket::UdpSocketChannel};
@@ -258,7 +259,7 @@ mod tests {
     #[test]
     fn send_recv() {
         init();
-        async_std::task::block_on(async move {
+        smol::block_on(async move {
             let agent = Agent::builder().controlling(false).build();
             let stream = agent.add_stream();
             let send = stream.add_component().unwrap();
