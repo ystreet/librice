@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, Weak};
 
 use futures::StreamExt;
-use rice_c::prelude::*;
+use rice_c::{prelude::*, Instant};
 use rice_c::Address;
 use smol::net::TcpStream;
 use tracing::{debug, info, trace, warn};
@@ -33,6 +33,7 @@ pub use rice_c::stream::Credentials;
 pub struct Stream {
     weak_proto_agent: Weak<Mutex<rice_c::agent::Agent>>,
     proto_stream: rice_c::stream::Stream,
+    base_instant: std::time::Instant,
     pub(crate) id: usize,
     weak_agent_inner: Weak<Mutex<AgentInner>>,
     transmit_send: smol::channel::Sender<AgentTransmit>,
@@ -112,6 +113,7 @@ impl Stream {
         weak_agent_inner: Weak<Mutex<AgentInner>>,
         proto_stream: rice_c::stream::Stream,
         id: usize,
+        base_instant: std::time::Instant,
     ) -> Self {
         let inner = Arc::new(Mutex::new(StreamInner::default()));
         let (transmit_send, transmit_recv) = smol::channel::bounded::<AgentTransmit>(16);
@@ -150,6 +152,7 @@ impl Stream {
             weak_agent_inner,
             transmit_send,
             inner,
+            base_instant,
         }
     }
 
@@ -176,7 +179,7 @@ impl Stream {
     pub fn add_component(&self) -> Result<Component, AgentError> {
         let component = self.proto_stream.add_component();
 
-        let component = Component::new(self.weak_proto_agent.clone(), self.id, component);
+        let component = Component::new(self.id, component, self.base_instant);
         let mut inner = self.inner.lock().unwrap();
         inner.components.push(component.clone());
         Ok(component)
@@ -334,6 +337,7 @@ impl Stream {
         stream_id: usize,
         component_id: usize,
         transmit: Transmit<T>,
+        base_instant: std::time::Instant,
     ) {
         trace!(
             "incoming data of {} bytes from {} to {} via {}",
@@ -354,7 +358,7 @@ impl Stream {
             Address::from(transmit.from),
             Address::from(transmit.to),
             transmit.data.as_ref(),
-            proto_agent.now(),
+            Instant::from_std(base_instant),
         );
 
         let Some(component) = weak_component.upgrade() else {
@@ -406,6 +410,7 @@ impl Stream {
             .ok_or(AgentError::Proto(ProtoAgentError::ResourceNotFound))?;
         let component_ids = self.proto_stream.component_ids();
         let weak_inner = Arc::downgrade(&self.inner);
+        let base_instant = self.base_instant;
 
         for component_id in component_ids {
             let weak_component = Arc::downgrade(&self.component(component_id).unwrap().inner);
@@ -447,6 +452,7 @@ impl Stream {
                                         from,
                                         local_addr,
                                     ),
+                                    base_instant,
                                 )
                             }
                             debug!("receive task closed for udp socket {:?}", udp.local_addr());
@@ -490,6 +496,7 @@ impl Stream {
                                                 from,
                                                 local_addr,
                                             ),
+                                            base_instant
                                         )
                                     }
                                 })
@@ -630,6 +637,7 @@ impl Stream {
         transport: TransportType,
         from: Address,
         to: Address,
+        base_instant: std::time::Instant,
     ) {
         if transport != TransportType::Tcp {
             unreachable!();
@@ -696,6 +704,7 @@ impl Stream {
                             from,
                             local_addr,
                         ),
+                        base_instant,
                     )
                 }
             }

@@ -8,6 +8,8 @@
 
 //! A [`Component`] in an ICE [`Stream`](crate::stream::Stream)
 
+use sans_io_time::Instant;
+
 use crate::agent::{AgentError, AgentTransmit};
 use crate::candidate::{CandidatePair, TransportType};
 use crate::{const_override, mut_override, Address};
@@ -112,7 +114,7 @@ impl Component {
 
     /// Send data to the peer using the selected pair.  This will not succeed until the
     /// [`Component`] has reached [`ComponentConnectionState::Connected`]
-    pub fn send(&self, data: &[u8], now_micros: u64) -> Result<AgentTransmit, AgentError> {
+    pub fn send(&self, data: &[u8], now: Instant) -> Result<AgentTransmit, AgentError> {
         unsafe {
             let mut transmit = crate::ffi::RiceTransmit {
                 stream_id: self.stream_id,
@@ -128,7 +130,7 @@ impl Component {
                 self.ffi,
                 mut_override(data.as_ptr()),
                 data.len(),
-                now_micros,
+                now.as_nanos(),
                 &mut transmit,
             ))?;
             Ok(AgentTransmit::from_c_full(transmit))

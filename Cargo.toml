@@ -1,6 +1,6 @@
 [workspace]
-members = ["rice-proto", "librice", "rice-io", "rice-c", "fuzz"]
-default-members = ["librice", "rice-proto", "rice-c"]
+members = ["rice-proto", "librice", "rice-io", "rice-c", "rice-stun-types", "fuzz"]
+default-members = ["librice", "rice-proto", "rice-c", "rice-stun-types"]
 resolver = "2"
 
 [workspace.package]
@@ -10,8 +10,9 @@ edition = "2021"
 rust-version = "1.68.2"
 
 [workspace.dependencies]
-stun-proto = "0.5"
-turn-client-proto = "0.3"
+stun-proto = "1.0.0-alpha2"
+stun-types = "1.0.0-alpha2"
+turn-client-proto = "0.4.0-alpha1"
 arbitrary = { version = "1", features = ["derive"] }
 byteorder = "1"
 get_if_addrs = "0.5"
@@ -20,6 +21,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 rice-proto = { version = "0.1.1", path = "rice-proto" }
 rice-c = { version = "0.1.1", path = "rice-c" }
+rice-stun-types = { version = "0.1.1", path = "rice-stun-types" }
 criterion = "0.6"
 
 [profile.bench]

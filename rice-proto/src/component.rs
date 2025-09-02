@@ -9,12 +9,13 @@
 //! A [`Component`] in an ICE [`Stream`](crate::stream::Stream)
 
 use std::net::SocketAddr;
-use std::time::Instant;
 
 use stun_proto::agent::Transmit;
 use stun_proto::types::message::{Message, MessageWriteVec, BINDING};
 use stun_proto::types::prelude::MessageWrite;
-use turn_client_proto::api::{DelayedTransmitBuild, TurnClientApi};
+use stun_proto::Instant;
+use turn_client_proto::api::TurnClientApi;
+use turn_client_proto::types::prelude::DelayedTransmitBuild;
 
 use crate::candidate::{CandidatePair, CandidateType, TransportType};
 
@@ -160,7 +161,7 @@ impl<'a> ComponentMut<'a> {
                 .send_request(
                     Message::builder_request(BINDING, MessageWriteVec::new()).finish(),
                     selected.remote.address,
-                    Instant::now(),
+                    Instant::ZERO,
                 )
                 .unwrap();
             let msg = Message::from_bytes(&transmit.data).unwrap();
@@ -340,7 +341,7 @@ mod tests {
         let send_id = stream.add_component().unwrap();
         let local_addr = "127.0.0.1:1000".parse().unwrap();
         let remote_addr = "127.0.0.1:2000".parse().unwrap();
-        let now = Instant::now();
+        let now = Instant::ZERO;
 
         let local_cand = Candidate::builder(
             send_id,

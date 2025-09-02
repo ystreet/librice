@@ -6,13 +6,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use std::time::Instant;
-
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use rice_proto::agent::Agent;
 use rice_proto::candidate::{Candidate, CandidatePair};
 use stun_proto::agent::Transmit;
 use stun_proto::types::TransportType;
+use stun_proto::Instant;
 
 fn bench_sendrecv_udp(c: &mut Criterion) {
     let local_addr = "192.168.1.1:1000".parse().unwrap();
@@ -56,7 +55,7 @@ fn bench_sendrecv_udp(c: &mut Criterion) {
         let mut component = stream.mut_component(component_id).unwrap();
         group.throughput(criterion::Throughput::Bytes(size as u64));
         let data = vec![1; size];
-        let now = Instant::now();
+        let now = Instant::ZERO;
         let transmit = component.send(data.clone(), now).unwrap();
         assert_eq!(transmit.data.as_ref(), data.as_slice());
         group.bench_function(BenchmarkId::new("Send", size), |b| {
@@ -125,7 +124,7 @@ fn bench_sendrecv_tcp(c: &mut Criterion) {
         let mut component = stream.mut_component(component_id).unwrap();
         group.throughput(criterion::Throughput::Bytes(size as u64));
         let data = vec![1; size];
-        let now = Instant::now();
+        let now = Instant::ZERO;
         let transmit = component.send(data.clone(), now).unwrap();
         assert_eq!(&transmit.data.as_ref()[2..], data.as_slice());
         group.bench_function(BenchmarkId::new("Send", size), |b| {

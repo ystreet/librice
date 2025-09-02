@@ -12,10 +12,11 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use rice_c::agent::{AgentError as ProtoAgentError, AgentPoll, AgentTransmit};
 use rice_c::component::ComponentConnectionState;
+use rice_c::Instant;
 use tracing::warn;
 
 use crate::component::{Component, SelectedPair};
@@ -54,8 +55,7 @@ impl std::fmt::Display for AgentError {
 #[derive(Debug)]
 pub struct Agent {
     agent: Arc<Mutex<rice_c::agent::Agent>>,
-    base_instant: Instant,
-    base_micros: u64,
+    base_instant: std::time::Instant,
     inner: Arc<Mutex<AgentInner>>,
 }
 
@@ -86,14 +86,12 @@ impl AgentBuilder {
             .trickle_ice(self.trickle_ice)
             .controlling(self.controlling)
             .build();
-        let base_instant = Instant::now();
-        let base_micros = agent.now();
+        let base_instant = std::time::Instant::now();
 
         let agent = Arc::new(Mutex::new(agent));
         Agent {
             agent,
             base_instant,
-            base_micros,
             inner: Arc::new(Mutex::new(AgentInner::default())),
         }
     }
@@ -121,7 +119,6 @@ impl Agent {
         AgentStream {
             agent: self.agent.clone(),
             timer: None,
-            base_micros: self.base_micros,
             base_instant: self.base_instant,
             pending_transmit: None,
             inner: self.inner.clone(),
@@ -156,6 +153,7 @@ impl Agent {
             weak_inner,
             proto_stream,
             inner.streams.len(),
+            self.base_instant,
         );
         inner.streams.push(ret.clone());
         ret
@@ -169,9 +167,8 @@ impl Agent {
 
     /// Close the agent loop
     pub fn close(&self) {
-        let now = Instant::now();
-        let now_micros = (now - self.base_instant).as_micros() as u64 + self.base_micros;
-        self.agent.lock().unwrap().close(now_micros);
+        let now_nanos = Instant::from_std(self.base_instant);
+        self.agent.lock().unwrap().close(now_nanos);
         let mut inner = self.inner.lock().unwrap();
         if let Some(waker) = inner.waker.take() {
             waker.wake();
@@ -227,8 +224,7 @@ pub enum AgentMessage {
 #[derive(Debug)]
 struct AgentStream {
     agent: Arc<Mutex<rice_c::agent::Agent>>,
-    base_instant: Instant,
-    base_micros: u64,
+    base_instant: std::time::Instant,
     inner: Arc<Mutex<AgentInner>>,
     timer: Option<Pin<Box<async_io::Timer>>>,
     pending_transmit: Option<AgentTransmit>,
@@ -256,11 +252,10 @@ impl futures::stream::Stream for AgentStream {
         let weak_proto_agent = Arc::downgrade(&self.agent);
         let weak_agent_inner = Arc::downgrade(&self.inner);
         let agent = self.agent.lock().unwrap();
-        let now = Instant::now();
-        let now_micros = (now - self.base_instant).as_micros() as u64 + self.base_micros;
+        let now_nanos = Instant::from_std(self.base_instant);
 
         let wait = {
-            let wait = match agent.poll(now_micros) {
+            let wait = match agent.poll(now_nanos) {
                 AgentPoll::Closed => return Poll::Ready(None),
                 AgentPoll::AllocateSocket(ref allocate) => {
                     drop(agent);
@@ -277,6 +272,7 @@ impl futures::stream::Stream for AgentStream {
                             allocate.transport,
                             allocate.from.clone(),
                             allocate.to.clone(),
+                            self.base_instant,
                         );
                     }
                     cx.waker().wake_by_ref();
@@ -298,7 +294,7 @@ impl futures::stream::Stream for AgentStream {
                     cx.waker().wake_by_ref();
                     return Poll::Pending;
                 }
-                AgentPoll::WaitUntilMicros(time) => Some(time),
+                AgentPoll::WaitUntilNanos(time) => Some(Instant::from_nanos(time)),
                 AgentPoll::SelectedPair(ref pair) => {
                     drop(agent);
                     let inner = self.inner.lock().unwrap();
@@ -367,7 +363,7 @@ impl futures::stream::Stream for AgentStream {
                 }
             };
 
-            if let Some(transmit) = agent.poll_transmit(now_micros) {
+            if let Some(transmit) = agent.poll_transmit(now_nanos) {
                 drop(agent);
                 let inner = self.inner.lock().unwrap();
                 if let Some(stream) = inner.streams.get(transmit.stream_id) {
@@ -385,7 +381,13 @@ impl futures::stream::Stream for AgentStream {
         drop(agent);
 
         if let Some(wait) = wait {
-            let wait_instant = self.base_instant + Duration::from_micros(wait - self.base_micros);
+            let dur_nanos = wait.as_nanos();
+            let mut wait_instant = self.base_instant;
+            if dur_nanos < 0 {
+                wait_instant -= Duration::from_nanos(wait.as_nanos().unsigned_abs());
+            } else {
+                wait_instant += Duration::from_nanos(wait.as_nanos() as u64);
+            };
             match self.as_mut().timer.as_mut() {
                 Some(timer) => timer.set_at(wait_instant),
                 None => self.as_mut().timer = Some(Box::pin(async_io::Timer::at(wait_instant))),

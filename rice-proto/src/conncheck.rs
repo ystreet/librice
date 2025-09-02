@@ -13,21 +13,20 @@ use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::ops::Range;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::candidate::{Candidate, CandidatePair, CandidateType, TcpType, TransportType};
 use crate::component::ComponentConnectionState;
 use crate::gathering::GatheredCandidate;
+use crate::tcp::TcpBuffer;
 use byteorder::{BigEndian, ByteOrder};
-use stun_proto::agent::{
-    HandleStunReply, StunAgent, StunAgentPollRet, StunError, TcpBuffer, Transmit,
-};
+use rice_stun_types::attribute::{IceControlled, IceControlling, Priority, UseCandidate};
+use stun_proto::agent::{HandleStunReply, StunAgent, StunAgentPollRet, StunError, Transmit};
 use stun_proto::types::attribute::*;
 use stun_proto::types::data::Data;
 use stun_proto::types::message::*;
-use turn_client_proto::api::{
-    DelayedTransmitBuild, TransmitBuild, TurnEvent, TurnPollRet, TurnRecvRet,
-};
+use stun_proto::Instant;
+use turn_client_proto::api::{TransmitBuild, TurnEvent, TurnPollRet, TurnRecvRet};
 use turn_client_proto::client::TurnClient;
 use turn_client_proto::prelude::*;
 
@@ -1956,7 +1955,7 @@ impl ConnCheckListSetBuilder {
             controlling: self.controlling,
             trickle_ice: self.trickle_ice,
             checklist_i: 0,
-            last_send_time: Instant::now() - ConnCheckListSet::MINIMUM_SET_TICK,
+            last_send_time: None,
             pending_messages: Default::default(),
             pending_transmits: Default::default(),
             pending_remove_sockets: Default::default(),
@@ -1974,7 +1973,7 @@ pub struct ConnCheckListSet {
     controlling: bool,
     trickle_ice: bool,
     checklist_i: usize,
-    last_send_time: Instant,
+    last_send_time: Option<Instant>,
     pending_messages: VecDeque<CheckListSetPendingMessage>,
     pending_transmits: VecDeque<CheckListSetTransmit>,
     pending_remove_sockets: VecDeque<CheckListSetSocket>,
@@ -3112,7 +3111,7 @@ impl ConnCheckListSet {
                 while let Some(event) = client.poll_event() {
                     match event {
                         TurnEvent::AllocationCreated(_, _) => (),
-                        TurnEvent::AllocationCreateFailed => (),
+                        TurnEvent::AllocationCreateFailed(_family) => (),
                         TurnEvent::PermissionCreated(transport, peer_addr) => {
                             for idx in 0..checklist.pairs.len() {
                                 let check = &mut checklist.pairs[idx];
@@ -3151,14 +3150,19 @@ impl ConnCheckListSet {
                         all_turn_closed = false;
                         if wait == now {
                             return CheckListSetPollRet::WaitUntil(
-                                wait.max(self.last_send_time + Self::MINIMUM_SET_TICK)
-                                    .max(now),
+                                wait.max(
+                                    self.last_send_time
+                                        .map(|last_send| last_send + Self::MINIMUM_SET_TICK)
+                                        .unwrap_or(now),
+                                ),
                             );
                         }
                         if wait < lowest_wait {
-                            lowest_wait = wait
-                                .max(self.last_send_time + Self::MINIMUM_SET_TICK)
-                                .max(now);
+                            lowest_wait = wait.max(
+                                self.last_send_time
+                                    .map(|last_send| last_send + Self::MINIMUM_SET_TICK)
+                                    .unwrap_or(now),
+                            );
                         }
                     }
                 }
@@ -3193,14 +3197,19 @@ impl ConnCheckListSet {
                         all_turn_closed = false;
                         if wait == now {
                             return CheckListSetPollRet::WaitUntil(
-                                wait.max(self.last_send_time + Self::MINIMUM_SET_TICK)
-                                    .max(now),
+                                wait.max(
+                                    self.last_send_time
+                                        .map(|last_send| last_send + Self::MINIMUM_SET_TICK)
+                                        .unwrap_or(now),
+                                ),
                             );
                         }
                         if wait < lowest_wait {
-                            lowest_wait = wait
-                                .max(self.last_send_time + Self::MINIMUM_SET_TICK)
-                                .max(now);
+                            lowest_wait = wait.max(
+                                self.last_send_time
+                                    .map(|last_send| last_send + Self::MINIMUM_SET_TICK)
+                                    .unwrap_or(now),
+                            );
                         }
                     }
                 }
@@ -3223,10 +3232,10 @@ impl ConnCheckListSet {
                 any_running = true;
             }
             if checklist_state != CheckListState::Failed {
-                if self.last_send_time + Self::MINIMUM_SET_TICK > now {
-                    return CheckListSetPollRet::WaitUntil(
-                        self.last_send_time + Self::MINIMUM_SET_TICK,
-                    );
+                if let Some(last_send) = self.last_send_time {
+                    if last_send + Self::MINIMUM_SET_TICK > now {
+                        return CheckListSetPollRet::WaitUntil(last_send + Self::MINIMUM_SET_TICK);
+                    }
                 }
                 all_failed = false;
                 for idx in 0..checklist.pairs.len() {
@@ -3251,8 +3260,11 @@ impl ConnCheckListSet {
                                 }
                                 StunAgentPollRet::WaitUntil(wait) => {
                                     if wait < lowest_wait {
-                                        lowest_wait =
-                                            wait.max(self.last_send_time + Self::MINIMUM_SET_TICK);
+                                        lowest_wait = wait.max(
+                                            self.last_send_time
+                                                .map(|last_send| last_send + Self::MINIMUM_SET_TICK)
+                                                .unwrap_or(now),
+                                        );
                                     }
                                 }
                             }
@@ -3260,8 +3272,11 @@ impl ConnCheckListSet {
                             match client.poll(now) {
                                 TurnPollRet::WaitUntil(wait) => {
                                     if wait < lowest_wait {
-                                        lowest_wait =
-                                            wait.max(self.last_send_time + Self::MINIMUM_SET_TICK);
+                                        lowest_wait = wait.max(
+                                            self.last_send_time
+                                                .map(|last_send| last_send + Self::MINIMUM_SET_TICK)
+                                                .unwrap_or(now),
+                                        );
                                     }
                                 }
                                 TurnPollRet::Closed => (),
@@ -3434,7 +3449,10 @@ impl ConnCheckListSet {
             }
         }
 
-        if self.last_send_time + Self::MINIMUM_SET_TICK > now {
+        if self
+            .last_send_time
+            .map_or(false, |last_send| last_send + Self::MINIMUM_SET_TICK > now)
+        {
             return None;
         }
 
@@ -3445,7 +3463,7 @@ impl ConnCheckListSet {
                     continue;
                 };
 
-                self.last_send_time = now;
+                self.last_send_time = Some(now);
                 let transport = transmit.transport;
                 return Some(CheckListSetTransmit {
                     checklist_id,
@@ -3458,7 +3476,7 @@ impl ConnCheckListSet {
                     continue;
                 };
 
-                self.last_send_time = now;
+                self.last_send_time = Some(now);
                 return Some(CheckListSetTransmit {
                     checklist_id,
                     transmit: transmit_send_unframed(transmit),
@@ -3470,7 +3488,7 @@ impl ConnCheckListSet {
                     continue;
                 };
 
-                self.last_send_time = now;
+                self.last_send_time = Some(now);
                 return Some(CheckListSetTransmit {
                     checklist_id,
                     transmit: transmit_send_unframed(transmit),
@@ -3814,6 +3832,7 @@ fn transmit_send_unframed(transmit: Transmit<Data<'_>>) -> Transmit<Box<[u8]>> {
 
 #[cfg(test)]
 mod tests {
+    use stun_proto::types::AddressFamily;
     use turn_client_proto::{
         tcp::TurnClientTcp,
         types::{
@@ -4120,6 +4139,7 @@ mod tests {
             TransportType::Udp => 0,
             TransportType::Tcp => 2,
         };
+        error!("data: {:x?}", transmit.data.as_ref());
         match Message::from_bytes(&transmit.data.as_ref()[offset..]) {
             Err(e) => error!("error parsing STUN message {e:?}"),
             Ok(msg) => {
@@ -4152,7 +4172,7 @@ mod tests {
     fn conncheck_list_transmit() {
         let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder().build();
-        let now = Instant::now();
+        let now = Instant::ZERO;
 
         let CheckListSetPollRet::Event {
             checklist_id: _,
@@ -4256,7 +4276,7 @@ mod tests {
         let mut set = ConnCheckListSet::builder(0, true).build();
         let list1_id = set.new_list();
         let list2_id = set.new_list();
-        let now = Instant::now();
+        let now = Instant::ZERO;
 
         let local1 = Peer::builder()
             .foundation("0")
@@ -4586,6 +4606,7 @@ mod tests {
                 transmit = turn
                     .recv(transmit, now)
                     .unwrap()
+                    .build()
                     .reinterpret_data(|data| data.into_boxed_slice());
             }
             let mut remote_agent = self.remote_peer.stun_agent();
@@ -4604,6 +4625,7 @@ mod tests {
                 reply = turn
                     .recv(reply, now)
                     .unwrap()
+                    .build()
                     .reinterpret_data(|data| data.into_boxed_slice());
             }
 
@@ -4639,7 +4661,7 @@ mod tests {
     fn very_fine_control1() {
         let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder().build();
-        let now = Instant::now();
+        let now = Instant::ZERO;
         assert_eq!(state.local.component_id, 1);
 
         let pair = CandidatePair::new(
@@ -4693,7 +4715,7 @@ mod tests {
         // start off in the controlled mode, otherwise, the test needs to do the nomination
         // check
         let mut state = FineControl::builder().controlling(false).build();
-        let now = Instant::now();
+        let now = Instant::ZERO;
 
         let pair = CandidatePair::new(
             state.local.peer.candidate.clone(),
@@ -4762,7 +4784,7 @@ mod tests {
     fn bad_username_conncheck() {
         let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder().build();
-        let now = Instant::now();
+        let now = Instant::ZERO;
         let local_list = state
             .local
             .checklist_set
@@ -4834,7 +4856,7 @@ mod tests {
                 .remote_addr(state.local.peer.candidate.base_address)
                 .build();
         state.remote.configure_stun_agent(&mut remote_agent);
-        let now = Instant::now();
+        let now = Instant::ZERO;
 
         let CheckListSetPollRet::AllocateSocket {
             checklist_id: id,
@@ -4985,7 +5007,7 @@ mod tests {
             .tcp_type(TcpType::Active)
             .priority(10);
         let mut state = state.build();
-        let now = Instant::now();
+        let now = Instant::ZERO;
         let remote_addr = SocketAddr::new(state.remote.candidate.base_address.ip(), 2000);
         let mut remote_cand = state.remote.candidate.clone();
         remote_cand.address = remote_addr;
@@ -5041,7 +5063,7 @@ mod tests {
         assert_eq!(check.state(), CandidatePairState::Waiting);
 
         // success response
-        let now = Instant::now();
+        let now = Instant::ZERO;
         let CheckListSetPollRet::WaitUntil(_) = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
@@ -5211,7 +5233,7 @@ mod tests {
     fn conncheck_incoming_prflx() {
         let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder().build();
-        let now = Instant::now();
+        let now = Instant::ZERO;
 
         let pair = CandidatePair::new(
             state.local.peer.candidate.clone(),
@@ -5344,7 +5366,7 @@ mod tests {
     fn conncheck_response_prflx() {
         let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder().build();
-        let now = Instant::now();
+        let now = Instant::ZERO;
 
         let pair = CandidatePair::new(
             state.local.peer.candidate.clone(),
@@ -5450,7 +5472,7 @@ mod tests {
     fn conncheck_trickle_ice() {
         let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder().trickle_ice(true).build();
-        let now = Instant::now();
+        let now = Instant::ZERO;
         assert_eq!(state.local.component_id, 1);
 
         // Don't generate any initial checks as they should be done as candidates are added to
@@ -5527,7 +5549,7 @@ mod tests {
 
         // Don't generate any initial checks as they should be done as candidates are added to
         // the checklist
-        let now = Instant::now();
+        let now = Instant::ZERO;
 
         let set_ret = state.local.checklist_set.poll(now);
         // a checklist with no candidates has nothing to do
@@ -5571,7 +5593,7 @@ mod tests {
         let _list1_id = set.new_list();
         let _list2_id = set.new_list();
 
-        let now = Instant::now();
+        let now = Instant::ZERO;
         let CheckListSetPollRet::WaitUntil(_now) = set.poll(now) else {
             unreachable!();
         };
@@ -5605,7 +5627,7 @@ mod tests {
 
         // Don't generate any initial checks as they should be done as candidates are added to
         // the checklist
-        let now = Instant::now();
+        let now = Instant::ZERO;
 
         let CheckListSetPollRet::Event {
             checklist_id: _,
@@ -5702,7 +5724,7 @@ mod tests {
 
         // Don't generate any initial checks as they should be done as candidates are added to
         // the checklist
-        let now = Instant::now();
+        let now = Instant::ZERO;
 
         let CheckListSetPollRet::Event {
             checklist_id: _,
@@ -5825,7 +5847,7 @@ mod tests {
             .remote_credentials(state.local.peer.local_credentials.clone().unwrap())
             .build();
         let mut remote_agent = state.remote.stun_agent();
-        let mut now = Instant::now();
+        let mut now = Instant::ZERO;
         let to = state.local.peer.candidate.base_address;
         let transmit = remote_generate_check(&remote_peer, &mut remote_agent, to, now);
 
@@ -5934,7 +5956,7 @@ mod tests {
         let transmit = client.poll_transmit(now).unwrap();
         let msg = Message::from_bytes(&transmit.data).unwrap();
         assert!(msg.has_method(ALLOCATE));
-        let transmit = server.recv(transmit, now).unwrap();
+        let transmit = server.recv(transmit, now).unwrap().build();
         let ret = client.recv(transmit, now);
         assert!(matches!(ret, TurnRecvRet::Handled));
         client.poll(now);
@@ -5946,11 +5968,19 @@ mod tests {
             transport,
             local_addr,
             remote_addr,
+            family,
         } = server.poll(now)
         else {
             unreachable!();
         };
-        server.allocated_udp_socket(transport, local_addr, remote_addr, Ok(turn_alloc_addr), now);
+        server.allocated_udp_socket(
+            transport,
+            local_addr,
+            remote_addr,
+            family,
+            Ok(turn_alloc_addr),
+            now,
+        );
         let transmit = server.poll_transmit(now).unwrap();
         let ret = client.recv(transmit, now);
         assert!(matches!(ret, TurnRecvRet::Handled));
@@ -5968,7 +5998,7 @@ mod tests {
         let msg = Message::from_bytes(&transmit.transmit.data).unwrap();
         assert_eq!(msg.method(), CREATE_PERMISSION);
         let checklist_id = transmit.checklist_id;
-        let transmit = turn_server.recv(transmit.transmit, now).unwrap();
+        let transmit = turn_server.recv(transmit.transmit, now).unwrap().build();
         let msg = Message::from_bytes(&transmit.data).unwrap();
         assert_eq!(msg.method(), CREATE_PERMISSION);
 
@@ -6010,19 +6040,27 @@ mod tests {
             .trickle_ice(true)
             .build();
 
-        let now = Instant::now();
+        let now = Instant::ZERO;
         let mut turn_server = TurnServer::new(client_transport, turn_addr, "realm".to_owned());
         turn_server.add_user(
             turn_credentials.username().to_owned(),
             turn_credentials.password().to_owned(),
         );
         let mut turn_client = match client_transport {
-            TransportType::Udp => {
-                TurnClientUdp::allocate(local_addr, turn_addr, turn_credentials).into()
-            }
-            TransportType::Tcp => {
-                TurnClientTcp::allocate(local_addr, turn_addr, turn_credentials).into()
-            }
+            TransportType::Udp => TurnClientUdp::allocate(
+                local_addr,
+                turn_addr,
+                turn_credentials,
+                &[AddressFamily::IPV4],
+            )
+            .into(),
+            TransportType::Tcp => TurnClientTcp::allocate(
+                local_addr,
+                turn_addr,
+                turn_credentials,
+                &[AddressFamily::IPV4],
+            )
+            .into(),
         };
         turn_allocate(&mut turn_client, &mut turn_server, turn_alloc_addr, now);
 
@@ -6120,7 +6158,7 @@ mod tests {
         };
 
         let checklist_id = transmit.checklist_id;
-        let transmit = turn_server.recv(transmit.transmit, now).unwrap();
+        let transmit = turn_server.recv(transmit.transmit, now).unwrap().build();
         let transmit = Transmit::new(
             Data::from(transmit.data.as_slice()),
             transmit.transport,
@@ -6187,14 +6225,19 @@ mod tests {
             .trickle_ice(true)
             .build();
 
-        let now = Instant::now();
+        let now = Instant::ZERO;
         let mut turn_server = TurnServer::new(TransportType::Udp, turn_addr, "realm".to_owned());
         turn_server.add_user(
             turn_credentials.username().to_owned(),
             turn_credentials.password().to_owned(),
         );
-        let mut turn_client =
-            TurnClientUdp::allocate(local_addr, turn_addr, turn_credentials).into();
+        let mut turn_client = TurnClientUdp::allocate(
+            local_addr,
+            turn_addr,
+            turn_credentials,
+            &[AddressFamily::IPV4],
+        )
+        .into();
         turn_allocate(&mut turn_client, &mut turn_server, turn_alloc_addr, now);
 
         let remote_candidate = state.remote.candidate.clone();
@@ -6225,7 +6268,7 @@ mod tests {
         let msg = Message::from_bytes(&transmit.transmit.data).unwrap();
         assert_eq!(msg.method(), CREATE_PERMISSION);
         let checklist_id = transmit.checklist_id;
-        let transmit = turn_server.recv(transmit.transmit, now).unwrap();
+        let transmit = turn_server.recv(transmit.transmit, now).unwrap().build();
         let msg = Message::from_bytes(&transmit.data).unwrap();
         assert_eq!(msg.method(), CREATE_PERMISSION);
 

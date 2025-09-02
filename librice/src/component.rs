@@ -9,12 +9,13 @@
 //! A [`Component`] in an ICE [`Stream`](crate::stream::Stream)
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 
 use std::task::{Poll, Waker};
 
 use rice_c::candidate::CandidatePair;
 use rice_c::prelude::*;
+use rice_c::Instant;
 
 pub use rice_c::component::ComponentConnectionState;
 use rice_c::stream::RecvData as CRecvData;
@@ -33,7 +34,7 @@ pub const RTCP: usize = 2;
 /// A [`Component`] within an ICE [`Stream`](crate::stream::Stream`)
 #[derive(Debug, Clone)]
 pub struct Component {
-    weak_agent: Weak<Mutex<rice_c::agent::Agent>>,
+    base_instant: std::time::Instant,
     proto: rice_c::component::Component,
     #[allow(dead_code)]
     stream_id: usize,
@@ -43,16 +44,16 @@ pub struct Component {
 
 impl Component {
     pub(crate) fn new(
-        weak_agent: Weak<Mutex<rice_c::agent::Agent>>,
         stream_id: usize,
         proto: rice_c::component::Component,
+        base_instant: std::time::Instant,
     ) -> Self {
         Self {
-            weak_agent,
             stream_id,
             id: proto.id(),
             proto,
             inner: Arc::new(Mutex::new(ComponentInner::new())),
+            base_instant,
         }
     }
 
@@ -94,14 +95,7 @@ impl Component {
             (selected_pair.socket.clone(), to)
         };
 
-        {
-            let agent = self.weak_agent.upgrade().ok_or(AgentError::Proto(
-                rice_c::agent::AgentError::ResourceNotFound,
-            ))?;
-            let agent = agent.lock().unwrap();
-
-            transmit = self.proto.send(data, agent.now())?;
-        }
+        transmit = self.proto.send(data, Instant::from_std(self.base_instant))?;
 
         trace!("sending {} bytes to {:?}", data.len(), to);
         channel

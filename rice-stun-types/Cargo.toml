@@ -1,0 +1,24 @@
+[package]
+name = "rice-stun-types"
+description = "STUN types for the ICE (RFC8445) protocol"
+version.workspace = true
+authors = ["Matthew Waters <matthew@centricular.com>"]
+license = "MIT OR Apache-2.0"
+keywords = ["STUN", "ICE"]
+categories = ["network-programming", ]
+documentation = "https://docs.rs/rice-stun-types"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+workspace = ".."
+
+[dependencies]
+arbitrary = { workspace = true, optional = true }
+byteorder.workspace = true
+rand.workspace = true
+stun-types.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
