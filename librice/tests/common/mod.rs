@@ -12,11 +12,11 @@ use stun_proto::agent::HandleStunReply;
 use stun_proto::agent::StunAgent;
 use stun_proto::types::attribute::*;
 use stun_proto::types::message::*;
+use rice_c::Instant;
 
 use std::fmt::Display;
 use std::net::SocketAddr;
 use std::sync::Once;
-use std::time::Instant;
 
 use smol::net::{TcpListener, UdpSocket};
 
@@ -131,6 +131,7 @@ pub async fn stund_udp(udp_socket: UdpSocket) -> std::io::Result<()> {
 pub async fn stund_tcp(listener: TcpListener) -> std::io::Result<()> {
     let mut incoming = listener.incoming();
     let local_addr = listener.local_addr()?;
+    let base_instant = std::time::Instant::now();
     while let Some(Ok(mut stream)) = incoming.next().await {
         debug!("stund incoming tcp connection");
         smol::spawn(async move {
@@ -149,7 +150,7 @@ pub async fn stund_tcp(listener: TcpListener) -> std::io::Result<()> {
             if let Some((response, to)) =
                 handle_incoming_data(&data[..size], remote_addr, &mut tcp_stun_agent)
             {
-                if let Ok(transmit) = tcp_stun_agent.send(response.finish(), to, Instant::now()) {
+                if let Ok(transmit) = tcp_stun_agent.send(response.finish(), to, Instant::from_std(base_instant)) {
                     warn_on_err(stream.write_all(&transmit.data).await, ());
                 }
             }

@@ -44,6 +44,8 @@ pub mod candidate;
 pub mod component;
 pub mod stream;
 
+pub use sans_io_time::Instant;
+
 /// Prelude module.
 pub mod prelude {
     pub use crate::candidate::CandidateApi;

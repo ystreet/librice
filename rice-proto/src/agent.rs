@@ -12,10 +12,11 @@ use std::error::Error;
 use std::fmt::Display;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicU64;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use rand::prelude::*;
 use stun_proto::types::data::Data;
+use stun_proto::Instant;
 
 use crate::candidate::{ParseCandidateError, TransportType};
 use crate::component::ComponentConnectionState;

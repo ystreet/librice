@@ -11,6 +11,7 @@
 use crate::{mut_override, stream::Stream};
 
 pub use crate::stream::Credentials as TurnCredentials;
+use sans_io_time::Instant;
 
 /// An ICE agent as specified in RFC 8445
 #[derive(Debug)]
@@ -52,11 +53,6 @@ impl Agent {
         unsafe { crate::ffi::rice_agent_id(self.ffi) }
     }
 
-    /// The current time in microseconds.
-    pub fn now(&self) -> u64 {
-        unsafe { crate::ffi::rice_agent_now(self.ffi) }
-    }
-
     /// Add a new `Stream` to this agent
     ///
     /// # Examples
@@ -84,8 +80,8 @@ impl Agent {
 
     /// Close the agent loop.  Applications should wait for [`Agent::poll`] to return
     /// [`AgentPoll::Closed`] after calling this function.
-    pub fn close(&self, now_micros: u64) {
-        unsafe { crate::ffi::rice_agent_close(self.ffi, now_micros) }
+    pub fn close(&self, now: Instant) {
+        unsafe { crate::ffi::rice_agent_close(self.ffi, now.as_nanos()) }
     }
 
     /// The controlling state of this ICE agent.  This value may change throughout the ICE
@@ -123,13 +119,13 @@ impl Agent {
     /// Poll the [`Agent`] for further progress to be made.
     ///
     /// The returned value indicates what the application needs to do.
-    pub fn poll(&self, now_micros: u64) -> AgentPoll {
+    pub fn poll(&self, now: Instant) -> AgentPoll {
         let mut ret = crate::ffi::RiceAgentPoll {
             tag: crate::ffi::RICE_AGENT_POLL_CLOSED,
             field1: crate::ffi::RiceAgentPoll__bindgen_ty_1 {
                 field1: core::mem::ManuallyDrop::new(
                     crate::ffi::RiceAgentPoll__bindgen_ty_1__bindgen_ty_1 {
-                        wait_until_micros: 0,
+                        wait_until_nanos: 0,
                     },
                 ),
             },
@@ -137,7 +133,7 @@ impl Agent {
 
         unsafe {
             crate::ffi::rice_agent_poll_init(&mut ret);
-            crate::ffi::rice_agent_poll(self.ffi, now_micros, &mut ret);
+            crate::ffi::rice_agent_poll(self.ffi, now.as_nanos(), &mut ret);
         }
 
         AgentPoll::from_c_full(ret)
@@ -147,7 +143,7 @@ impl Agent {
     ///
     /// If not-None, then the provided data must be sent to the peer from the provided socket
     /// address.
-    pub fn poll_transmit(&self, now_micros: u64) -> Option<AgentTransmit> {
+    pub fn poll_transmit(&self, now: Instant) -> Option<AgentTransmit> {
         let mut ret = crate::ffi::RiceTransmit {
             stream_id: 0,
             transport: crate::ffi::RICE_TRANSPORT_TYPE_UDP,
@@ -158,7 +154,7 @@ impl Agent {
                 size: 0,
             },
         };
-        unsafe { crate::ffi::rice_agent_poll_transmit(self.ffi, now_micros, &mut ret) }
+        unsafe { crate::ffi::rice_agent_poll_transmit(self.ffi, now.as_nanos(), &mut ret) }
         if ret.from.is_null() || ret.to.is_null() {
             return None;
         }
@@ -203,7 +199,7 @@ pub enum AgentPoll {
     #[default]
     Closed,
     /// Wait until the specified `Instant` has been reached (or an external event)
-    WaitUntilMicros(u64),
+    WaitUntilNanos(i64),
     /// Connect from the specified interface to the specified address.  Reply (success or failure)
     /// should be notified using [`Stream::allocated_socket`] with the same parameters.
     AllocateSocket(AgentSocket),
@@ -225,8 +221,8 @@ impl AgentPoll {
         unsafe {
             let ret = match ffi.tag {
                 crate::ffi::RICE_AGENT_POLL_CLOSED => Self::Closed,
-                crate::ffi::RICE_AGENT_POLL_WAIT_UNTIL_MICROS => Self::WaitUntilMicros(
-                    core::mem::ManuallyDrop::into_inner(ffi.field1.field1).wait_until_micros,
+                crate::ffi::RICE_AGENT_POLL_WAIT_UNTIL_NANOS => Self::WaitUntilNanos(
+                    core::mem::ManuallyDrop::into_inner(ffi.field1.field1).wait_until_nanos,
                 ),
                 crate::ffi::RICE_AGENT_POLL_ALLOCATE_SOCKET => {
                     let ty = core::mem::ManuallyDrop::into_inner(ffi.field1.field2).allocate_socket;

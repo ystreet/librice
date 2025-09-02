@@ -42,7 +42,6 @@ use core::mem::MaybeUninit;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, Once, Weak};
-use std::time::{Duration, Instant};
 
 use crate::agent::AgentPoll;
 use crate::agent::TurnCredentials;
@@ -53,6 +52,7 @@ use crate::gathering::GatheredCandidate;
 use crate::stream::Credentials;
 use stun_proto::agent::{StunError, Transmit};
 use stun_proto::types::data::{Data, DataOwned, DataSlice};
+use stun_proto::Instant;
 use turn_client_proto::client::TurnClient;
 
 use tracing_subscriber::layer::SubscriberExt;
@@ -149,7 +149,6 @@ struct RiceAgentInner {
 pub struct RiceAgent {
     proto_agent: Arc<Mutex<Agent>>,
     inner: Arc<Mutex<RiceAgentInner>>,
-    base_instant: Instant,
 }
 
 /// Create a new ICE Agent.
@@ -171,7 +170,6 @@ pub unsafe extern "C" fn rice_agent_new(controlling: bool, trickle_ice: bool) ->
             turn_servers: vec![],
             streams: vec![],
         })),
-        base_instant: Instant::now(),
     });
 
     mut_override(Arc::into_raw(agent))
@@ -202,11 +200,10 @@ pub unsafe extern "C" fn rice_agent_unref(agent: *mut RiceAgent) {
 /// `rice_agent_poll()`) and will only succesfully complete once `rice_agent_poll`() returns
 /// `Closed`.
 #[no_mangle]
-pub unsafe extern "C" fn rice_agent_close(agent: *const RiceAgent, now_micros: u64) {
+pub unsafe extern "C" fn rice_agent_close(agent: *const RiceAgent, now_nanos: i64) {
     let agent = Arc::from_raw(agent);
     let mut proto_agent = agent.proto_agent.lock().unwrap();
-    let now = agent.base_instant + Duration::from_micros(now_micros);
-    proto_agent.close(now);
+    proto_agent.close(Instant::from_nanos(now_nanos));
 
     drop(proto_agent);
     core::mem::forget(agent);
@@ -246,7 +243,7 @@ pub enum RiceAgentPoll {
     /// The Agent is closed.  No further progress will be made.
     Closed,
     /// Wait until the specified `Instant` has been reached (or an external event)
-    WaitUntilMicros(u64),
+    WaitUntilNanos(i64),
     /// Connect from the specified interface to the specified address.  Reply (success or failure)
     /// should be notified using `rice_agent_allocated_socket()` with the same parameters.
     AllocateSocket(RiceAgentSocket),
@@ -264,12 +261,10 @@ pub enum RiceAgentPoll {
 }
 
 impl RiceAgentPoll {
-    fn into_c_full(poll: AgentPoll, base_instant: Instant) -> Self {
+    fn into_c_full(poll: AgentPoll) -> Self {
         match poll {
             AgentPoll::Closed => Self::Closed,
-            AgentPoll::WaitUntil(instant) => Self::WaitUntilMicros(
-                instant.saturating_duration_since(base_instant).as_micros() as u64,
-            ),
+            AgentPoll::WaitUntil(instant) => Self::WaitUntilNanos(instant.as_nanos()),
             AgentPoll::AllocateSocket(connect) => {
                 Self::AllocateSocket(RiceAgentSocket::into_c_full(connect))
             }
@@ -595,7 +590,7 @@ pub unsafe extern "C" fn rice_agent_poll_clear(poll: *mut RiceAgentPoll) {
     match other {
         RiceAgentPoll::Closed
         | RiceAgentPoll::ComponentStateChange(_)
-        | RiceAgentPoll::WaitUntilMicros(_)
+        | RiceAgentPoll::WaitUntilNanos(_)
         | RiceAgentPoll::GatheringComplete(_) => (),
         RiceAgentPoll::AllocateSocket(mut connect) => {
             let mut from = core::ptr::null();
@@ -636,12 +631,12 @@ pub unsafe extern "C" fn rice_agent_poll_clear(poll: *mut RiceAgentPoll) {
 #[no_mangle]
 pub unsafe extern "C" fn rice_agent_poll(
     agent: *mut RiceAgent,
-    now_micros: u64,
+    now_nanos: i64,
     poll: *mut RiceAgentPoll,
 ) {
     let agent = Arc::from_raw(agent);
     let mut proto_agent = agent.proto_agent.lock().unwrap();
-    let now = agent.base_instant + Duration::from_micros(now_micros);
+    let now = Instant::from_nanos(now_nanos);
     let ret = proto_agent.poll(now);
     if let AgentPoll::SelectedPair(ref pair) = ret {
         if let Some(mut stream) = proto_agent.mut_stream(pair.stream_id) {
@@ -650,7 +645,7 @@ pub unsafe extern "C" fn rice_agent_poll(
             }
         }
     }
-    *poll = RiceAgentPoll::into_c_full(ret, agent.base_instant);
+    *poll = RiceAgentPoll::into_c_full(ret);
 
     drop(proto_agent);
     core::mem::forget(agent);
@@ -664,12 +659,12 @@ pub unsafe extern "C" fn rice_agent_poll(
 #[no_mangle]
 pub unsafe extern "C" fn rice_agent_poll_transmit(
     agent: *mut RiceAgent,
-    now_micros: u64,
+    now_nanos: i64,
     transmit: *mut RiceTransmit,
 ) {
     let agent = Arc::from_raw(agent);
     let mut proto_agent = agent.proto_agent.lock().unwrap();
-    let now = agent.base_instant + Duration::from_micros(now_micros);
+    let now = Instant::from_nanos(now_nanos);
     if let Some(ret) = proto_agent.poll_transmit(now) {
         *transmit = RiceTransmit::into_c_full(ret);
     } else {
@@ -720,28 +715,12 @@ pub unsafe extern "C" fn rice_agent_add_turn_server(
     core::mem::forget(creds);
 }
 
-/// Get the current time in microseconds of the `RiceAgent`.
-///
-/// The returned value can be passed to functions that require the current time.
-///
-/// This value is the same as `rice_stream_now()`.
-#[no_mangle]
-pub unsafe extern "C" fn rice_agent_now(agent: *const RiceAgent) -> u64 {
-    let agent = Arc::from_raw(agent);
-    let ret = Instant::now()
-        .saturating_duration_since(agent.base_instant)
-        .as_micros() as u64;
-    core::mem::forget(agent);
-    ret
-}
-
 /// A data stream in a `RiceAgent`.
 #[derive(Debug)]
 pub struct RiceStream {
     proto_agent: Arc<Mutex<Agent>>,
     weak_agent: Weak<Mutex<RiceAgentInner>>,
     inner: Arc<Mutex<RiceStreamInner>>,
-    base_instant: Instant,
     stream_id: usize,
 }
 
@@ -760,7 +739,6 @@ pub unsafe extern "C" fn rice_agent_add_stream(agent: *mut RiceAgent) -> *mut Ri
         proto_agent: agent.proto_agent.clone(),
         weak_agent: Arc::downgrade(&agent.inner),
         inner: Arc::new(Mutex::new(RiceStreamInner { components: vec![] })),
-        base_instant: agent.base_instant,
         stream_id,
     });
     drop(proto_agent);
@@ -850,21 +828,6 @@ pub unsafe extern "C" fn rice_stream_handle_allocated_socket(
 
     drop(proto_agent);
     core::mem::forget(stream);
-}
-
-/// Get the current time in microseconds of the `RiceStream`.
-///
-/// The returned value can be passed to functions that require the current time.
-///
-/// This value produces the same values as `rice_agent_now()`.
-#[no_mangle]
-pub unsafe extern "C" fn rice_stream_now(stream: *const RiceStream) -> u64 {
-    let stream = Arc::from_raw(stream);
-    let ret = Instant::now()
-        .saturating_duration_since(stream.base_instant)
-        .as_micros() as u64;
-    core::mem::forget(stream);
-    ret
 }
 
 /// ICE/TURN credentials.
@@ -1661,11 +1624,11 @@ pub unsafe extern "C" fn rice_stream_handle_incoming_data(
     to: *const RiceAddress,
     data: *const u8,
     data_len: usize,
-    now_micros: u64,
+    now_nanos: i64,
     ret: *mut MaybeUninit<RiceStreamIncomingData>,
 ) {
     let stream = Arc::from_raw(stream);
-    let now = stream.base_instant + Duration::from_micros(now_micros);
+    let now = Instant::from_nanos(now_nanos);
     let mut proto_agent = stream.proto_agent.lock().unwrap();
     let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
     let from = Box::from_raw(mut_override(from));
@@ -1780,7 +1743,6 @@ pub struct RiceComponent {
     weak_agent: Weak<Mutex<RiceAgentInner>>,
     stream_id: usize,
     component_id: usize,
-    base_instant: Instant,
 }
 
 /// Add an ICE component to a `RiceStream`.
@@ -1795,7 +1757,6 @@ pub unsafe extern "C" fn rice_stream_add_component(stream: *mut RiceStream) -> *
         weak_agent: stream.weak_agent.clone(),
         stream_id: stream.stream_id,
         component_id,
-        base_instant: stream.base_instant,
     });
     drop(proto_agent);
 
@@ -1952,11 +1913,11 @@ pub unsafe extern "C" fn rice_component_send(
     component: *mut RiceComponent,
     data: *mut u8,
     len: usize,
-    now_micros: u64,
+    now_nanos: i64,
     transmit: *mut RiceTransmit,
 ) -> RiceError {
     let component = Arc::from_raw(component);
-    let now = component.base_instant + Duration::from_micros(now_micros);
+    let now = Instant::from_nanos(now_nanos);
 
     let mut proto_agent = component.proto_agent.lock().unwrap();
     let mut proto_stream = proto_agent.mut_stream(component.stream_id).unwrap();
@@ -2333,7 +2294,7 @@ mod tests {
 
             let mut poll = RiceAgentPoll::Closed;
             rice_agent_poll(agent, 0, &mut poll);
-            let RiceAgentPoll::WaitUntilMicros(_now) = poll else {
+            let RiceAgentPoll::WaitUntilNanos(_now) = poll else {
                 unreachable!()
             };
             rice_agent_poll_clear(&mut poll);

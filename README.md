@@ -78,6 +78,10 @@ For other examples of sans-IO implementations, take a look at:
 
 ## Structure
 
+### [rice-stun-types](https://github.com/ystreet/librice/tree/main/rice-stun-types)
+
+Implementation of STUN attributes relevant for ICE (RFC8445).
+
 ### [rice-proto](https://github.com/ystreet/librice/tree/main/rice-proto)
 
 The sans-IO implementation of the ICE (RFC8445) protocol. Contains no IO code

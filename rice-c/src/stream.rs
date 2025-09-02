@@ -8,6 +8,8 @@
 
 //! A [`Stream`] in an ICE [`Agent`](crate::agent::Agent).
 
+use sans_io_time::Instant;
+
 use crate::{candidate::TransportType, mut_override};
 
 /// An ICE [`Stream`]
@@ -196,7 +198,7 @@ impl Stream {
         from: crate::Address,
         to: crate::Address,
         data: &'a [u8],
-        now_micros: u64,
+        now: Instant,
     ) -> StreamIncomingDataReply<'a> {
         unsafe {
             let mut stream_ret = crate::ffi::RiceStreamIncomingData::default();
@@ -208,7 +210,7 @@ impl Stream {
                 to.as_c(),
                 data.as_ptr(),
                 data.len(),
-                now_micros,
+                now.as_nanos(),
                 &mut stream_ret,
             );
             let mut ret = StreamIncomingDataReply {
@@ -366,6 +368,8 @@ impl GatheredCandidate {
 
 #[cfg(test)]
 mod tests {
+    use sans_io_time::Instant;
+
     use super::*;
     use crate::agent::{Agent, AgentPoll};
 
@@ -385,22 +389,22 @@ mod tests {
         stream.set_remote_credentials(&remote_credentials);
         component.gather_candidates([(transport, addr)]).unwrap();
 
-        let AgentPoll::AllocateSocket(ref alloc) = agent.poll(0) else {
+        let AgentPoll::AllocateSocket(ref alloc) = agent.poll(Instant::ZERO) else {
             unreachable!()
         };
         let from = &alloc.from;
         let to = &alloc.to;
         let component_id = alloc.component_id;
 
-        let AgentPoll::GatheredCandidate(ref _candidate) = agent.poll(0) else {
+        let AgentPoll::GatheredCandidate(ref _candidate) = agent.poll(Instant::ZERO) else {
             unreachable!()
         };
 
-        let AgentPoll::GatheredCandidate(ref _candidate) = agent.poll(0) else {
+        let AgentPoll::GatheredCandidate(ref _candidate) = agent.poll(Instant::ZERO) else {
             unreachable!()
         };
 
-        let AgentPoll::WaitUntilMicros(_now) = agent.poll(0) else {
+        let AgentPoll::WaitUntilNanos(_now) = agent.poll(Instant::ZERO) else {
             unreachable!()
         };
 
@@ -413,9 +417,9 @@ mod tests {
             Some(tcp_from_addr),
         );
 
-        let _ = agent.poll_transmit(0).unwrap();
+        let _ = agent.poll_transmit(Instant::ZERO).unwrap();
 
-        let _ = agent.poll(0);
-        let _ = agent.poll(0);
+        let _ = agent.poll(Instant::ZERO);
+        let _ = agent.poll(Instant::ZERO);
     }
 }

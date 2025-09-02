@@ -10,7 +10,7 @@
 
 use std::collections::VecDeque;
 use std::net::{IpAddr, SocketAddr};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::candidate::{Candidate, TcpType, TransportType};
 use stun_proto::agent::{HandleStunReply, StunAgent, StunAgentPollRet, StunError, Transmit};
@@ -20,6 +20,8 @@ use stun_proto::types::message::{
     Message, MessageHeader, MessageWriteVec, StunParseError, TransactionId, BINDING,
 };
 use stun_proto::types::prelude::{MessageWrite, MessageWriteExt};
+use stun_proto::types::AddressFamily;
+use stun_proto::Instant;
 use turn_client_proto::api::{TurnEvent, TurnPollRet, TurnRecvRet};
 use turn_client_proto::client::TurnClient;
 use turn_client_proto::prelude::*;
@@ -109,7 +111,7 @@ impl PendingRequest {
             }
             Method::Turn(credentials) => {
                 let client =
-                    TurnClientTcp::allocate(local_addr, self.server_addr, credentials.clone())
+                    TurnClientTcp::allocate(local_addr, self.server_addr, credentials.clone(), &[AddressFamily::IPV4])
                         .into();
                 Request {
                     protocol: RequestProtocol::Tcp(None),
@@ -369,6 +371,7 @@ impl StunGatherer {
                                 pending_request.local_addr,
                                 pending_request.server_addr,
                                 credentials.clone(),
+                                &[AddressFamily::IPV4],
                             )
                             .into();
                             StunOrTurnClient::Turn(Box::new(client))
@@ -949,7 +952,7 @@ mod tests {
         let local_addr = "192.168.1.1:1000".parse().unwrap();
         let mut gather =
             StunGatherer::new(1, vec![(TransportType::Udp, local_addr)], vec![], vec![]);
-        let now = Instant::now();
+        let now = Instant::ZERO;
         let ret = gather.poll(now);
         if let GatherPoll::NewCandidate(cand) = ret {
             assert!(cand.turn_agent.is_none());
@@ -975,7 +978,7 @@ mod tests {
         let local_addr = "192.168.1.1:1000".parse().unwrap();
         let mut gather =
             StunGatherer::new(1, vec![(TransportType::Udp, local_addr)], vec![], vec![]);
-        let now = Instant::now();
+        let now = Instant::ZERO;
         let ret = gather.poll(now);
         if let GatherPoll::NewCandidate(cand) = ret {
             assert!(cand.turn_agent.is_none());
@@ -1005,7 +1008,7 @@ mod tests {
         let local_addr = "192.168.1.1:1000".parse().unwrap();
         let mut gather =
             StunGatherer::new(1, vec![(TransportType::Tcp, local_addr)], vec![], vec![]);
-        let now = Instant::now();
+        let now = Instant::ZERO;
         let ret = gather.poll(now);
         if let GatherPoll::NewCandidate(cand) = ret {
             let local_addr = SocketAddr::new(local_addr.ip(), 9);
@@ -1072,7 +1075,7 @@ mod tests {
             vec![(TransportType::Udp, stun_addr)],
             vec![],
         );
-        let now = Instant::now();
+        let now = Instant::ZERO;
         /* host candidate contents checked in `host_udp()` */
         assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
         let transmit = gather.poll_transmit(now).unwrap();
@@ -1129,7 +1132,7 @@ mod tests {
             vec![(TransportType::Tcp, stun_addr)],
             vec![],
         );
-        let now = Instant::now();
+        let now = Instant::ZERO;
         handle_allocate_socket(&mut gather, local_addr, now);
         /* host candidate contents checked in `host_tcp()` */
         assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
@@ -1189,7 +1192,7 @@ mod tests {
             vec![(TransportType::Tcp, stun_addr)],
             vec![],
         );
-        let now = Instant::now();
+        let now = Instant::ZERO;
         handle_allocate_socket(&mut gather, local_addr, now);
         /* host candidate contents checked in `host_tcp()` */
         assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
@@ -1232,7 +1235,7 @@ mod tests {
             vec![],
             vec![(TransportType::Udp, turn_listen_addr, turn_credentials)],
         );
-        let now = Instant::now();
+        let now = Instant::ZERO;
         /* host candidate contents checked in `host_udp()` */
         assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
         let stun_transmit = gather.poll_transmit(now).unwrap();
@@ -1262,7 +1265,7 @@ mod tests {
         let turn_transmit = gather.poll_transmit(now).unwrap();
         assert_eq!(turn_transmit.from, local_addr);
         assert_eq!(turn_transmit.to, turn_listen_addr);
-        let reply = turn_server.recv(turn_transmit, now).unwrap();
+        let reply = turn_server.recv(turn_transmit, now).unwrap().build();
         assert!(gather.handle_data(&reply, now));
 
         // authenticated TURN ALLOCATE
@@ -1274,6 +1277,7 @@ mod tests {
             transport,
             local_addr,
             remote_addr,
+            family,
         } = turn_server.poll(now)
         else {
             unreachable!();
@@ -1282,6 +1286,7 @@ mod tests {
             transport,
             local_addr,
             remote_addr,
+            family,
             Ok(turn_alloc_addr),
             now,
         );
@@ -1331,7 +1336,7 @@ mod tests {
             vec![],
             vec![(TransportType::Tcp, turn_listen_addr, turn_credentials)],
         );
-        let now = Instant::now();
+        let now = Instant::ZERO;
         handle_allocate_socket(&mut gather, local_addr, now);
         /* host candidate contents checked in `host_tcp()` */
         assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
@@ -1381,7 +1386,7 @@ mod tests {
         let turn_transmit = gather.poll_transmit(now).unwrap();
         assert_eq!(turn_transmit.from, local_addr);
         assert_eq!(turn_transmit.to, turn_listen_addr);
-        let reply = turn_server.recv(turn_transmit, now).unwrap();
+        let reply = turn_server.recv(turn_transmit, now).unwrap().build();
         assert!(gather.handle_data(&reply, now));
 
         // authenticated TURN ALLOCATE
@@ -1393,6 +1398,7 @@ mod tests {
             transport,
             local_addr,
             remote_addr,
+            family,
         } = turn_server.poll(now)
         else {
             unreachable!();
@@ -1401,6 +1407,7 @@ mod tests {
             transport,
             local_addr,
             remote_addr,
+            family,
             Ok(turn_alloc_addr),
             now,
         );

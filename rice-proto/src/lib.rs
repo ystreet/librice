@@ -92,6 +92,7 @@ pub mod component;
 mod conncheck;
 mod gathering;
 pub mod stream;
+mod tcp;
 
 #[cfg(feature = "capi")]
 pub mod capi;

@@ -18,6 +18,7 @@ bindgen = "0.72"
 
 [dependencies]
 tracing.workspace = true
+sans-io-time = "0.1"
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

@@ -379,7 +379,7 @@ const _: () = {
 #[doc = " The Agent is closed.  No further progress will be made."]
 pub const RICE_AGENT_POLL_CLOSED: RiceAgentPoll_Tag = 0;
 #[doc = " Wait until the specified `Instant` has been reached (or an external event)"]
-pub const RICE_AGENT_POLL_WAIT_UNTIL_MICROS: RiceAgentPoll_Tag = 1;
+pub const RICE_AGENT_POLL_WAIT_UNTIL_NANOS: RiceAgentPoll_Tag = 1;
 #[doc = " Connect from the specified interface to the specified address.  Reply (success or failure)\n should be notified using `rice_agent_allocated_socket()` with the same parameters."]
 pub const RICE_AGENT_POLL_ALLOCATE_SOCKET: RiceAgentPoll_Tag = 2;
 #[doc = " It is posible to remove the specified 5-tuple. The socket will not be referenced any\n further."]
@@ -412,7 +412,7 @@ pub union RiceAgentPoll__bindgen_ty_1 {
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct RiceAgentPoll__bindgen_ty_1__bindgen_ty_1 {
-    pub wait_until_micros: u64,
+    pub wait_until_nanos: i64,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
@@ -420,9 +420,9 @@ const _: () = {
         [::core::mem::size_of::<RiceAgentPoll__bindgen_ty_1__bindgen_ty_1>() - 8usize];
     ["Alignment of RiceAgentPoll__bindgen_ty_1__bindgen_ty_1"]
         [::core::mem::align_of::<RiceAgentPoll__bindgen_ty_1__bindgen_ty_1>() - 8usize];
-    ["Offset of field: RiceAgentPoll__bindgen_ty_1__bindgen_ty_1::wait_until_micros"][::core::mem::offset_of!(
+    ["Offset of field: RiceAgentPoll__bindgen_ty_1__bindgen_ty_1::wait_until_nanos"][::core::mem::offset_of!(
         RiceAgentPoll__bindgen_ty_1__bindgen_ty_1,
-        wait_until_micros
+        wait_until_nanos
     ) - 0usize];
 };
 #[repr(C)]
@@ -578,7 +578,7 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[doc = " Close the `RiceAgent`.\n\n Closure does involve closing network resources (signalled through calls to\n `rice_agent_poll()`) and will only succesfully complete once `rice_agent_poll`() returns\n `Closed`."]
-    pub fn rice_agent_close(agent: *const RiceAgent, now_micros: u64);
+    pub fn rice_agent_close(agent: *const RiceAgent, now_nanos: i64);
 }
 unsafe extern "C" {
     #[doc = " Return the process-local unique id for this agent."]
@@ -614,13 +614,13 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[doc = " Poll the `RiceAgent` for further progress.\n\n The returned value indicates what should be done to continue making progress."]
-    pub fn rice_agent_poll(agent: *mut RiceAgent, now_micros: u64, poll: *mut RiceAgentPoll);
+    pub fn rice_agent_poll(agent: *mut RiceAgent, now_nanos: i64, poll: *mut RiceAgentPoll);
 }
 unsafe extern "C" {
     #[doc = " Poll the `RiceAgent` for a transmission to send.\n\n If there is no transmission, then `transmit` will be filled with empty data.\n\n `rice_transmit_init()` or `rice_transmit_clear()` must be called before this function."]
     pub fn rice_agent_poll_transmit(
         agent: *mut RiceAgent,
-        now_micros: u64,
+        now_nanos: i64,
         transmit: *mut RiceTransmit,
     );
 }
@@ -640,10 +640,6 @@ unsafe extern "C" {
         addr: *const RiceAddress,
         credentials: *const RiceCredentials,
     );
-}
-unsafe extern "C" {
-    #[doc = " Get the current time in microseconds of the `RiceAgent`.\n\n The returned value can be passed to functions that require the current time.\n\n This value is the same as `rice_stream_now()`."]
-    pub fn rice_agent_now(agent: *const RiceAgent) -> u64;
 }
 unsafe extern "C" {
     #[doc = " Add an ICE stream to the `RiceAgent`."]
@@ -675,10 +671,6 @@ unsafe extern "C" {
         to: *const RiceAddress,
         socket_addr: *mut RiceAddress,
     );
-}
-unsafe extern "C" {
-    #[doc = " Get the current time in microseconds of the `RiceStream`.\n\n The returned value can be passed to functions that require the current time.\n\n This value produces the same values as `rice_agent_now()`."]
-    pub fn rice_stream_now(stream: *const RiceStream) -> u64;
 }
 unsafe extern "C" {
     #[doc = " Construct a new set of ICE/TURN credentials."]
@@ -842,7 +834,7 @@ unsafe extern "C" {
         to: *const RiceAddress,
         data: *const u8,
         data_len: usize,
-        now_micros: u64,
+        now_nanos: i64,
         ret: *mut RiceStreamIncomingData,
     );
 }
@@ -914,7 +906,7 @@ unsafe extern "C" {
         component: *mut RiceComponent,
         data: *mut u8,
         len: usize,
-        now_micros: u64,
+        now_nanos: i64,
         transmit: *mut RiceTransmit,
     ) -> RiceError;
 }

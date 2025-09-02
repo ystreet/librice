@@ -9,11 +9,11 @@
 //! A [`Stream`] in an ICE [`Agent`]
 
 use std::net::SocketAddr;
-use std::time::Instant;
 
 use crate::gathering::GatherPoll;
 use stun_proto::agent::{StunError, Transmit};
 use stun_proto::types::data::Data;
+use stun_proto::Instant;
 
 use crate::agent::{Agent, AgentError};
 use crate::component::{Component, ComponentMut, ComponentState, GatherProgress};
