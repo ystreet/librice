@@ -8,9 +8,12 @@
 
 //! Helpers for retrieving a list of local candidates
 
-use std::collections::VecDeque;
-use std::net::{IpAddr, SocketAddr};
-use std::time::Duration;
+use alloc::boxed::Box;
+use alloc::collections::VecDeque;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use core::net::{IpAddr, SocketAddr};
+use core::time::Duration;
 
 use crate::candidate::{Candidate, TcpType, TransportType};
 use stun_proto::agent::{HandleStunReply, StunAgent, StunAgentPollRet, StunError, Transmit};
@@ -29,6 +32,8 @@ use turn_client_proto::tcp::TurnClientTcp;
 use turn_client_proto::types::message::ALLOCATE;
 use turn_client_proto::types::TurnCredentials;
 use turn_client_proto::udp::TurnClientUdp;
+
+use tracing::{info, trace};
 
 fn address_is_ignorable(ip: IpAddr) -> bool {
     // TODO: add is_benchmarking() and is_documentation() when they become stable
@@ -110,9 +115,13 @@ impl PendingRequest {
                 }
             }
             Method::Turn(credentials) => {
-                let client =
-                    TurnClientTcp::allocate(local_addr, self.server_addr, credentials.clone(), &[AddressFamily::IPV4])
-                        .into();
+                let client = TurnClientTcp::allocate(
+                    local_addr,
+                    self.server_addr,
+                    credentials.clone(),
+                    &[AddressFamily::IPV4],
+                )
+                .into();
                 Request {
                     protocol: RequestProtocol::Tcp(None),
                     agent: StunOrTurnClient::Turn(Box::new(client)),
@@ -319,7 +328,7 @@ impl StunGatherer {
 
         Self {
             component_id,
-            requests: vec![],
+            requests: Vec::new(),
             pending_candidates,
             produced_candidates: Default::default(),
             produced_i: 0,
@@ -639,7 +648,7 @@ impl StunGatherer {
             to = %transmit.to,
         )
     )]
-    pub(crate) fn handle_data<T: AsRef<[u8]> + std::fmt::Debug>(
+    pub(crate) fn handle_data<T: AsRef<[u8]> + core::fmt::Debug>(
         &mut self,
         transmit: &Transmit<T>,
         now: Instant,
@@ -916,7 +925,7 @@ impl StunGatherer {
                             requested_local_addr: local_addr,
                             local_addr: *socket_addr,
                             remote_addr,
-                            tcp_buffer: vec![],
+                            tcp_buffer: Vec::new(),
                         });
                     }
                 }
@@ -937,6 +946,8 @@ fn transmit_send_unframed<'a, T: AsRef<[u8]>>(transmit: &Transmit<T>) -> Transmi
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use crate::candidate::{CandidateType, TcpType};
     use stun_proto::types::{
         message::{MessageClass, MessageWriteVec},
@@ -945,6 +956,8 @@ mod tests {
     use turn_server_proto::api::{TurnServerApi, TurnServerPollRet};
 
     use super::*;
+
+    use tracing::error;
 
     #[test]
     fn host_udp() {

@@ -103,6 +103,8 @@ mod tests {
     use super::*;
     use tracing::trace;
 
+    use std::vec::Vec;
+
     #[test]
     fn priority() {
         let _log = crate::tests::test_init_log();

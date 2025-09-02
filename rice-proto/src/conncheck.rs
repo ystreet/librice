@@ -9,15 +9,20 @@
 //! Connectivity check module for checking a set of candidates for an appropriate candidate pair to
 //! transfer data with.
 
-use std::collections::{HashMap, VecDeque};
-use std::net::{IpAddr, SocketAddr};
-use std::ops::Range;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::vec::Vec;
+
+use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
+use core::net::{IpAddr, SocketAddr};
+use core::ops::Range;
+use core::sync::atomic::{AtomicUsize, Ordering};
+use core::time::Duration;
 
 use crate::candidate::{Candidate, CandidatePair, CandidateType, TcpType, TransportType};
 use crate::component::ComponentConnectionState;
 use crate::gathering::GatheredCandidate;
+use crate::rand::generate_random_ice_string;
 use crate::tcp::TcpBuffer;
 use byteorder::{BigEndian, ByteOrder};
 use rice_stun_types::attribute::{IceControlled, IceControlling, Priority, UseCandidate};
@@ -30,12 +35,14 @@ use turn_client_proto::api::{TransmitBuild, TurnEvent, TurnPollRet, TurnRecvRet}
 use turn_client_proto::client::TurnClient;
 use turn_client_proto::prelude::*;
 
+use tracing::{debug, error, info, trace, warn};
+
 static STUN_AGENT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct StunAgentId(usize);
 
-impl std::ops::Deref for StunAgentId {
+impl core::ops::Deref for StunAgentId {
     type Target = usize;
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -49,8 +56,8 @@ impl StunAgentId {
     }
 }
 
-impl std::fmt::Display for StunAgentId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for StunAgentId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.0.fmt(f)
     }
 }
@@ -109,14 +116,14 @@ impl SelectedPair {
 
 /// Return value when handling received data
 #[derive(Debug)]
-pub struct HandleRecvReply<T: AsRef<[u8]> + std::fmt::Debug> {
+pub struct HandleRecvReply<T: AsRef<[u8]> + core::fmt::Debug> {
     pub handled: bool,
     pub have_more_data: bool,
     pub data: Option<DataAndRange<T>>,
 }
 
-impl<T: AsRef<[u8]> + std::fmt::Debug> std::fmt::Display for HandleRecvReply<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl<T: AsRef<[u8]> + core::fmt::Debug> core::fmt::Display for HandleRecvReply<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "HandleRecvReply {{")?;
         let mut need_comma = false;
         if self.handled {
@@ -133,7 +140,7 @@ impl<T: AsRef<[u8]> + std::fmt::Debug> std::fmt::Display for HandleRecvReply<T> 
     }
 }
 
-impl<T: AsRef<[u8]> + std::fmt::Debug> Default for HandleRecvReply<T> {
+impl<T: AsRef<[u8]> + core::fmt::Debug> Default for HandleRecvReply<T> {
     fn default() -> Self {
         Self {
             handled: false,
@@ -144,12 +151,12 @@ impl<T: AsRef<[u8]> + std::fmt::Debug> Default for HandleRecvReply<T> {
 }
 
 #[derive(Debug)]
-pub struct DataAndRange<T: AsRef<[u8]> + std::fmt::Debug> {
+pub struct DataAndRange<T: AsRef<[u8]> + core::fmt::Debug> {
     data: T,
     range: Range<usize>,
 }
 
-impl<T: AsRef<[u8]> + std::fmt::Debug> AsRef<[u8]> for DataAndRange<T> {
+impl<T: AsRef<[u8]> + core::fmt::Debug> AsRef<[u8]> for DataAndRange<T> {
     fn as_ref(&self) -> &[u8] {
         &self.data.as_ref()[self.range.start..self.range.end]
     }
@@ -173,9 +180,9 @@ pub(crate) enum CandidatePairState {
     Frozen,
 }
 
-impl std::fmt::Display for CandidatePairState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.pad(&format!("{self:?}"))
+impl core::fmt::Display for CandidatePairState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.pad(&alloc::format!("{self:?}"))
     }
 }
 
@@ -195,7 +202,7 @@ enum ConnCheckVariant {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
 struct ConnCheckId(usize);
 
-impl std::ops::Deref for ConnCheckId {
+impl core::ops::Deref for ConnCheckId {
     type Target = usize;
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -209,8 +216,8 @@ impl ConnCheckId {
     }
 }
 
-impl std::fmt::Display for ConnCheckId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for ConnCheckId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.0.fmt(f)
     }
 }
@@ -375,7 +382,7 @@ pub struct ConnCheckList {
     agents: Vec<CheckStunAgent>,
     turn_clients: Vec<(StunAgentId, TurnClient)>,
     pending_delete_turn_clients: Vec<(StunAgentId, TurnClient)>,
-    tcp_buffers: HashMap<(SocketAddr, SocketAddr), TcpBuffer>,
+    tcp_buffers: BTreeMap<(SocketAddr, SocketAddr), TcpBuffer>,
     pending_turn_permissions: VecDeque<(StunAgentId, TransportType, IpAddr)>,
     pending_recv: VecDeque<PendingRecv>,
 }
@@ -474,17 +481,6 @@ impl PartialEq<bool> for Nominate {
     }
 }
 
-fn generate_random_ice_string(alphabet: &[u8], length: usize) -> String {
-    use rand::prelude::*;
-    let mut rng = rand::rng();
-    String::from_utf8(
-        (0..length)
-            .map(|_| *alphabet.choose(&mut rng).unwrap())
-            .collect(),
-    )
-    .unwrap()
-}
-
 fn generate_random_credentials() -> Credentials {
     let alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/".as_bytes();
     let user = generate_random_ice_string(alphabet, 4);
@@ -497,24 +493,24 @@ impl ConnCheckList {
         Self {
             checklist_id,
             state: CheckListState::Running,
-            component_ids: vec![],
+            component_ids: Vec::new(),
             local_credentials: generate_random_credentials(),
             remote_credentials: generate_random_credentials(),
-            local_candidates: vec![],
-            remote_candidates: vec![],
+            local_candidates: Vec::new(),
+            remote_candidates: Vec::new(),
             triggered: VecDeque::new(),
             pairs: VecDeque::new(),
-            valid: vec![],
-            nominated: vec![],
+            valid: Vec::new(),
+            nominated: Vec::new(),
             controlling,
             trickle_ice,
             local_end_of_candidates: false,
             remote_end_of_candidates: false,
             events: VecDeque::new(),
-            agents: vec![],
-            turn_clients: vec![],
-            pending_delete_turn_clients: vec![],
-            tcp_buffers: HashMap::default(),
+            agents: Vec::new(),
+            turn_clients: Vec::new(),
+            pending_delete_turn_clients: Vec::new(),
+            tcp_buffers: BTreeMap::default(),
             pending_turn_permissions: VecDeque::new(),
             pending_recv: VecDeque::new(),
         }
@@ -556,7 +552,7 @@ impl ConnCheckList {
 
         // If we already have checks that are using old or outdated credentials, replace them with
         // new checks that use the new remote credentials
-        let mut request_cancels = vec![];
+        let mut request_cancels = Vec::new();
         let new_pairs = self
             .pairs
             .drain(..)
@@ -1073,8 +1069,8 @@ impl ConnCheckList {
             .next()
     }
 
-    fn foundations(&self) -> std::collections::HashSet<String> {
-        let mut foundations = std::collections::HashSet::new();
+    fn foundations(&self) -> BTreeSet<String> {
+        let mut foundations = BTreeSet::new();
         let _: Vec<_> = self
             .pairs
             .iter()
@@ -1219,7 +1215,7 @@ impl ConnCheckList {
 
     fn thawn_foundations(&mut self) -> Vec<String> {
         // XXX: cache this?
-        let mut thawn_foundations = vec![];
+        let mut thawn_foundations = Vec::new();
         for check in self.pairs.iter() {
             if !thawn_foundations
                 .iter()
@@ -1239,7 +1235,7 @@ impl ConnCheckList {
         )
     )]
     fn generate_checks(&mut self) {
-        let mut checks = vec![];
+        let mut checks = Vec::new();
         // Trickle ICE mandates that we only check redundancy with Frozen or Waiting pairs.  This
         // is compatible with non-trickle-ICE as checks start off in the frozen state until the
         // initial thaw.
@@ -1257,8 +1253,8 @@ impl ConnCheckList {
                 }
             })
             .collect();
-        let mut redundant_pairs = vec![];
-        let mut turn_checks = vec![];
+        let mut redundant_pairs = Vec::new();
+        let mut turn_checks = Vec::new();
 
         for local in self.local_candidates.iter() {
             let turn_client_id = if local.candidate.candidate_type == CandidateType::Relayed {
@@ -1371,7 +1367,7 @@ impl ConnCheckList {
         let mut thawn_foundations = if self.trickle_ice {
             self.thawn_foundations()
         } else {
-            vec![]
+            Vec::new()
         };
         for mut check in checks {
             if self.trickle_ice {
@@ -1672,7 +1668,7 @@ impl ConnCheckList {
                     self.component_ids.len()
                 );
                 self.nominated.clone().iter().fold(
-                    vec![],
+                    Vec::new(),
                     |mut component_ids_selected, &check_id| {
                         let Some(check) = self.check_by_id(check_id) else {
                             return component_ids_selected;
@@ -1777,9 +1773,9 @@ impl ConnCheckList {
     }
 
     fn dump_check_state(&self) {
-        let mut s = format!("checklist {}", self.checklist_id);
+        let mut s = alloc::format!("checklist {}", self.checklist_id);
         for pair in self.pairs.iter() {
-            use std::fmt::Write as _;
+            use core::fmt::Write as _;
             let _ = write!(&mut s,
                 "\nID:{id} foundation:{foundation} state:{state} nom:{nominate} con:{controlling} priority:{local_pri},{remote_pri} trans:{transport} local:{local_cand_type} {local_addr} remote:{remote_cand_type} {remote_addr}",
                 id = format_args!("{:<3}", pair.conncheck_id),
@@ -1900,7 +1896,7 @@ impl ConnCheckList {
         mut precondition: F,
     ) -> Vec<ConnCheck> {
         let mut i = 0;
-        let mut ret = vec![];
+        let mut ret = Vec::new();
         while let Some(check) = self.pairs.get(i) {
             if precondition(check) {
                 ret.push(self.pairs.remove(i).unwrap());
@@ -2081,7 +2077,7 @@ impl ConnCheckListSet {
             to = %transmit.to,
         )
     )]
-    fn incoming_data_or_stun<T: AsRef<[u8]> + std::fmt::Debug>(
+    fn incoming_data_or_stun<T: AsRef<[u8]> + core::fmt::Debug>(
         &mut self,
         checklist_i: usize,
         component_id: usize,
@@ -2224,7 +2220,7 @@ impl ConnCheckListSet {
             len = transmit.data.as_ref().len(),
         )
     )]
-    pub fn incoming_data<T: AsRef<[u8]> + std::fmt::Debug>(
+    pub fn incoming_data<T: AsRef<[u8]> + core::fmt::Debug>(
         &mut self,
         checklist_id: usize,
         component_id: usize,
@@ -2919,7 +2915,7 @@ impl ConnCheckListSet {
             //     checklist set) in the Waiting or In-Progress state, the agent
             //     puts the candidate pair state to Waiting and continues with the
             //     next step.
-            let mut foundations_not_waiting_in_progress = std::collections::HashSet::new();
+            let mut foundations_not_waiting_in_progress = BTreeSet::new();
             for checklist in self.checklists.iter() {
                 for f in checklist.foundations() {
                     if self
@@ -2936,7 +2932,7 @@ impl ConnCheckListSet {
                 foundations_not_waiting_in_progress
             );
 
-            let mut foundations_check_added = std::collections::HashSet::new();
+            let mut foundations_check_added = BTreeSet::new();
             for checklist in self.checklists.iter_mut() {
                 for check in checklist.pairs.iter_mut() {
                     if check.state() != CandidatePairState::Frozen {
@@ -3812,7 +3808,7 @@ pub(crate) fn transmit_send<T: AsRef<[u8]>>(transport: TransportType, data: T) -
     }
 }
 
-fn transmit_send_build_unframed<T: DelayedTransmitBuild + std::fmt::Debug>(
+fn transmit_send_build_unframed<T: DelayedTransmitBuild + core::fmt::Debug>(
     transmit: TransmitBuild<T>,
 ) -> Transmit<Box<[u8]>> {
     Transmit::new(
@@ -3832,6 +3828,9 @@ fn transmit_send_unframed(transmit: Transmit<Data<'_>>) -> Transmit<Box<[u8]>> {
 
 #[cfg(test)]
 mod tests {
+    use alloc::borrow::ToOwned;
+    use alloc::vec;
+
     use stun_proto::types::AddressFamily;
     use turn_client_proto::{
         tcp::TurnClientTcp,

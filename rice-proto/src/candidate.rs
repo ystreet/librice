@@ -11,9 +11,12 @@
 pub use parse::ParseCandidateError;
 pub use stun_proto::types::TransportType;
 
-use std::error::Error;
-use std::net::SocketAddr;
-use std::str::FromStr;
+use alloc::borrow::ToOwned;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use core::error::Error;
+use core::net::SocketAddr;
+use core::str::FromStr;
 
 /// An ICE candidate.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,8 +81,8 @@ impl FromStr for TcpType {
     }
 }
 
-impl std::fmt::Display for TcpType {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl core::fmt::Display for TcpType {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         match &self {
             TcpType::Active => f.pad("active"),
             TcpType::Passive => f.pad("passive"),
@@ -97,8 +100,8 @@ pub enum ParseTcpTypeError {
 
 impl Error for ParseTcpTypeError {}
 
-impl std::fmt::Display for ParseTcpTypeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl core::fmt::Display for ParseTcpTypeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         write!(f, "{self:?}")
     }
 }
@@ -112,9 +115,9 @@ pub enum ParseCandidateTypeError {
 
 impl Error for ParseCandidateTypeError {}
 
-impl std::fmt::Display for ParseCandidateTypeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.pad(&format!("{self:?}"))
+impl core::fmt::Display for ParseCandidateTypeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        f.pad(&alloc::format!("{self:?}"))
     }
 }
 
@@ -132,8 +135,8 @@ impl FromStr for CandidateType {
     }
 }
 
-impl std::fmt::Display for CandidateType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for CandidateType {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.pad(match &self {
             CandidateType::Host => "host",
             CandidateType::PeerReflexive => "prflx",
@@ -165,7 +168,7 @@ impl CandidateBuilder {
     ///
     /// ```
     /// # use rice_proto::candidate::*;
-    /// # use std::net::SocketAddr;
+    /// # use core::net::SocketAddr;
     /// let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
     /// let candidate = Candidate::builder(
     ///     1,
@@ -252,7 +255,7 @@ impl Candidate {
     ///
     /// ```
     /// # use rice_proto::candidate::*;
-    /// # use std::net::SocketAddr;
+    /// # use core::net::SocketAddr;
     /// let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
     /// let candidate = Candidate::builder(
     ///     1,
@@ -282,7 +285,7 @@ impl Candidate {
             base_address: None,
             related_address: None,
             tcp_type: None,
-            extensions: vec![],
+            extensions: Vec::new(),
         }
     }
 
@@ -292,7 +295,7 @@ impl Candidate {
     ///
     /// ```
     /// # use rice_proto::candidate::*;
-    /// # use std::net::SocketAddr;
+    /// # use core::net::SocketAddr;
     /// let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
     /// let candidate = Candidate::builder(
     ///     1,
@@ -408,7 +411,7 @@ impl Candidate {
 
 /// Candidate parsing
 mod parse {
-    use std::{net::SocketAddr, str::FromStr};
+    use core::{net::SocketAddr, str::FromStr};
 
     use nom::bytes::complete::{tag, take_while1, take_while_m_n};
     use nom::combinator::map_res;
@@ -628,7 +631,7 @@ impl CandidatePair {
     ///
     /// ```
     /// # use rice_proto::candidate::*;
-    /// # use std::net::SocketAddr;
+    /// # use core::net::SocketAddr;
     /// let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
     /// let candidate = Candidate::builder(
     ///     1,

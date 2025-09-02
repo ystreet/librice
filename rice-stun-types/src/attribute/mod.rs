@@ -22,14 +22,17 @@ mod tie_breaker;
 pub use tie_breaker::{IceControlled, IceControlling};
 
 pub(super) fn debug_init() {
-    use stun_types::prelude::*;
+    #[cfg(feature = "std")]
+    {
+        use stun_types::prelude::*;
 
-    stun_types::attribute_display!(IceControlled);
-    IceControlled::TYPE.add_name("IceControlled");
-    stun_types::attribute_display!(IceControlling);
-    IceControlling::TYPE.add_name("IceControlling");
-    stun_types::attribute_display!(Priority);
-    Priority::TYPE.add_name("Priority");
-    stun_types::attribute_display!(UseCandidate);
-    UseCandidate::TYPE.add_name("UseCandidate");
+        stun_types::attribute_display!(IceControlled);
+        IceControlled::TYPE.add_name("IceControlled");
+        stun_types::attribute_display!(IceControlling);
+        IceControlling::TYPE.add_name("IceControlling");
+        stun_types::attribute_display!(Priority);
+        Priority::TYPE.add_name("Priority");
+        stun_types::attribute_display!(UseCandidate);
+        UseCandidate::TYPE.add_name("UseCandidate");
+    }
 }

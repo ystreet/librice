@@ -33,6 +33,9 @@ tracing-subscriber = { workspace = true, optional = true }
 [dev-dependencies]
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
 [package.metadata.capi]
 min_version = "0.9.21"
 

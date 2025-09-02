@@ -6,7 +6,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use alloc::vec::Vec;
+
 use byteorder::{BigEndian, ByteOrder};
+
+use tracing::trace;
 
 /// A buffer object for handling STUN data received over a TCP connection that requires framing as
 /// specified in RFC 4571.  This framing is required for ICE usage of TCP candidates.
@@ -18,7 +22,7 @@ pub struct TcpBuffer {
 impl core::fmt::Display for TcpBuffer {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TcpBuffer")
-            .field("buf", &format!("{} bytes", self.buf.len()))
+            .field("buf", &alloc::format!("{} bytes", self.buf.len()))
             .finish()
     }
 }
@@ -26,7 +30,7 @@ impl core::fmt::Display for TcpBuffer {
 impl TcpBuffer {
     /// Construct a new [`TcpBuffer`]
     pub fn new() -> Self {
-        vec![].into()
+        Vec::new().into()
     }
 
     /// Push a chunk of received data into the buffer.
@@ -63,7 +67,7 @@ impl TcpBuffer {
     fn take(&mut self, data_length: usize) -> Vec<u8> {
         let offset = data_length + 2;
         if offset > self.buf.len() {
-            return vec![];
+            return Vec::new();
         }
         let mut data = self.buf.split_off(offset);
         core::mem::swap(&mut data, &mut self.buf);
@@ -79,9 +83,7 @@ impl Default for TcpBuffer {
 
 impl From<Vec<u8>> for TcpBuffer {
     fn from(value: Vec<u8>) -> Self {
-        Self {
-            buf: value,
-        }
+        Self { buf: value }
     }
 }
 

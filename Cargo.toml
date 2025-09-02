@@ -10,18 +10,18 @@ edition = "2021"
 rust-version = "1.68.2"
 
 [workspace.dependencies]
-stun-proto = "1.0.0-alpha2"
-stun-types = "1.0.0-alpha2"
-turn-client-proto = "0.4.0-alpha1"
+stun-proto = { version = "1.0.0-alpha2", default-features = false }
+stun-types = { version = "1.0.0-alpha2", default-features = false }
+turn-client-proto = { version = "0.4.0-alpha1", default-features = false }
 arbitrary = { version = "1", features = ["derive"] }
-byteorder = "1"
+byteorder = { version = "1", default-features = false }
 get_if_addrs = "0.5"
-rand = "0.9"
-tracing = "0.1"
+rand = { version = "0.9", default-features = false, features = ["os_rng"] }
+tracing = { version = "0.1", default-features = false, features = ["attributes"] }
 tracing-subscriber = "0.3"
 rice-proto = { version = "0.1.1", path = "rice-proto" }
 rice-c = { version = "0.1.1", path = "rice-c" }
-rice-stun-types = { version = "0.1.1", path = "rice-stun-types" }
+rice-stun-types = { version = "0.1.1", path = "rice-stun-types", default-features = false }
 criterion = "0.6"
 
 [profile.bench]

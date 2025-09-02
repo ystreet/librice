@@ -8,7 +8,9 @@
 
 //! A [`Component`] in an ICE [`Stream`](crate::stream::Stream)
 
-use std::net::SocketAddr;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::net::SocketAddr;
 
 use stun_proto::agent::Transmit;
 use stun_proto::types::message::{Message, MessageWriteVec, BINDING};
@@ -24,6 +26,8 @@ use crate::conncheck::transmit_send;
 pub use crate::conncheck::SelectedPair;
 use crate::gathering::StunGatherer;
 use turn_client_proto::types::TurnCredentials;
+
+use tracing::{debug, trace};
 
 /// The component id for RTP streaming (and general data).
 pub const RTP: usize = 1;
@@ -97,11 +101,11 @@ pub struct ComponentMut<'a> {
     component_id: usize,
 }
 
-impl<'a> std::ops::Deref for ComponentMut<'a> {
+impl<'a> core::ops::Deref for ComponentMut<'a> {
     type Target = Component<'a>;
 
     fn deref(&self) -> &Self::Target {
-        unsafe { std::mem::transmute(self) }
+        unsafe { core::mem::transmute(self) }
     }
 }
 
@@ -183,7 +187,7 @@ impl<'a> ComponentMut<'a> {
 
     /// Send data to the peer using the selected pair.  This will not succeed until the
     /// [`Component`] has reached [`ComponentConnectionState::Connected`]
-    pub fn send<T: AsRef<[u8]> + std::fmt::Debug>(
+    pub fn send<T: AsRef<[u8]> + core::fmt::Debug>(
         &mut self,
         data: T,
         now: Instant,
@@ -320,6 +324,7 @@ mod tests {
     use super::*;
     use crate::agent::Agent;
     use crate::candidate::Candidate;
+    use alloc::vec;
 
     #[test]
     fn initial_state_new() {

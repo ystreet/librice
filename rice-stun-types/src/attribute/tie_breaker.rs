@@ -189,6 +189,8 @@ mod tests {
     use super::*;
     use tracing::trace;
 
+    use std::vec::Vec;
+
     #[test]
     fn ice_controlling() {
         let _log = crate::tests::test_init_log();

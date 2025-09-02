@@ -8,7 +8,8 @@
 
 //! A [`Stream`] in an ICE [`Agent`]
 
-use std::net::SocketAddr;
+use alloc::vec::Vec;
+use core::net::SocketAddr;
 
 use crate::gathering::GatherPoll;
 use stun_proto::agent::{StunError, Transmit};
@@ -24,6 +25,8 @@ use crate::candidate::{Candidate, TransportType};
 
 pub use crate::conncheck::Credentials;
 pub use crate::gathering::GatheredCandidate;
+
+use tracing::{info, trace};
 
 /// An ICE [`Stream`]
 #[derive(Debug, Clone)]
@@ -182,11 +185,11 @@ pub struct StreamMut<'a> {
     id: usize,
 }
 
-impl<'a> std::ops::Deref for StreamMut<'a> {
+impl<'a> core::ops::Deref for StreamMut<'a> {
     type Target = Stream<'a>;
 
     fn deref(&self) -> &Self::Target {
-        unsafe { std::mem::transmute(self) }
+        unsafe { core::mem::transmute(self) }
     }
 }
 
@@ -330,7 +333,7 @@ impl<'a> StreamMut<'a> {
             component.id = component_id,
         )
     )]
-    pub fn handle_incoming_data<T: AsRef<[u8]> + std::fmt::Debug>(
+    pub fn handle_incoming_data<T: AsRef<[u8]> + core::fmt::Debug>(
         &mut self,
         component_id: usize,
         transmit: Transmit<T>,
@@ -458,7 +461,7 @@ impl StreamState {
         Self {
             id,
             checklist_id,
-            components: vec![],
+            components: Vec::new(),
             local_credentials: None,
             remote_credentials: None,
         }
@@ -552,7 +555,7 @@ impl StreamState {
         self.remote_credentials.clone()
     }
 
-    pub(crate) fn handle_incoming_data<T: AsRef<[u8]> + std::fmt::Debug>(
+    pub(crate) fn handle_incoming_data<T: AsRef<[u8]> + core::fmt::Debug>(
         &mut self,
         component_id: usize,
         transmit: &Transmit<T>,

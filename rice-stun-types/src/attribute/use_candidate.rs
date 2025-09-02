@@ -87,6 +87,8 @@ mod tests {
     use super::*;
     use tracing::trace;
 
+    use std::vec::Vec;
+
     #[test]
     fn use_candidate() {
         let _log = crate::tests::test_init_log();
