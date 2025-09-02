@@ -27,6 +27,11 @@
 //! [RFC8445]: <https://tools.ietf.org/html/rfc8445>
 //! [stun-types]: https://docs.rs/stun-types
 
+#![no_std]
+
+#[cfg(any(feature = "std", test))]
+extern crate std;
+
 pub mod attribute;
 
 /// Initialize some debugging functionality of the library.

@@ -8,11 +8,11 @@
 
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
+use rice_c::Instant;
 use stun_proto::agent::HandleStunReply;
 use stun_proto::agent::StunAgent;
 use stun_proto::types::attribute::*;
 use stun_proto::types::message::*;
-use rice_c::Instant;
 
 use std::fmt::Display;
 use std::net::SocketAddr;
@@ -150,7 +150,9 @@ pub async fn stund_tcp(listener: TcpListener) -> std::io::Result<()> {
             if let Some((response, to)) =
                 handle_incoming_data(&data[..size], remote_addr, &mut tcp_stun_agent)
             {
-                if let Ok(transmit) = tcp_stun_agent.send(response.finish(), to, Instant::from_std(base_instant)) {
+                if let Ok(transmit) =
+                    tcp_stun_agent.send(response.finish(), to, Instant::from_std(base_instant))
+                {
                     warn_on_err(stream.write_all(&transmit.data).await, ());
                 }
             }

@@ -34,14 +34,22 @@
 //! All heap allocated resources allocated by `rice-proto` must also be freed by a `rice-proto`
 //! function in order to correctly match the allocation with the correct allocator.
 
-use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_int, c_void};
+use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::ffi::CString;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::ffi::CStr;
+use libc::{c_char, c_int, c_void};
+use tracing::{debug, warn};
 
 use core::mem::MaybeUninit;
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::str::FromStr;
-use std::sync::{Arc, Mutex, Once, Weak};
+use alloc::sync::{Arc, Weak};
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use core::str::FromStr;
+use std::sync::{Mutex, Once};
 
 use crate::agent::AgentPoll;
 use crate::agent::TurnCredentials;
@@ -764,7 +772,7 @@ pub unsafe extern "C" fn rice_agent_get_stream(
     let ret = if let Some(stream) = inner.streams.get(stream_id) {
         mut_override(Arc::into_raw(stream.clone()))
     } else {
-        mut_override(std::ptr::null::<RiceStream>())
+        mut_override(core::ptr::null::<RiceStream>())
     };
 
     drop(inner);
@@ -908,7 +916,7 @@ pub unsafe extern "C" fn rice_stream_get_local_credentials(
     let ret = if let Some(credentials) = proto_stream.local_credentials() {
         credentials_to_c(credentials)
     } else {
-        mut_override(std::ptr::null::<RiceCredentials>())
+        mut_override(core::ptr::null::<RiceCredentials>())
     };
 
     drop(proto_agent);
@@ -928,7 +936,7 @@ pub unsafe extern "C" fn rice_stream_get_remote_credentials(
     let ret = if let Some(credentials) = proto_stream.remote_credentials() {
         credentials_to_c(credentials)
     } else {
-        mut_override(std::ptr::null::<RiceCredentials>())
+        mut_override(core::ptr::null::<RiceCredentials>())
     };
 
     drop(proto_agent);
@@ -1151,7 +1159,7 @@ impl RiceCandidate {
             related_address,
             tcp_type: value.tcp_type.into(),
             // FIXME
-            extensions: std::ptr::null_mut(),
+            extensions: core::ptr::null_mut(),
             extensions_len: 0,
         }
     }
@@ -1638,7 +1646,7 @@ pub unsafe extern "C" fn rice_stream_handle_incoming_data(
         transport: transport.into(),
         from: **from,
         to: **to,
-        data: Data::Borrowed(DataSlice::from(std::slice::from_raw_parts(data, data_len))),
+        data: Data::Borrowed(DataSlice::from(core::slice::from_raw_parts(data, data_len))),
     };
     core::mem::forget(from);
     core::mem::forget(to);
@@ -1843,14 +1851,14 @@ pub unsafe extern "C" fn rice_stream_get_component(
     component_id: usize,
 ) -> *mut RiceComponent {
     if component_id < 1 {
-        return mut_override(std::ptr::null::<RiceComponent>());
+        return mut_override(core::ptr::null::<RiceComponent>());
     }
     let stream = Arc::from_raw(stream);
     let inner = stream.inner.lock().unwrap();
     let ret = if let Some(component) = inner.components.get(component_id - 1) {
         mut_override(Arc::into_raw(component.clone()))
     } else {
-        return mut_override(std::ptr::null::<RiceComponent>());
+        return mut_override(core::ptr::null::<RiceComponent>());
     };
 
     drop(inner);
@@ -1879,8 +1887,8 @@ pub unsafe extern "C" fn rice_component_gather_candidates(
     let mut proto_stream = proto_agent.mut_stream(component.stream_id).unwrap();
     let mut proto_component = proto_stream.mut_component(component.component_id).unwrap();
 
-    let sockets_addr = std::slice::from_raw_parts(sockets_addr, sockets_len);
-    let sockets_transport = std::slice::from_raw_parts(sockets_transports, sockets_len);
+    let sockets_addr = core::slice::from_raw_parts(sockets_addr, sockets_len);
+    let sockets_transport = core::slice::from_raw_parts(sockets_transports, sockets_len);
 
     let sockets = sockets_transport
         .iter()
@@ -2015,7 +2023,7 @@ impl RiceAddress {
     }
 }
 
-impl std::ops::Deref for RiceAddress {
+impl core::ops::Deref for RiceAddress {
     type Target = SocketAddr;
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -2168,6 +2176,10 @@ fn const_override<T>(val: *mut T) -> *const T {
 mod tests {
     use super::*;
     use crate::candidate::{Candidate, TcpType};
+
+    use alloc::string::ToString;
+
+    use std::eprintln;
 
     #[test]
     fn test_rice_version() {

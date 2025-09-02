@@ -8,13 +8,15 @@
 
 //! ICE Agent implementation as specified in RFC 8445
 
-use std::error::Error;
-use std::fmt::Display;
-use std::net::SocketAddr;
-use std::sync::atomic::AtomicU64;
-use std::time::Duration;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 
-use rand::prelude::*;
+use core::error::Error;
+use core::fmt::Display;
+use core::net::SocketAddr;
+use core::sync::atomic::AtomicU64;
+use core::time::Duration;
+
 use stun_proto::types::data::Data;
 use stun_proto::Instant;
 
@@ -22,11 +24,14 @@ use crate::candidate::{ParseCandidateError, TransportType};
 use crate::component::ComponentConnectionState;
 use crate::conncheck::{CheckListSetPollRet, ConnCheckEvent, ConnCheckListSet, SelectedPair};
 use crate::gathering::{GatherPoll, GatheredCandidate};
+use crate::rand::rand_u64;
 use crate::stream::{Stream, StreamMut, StreamState};
 use stun_proto::agent::{StunError, Transmit};
 use stun_proto::types::message::StunParseError;
 
 pub use turn_client_proto::types::TurnCredentials;
+
+use tracing::{info, warn};
 
 /// Errors that can be returned as a result of agent operations.
 #[derive(Debug)]
@@ -60,7 +65,7 @@ pub enum AgentError {
 impl Error for AgentError {}
 
 impl Display for AgentError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         write!(f, "{self:?}")
     }
 }
@@ -123,18 +128,17 @@ impl AgentBuilder {
 
     /// Construct a new [`Agent`]
     pub fn build(self) -> Agent {
-        let id = AGENT_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let mut rnd = rand::rng();
-        let tie_breaker = rnd.random::<u64>();
+        let id = AGENT_COUNT.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+        let tie_breaker = rand_u64();
         let controlling = self.controlling;
         Agent {
             id,
             checklistset: ConnCheckListSet::builder(tie_breaker, controlling)
                 .trickle_ice(self.trickle_ice)
                 .build(),
-            stun_servers: vec![],
-            turn_servers: vec![],
-            streams: vec![],
+            stun_servers: Vec::new(),
+            turn_servers: Vec::new(),
+            streams: Vec::new(),
         }
     }
 }

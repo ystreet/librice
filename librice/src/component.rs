@@ -95,7 +95,9 @@ impl Component {
             (selected_pair.socket.clone(), to)
         };
 
-        transmit = self.proto.send(data, Instant::from_std(self.base_instant))?;
+        transmit = self
+            .proto
+            .send(data, Instant::from_std(self.base_instant))?;
 
         trace!("sending {} bytes to {:?}", data.len(), to);
         channel

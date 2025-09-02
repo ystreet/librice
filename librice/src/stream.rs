@@ -12,8 +12,8 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, Weak};
 
 use futures::StreamExt;
-use rice_c::{prelude::*, Instant};
 use rice_c::Address;
+use rice_c::{prelude::*, Instant};
 use smol::net::TcpStream;
 use tracing::{debug, info, trace, warn};
 
@@ -496,7 +496,7 @@ impl Stream {
                                                 from,
                                                 local_addr,
                                             ),
-                                            base_instant
+                                            base_instant,
                                         )
                                     }
                                 })

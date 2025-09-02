@@ -22,6 +22,8 @@ jobs:
         tool: cargo-c
     - name: Build
       run: cargo build --verbose
+    - name: Build (No default features)
+      run: cargo build --verbose --no-default-features
   test:
     runs-on: ubuntu-latest
     steps:
@@ -32,6 +34,8 @@ jobs:
         tool: cargo-c
     - name: Run tests
       run: cargo test --verbose
+    - name: Run tests (No default features)
+      run: cargo test --verbose --no-default-features
   clippy:
     runs-on: ubuntu-latest
     steps:

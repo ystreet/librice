@@ -83,14 +83,19 @@
 //! [stun-proto]: https://docs.rs/stun-proto
 //! [turn-proto]: https://docs.rs/turn-proto
 
-#[macro_use]
-extern crate tracing;
+#![no_std]
+
+extern crate alloc;
+
+#[cfg(any(feature = "std", test))]
+extern crate std;
 
 pub mod agent;
 pub mod candidate;
 pub mod component;
 mod conncheck;
 mod gathering;
+mod rand;
 pub mod stream;
 mod tcp;
 
