@@ -1,0 +1,13 @@
+[package]
+name = "rice-ctypes"
+description = "Internal helper crate for providing C types for the rice API"
+version.workspace = true
+authors = ["Matthew Waters <matthew@centricular.com>"]
+license = "MIT OR Apache-2.0"
+keywords = ["STUN", "ICE"]
+categories = ["network-programming", ]
+documentation = "https://docs.rs/rice-ctypes"
+edition.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+workspace = ".."

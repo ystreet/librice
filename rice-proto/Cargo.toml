@@ -14,7 +14,7 @@ workspace = ".."
 
 [features]
 default = ["std"]
-capi = ["dep:libc", "dep:tracing-subscriber", "std"]
+capi = ["dep:libc", "dep:tracing-subscriber", "std", "dep:rice-ctypes"]
 std = ["rice-stun-types/std", "stun-proto/std", "turn-client-proto/std", "rand/thread_rng"]
 
 [dependencies]
@@ -24,6 +24,7 @@ libc = { version = "0.2", optional = true }
 nom = { version = "8", default-features = false }
 rand.workspace = true
 rice-stun-types.workspace = true
+rice-ctypes = { workspace = true, optional = true }
 stun-proto.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, optional = true }
