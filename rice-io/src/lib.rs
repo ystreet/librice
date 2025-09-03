@@ -8,5 +8,4 @@
 
 #![deny(missing_debug_implementations)]
 
-#[cfg(feature = "capi")]
 mod capi;

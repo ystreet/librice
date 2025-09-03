@@ -66,6 +66,46 @@ use turn_client_proto::client::TurnClient;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::Layer;
 
+pub use rice_ctypes::{RiceAddress, RiceError, RiceTransportType};
+
+// cbindgen does not generate definitions for reexported types, so do that here, now.
+#[allow(unused)]
+mod cbindgen_workarounds {
+    /// A socket address.
+    pub struct RiceAddress;
+    /// The transport family
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[repr(u32)]
+    pub enum RiceTransportType {
+        /// The UDP transport
+        Udp,
+        /// The TCP transport
+        Tcp,
+    }
+    const _: () = assert!(core::mem::size_of::<RiceTransportType>() == core::mem::size_of::<u32>());
+    const _: () = assert!(RiceTransportType::Udp as u32 == super::RiceTransportType::Udp as u32);
+    const _: () = assert!(RiceTransportType::Tcp as u32 == super::RiceTransportType::Tcp as u32);
+    /// Errors when processing an operation.
+    #[repr(i32)]
+    pub enum RiceError {
+        /// Not an error. The operation was completed successfully.
+        Success = 0,
+        /// The operation failed for an unspecified reason.
+        Failed = -1,
+        /// A required resource was not found.
+        ResourceNotFound = -2,
+        /// The operation is already in progress.
+        AlreadyInProgress = -3,
+    }
+    const _: () = assert!(core::mem::size_of::<RiceError>() == core::mem::size_of::<i32>());
+    const _: () = assert!(RiceError::Success as i32 == super::RiceError::Success as i32);
+    const _: () = assert!(RiceError::Failed as i32 == super::RiceError::Failed as i32);
+    const _: () =
+        assert!(RiceError::ResourceNotFound as i32 == super::RiceError::ResourceNotFound as i32);
+    const _: () =
+        assert!(RiceError::AlreadyInProgress as i32 == super::RiceError::AlreadyInProgress as i32);
+}
+
 static TRACING: Once = Once::new();
 
 fn init_logs() {
@@ -103,45 +143,17 @@ pub unsafe extern "C" fn rice_version(major: *mut u32, minor: *mut u32, patch: *
     }
 }
 
-/// Errors when processing an operation.
-#[repr(i32)]
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub enum RiceError {
-    /// Not an error. The operation was completed successfully.
-    Success = 0,
-    /// The operation failed for an unspecified reason.
-    Failed = -1,
-    /// A required resource was not found.
-    ResourceNotFound = -2,
-    /// The operation is already in progress.
-    AlreadyInProgress = -3,
-}
-
-/// The transport family
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
-pub enum RiceTransportType {
-    /// The UDP transport
-    Udp,
-    /// The TCP transport
-    Tcp,
-}
-
-impl From<TransportType> for RiceTransportType {
-    fn from(value: TransportType) -> Self {
-        match value {
-            TransportType::Udp => Self::Udp,
-            TransportType::Tcp => Self::Tcp,
-        }
+fn transport_type_from_c(transport: RiceTransportType) -> TransportType {
+    match transport {
+        RiceTransportType::Udp => TransportType::Udp,
+        RiceTransportType::Tcp => TransportType::Tcp,
     }
 }
 
-impl From<RiceTransportType> for TransportType {
-    fn from(value: RiceTransportType) -> Self {
-        match value {
-            RiceTransportType::Udp => Self::Udp,
-            RiceTransportType::Tcp => Self::Tcp,
-        }
+fn transport_type_to_c(transport: TransportType) -> RiceTransportType {
+    match transport {
+        TransportType::Udp => RiceTransportType::Udp,
+        TransportType::Tcp => RiceTransportType::Tcp,
     }
 }
 
@@ -415,7 +427,7 @@ impl RiceTransmit {
         let to = Box::new(RiceAddress::new(value.transmit.to));
         Self {
             stream_id: value.stream_id,
-            transport: value.transmit.transport.into(),
+            transport: transport_type_to_c(value.transmit.transport),
             from: Box::into_raw(from),
             to: Box::into_raw(to),
             data: RiceDataImpl::owned_to_c(value.transmit.data),
@@ -470,7 +482,7 @@ impl RiceAgentSocket {
         Self {
             stream_id: value.stream_id,
             component_id: value.component_id,
-            transport: value.transport.into(),
+            transport: transport_type_to_c(value.transport),
             from: Box::into_raw(Box::new(RiceAddress::new(value.from))),
             to: Box::into_raw(Box::new(RiceAddress::new(value.to))),
         }
@@ -693,7 +705,9 @@ pub unsafe extern "C" fn rice_agent_add_stun_server(
     let agent = Arc::from_raw(agent);
     let addr = Box::from_raw(mut_override(addr));
     let mut inner = agent.inner.lock().unwrap();
-    inner.stun_servers.push((transport.into(), **addr));
+    inner
+        .stun_servers
+        .push((transport_type_from_c(transport), **addr));
     drop(inner);
     core::mem::forget(addr);
     core::mem::forget(agent);
@@ -713,7 +727,7 @@ pub unsafe extern "C" fn rice_agent_add_turn_server(
     let addr = Box::from_raw(mut_override(addr));
     let mut inner = agent.inner.lock().unwrap();
     inner.turn_servers.push((
-        transport.into(),
+        transport_type_from_c(transport),
         **addr,
         TurnCredentials::new(&creds.credentials.ufrag, &creds.credentials.passwd),
     ));
@@ -832,7 +846,13 @@ pub unsafe extern "C" fn rice_stream_handle_allocated_socket(
     } else {
         Ok(**RiceAddress::into_rice_full(socket_addr))
     };
-    proto_stream.allocated_socket(component_id, transport.into(), from.0, to.0, socket);
+    proto_stream.allocated_socket(
+        component_id,
+        transport_type_from_c(transport),
+        from.inner(),
+        to.inner(),
+        socket,
+    );
 
     drop(proto_agent);
     core::mem::forget(stream);
@@ -1095,7 +1115,7 @@ impl RiceCandidate {
     fn as_rice_none(&self) -> crate::candidate::Candidate {
         unsafe {
             let related_address = if !self.related_address.is_null() {
-                Some(RiceAddress::into_rice_none(self.related_address).0)
+                Some(RiceAddress::into_rice_none(self.related_address).inner())
             } else {
                 None
             };
@@ -1103,11 +1123,11 @@ impl RiceCandidate {
             crate::candidate::Candidate {
                 component_id: self.component_id,
                 candidate_type: self.candidate_type.into(),
-                transport_type: self.transport_type.into(),
+                transport_type: transport_type_from_c(self.transport_type),
                 foundation,
                 priority: self.priority,
-                address: RiceAddress::into_rice_none(self.address).0,
-                base_address: RiceAddress::into_rice_none(self.base_address).0,
+                address: RiceAddress::into_rice_none(self.address).inner(),
+                base_address: RiceAddress::into_rice_none(self.base_address).inner(),
                 related_address,
                 tcp_type: self.tcp_type.into(),
                 // FIXME
@@ -1119,7 +1139,7 @@ impl RiceCandidate {
     fn into_rice_full(self) -> crate::candidate::Candidate {
         unsafe {
             let related_address = if !self.related_address.is_null() {
-                Some(RiceAddress::into_rice_full(self.related_address).0)
+                Some(RiceAddress::into_rice_full(self.related_address).inner())
             } else {
                 None
             };
@@ -1127,11 +1147,11 @@ impl RiceCandidate {
             crate::candidate::Candidate {
                 component_id: self.component_id,
                 candidate_type: self.candidate_type.into(),
-                transport_type: self.transport_type.into(),
+                transport_type: transport_type_from_c(self.transport_type),
                 foundation: foundation.to_str().unwrap().to_owned(),
                 priority: self.priority,
-                address: RiceAddress::into_rice_full(self.address).0,
-                base_address: RiceAddress::into_rice_full(self.base_address).0,
+                address: RiceAddress::into_rice_full(self.address).inner(),
+                base_address: RiceAddress::into_rice_full(self.base_address).inner(),
                 related_address,
                 tcp_type: self.tcp_type.into(),
                 // FIXME
@@ -1141,17 +1161,17 @@ impl RiceCandidate {
     }
 
     fn into_c_full(value: crate::candidate::Candidate) -> Self {
-        let address = Box::new(RiceAddress(value.address));
-        let base_address = Box::new(RiceAddress(value.base_address));
+        let address = Box::new(RiceAddress::new(value.address));
+        let base_address = Box::new(RiceAddress::new(value.base_address));
         let related_address = if let Some(addr) = value.related_address {
-            Box::into_raw(Box::new(RiceAddress(addr)))
+            Box::into_raw(Box::new(RiceAddress::new(addr)))
         } else {
             core::ptr::null()
         };
         Self {
             component_id: value.component_id,
             candidate_type: value.candidate_type.into(),
-            transport_type: value.transport_type.into(),
+            transport_type: transport_type_to_c(value.transport_type),
             foundation: CString::new(value.foundation).unwrap().into_raw(),
             priority: value.priority,
             address: Box::into_raw(address),
@@ -1643,7 +1663,7 @@ pub unsafe extern "C" fn rice_stream_handle_incoming_data(
     let to = Box::from_raw(mut_override(to));
 
     let transmit = Transmit {
-        transport: transport.into(),
+        transport: transport_type_from_c(transport),
         from: **from,
         to: **to,
         data: Data::Borrowed(DataSlice::from(core::slice::from_raw_parts(data, data_len))),
@@ -1894,8 +1914,8 @@ pub unsafe extern "C" fn rice_component_gather_candidates(
         .iter()
         .zip(sockets_addr.iter())
         .map(|(&transport, addr)| {
-            let socket_addr = RiceAddress::into_rice_none(*addr).0;
-            (transport.into(), socket_addr)
+            let socket_addr = RiceAddress::into_rice_none(*addr).inner();
+            (transport_type_from_c(transport), socket_addr)
         })
         .collect::<Vec<_>>();
 
@@ -1936,7 +1956,7 @@ pub unsafe extern "C" fn rice_component_send(
         Ok(stun_transmit) => {
             *transmit = RiceTransmit {
                 stream_id: component.stream_id,
-                transport: stun_transmit.transport.into(),
+                transport: transport_type_to_c(stun_transmit.transport),
                 from: Box::into_raw(Box::new(RiceAddress::new(stun_transmit.from))),
                 to: Box::into_raw(Box::new(RiceAddress::new(stun_transmit.to))),
                 data: RiceDataImpl::owned_to_c(stun_transmit.data),
@@ -1991,56 +2011,10 @@ pub unsafe extern "C" fn rice_component_set_selected_pair(
 // TODO:
 // - selected_pair
 
-/// A socket address.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
-pub struct RiceAddress(SocketAddr);
-
-impl RiceAddress {
-    /// Create a new `RiceAddress`.
-    pub fn new(addr: SocketAddr) -> Self {
-        Self(addr)
-    }
-
-    /// Convert this `RiceAddress` into it's C API equivalent.
-    ///
-    /// The returned value should be converted back into the Rust equivalent using
-    /// `RiceAddress::into_rust_full()` in order to free the resource.
-    pub fn into_c_full(self) -> *const RiceAddress {
-        const_override(Box::into_raw(Box::new(self)))
-    }
-
-    /// Consume a C representation of a `RiceAddress` into the Rust equivalent.
-    pub unsafe fn into_rice_full(value: *const RiceAddress) -> Box<Self> {
-        Box::from_raw(mut_override(value))
-    }
-
-    /// Copy a C representation of a `RiceAddress` into the Rust equivalent.
-    pub unsafe fn into_rice_none(value: *const RiceAddress) -> Self {
-        let boxed = Box::from_raw(mut_override(value));
-        let ret = *boxed;
-        core::mem::forget(boxed);
-        ret
-    }
-}
-
-impl core::ops::Deref for RiceAddress {
-    type Target = SocketAddr;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 /// Create a `RiceAddress` from a string representation of the socket address.
 #[no_mangle]
 pub unsafe extern "C" fn rice_address_new_from_string(string: *const c_char) -> *mut RiceAddress {
-    let Ok(string) = CStr::from_ptr(string).to_str() else {
-        return core::ptr::null_mut();
-    };
-    let Ok(saddr) = SocketAddr::from_str(string) else {
-        return core::ptr::null_mut();
-    };
-
-    mut_override(RiceAddress::into_c_full(RiceAddress(saddr)))
+    rice_ctypes::rice_address_new_from_string(string)
 }
 
 /// The address family.
@@ -2078,14 +2052,14 @@ pub unsafe extern "C" fn rice_address_new_from_bytes(
             ]))
         }
     };
-    Box::into_raw(Box::new(RiceAddress(SocketAddr::new(ip_addr, port))))
+    Box::into_raw(Box::new(RiceAddress::new(SocketAddr::new(ip_addr, port))))
 }
 
 /// The address family of the `RiceAddress`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_address_get_family(addr: *const RiceAddress) -> RiceAddressFamily {
     let addr = RiceAddress::into_rice_none(addr);
-    match addr.0 {
+    match addr.inner() {
         SocketAddr::V4(_) => RiceAddressFamily::Ipv4,
         SocketAddr::V6(_) => RiceAddressFamily::Ipv6,
     }
@@ -2102,7 +2076,7 @@ pub unsafe extern "C" fn rice_address_get_address_bytes(
     bytes: *mut u8,
 ) -> usize {
     let addr = RiceAddress::into_rice_none(addr);
-    let ret = match addr.0.ip() {
+    let ret = match addr.inner().ip() {
         IpAddr::V4(ip) => {
             let bytes = core::slice::from_raw_parts_mut(bytes, 4);
             for (i, octet) in ip.octets().into_iter().enumerate() {
@@ -2125,7 +2099,7 @@ pub unsafe extern "C" fn rice_address_get_address_bytes(
 #[no_mangle]
 pub unsafe extern "C" fn rice_address_get_port(addr: *const RiceAddress) -> u16 {
     let addr = RiceAddress::into_rice_none(addr);
-    addr.0.port()
+    addr.inner().port()
 }
 
 /// Compare whether two `RiceAddress`es are equal.
@@ -2134,16 +2108,7 @@ pub unsafe extern "C" fn rice_address_cmp(
     addr: *const RiceAddress,
     other: *const RiceAddress,
 ) -> c_int {
-    match (addr.is_null(), other.is_null()) {
-        (true, true) => 0,
-        (true, false) => -1,
-        (false, true) => 1,
-        (false, false) => {
-            let addr = RiceAddress::into_rice_none(addr);
-            let other = RiceAddress::into_rice_none(other);
-            addr.cmp(&other) as c_int
-        }
-    }
+    rice_ctypes::rice_address_cmp(addr, other)
 }
 
 /// Copy a `RiceAddress`.
@@ -2153,15 +2118,13 @@ pub unsafe extern "C" fn rice_address_copy(addr: *const RiceAddress) -> *mut Ric
         return core::ptr::null_mut();
     }
     let addr = RiceAddress::into_rice_none(mut_override(addr));
-    mut_override(RiceAddress(addr.0).into_c_full())
+    mut_override(RiceAddress::new(addr.inner()).into_c_full())
 }
 
 /// Free a `RiceAddress`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_address_free(addr: *mut RiceAddress) {
-    if !addr.is_null() {
-        let _addr = Box::from_raw(addr);
-    }
+    rice_ctypes::rice_address_free(addr)
 }
 
 fn mut_override<T>(val: *const T) -> *mut T {
@@ -2271,13 +2234,13 @@ mod tests {
             let remote_credentials =
                 credentials_to_c(Credentials::new("ruser".to_string(), "rpass".to_string()));
 
-            rice_agent_add_stun_server(agent, transport.into(), stun_addr);
+            rice_agent_add_stun_server(agent, transport_type_to_c(transport), stun_addr);
             rice_address_free(mut_override(stun_addr));
             rice_stream_set_local_credentials(stream, local_credentials);
             rice_credentials_free(local_credentials);
             rice_stream_set_remote_credentials(stream, remote_credentials);
             rice_credentials_free(remote_credentials);
-            rice_component_gather_candidates(component, 1, &addr, &transport.into());
+            rice_component_gather_candidates(component, 1, &addr, &transport_type_to_c(transport));
             rice_address_free(mut_override(addr));
 
             let mut poll = RiceAgentPoll::Closed;

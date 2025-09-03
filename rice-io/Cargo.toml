@@ -13,22 +13,22 @@ rust-version.workspace = true
 workspace = ".."
 
 [features]
-capi = ["get_if_addrs", "libc", "rice-proto/capi", "tracing-subscriber", "async-lock", "async-io", "async-task", "flume", "futures-lite"]
+capi = []
 
 [dependencies]
 arbitrary = { workspace = true, optional = true }
-async-io = {version = "2", optional = true }
-async-lock = {version = "3", optional = true }
-async-task = {version = "4", optional = true }
+async-io = "2"
+async-lock = "3"
+async-task = "4"
 byteorder.workspace = true
-flume = { version = "0.11", optional = true }
-futures-lite = {version = "2", optional = true }
-get_if_addrs = { workspace = true, optional = true }
-libc = { version = "0.2", optional = true }
-rice-proto.workspace = true
+flume = "0.11"
+futures-lite = "2"
+get_if_addrs.workspace = true
+libc = "0.2"
+rice-ctypes.workspace = true
 stun-proto.workspace = true
 tracing.workspace = true
-tracing-subscriber = { workspace = true, optional = true }
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

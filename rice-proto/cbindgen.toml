@@ -11,8 +11,6 @@ exclude = ["MAGIC_COOKIE", "BINDING", "RTP", "RTCP"]
 item_types = ["enums", "structs", "opaque", "functions"]
 
 [export.rename]
-#"sockaddr" = "struct sockaddr"
-#"sockaddr_storage" = "struct sockaddr_storage"
 "CandidateType" = "RiceCandidateType"
 "ComponentConnectionState" = "RiceComponentConnectionState"
 
