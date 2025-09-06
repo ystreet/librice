@@ -38,7 +38,7 @@ fn init_logs() {
             .ok()
             .and_then(|var| var.parse::<tracing_subscriber::filter::Targets>().ok())
             .unwrap_or(
-                tracing_subscriber::filter::Targets::new().with_default(tracing::Level::TRACE),
+                tracing_subscriber::filter::Targets::new().with_default(tracing::Level::ERROR),
             );
         let registry = tracing_subscriber::registry().with(
             tracing_subscriber::fmt::layer()
