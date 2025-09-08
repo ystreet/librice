@@ -209,10 +209,11 @@ pub unsafe extern "C" fn rice_tcp_connect(
     let remote_addr = Box::from_raw(mut_override(remote_addr));
     let addr = **remote_addr;
     core::mem::forget(remote_addr);
-    let ptr = Some(SendPtr::new(data));
+    let ptr = SendPtr::new(data);
 
     let (runnable, task) = async_task::spawn(
         async move {
+            let ptr = ptr;
             debug!("connecting to {addr:?}");
             let stream = match Async::<TcpStream>::connect(addr).await {
                 Ok(socket) => {
@@ -225,7 +226,7 @@ pub unsafe extern "C" fn rice_tcp_connect(
                 }
             };
             let on_connect = on_connect.unwrap();
-            on_connect(stream, ptr.unwrap().ptr);
+            on_connect(stream, ptr.ptr);
         },
         schedule,
     );
@@ -287,7 +288,7 @@ pub unsafe extern "C" fn rice_tcp_listen(
     };
     let listener = Arc::new(listener);
 
-    let ptr = Some(SendPtr::new(data));
+    let ptr = SendPtr::new(data);
 
     let (runnable, task) = async_task::spawn(
         {
@@ -295,7 +296,7 @@ pub unsafe extern "C" fn rice_tcp_listen(
             async move {
                 let _drop_destroy = DestroyOnDrop {
                     on_destroy: destroy,
-                    ptr: ptr.clone().unwrap(),
+                    ptr,
                 };
                 let incoming = listener.incoming();
                 futures_lite::pin!(incoming);
@@ -307,7 +308,7 @@ pub unsafe extern "C" fn rice_tcp_listen(
                             let socket = mut_override(Arc::into_raw(Arc::new(RiceTcpSocket {
                                 socket: stream,
                             })));
-                            on_listen(socket, ptr.unwrap().ptr);
+                            on_listen(socket, ptr.ptr);
                         }
                         Err(e) => {
                             warn!("Failed to accept incoming stream for listener {addr:?}: {e:?}");
@@ -401,14 +402,14 @@ impl RiceSockets {
     fn set_notify(&self, notify_data: Option<IoNotifyData>) {
         let removed_notify = {
             let mut our_notify_data = self.notify_data.lock().unwrap();
-            let mut notify_data = notify_data.clone();
+            let mut notify_data = notify_data;
             std::mem::swap(&mut *our_notify_data, &mut notify_data);
             notify_data
         };
 
         {
             let mut inner = self.inner.lock().unwrap();
-            let notify_data = notify_data.map(|notify| Arc::new(Mutex::new(notify.clone())));
+            let notify_data = notify_data.map(|notify| Arc::new(Mutex::new(notify)));
             for udp in inner.udp_sockets.values_mut() {
                 let mut notify_data = notify_data.clone();
                 std::mem::swap(&mut udp.readable.io_notify_data, &mut notify_data);
@@ -553,7 +554,7 @@ pub unsafe extern "C" fn rice_sockets_add_udp(
             let io_notify_data = notify_data
                 .lock()
                 .unwrap()
-                .map(|notify| Arc::new(Mutex::new(notify.clone())));
+                .map(|notify| Arc::new(Mutex::new(notify)));
             let (runnable, task) = async_task::spawn(
                 {
                     let poll_guard = poll_guard.clone();
@@ -632,7 +633,7 @@ pub unsafe extern "C" fn rice_sockets_add_tcp(
             let io_notify_data = notify_data
                 .lock()
                 .unwrap()
-                .map(|notify| Arc::new(Mutex::new(notify.clone())));
+                .map(|notify| Arc::new(Mutex::new(notify)));
             let (runnable, task) = async_task::spawn(
                 {
                     debug!("staring tcp recv task for {local_addr:?} -> {remote_addr:?}");
@@ -889,9 +890,9 @@ pub unsafe extern "C" fn rice_sockets_recv(
     let sockets = Arc::from_raw(sockets);
     *ret = RiceIoRecv::WouldBlock;
     let mut inner = sockets.inner.lock().unwrap();
-    let mut data = core::slice::from_raw_parts_mut(data, len);
+    let data = core::slice::from_raw_parts_mut(data, len);
     for (&local_addr, udp) in inner.udp_sockets.iter_mut() {
-        match udp.inner.socket.get_ref().recv_from(&mut data) {
+        match udp.inner.socket.get_ref().recv_from(data) {
             Ok((len, from)) => {
                 udp.readable.semaphore_guard.lock().unwrap().take();
                 *ret = RiceIoRecv::Data(RiceIoData {
@@ -913,7 +914,7 @@ pub unsafe extern "C" fn rice_sockets_recv(
 
     for (&(local_addr, remote_addr), tcp) in inner.tcp_sockets.iter_mut() {
         use std::io::Read;
-        match tcp.inner.socket.get_ref().read(&mut data) {
+        match tcp.inner.socket.get_ref().read(data) {
             Ok(len) => {
                 tcp.readable.semaphore_guard.lock().unwrap().take();
                 *ret = RiceIoRecv::Data(RiceIoData {
@@ -1024,7 +1025,7 @@ mod tests {
                 )
             );
 
-            let _ = recv.recv().unwrap();
+            recv.recv().unwrap();
 
             let mut io_recv = RiceIoRecv::WouldBlock;
             let mut recv_buf = [0; 1500];
@@ -1142,22 +1143,22 @@ mod tests {
         unsafe {
             // send a receive data over TCP using our wrappers
             let (send, recv) = flume::unbounded::<Event>();
-            let sockets = Some(SendPtr::new(rice_sockets_new_with_io_notify_callback({
+            let sockets = SendPtr::new(rice_sockets_new_with_io_notify_callback({
                 let send = send.clone();
                 move || {
                     trace!("send io event");
                     let _ = send.send(Event::Io);
                 }
-            }) as *mut c_void));
+            }) as *mut c_void);
 
             let addr = mut_override(RiceAddress::new("127.0.0.1:0".parse().unwrap()).into_c_full());
             let listener = rice_tcp_listen_with_callback(addr, {
-                let sockets = sockets.clone();
                 move |tcp| {
+                    let sockets = sockets;
                     if let Some(tcp) = tcp {
                         debug!("listener has incoming stream");
                         rice_sockets_add_tcp(
-                            sockets.unwrap().ptr as *mut RiceSockets,
+                            sockets.ptr as *mut RiceSockets,
                             mut_override(Arc::into_raw(tcp)),
                         );
                     }
@@ -1170,15 +1171,15 @@ mod tests {
             rice_tcp_connect_with_callback(
                 mut_override(local_addr),
                 {
-                    let sockets = sockets.clone();
                     move |tcp| {
+                        let sockets = sockets;
                         if let Some(tcp) = tcp {
                             debug!("tcp connect created connection");
                             let tcp = mut_override(Arc::into_raw(tcp));
                             let addr = rice_tcp_socket_local_addr(tcp);
                             send.send(Event::Address(addr)).unwrap();
                             rice_sockets_add_tcp(
-                                sockets.unwrap().ptr as *mut RiceSockets,
+                                sockets.ptr as *mut RiceSockets,
                                 mut_override(tcp),
                             );
                         }
@@ -1202,7 +1203,7 @@ mod tests {
             assert_eq!(
                 RiceError::Success,
                 rice_sockets_send(
-                    sockets.unwrap().ptr as *mut RiceSockets,
+                    sockets.ptr as *mut RiceSockets,
                     RiceTransportType::Tcp,
                     local_addr,
                     remote_addr,
@@ -1214,7 +1215,7 @@ mod tests {
             let mut io_recv = RiceIoRecv::WouldBlock;
             let mut recv_buf = [0; 1500];
             rice_sockets_recv(
-                sockets.unwrap().ptr as *mut RiceSockets,
+                sockets.ptr as *mut RiceSockets,
                 recv_buf.as_mut_ptr(),
                 recv_buf.len(),
                 &mut io_recv,
@@ -1229,11 +1230,8 @@ mod tests {
             assert_eq!(rice_address_cmp(io_data.to, remote_addr), 0);
             rice_io_data_clear(&mut io_data);
 
-            let tcp = rice_sockets_remove_tcp(
-                sockets.unwrap().ptr as *mut RiceSockets,
-                local_addr,
-                remote_addr,
-            );
+            let tcp =
+                rice_sockets_remove_tcp(sockets.ptr as *mut RiceSockets, local_addr, remote_addr);
             assert!(!tcp.is_null());
             let addr = rice_tcp_socket_local_addr(tcp);
             assert_eq!(rice_address_cmp(addr, local_addr), 0);
@@ -1246,7 +1244,7 @@ mod tests {
 
             rice_address_free(local_addr);
             rice_address_free(remote_addr);
-            rice_sockets_unref(sockets.unwrap().ptr as *mut RiceSockets);
+            rice_sockets_unref(sockets.ptr as *mut RiceSockets);
         }
     }
 }
