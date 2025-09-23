@@ -2022,7 +2022,7 @@ impl ConnCheckListSet {
             return false;
         };
         match agent.handle_stun(msg, transmit.from) {
-            HandleStunReply::Drop => false,
+            HandleStunReply::Drop(_) => false,
             HandleStunReply::ValidatedStunResponse(response) => {
                 let Some(remote_credentials) = agent.remote_credentials() else {
                     return false;
@@ -2291,6 +2291,20 @@ impl ConnCheckListSet {
                     return HandleRecvReply {
                         handled: ret.handled,
                         have_more_data: true,
+                        data: None,
+                    };
+                }
+                TurnRecvRet::PeerIcmp {
+                    transport,
+                    peer,
+                    icmp_type,
+                    icmp_code,
+                    icmp_data: _,
+                } => {
+                    debug!("conncheck received ICMP(type:{icmp_type:x}, code:{icmp_code:x}) over TURN from {transport}:{peer}");
+                    return HandleRecvReply {
+                        handled: true,
+                        have_more_data: false,
                         data: None,
                     };
                 }

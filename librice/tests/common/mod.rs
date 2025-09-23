@@ -84,7 +84,7 @@ fn handle_incoming_data(
 ) -> Option<(MessageWriteVec, SocketAddr)> {
     let msg = Message::from_bytes(data).ok()?;
     match stun_agent.handle_stun(msg, from) {
-        HandleStunReply::Drop | HandleStunReply::UnvalidatedStunResponse(_) => None,
+        HandleStunReply::Drop(_) | HandleStunReply::UnvalidatedStunResponse(_) => None,
         // we don't send any stun request so should never receive any responses
         HandleStunReply::ValidatedStunResponse(_response) => {
             error!("Received STUN response from {from}!");
