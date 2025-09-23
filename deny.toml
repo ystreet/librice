@@ -27,8 +27,7 @@ skip-tree = [
     # FIXME: replace get_if_addrs
     { crate = "get_if_addrs", reason = "Outdated dependency that needs replacing" },
     { crate = "bindgen", reason = "Build dependency only" },
-    { crate = "windows-sys@0.59", reason = "a foundational crate for many that bumps far too frequently to ever have a shared version" },
-    { crate = "windows-sys@0.60", reason = "a foundational crate for many that bumps far too frequently to ever have a shared version" },
+    { crate = "windows-sys@0.52", reason = "a foundational crate for many that bumps far too frequently to ever have a shared version" },
     { crate = "getrandom@0.2", reason = "flume depends on an old version of getrandom" },
 ]
 

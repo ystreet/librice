@@ -33,7 +33,7 @@ use turn_client_proto::types::message::ALLOCATE;
 use turn_client_proto::types::TurnCredentials;
 use turn_client_proto::udp::TurnClientUdp;
 
-use tracing::{info, trace};
+use tracing::{debug, info, trace};
 
 fn address_is_ignorable(ip: IpAddr) -> bool {
     // TODO: add is_benchmarking() and is_documentation() when they become stable
@@ -786,6 +786,16 @@ impl StunGatherer {
                                     break;
                                 }
                                 TurnRecvRet::Ignored(_) => (),
+                                TurnRecvRet::PeerIcmp {
+                                    transport,
+                                    peer,
+                                    icmp_type,
+                                    icmp_code,
+                                    icmp_data: _,
+                                } => {
+                                    debug!("gathering received ICMP(type:{icmp_type:x}, code:{icmp_code:x}) over TURN from {transport}:{peer}");
+                                    return true;
+                                }
                             }
                         }
                     }
@@ -864,6 +874,16 @@ impl StunGatherer {
                                         break;
                                     }
                                     TurnRecvRet::Ignored(_) => (),
+                                    TurnRecvRet::PeerIcmp {
+                                        transport,
+                                        peer,
+                                        icmp_type,
+                                        icmp_code,
+                                        icmp_data: _,
+                                    } => {
+                                        debug!("gathering received ICMP(type:{icmp_type:x}, code:{icmp_code:x}) over TURN from {transport}:{peer}");
+                                        return true;
+                                    }
                                 }
                             }
                         }
