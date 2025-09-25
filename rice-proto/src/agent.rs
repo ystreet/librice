@@ -21,7 +21,7 @@ use stun_proto::types::data::Data;
 use stun_proto::Instant;
 
 use crate::candidate::{ParseCandidateError, TransportType};
-use crate::component::ComponentConnectionState;
+use crate::component::{ComponentConnectionState, TurnConfig};
 use crate::conncheck::{CheckListSetPollRet, ConnCheckEvent, ConnCheckListSet, SelectedPair};
 use crate::gathering::{GatherPoll, GatheredCandidate};
 use crate::rand::rand_u64;
@@ -101,7 +101,7 @@ pub struct Agent {
     id: u64,
     pub(crate) checklistset: ConnCheckListSet,
     pub(crate) stun_servers: Vec<(TransportType, SocketAddr)>,
-    pub(crate) turn_servers: Vec<(TransportType, SocketAddr, TurnCredentials)>,
+    pub(crate) turn_servers: Vec<TurnConfig>,
     streams: Vec<StreamState>,
 }
 
@@ -221,7 +221,7 @@ impl Agent {
     }
 
     /// The current list of STUN servers used by this [`Agent`]
-    pub fn stun_servers(&self) -> &Vec<(TransportType, SocketAddr)> {
+    pub fn stun_servers(&self) -> &[(TransportType, SocketAddr)] {
         &self.stun_servers
     }
 
@@ -234,17 +234,15 @@ impl Agent {
     )]
     pub fn add_turn_server(
         &mut self,
-        transport: TransportType,
-        addr: SocketAddr,
-        credentials: TurnCredentials,
+        config: TurnConfig,
     ) {
         info!("Adding turn server");
-        self.turn_servers.push((transport, addr, credentials));
+        self.turn_servers.push(config);
         // TODO: propagate towards the gatherer as required
     }
 
-    /// The current list of STUN servers used by this [`Agent`]
-    pub fn turn_servers(&self) -> &Vec<(TransportType, SocketAddr, TurnCredentials)> {
+    /// The current list of TURN servers used by this [`Agent`]
+    pub fn turn_servers(&self) -> &[TurnConfig] {
         &self.turn_servers
     }
 
