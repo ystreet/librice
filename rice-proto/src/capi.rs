@@ -1921,7 +1921,9 @@ pub unsafe extern "C" fn rice_component_gather_candidates(
 
     debug!("sockets: {sockets:?}");
 
-    let ret = proto_component.gather_candidates(sockets, stun_servers, turn_servers);
+    let turn_servers = turn_servers.iter().collect::<Vec<_>>();
+
+    let ret = proto_component.gather_candidates(&sockets, &stun_servers, &turn_servers);
     drop(proto_agent);
     core::mem::forget(component);
 
