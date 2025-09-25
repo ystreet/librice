@@ -16,6 +16,7 @@ use core::net::{IpAddr, SocketAddr};
 use core::time::Duration;
 
 use crate::candidate::{Candidate, TcpType, TransportType};
+use crate::component::TurnConfig;
 use stun_proto::agent::{HandleStunReply, StunAgent, StunAgentPollRet, StunError, Transmit};
 use stun_proto::types::attribute::XorMappedAddress;
 use stun_proto::types::data::Data;
@@ -200,7 +201,7 @@ impl StunGatherer {
         component_id: usize,
         sockets: Vec<(TransportType, SocketAddr)>,
         stun_servers: Vec<(TransportType, SocketAddr)>,
-        turn_servers: Vec<(TransportType, SocketAddr, TurnCredentials)>,
+        turn_servers: Vec<TurnConfig>,
     ) -> Self {
         // TODO: what to do on duplicate socket or stun_server addresses?
         let mut pending_candidates = VecDeque::new();
@@ -281,7 +282,7 @@ impl StunGatherer {
             for (stun_transport, stun_addr) in stun_servers.iter().copied().chain(
                 turn_servers
                     .iter()
-                    .map(|(transport, addr, _credentials)| (*transport, *addr)),
+                    .map(|turn_config| (turn_config.client_transport, turn_config.turn_server)),
             ) {
                 if *socket_transport != stun_transport {
                     continue;
@@ -303,25 +304,25 @@ impl StunGatherer {
                     method: Method::Stun,
                 });
             }
-            for (turn_transport, turn_addr, turn_credentials) in turn_servers.iter() {
-                if socket_transport != turn_transport {
+            for turn_config in turn_servers.iter() {
+                if *socket_transport != turn_config.client_transport {
                     continue;
                 }
-                if socket_addr.is_ipv4() && !turn_addr.is_ipv4() {
+                if socket_addr.is_ipv4() && !turn_config.turn_server.is_ipv4() {
                     continue;
                 }
-                if socket_addr.is_ipv6() && !turn_addr.is_ipv6() {
+                if socket_addr.is_ipv6() && !turn_config.turn_server.is_ipv6() {
                     continue;
                 }
                 pending_requests.push_back(PendingRequest {
                     component_id,
                     transport_type: *socket_transport,
                     local_addr: *socket_addr,
-                    server_addr: *turn_addr,
+                    server_addr: turn_config.turn_server,
                     other_preference,
                     completed: false,
                     agent_request_time: None,
-                    method: Method::Turn(turn_credentials.clone()),
+                    method: Method::Turn(turn_config.credentials.clone()),
                 });
             }
         }
@@ -1266,7 +1267,11 @@ mod tests {
             1,
             vec![(TransportType::Udp, local_addr)],
             vec![],
-            vec![(TransportType::Udp, turn_listen_addr, turn_credentials)],
+            vec![TurnConfig::new(
+                TransportType::Udp,
+                turn_listen_addr,
+                turn_credentials,
+            )],
         );
         let now = Instant::ZERO;
         /* host candidate contents checked in `host_udp()` */
@@ -1367,7 +1372,11 @@ mod tests {
             1,
             vec![(TransportType::Tcp, local_addr)],
             vec![],
-            vec![(TransportType::Tcp, turn_listen_addr, turn_credentials)],
+            vec![TurnConfig::new(
+                TransportType::Tcp,
+                turn_listen_addr,
+                turn_credentials,
+            )],
         );
         let now = Instant::ZERO;
         handle_allocate_socket(&mut gather, local_addr, now);
