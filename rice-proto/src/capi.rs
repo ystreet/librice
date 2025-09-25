@@ -55,7 +55,7 @@ use crate::agent::AgentPoll;
 use crate::agent::TurnCredentials;
 use crate::agent::{Agent, AgentError};
 use crate::candidate::{Candidate, CandidatePair, CandidateType, TransportType};
-use crate::component::ComponentConnectionState;
+use crate::component::{ComponentConnectionState, TurnConfig};
 use crate::gathering::GatheredCandidate;
 use crate::stream::Credentials;
 use stun_proto::agent::{StunError, Transmit};
@@ -160,7 +160,7 @@ fn transport_type_to_c(transport: TransportType) -> RiceTransportType {
 #[derive(Debug)]
 struct RiceAgentInner {
     stun_servers: Vec<(TransportType, SocketAddr)>,
-    turn_servers: Vec<(TransportType, SocketAddr, TurnCredentials)>,
+    turn_servers: Vec<TurnConfig>,
     streams: Vec<Arc<RiceStream>>,
 }
 
@@ -726,7 +726,7 @@ pub unsafe extern "C" fn rice_agent_add_turn_server(
     let agent = Arc::from_raw(agent);
     let addr = Box::from_raw(mut_override(addr));
     let mut inner = agent.inner.lock().unwrap();
-    inner.turn_servers.push((
+    inner.turn_servers.push(TurnConfig::new(
         transport_type_from_c(transport),
         **addr,
         TurnCredentials::new(&creds.credentials.ufrag, &creds.credentials.passwd),
