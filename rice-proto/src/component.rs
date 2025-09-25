@@ -9,7 +9,6 @@
 //! A [`Component`] in an ICE [`Stream`](crate::stream::Stream)
 
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use core::net::SocketAddr;
 
 use stun_proto::agent::Transmit;
@@ -44,6 +43,8 @@ pub struct TurnConfig {
 
 impl TurnConfig {
     /// Create a new [`TurnConfig`] from the provided details.
+    ///
+    /// # Examples
     pub fn new(
         client_transport: TransportType,
         server_addr: SocketAddr,
@@ -54,6 +55,21 @@ impl TurnConfig {
             turn_server: server_addr,
             credentials,
         }
+    }
+
+    /// The TURN server address to connect to.
+    pub fn addr(&self) -> SocketAddr {
+        self.turn_server
+    }
+
+    /// The [`TransportType`] between the client and the TURN server.
+    pub fn client_transport(&self) -> TransportType {
+        self.client_transport
+    }
+
+    /// The credentials for accessing the TURN server.
+    pub fn credentials(&self) -> &TurnCredentials {
+        &self.credentials
     }
 }
 
@@ -146,9 +162,9 @@ impl<'a> ComponentMut<'a> {
     /// the gathering.
     pub fn gather_candidates(
         &mut self,
-        sockets: Vec<(TransportType, SocketAddr)>,
-        stun_servers: Vec<(TransportType, SocketAddr)>,
-        turn_servers: Vec<TurnConfig>,
+        sockets: &[(TransportType, SocketAddr)],
+        stun_servers: &[(TransportType, SocketAddr)],
+        turn_servers: &[&TurnConfig],
     ) -> Result<(), AgentError> {
         let stream = self.agent.mut_stream_state(self.stream_id).unwrap();
         let component = stream.mut_component_state(self.component_id).unwrap();
@@ -311,9 +327,9 @@ impl ComponentState {
 
     pub(crate) fn gather_candidates(
         &mut self,
-        sockets: Vec<(TransportType, SocketAddr)>,
-        stun_servers: Vec<(TransportType, SocketAddr)>,
-        turn_servers: Vec<TurnConfig>,
+        sockets: &[(TransportType, SocketAddr)],
+        stun_servers: &[(TransportType, SocketAddr)],
+        turn_servers: &[&TurnConfig],
     ) -> Result<(), AgentError> {
         if self.gather_state != GatherProgress::New {
             return Err(AgentError::AlreadyInProgress);

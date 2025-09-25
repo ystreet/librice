@@ -1117,16 +1117,13 @@ impl ConnCheckList {
     }
 
     /// The list of local candidates currently configured for this checklist
-    pub fn local_candidates(&self) -> Vec<Candidate> {
-        self.local_candidates
-            .iter()
-            .map(|local| local.candidate.clone())
-            .collect()
+    pub fn local_candidates(&self) -> impl Iterator<Item = &'_ Candidate> + '_ {
+        self.local_candidates.iter().map(|local| &local.candidate)
     }
 
     /// The list of remote candidates currently configured for this checklist
-    pub fn remote_candidates(&self) -> Vec<Candidate> {
-        self.remote_candidates.to_vec()
+    pub fn remote_candidates(&self) -> &[Candidate] {
+        &self.remote_candidates
     }
 
     #[tracing::instrument(
@@ -4052,9 +4049,9 @@ mod tests {
         list.add_remote_candidate(remote.candidate.clone());
 
         // The candidate list is only what we put in
-        let locals = list.local_candidates();
-        assert_eq!(locals.len(), 1);
-        assert_eq!(locals[0], local.candidate);
+        let mut locals = list.local_candidates();
+        assert_eq!(locals.next(), Some(&local.candidate));
+        assert_eq!(locals.next(), None);
         let remotes = list.remote_candidates();
         assert_eq!(remotes.len(), 1);
         assert_eq!(remotes[0], remote.candidate);
