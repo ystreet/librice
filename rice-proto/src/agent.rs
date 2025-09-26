@@ -21,7 +21,7 @@ use stun_proto::types::data::Data;
 use stun_proto::Instant;
 
 use crate::candidate::{ParseCandidateError, TransportType};
-use crate::component::{ComponentConnectionState, TurnConfig};
+use crate::component::ComponentConnectionState;
 use crate::conncheck::{CheckListSetPollRet, ConnCheckEvent, ConnCheckListSet, SelectedPair};
 use crate::gathering::{GatherPoll, GatheredCandidate};
 use crate::rand::rand_u64;
@@ -92,6 +92,56 @@ impl From<StunError> for AgentError {
 impl From<StunParseError> for AgentError {
     fn from(_e: StunParseError) -> Self {
         Self::StunParse
+    }
+}
+
+/// Configuration for a particular TURN server connection.
+#[derive(Debug, Clone)]
+pub struct TurnConfig {
+    pub(crate) client_transport: TransportType,
+    pub(crate) turn_server: SocketAddr,
+    pub(crate) credentials: TurnCredentials,
+}
+
+impl TurnConfig {
+    /// Create a new [`TurnConfig`] from the provided details.
+    ///
+    /// # Examples
+    /// ```
+    /// # use rice_proto::agent::{TurnConfig, TurnCredentials};
+    /// # use rice_proto::candidate::TransportType;
+    /// let credentials = TurnCredentials::new("user", "pass");
+    /// let server_addr = "127.0.0.1:3478".parse().unwrap();
+    /// let config = TurnConfig::new(TransportType::Udp, server_addr, credentials.clone());
+    /// assert_eq!(config.client_transport(), TransportType::Udp);
+    /// assert_eq!(config.addr(), server_addr);
+    /// assert_eq!(config.credentials().username(), credentials.username());
+    /// ```
+    pub fn new(
+        client_transport: TransportType,
+        server_addr: SocketAddr,
+        credentials: TurnCredentials,
+    ) -> Self {
+        Self {
+            client_transport,
+            turn_server: server_addr,
+            credentials,
+        }
+    }
+
+    /// The TURN server address to connect to.
+    pub fn addr(&self) -> SocketAddr {
+        self.turn_server
+    }
+
+    /// The [`TransportType`] between the client and the TURN server.
+    pub fn client_transport(&self) -> TransportType {
+        self.client_transport
+    }
+
+    /// The credentials for accessing the TURN server.
+    pub fn credentials(&self) -> &TurnCredentials {
+        &self.credentials
     }
 }
 
@@ -232,10 +282,7 @@ impl Agent {
         skip(self)
         fields(ice.id = self.id)
     )]
-    pub fn add_turn_server(
-        &mut self,
-        config: TurnConfig,
-    ) {
+    pub fn add_turn_server(&mut self, config: TurnConfig) {
         info!("Adding turn server");
         self.turn_servers.push(config);
         // TODO: propagate towards the gatherer as required
