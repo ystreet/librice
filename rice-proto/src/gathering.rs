@@ -15,8 +15,8 @@ use alloc::vec::Vec;
 use core::net::{IpAddr, SocketAddr};
 use core::time::Duration;
 
+use crate::agent::TurnConfig;
 use crate::candidate::{Candidate, TcpType, TransportType};
-use crate::component::TurnConfig;
 use stun_proto::agent::{HandleStunReply, StunAgent, StunAgentPollRet, StunError, Transmit};
 use stun_proto::types::attribute::XorMappedAddress;
 use stun_proto::types::data::Data;
@@ -984,8 +984,7 @@ mod tests {
     fn host_udp() {
         let _log = crate::tests::test_init_log();
         let local_addr = "192.168.1.1:1000".parse().unwrap();
-        let mut gather =
-            StunGatherer::new(1, &[(TransportType::Udp, local_addr)], &[], &[]);
+        let mut gather = StunGatherer::new(1, &[(TransportType::Udp, local_addr)], &[], &[]);
         let now = Instant::ZERO;
         let ret = gather.poll(now);
         if let GatherPoll::NewCandidate(cand) = ret {
@@ -1010,8 +1009,7 @@ mod tests {
     fn host_udp_incoming_data_ignored() {
         let _log = crate::tests::test_init_log();
         let local_addr = "192.168.1.1:1000".parse().unwrap();
-        let mut gather =
-            StunGatherer::new(1, &[(TransportType::Udp, local_addr)], &[], &[]);
+        let mut gather = StunGatherer::new(1, &[(TransportType::Udp, local_addr)], &[], &[]);
         let now = Instant::ZERO;
         let ret = gather.poll(now);
         if let GatherPoll::NewCandidate(cand) = ret {
@@ -1040,8 +1038,7 @@ mod tests {
     fn host_tcp() {
         let _log = crate::tests::test_init_log();
         let local_addr = "192.168.1.1:1000".parse().unwrap();
-        let mut gather =
-            StunGatherer::new(1, &[(TransportType::Tcp, local_addr)], &[], &[]);
+        let mut gather = StunGatherer::new(1, &[(TransportType::Tcp, local_addr)], &[], &[]);
         let now = Instant::ZERO;
         let ret = gather.poll(now);
         if let GatherPoll::NewCandidate(cand) = ret {

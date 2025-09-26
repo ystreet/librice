@@ -20,11 +20,10 @@ use turn_client_proto::types::prelude::DelayedTransmitBuild;
 
 use crate::candidate::{CandidatePair, CandidateType, TransportType};
 
-use crate::agent::{Agent, AgentError};
+use crate::agent::{Agent, AgentError, TurnConfig};
 use crate::conncheck::transmit_send;
 pub use crate::conncheck::SelectedPair;
 use crate::gathering::StunGatherer;
-use turn_client_proto::types::TurnCredentials;
 
 use tracing::{debug, trace};
 
@@ -32,46 +31,6 @@ use tracing::{debug, trace};
 pub const RTP: usize = 1;
 /// The component id for RTCP streaming (if rtcp-mux is not in use).
 pub const RTCP: usize = 2;
-
-/// Configuration for a particular TURN server connection.
-#[derive(Debug, Clone)]
-pub struct TurnConfig {
-    pub(crate) client_transport: TransportType,
-    pub(crate) turn_server: SocketAddr,
-    pub(crate) credentials: TurnCredentials,
-}
-
-impl TurnConfig {
-    /// Create a new [`TurnConfig`] from the provided details.
-    ///
-    /// # Examples
-    pub fn new(
-        client_transport: TransportType,
-        server_addr: SocketAddr,
-        credentials: TurnCredentials,
-    ) -> Self {
-        Self {
-            client_transport,
-            turn_server: server_addr,
-            credentials,
-        }
-    }
-
-    /// The TURN server address to connect to.
-    pub fn addr(&self) -> SocketAddr {
-        self.turn_server
-    }
-
-    /// The [`TransportType`] between the client and the TURN server.
-    pub fn client_transport(&self) -> TransportType {
-        self.client_transport
-    }
-
-    /// The credentials for accessing the TURN server.
-    pub fn credentials(&self) -> &TurnCredentials {
-        &self.credentials
-    }
-}
 
 /// A [`Component`] in an ICE [`Stream`](crate::stream::Stream)
 #[derive(Debug)]
