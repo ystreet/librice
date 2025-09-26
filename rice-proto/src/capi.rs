@@ -52,10 +52,10 @@ use core::str::FromStr;
 use std::sync::{Mutex, Once};
 
 use crate::agent::AgentPoll;
-use crate::agent::TurnCredentials;
+use crate::agent::{TurnConfig, TurnCredentials};
 use crate::agent::{Agent, AgentError};
 use crate::candidate::{Candidate, CandidatePair, CandidateType, TransportType};
-use crate::component::{ComponentConnectionState, TurnConfig};
+use crate::component::ComponentConnectionState;
 use crate::gathering::GatheredCandidate;
 use crate::stream::Credentials;
 use stun_proto::agent::{StunError, Transmit};
@@ -1921,7 +1921,9 @@ pub unsafe extern "C" fn rice_component_gather_candidates(
 
     debug!("sockets: {sockets:?}");
 
-    let ret = proto_component.gather_candidates(sockets, stun_servers, turn_servers);
+    let turn_servers = turn_servers.iter().collect::<Vec<_>>();
+
+    let ret = proto_component.gather_candidates(&sockets, &stun_servers, &turn_servers);
     drop(proto_agent);
     core::mem::forget(component);
 

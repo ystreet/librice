@@ -123,7 +123,7 @@ impl<'a> Stream<'a> {
     }
 
     /// Retrieve previously gathered local candidates
-    pub fn local_candidates(&self) -> Vec<Candidate> {
+    pub fn local_candidates(&self) -> impl Iterator<Item = &'_ Candidate> + '_ {
         let stream_state = self.agent.stream_state(self.id).unwrap();
         let checklist = self
             .agent
@@ -159,7 +159,7 @@ impl<'a> Stream<'a> {
     /// assert_eq!(remote_cands.len(), 1);
     /// assert_eq!(remote_cands[0], candidate);
     /// ```
-    pub fn remote_candidates(&self) -> Vec<Candidate> {
+    pub fn remote_candidates(&self) -> &[Candidate] {
         let stream_state = self.agent.stream_state(self.id).unwrap();
         let checklist_id = stream_state.checklist_id;
         let checklist = self.agent.checklistset.list(checklist_id).unwrap();

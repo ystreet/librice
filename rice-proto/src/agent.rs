@@ -95,13 +95,63 @@ impl From<StunParseError> for AgentError {
     }
 }
 
+/// Configuration for a particular TURN server connection.
+#[derive(Debug, Clone)]
+pub struct TurnConfig {
+    pub(crate) client_transport: TransportType,
+    pub(crate) turn_server: SocketAddr,
+    pub(crate) credentials: TurnCredentials,
+}
+
+impl TurnConfig {
+    /// Create a new [`TurnConfig`] from the provided details.
+    ///
+    /// # Examples
+    /// ```
+    /// # use rice_proto::agent::{TurnConfig, TurnCredentials};
+    /// # use rice_proto::candidate::TransportType;
+    /// let credentials = TurnCredentials::new("user", "pass");
+    /// let server_addr = "127.0.0.1:3478".parse().unwrap();
+    /// let config = TurnConfig::new(TransportType::Udp, server_addr, credentials.clone());
+    /// assert_eq!(config.client_transport(), TransportType::Udp);
+    /// assert_eq!(config.addr(), server_addr);
+    /// assert_eq!(config.credentials().username(), credentials.username());
+    /// ```
+    pub fn new(
+        client_transport: TransportType,
+        server_addr: SocketAddr,
+        credentials: TurnCredentials,
+    ) -> Self {
+        Self {
+            client_transport,
+            turn_server: server_addr,
+            credentials,
+        }
+    }
+
+    /// The TURN server address to connect to.
+    pub fn addr(&self) -> SocketAddr {
+        self.turn_server
+    }
+
+    /// The [`TransportType`] between the client and the TURN server.
+    pub fn client_transport(&self) -> TransportType {
+        self.client_transport
+    }
+
+    /// The credentials for accessing the TURN server.
+    pub fn credentials(&self) -> &TurnCredentials {
+        &self.credentials
+    }
+}
+
 /// An ICE agent as specified in RFC 8445
 #[derive(Debug)]
 pub struct Agent {
     id: u64,
     pub(crate) checklistset: ConnCheckListSet,
     pub(crate) stun_servers: Vec<(TransportType, SocketAddr)>,
-    pub(crate) turn_servers: Vec<(TransportType, SocketAddr, TurnCredentials)>,
+    pub(crate) turn_servers: Vec<TurnConfig>,
     streams: Vec<StreamState>,
 }
 
@@ -221,7 +271,7 @@ impl Agent {
     }
 
     /// The current list of STUN servers used by this [`Agent`]
-    pub fn stun_servers(&self) -> &Vec<(TransportType, SocketAddr)> {
+    pub fn stun_servers(&self) -> &[(TransportType, SocketAddr)] {
         &self.stun_servers
     }
 
@@ -232,19 +282,14 @@ impl Agent {
         skip(self)
         fields(ice.id = self.id)
     )]
-    pub fn add_turn_server(
-        &mut self,
-        transport: TransportType,
-        addr: SocketAddr,
-        credentials: TurnCredentials,
-    ) {
+    pub fn add_turn_server(&mut self, config: TurnConfig) {
         info!("Adding turn server");
-        self.turn_servers.push((transport, addr, credentials));
+        self.turn_servers.push(config);
         // TODO: propagate towards the gatherer as required
     }
 
-    /// The current list of STUN servers used by this [`Agent`]
-    pub fn turn_servers(&self) -> &Vec<(TransportType, SocketAddr, TurnCredentials)> {
+    /// The current list of TURN servers used by this [`Agent`]
+    pub fn turn_servers(&self) -> &[TurnConfig] {
         &self.turn_servers
     }
 

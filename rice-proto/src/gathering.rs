@@ -15,8 +15,8 @@ use alloc::vec::Vec;
 use core::net::{IpAddr, SocketAddr};
 use core::time::Duration;
 
+use crate::agent::TurnConfig;
 use crate::candidate::{Candidate, TcpType, TransportType};
-use crate::component::TurnConfig;
 use stun_proto::agent::{HandleStunReply, StunAgent, StunAgentPollRet, StunError, Transmit};
 use stun_proto::types::attribute::XorMappedAddress;
 use stun_proto::types::data::Data;
@@ -199,9 +199,9 @@ impl StunGatherer {
     /// Create a new gatherer
     pub(crate) fn new(
         component_id: usize,
-        sockets: Vec<(TransportType, SocketAddr)>,
-        stun_servers: Vec<(TransportType, SocketAddr)>,
-        turn_servers: Vec<TurnConfig>,
+        sockets: &[(TransportType, SocketAddr)],
+        stun_servers: &[(TransportType, SocketAddr)],
+        turn_servers: &[&TurnConfig],
     ) -> Self {
         // TODO: what to do on duplicate socket or stun_server addresses?
         let mut pending_candidates = VecDeque::new();
@@ -984,8 +984,7 @@ mod tests {
     fn host_udp() {
         let _log = crate::tests::test_init_log();
         let local_addr = "192.168.1.1:1000".parse().unwrap();
-        let mut gather =
-            StunGatherer::new(1, vec![(TransportType::Udp, local_addr)], vec![], vec![]);
+        let mut gather = StunGatherer::new(1, &[(TransportType::Udp, local_addr)], &[], &[]);
         let now = Instant::ZERO;
         let ret = gather.poll(now);
         if let GatherPoll::NewCandidate(cand) = ret {
@@ -1010,8 +1009,7 @@ mod tests {
     fn host_udp_incoming_data_ignored() {
         let _log = crate::tests::test_init_log();
         let local_addr = "192.168.1.1:1000".parse().unwrap();
-        let mut gather =
-            StunGatherer::new(1, vec![(TransportType::Udp, local_addr)], vec![], vec![]);
+        let mut gather = StunGatherer::new(1, &[(TransportType::Udp, local_addr)], &[], &[]);
         let now = Instant::ZERO;
         let ret = gather.poll(now);
         if let GatherPoll::NewCandidate(cand) = ret {
@@ -1040,8 +1038,7 @@ mod tests {
     fn host_tcp() {
         let _log = crate::tests::test_init_log();
         let local_addr = "192.168.1.1:1000".parse().unwrap();
-        let mut gather =
-            StunGatherer::new(1, vec![(TransportType::Tcp, local_addr)], vec![], vec![]);
+        let mut gather = StunGatherer::new(1, &[(TransportType::Tcp, local_addr)], &[], &[]);
         let now = Instant::ZERO;
         let ret = gather.poll(now);
         if let GatherPoll::NewCandidate(cand) = ret {
@@ -1105,9 +1102,9 @@ mod tests {
         let public_ip = "192.168.1.3:3000".parse().unwrap();
         let mut gather = StunGatherer::new(
             1,
-            vec![(TransportType::Udp, local_addr)],
-            vec![(TransportType::Udp, stun_addr)],
-            vec![],
+            &[(TransportType::Udp, local_addr)],
+            &[(TransportType::Udp, stun_addr)],
+            &[],
         );
         let now = Instant::ZERO;
         /* host candidate contents checked in `host_udp()` */
@@ -1162,9 +1159,9 @@ mod tests {
         let public_ip = "192.168.1.3:3000".parse().unwrap();
         let mut gather = StunGatherer::new(
             1,
-            vec![(TransportType::Tcp, local_addr)],
-            vec![(TransportType::Tcp, stun_addr)],
-            vec![],
+            &[(TransportType::Tcp, local_addr)],
+            &[(TransportType::Tcp, stun_addr)],
+            &[],
         );
         let now = Instant::ZERO;
         handle_allocate_socket(&mut gather, local_addr, now);
@@ -1222,9 +1219,9 @@ mod tests {
         let stun_addr = "192.168.1.2:2000".parse().unwrap();
         let mut gather = StunGatherer::new(
             1,
-            vec![(TransportType::Tcp, local_addr)],
-            vec![(TransportType::Tcp, stun_addr)],
-            vec![],
+            &[(TransportType::Tcp, local_addr)],
+            &[(TransportType::Tcp, stun_addr)],
+            &[],
         );
         let now = Instant::ZERO;
         handle_allocate_socket(&mut gather, local_addr, now);
@@ -1265,9 +1262,9 @@ mod tests {
         );
         let mut gather = StunGatherer::new(
             1,
-            vec![(TransportType::Udp, local_addr)],
-            vec![],
-            vec![TurnConfig::new(
+            &[(TransportType::Udp, local_addr)],
+            &[],
+            &[&TurnConfig::new(
                 TransportType::Udp,
                 turn_listen_addr,
                 turn_credentials,
@@ -1370,9 +1367,9 @@ mod tests {
         );
         let mut gather = StunGatherer::new(
             1,
-            vec![(TransportType::Tcp, local_addr)],
-            vec![],
-            vec![TurnConfig::new(
+            &[(TransportType::Tcp, local_addr)],
+            &[],
+            &[&TurnConfig::new(
                 TransportType::Tcp,
                 turn_listen_addr,
                 turn_credentials,

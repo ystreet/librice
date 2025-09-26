@@ -9,7 +9,6 @@
 //! A [`Component`] in an ICE [`Stream`](crate::stream::Stream)
 
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use core::net::SocketAddr;
 
 use stun_proto::agent::Transmit;
@@ -21,11 +20,10 @@ use turn_client_proto::types::prelude::DelayedTransmitBuild;
 
 use crate::candidate::{CandidatePair, CandidateType, TransportType};
 
-use crate::agent::{Agent, AgentError};
+use crate::agent::{Agent, AgentError, TurnConfig};
 use crate::conncheck::transmit_send;
 pub use crate::conncheck::SelectedPair;
 use crate::gathering::StunGatherer;
-use turn_client_proto::types::TurnCredentials;
 
 use tracing::{debug, trace};
 
@@ -33,29 +31,6 @@ use tracing::{debug, trace};
 pub const RTP: usize = 1;
 /// The component id for RTCP streaming (if rtcp-mux is not in use).
 pub const RTCP: usize = 2;
-
-/// Configuration for a particular TURN server connection.
-#[derive(Debug, Clone)]
-pub struct TurnConfig {
-    pub(crate) client_transport: TransportType,
-    pub(crate) turn_server: SocketAddr,
-    pub(crate) credentials: TurnCredentials,
-}
-
-impl TurnConfig {
-    /// Create a new [`TurnConfig`] from the provided details.
-    pub fn new(
-        client_transport: TransportType,
-        server_addr: SocketAddr,
-        credentials: TurnCredentials,
-    ) -> Self {
-        Self {
-            client_transport,
-            turn_server: server_addr,
-            credentials,
-        }
-    }
-}
 
 /// A [`Component`] in an ICE [`Stream`](crate::stream::Stream)
 #[derive(Debug)]
@@ -146,9 +121,9 @@ impl<'a> ComponentMut<'a> {
     /// the gathering.
     pub fn gather_candidates(
         &mut self,
-        sockets: Vec<(TransportType, SocketAddr)>,
-        stun_servers: Vec<(TransportType, SocketAddr)>,
-        turn_servers: Vec<TurnConfig>,
+        sockets: &[(TransportType, SocketAddr)],
+        stun_servers: &[(TransportType, SocketAddr)],
+        turn_servers: &[&TurnConfig],
     ) -> Result<(), AgentError> {
         let stream = self.agent.mut_stream_state(self.stream_id).unwrap();
         let component = stream.mut_component_state(self.component_id).unwrap();
@@ -311,9 +286,9 @@ impl ComponentState {
 
     pub(crate) fn gather_candidates(
         &mut self,
-        sockets: Vec<(TransportType, SocketAddr)>,
-        stun_servers: Vec<(TransportType, SocketAddr)>,
-        turn_servers: Vec<TurnConfig>,
+        sockets: &[(TransportType, SocketAddr)],
+        stun_servers: &[(TransportType, SocketAddr)],
+        turn_servers: &[&TurnConfig],
     ) -> Result<(), AgentError> {
         if self.gather_state != GatherProgress::New {
             return Err(AgentError::AlreadyInProgress);
