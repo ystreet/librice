@@ -52,10 +52,10 @@ use core::str::FromStr;
 use std::sync::{Mutex, Once};
 
 use crate::agent::AgentPoll;
-use crate::agent::TurnCredentials;
 use crate::agent::{Agent, AgentError};
+use crate::agent::{TurnConfig, TurnCredentials};
 use crate::candidate::{Candidate, CandidatePair, CandidateType, TransportType};
-use crate::component::{ComponentConnectionState, TurnConfig};
+use crate::component::ComponentConnectionState;
 use crate::gathering::GatheredCandidate;
 use crate::stream::Credentials;
 use stun_proto::agent::{StunError, Transmit};
