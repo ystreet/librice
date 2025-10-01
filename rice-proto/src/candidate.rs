@@ -560,7 +560,7 @@ mod parse {
                 take_while1::<_, _, nom::error::Error<_>>(is_part_of_byte_string)(s)
                     .map_err(|_| ParseCandidateError::BadExtension)?;
 
-            if let Some(expected_next) = expected_next {
+            if let Some(expected_next) = expected_next.take() {
                 if ext_key != expected_next {
                     return Err(ParseCandidateError::BadExtension);
                 }
@@ -949,6 +949,35 @@ mod tests {
             let parsed_cand = Candidate::from_str(cand_str).unwrap();
             assert_eq!(cand, parsed_cand);
             assert_eq!(cand_str, cand.to_sdp_string());
+        }
+        #[test]
+        fn generation_attribute() {
+            let _log = crate::tests::test_init_log();
+            let addr: SocketAddr = "127.0.0.1:2345".parse().unwrap();
+            let related_addr: SocketAddr = "192.168.0.1:9876".parse().unwrap();
+            let cand = Candidate::builder(
+                1,
+                CandidateType::ServerReflexive,
+                TransportType::Udp,
+                "foundation",
+                addr,
+            )
+            .priority(1234)
+            .related_address(related_addr)
+            .extension("generation", "0")
+            .build();
+            let cand_str = "a=candidate:foundation 1 UDP 1234 127.0.0.1 2345 typ srflx raddr 192.168.0.1 rport 9876 generation 0";
+            let parsed_cand = Candidate::from_str(cand_str).unwrap();
+            assert_eq!(cand, parsed_cand);
+            assert_eq!(cand_str, cand.to_sdp_string());
+        }
+        #[test]
+        fn raddr_without_rport_attribute() {
+            let _log = crate::tests::test_init_log();
+            assert!(matches!(
+                Candidate::from_str("a=candidate:foundation 1 TCP 1234 127.0.0.1 2345 typ host raddr 123.123.123.123 foo bar"),
+                Err(ParseCandidateError::BadExtension)
+            ));
         }
     }
 }
