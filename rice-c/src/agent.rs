@@ -8,9 +8,8 @@
 
 //! ICE Agent implementation as specified in RFC 8445
 
-use crate::{mut_override, stream::Stream};
+use crate::{mut_override, stream::Stream, turn::TurnConfig};
 
-pub use crate::stream::Credentials as TurnCredentials;
 use sans_io_time::Instant;
 
 /// An ICE agent as specified in RFC 8445
@@ -100,18 +99,19 @@ impl Agent {
     }
 
     /// Add a STUN server by address and transport to use for gathering potential candidates
-    pub fn add_turn_server(
-        &self,
-        transport: crate::candidate::TransportType,
-        addr: crate::Address,
-        credentials: TurnCredentials,
-    ) {
+    pub fn add_turn_server(&self, config: TurnConfig) {
         unsafe {
+            let tls_config = if let Some(cfg) = config.tls_config {
+                cfg.as_c()
+            } else {
+                core::ptr::null_mut()
+            };
             crate::ffi::rice_agent_add_turn_server(
                 self.ffi,
-                transport.into(),
-                addr.as_c(),
-                credentials.into_c_none(),
+                config.client_transport.into(),
+                config.turn_server.as_c(),
+                config.credentials.into_c_none(),
+                tls_config,
             )
         }
     }

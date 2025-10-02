@@ -10,9 +10,9 @@ edition = "2021"
 rust-version = "1.68.2"
 
 [workspace.dependencies]
-stun-proto = { version = "1.0.0-alpha4", default-features = false }
-stun-types = { version = "1.0.0-alpha4", default-features = false }
-turn-client-proto = { version = "0.4.0-alpha2", default-features = false }
+stun-proto = { version = "1.0.0", default-features = false }
+stun-types = { version = "1.0.0", default-features = false }
+turn-client-proto = { version = "0.4.0", default-features = false }
 arbitrary = { version = "1", features = ["derive"] }
 byteorder = { version = "1", default-features = false }
 get_if_addrs = "0.5"
