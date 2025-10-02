@@ -20,10 +20,11 @@ use turn_client_proto::types::prelude::DelayedTransmitBuild;
 
 use crate::candidate::{CandidatePair, CandidateType, TransportType};
 
-use crate::agent::{Agent, AgentError, TurnConfig};
+use crate::agent::{Agent, AgentError};
 use crate::conncheck::transmit_send;
 pub use crate::conncheck::SelectedPair;
 use crate::gathering::StunGatherer;
+use crate::turn::TurnConfig;
 
 use tracing::{debug, trace};
 

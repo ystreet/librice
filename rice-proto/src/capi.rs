@@ -53,11 +53,15 @@ use std::sync::{Mutex, Once};
 
 use crate::agent::AgentPoll;
 use crate::agent::{Agent, AgentError};
-use crate::agent::{TurnConfig, TurnCredentials};
 use crate::candidate::{Candidate, CandidatePair, CandidateType, TransportType};
 use crate::component::ComponentConnectionState;
 use crate::gathering::GatheredCandidate;
 use crate::stream::Credentials;
+#[cfg(feature = "openssl")]
+use crate::turn::OpensslTurnConfig;
+#[cfg(feature = "rustls")]
+use crate::turn::RustlsTurnConfig;
+use crate::turn::{TurnConfig, TurnCredentials, TurnTlsConfig};
 use stun_proto::agent::{StunError, Transmit};
 use stun_proto::types::data::{Data, DataOwned, DataSlice};
 use stun_proto::Instant;
@@ -720,21 +724,107 @@ pub unsafe extern "C" fn rice_agent_add_turn_server(
     transport: RiceTransportType,
     addr: *const RiceAddress,
     credentials: *const RiceCredentials,
+    tls_config: *const RiceTlsConfig,
 ) {
     let creds = Box::from_raw(mut_override(credentials));
 
     let agent = Arc::from_raw(agent);
     let addr = Box::from_raw(mut_override(addr));
     let mut inner = agent.inner.lock().unwrap();
-    inner.turn_servers.push(TurnConfig::new(
+    let mut turn_config = TurnConfig::new(
         transport_type_from_c(transport),
         **addr,
         TurnCredentials::new(&creds.credentials.ufrag, &creds.credentials.passwd),
-    ));
+    );
+    if !tls_config.is_null() {
+        let tls_config = Arc::from_raw(tls_config);
+        turn_config = turn_config.with_config(tls_config.variant.clone());
+        core::mem::forget(tls_config);
+    }
+    inner.turn_servers.push(turn_config);
     drop(inner);
     core::mem::forget(addr);
     core::mem::forget(agent);
     core::mem::forget(creds);
+}
+
+/// TLS configuration data.
+#[derive(Debug, Clone)]
+pub struct RiceTlsConfig {
+    variant: TurnTlsConfig,
+}
+
+/// Increase the reference count of the `RiceTlsConfig`.
+///
+/// This function is multi-threading safe.
+#[no_mangle]
+pub unsafe extern "C" fn rice_tls_config_ref(config: *const RiceTlsConfig) -> *mut RiceTlsConfig {
+    Arc::increment_strong_count(config);
+    mut_override(config)
+}
+
+/// Decrease the reference count of the `RiceTlsConfig`.
+///
+/// If this is the last reference, then the `RiceTlsConfig` is freed.
+///
+/// This function is multi-threading safe.
+#[no_mangle]
+pub unsafe extern "C" fn rice_tls_config_unref(config: *mut RiceTlsConfig) {
+    Arc::decrement_strong_count(config)
+}
+
+/// Construct a new TLS configuration using Openssl.
+#[no_mangle]
+#[cfg(feature = "openssl")]
+pub unsafe extern "C" fn rice_tls_config_new_openssl(
+    transport: RiceTransportType,
+) -> *mut RiceTlsConfig {
+    let method = match transport_type_from_c(transport) {
+        TransportType::Udp => openssl::ssl::SslMethod::dtls_client(),
+        TransportType::Tcp => openssl::ssl::SslMethod::tls_client(),
+    };
+    let Ok(ctx) = openssl::ssl::SslContext::builder(method) else {
+        return core::ptr::null_mut();
+    };
+    mut_override(Arc::into_raw(Arc::new(RiceTlsConfig {
+        variant: OpensslTurnConfig::new(ctx.build()).into(),
+    })))
+}
+
+/// Construct a new TLS configuration using Rustls.
+#[no_mangle]
+#[cfg(feature = "rustls")]
+pub unsafe extern "C" fn rice_tls_config_new_rustls_with_dns(
+    server_name: *const c_char,
+) -> *mut RiceTlsConfig {
+    use rustls_platform_verifier::ConfigVerifierExt;
+    let Ok(server_name) = string_from_c(server_name).try_into() else {
+        return core::ptr::null_mut();
+    };
+    mut_override(Arc::into_raw(Arc::new(RiceTlsConfig {
+        variant: RustlsTurnConfig::new(
+            Arc::new(rustls::ClientConfig::with_platform_verifier()),
+            server_name,
+        )
+        .into(),
+    })))
+}
+
+/// Construct a new TLS configuration using Rustls.
+#[no_mangle]
+#[cfg(feature = "rustls")]
+pub unsafe extern "C" fn rice_tls_config_new_rustls_with_ip(
+    addr: *const RiceAddress,
+) -> *mut RiceTlsConfig {
+    use rustls_platform_verifier::ConfigVerifierExt;
+    let addr = RiceAddress::into_rice_none(addr);
+    mut_override(Arc::into_raw(Arc::new(RiceTlsConfig {
+        variant: RustlsTurnConfig::new(
+            Arc::new(rustls::ClientConfig::with_platform_verifier()),
+            addr.inner().ip().into(),
+        )
+        .into(),
+    })))
 }
 
 /// A data stream in a `RiceAgent`.

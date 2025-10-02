@@ -21,8 +21,8 @@ use tracing::warn;
 
 use crate::component::{Component, SelectedPair};
 use crate::stream::Stream;
-pub use rice_c::agent::TurnCredentials;
 use rice_c::candidate::{Candidate, CandidatePair, TransportType};
+pub use rice_c::turn::{TurnConfig, TurnCredentials};
 
 /// Errors that can be returned as a result of agent operations.
 #[derive(Debug)]
@@ -190,16 +190,8 @@ impl Agent {
     }
 
     /// Add a TURN server by address and transport to use for gathering potential candidates
-    pub fn add_turn_server(
-        &self,
-        transport: TransportType,
-        addr: SocketAddr,
-        credentials: TurnCredentials,
-    ) {
-        self.agent
-            .lock()
-            .unwrap()
-            .add_turn_server(transport, addr.into(), credentials)
+    pub fn add_turn_server(&self, config: TurnConfig) {
+        self.agent.lock().unwrap().add_turn_server(config)
         // TODO: propagate towards the gatherer as required
     }
 }

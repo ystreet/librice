@@ -12,6 +12,11 @@ repository.workspace = true
 rust-version.workspace = true
 workspace = ".."
 
+[features]
+default = ["rustls", "openssl"]
+rustls = []
+openssl = []
+
 [build-dependencies]
 system-deps = "6.0"
 bindgen = "0.72"

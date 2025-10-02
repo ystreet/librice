@@ -3656,6 +3656,14 @@ impl ConnCheckListSet {
                 self.remove_check_resources(checklist_i, check, now);
             }
             let checklist = &mut self.checklists[checklist_i];
+            let mut turn_clients = Vec::new();
+            core::mem::swap(&mut turn_clients, &mut checklist.turn_clients);
+            for (turn_id, mut turn_client) in turn_clients {
+                let _ = turn_client.delete(now);
+                checklist
+                    .pending_delete_turn_clients
+                    .push((turn_id, turn_client));
+            }
             checklist.close();
         }
         self.closed = true;

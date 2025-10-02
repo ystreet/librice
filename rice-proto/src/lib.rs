@@ -98,6 +98,7 @@ mod gathering;
 mod rand;
 pub mod stream;
 mod tcp;
+pub mod turn;
 
 #[cfg(feature = "capi")]
 pub mod capi;

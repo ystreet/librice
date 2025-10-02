@@ -96,6 +96,11 @@ pub struct RiceComponent {
 pub struct RiceStream {
     _unused: [u8; 0],
 }
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct RiceTlsConfig {
+    _unused: [u8; 0],
+}
 #[doc = " A pointer to a sequence of bytes and the associated size."]
 #[repr(C)]
 #[derive(Debug)]
@@ -639,7 +644,30 @@ unsafe extern "C" {
         transport: RiceTransportType,
         addr: *const RiceAddress,
         credentials: *const RiceCredentials,
+        tls_config: *const RiceTlsConfig,
     );
+}
+unsafe extern "C" {
+    #[doc = " Increase the reference count of the `RiceTlsConfig`.\n\n This function is multi-threading safe."]
+    pub fn rice_tls_config_ref(config: *const RiceTlsConfig) -> *mut RiceTlsConfig;
+}
+unsafe extern "C" {
+    #[doc = " Decrease the reference count of the `RiceTlsConfig`.\n\n If this is the last reference, then the `RiceTlsConfig` is freed.\n\n This function is multi-threading safe."]
+    pub fn rice_tls_config_unref(config: *mut RiceTlsConfig);
+}
+unsafe extern "C" {
+    #[doc = " Construct a new TLS configuration using Openssl."]
+    pub fn rice_tls_config_new_openssl(transport: RiceTransportType) -> *mut RiceTlsConfig;
+}
+unsafe extern "C" {
+    #[doc = " Construct a new TLS configuration using Rustls."]
+    pub fn rice_tls_config_new_rustls_with_dns(
+        server_name: *const ::core::ffi::c_char,
+    ) -> *mut RiceTlsConfig;
+}
+unsafe extern "C" {
+    #[doc = " Construct a new TLS configuration using Rustls."]
+    pub fn rice_tls_config_new_rustls_with_ip(addr: *const RiceAddress) -> *mut RiceTlsConfig;
 }
 unsafe extern "C" {
     #[doc = " Add an ICE stream to the `RiceAgent`."]

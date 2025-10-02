@@ -14,9 +14,14 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::net::{IpAddr, SocketAddr};
 use core::time::Duration;
+#[cfg(feature = "openssl")]
+use turn_client_proto::openssl::TurnClientOpensslTls;
+use turn_client_proto::rustls::TurnClientRustls;
 
-use crate::agent::TurnConfig;
 use crate::candidate::{Candidate, TcpType, TransportType};
+use crate::turn::TurnConfig;
+#[cfg(feature = "rustls")]
+use crate::turn::TurnTlsConfig;
 use stun_proto::agent::{HandleStunReply, StunAgent, StunAgentPollRet, StunError, Transmit};
 use stun_proto::types::attribute::XorMappedAddress;
 use stun_proto::types::data::Data;
@@ -31,7 +36,6 @@ use turn_client_proto::client::TurnClient;
 use turn_client_proto::prelude::*;
 use turn_client_proto::tcp::TurnClientTcp;
 use turn_client_proto::types::message::ALLOCATE;
-use turn_client_proto::types::TurnCredentials;
 use turn_client_proto::udp::TurnClientUdp;
 
 use tracing::{debug, info, trace};
@@ -82,7 +86,7 @@ struct Request {
 #[derive(Debug)]
 enum Method {
     Stun,
-    Turn(TurnCredentials),
+    Turn(TurnConfig),
 }
 
 #[derive(Debug)]
@@ -115,14 +119,43 @@ impl PendingRequest {
                     completed: false,
                 }
             }
-            Method::Turn(credentials) => {
-                let client = TurnClientTcp::allocate(
-                    local_addr,
-                    self.server_addr,
-                    credentials.clone(),
-                    &[AddressFamily::IPV4],
-                )
-                .into();
+            Method::Turn(config) => {
+                let mut client = None;
+                if let Some(tls) = config.tls_config() {
+                    match tls {
+                        #[cfg(feature = "rustls")]
+                        TurnTlsConfig::Rustls(rustls) => {
+                            client = Some(TurnClient::from(TurnClientRustls::allocate(
+                                local_addr,
+                                self.server_addr,
+                                config.credentials().clone(),
+                                &[AddressFamily::IPV4],
+                                rustls.server_name(),
+                                rustls.client_config(),
+                            )))
+                        }
+                        #[cfg(feature = "openssl")]
+                        TurnTlsConfig::Openssl(ossl) => {
+                            client = Some(TurnClient::from(TurnClientOpensslTls::allocate(
+                                TransportType::Tcp,
+                                local_addr,
+                                self.server_addr,
+                                config.credentials().clone(),
+                                &[AddressFamily::IPV4],
+                                ossl.ssl_context().clone(),
+                            )))
+                        }
+                    }
+                }
+                let client = client.unwrap_or_else(|| {
+                    TurnClientTcp::allocate(
+                        local_addr,
+                        self.server_addr,
+                        config.credentials().clone(),
+                        &[AddressFamily::IPV4],
+                    )
+                    .into()
+                });
                 Request {
                     protocol: RequestProtocol::Tcp(None),
                     agent: StunOrTurnClient::Turn(Box::new(client)),
@@ -282,7 +315,7 @@ impl StunGatherer {
             for (stun_transport, stun_addr) in stun_servers.iter().copied().chain(
                 turn_servers
                     .iter()
-                    .map(|turn_config| (turn_config.client_transport, turn_config.turn_server)),
+                    .map(|turn_config| (turn_config.client_transport(), turn_config.addr())),
             ) {
                 if *socket_transport != stun_transport {
                     continue;
@@ -305,24 +338,24 @@ impl StunGatherer {
                 });
             }
             for turn_config in turn_servers.iter() {
-                if *socket_transport != turn_config.client_transport {
+                if *socket_transport != turn_config.client_transport() {
                     continue;
                 }
-                if socket_addr.is_ipv4() && !turn_config.turn_server.is_ipv4() {
+                if socket_addr.is_ipv4() && !turn_config.addr().is_ipv4() {
                     continue;
                 }
-                if socket_addr.is_ipv6() && !turn_config.turn_server.is_ipv6() {
+                if socket_addr.is_ipv6() && !turn_config.addr().is_ipv6() {
                     continue;
                 }
                 pending_requests.push_back(PendingRequest {
                     component_id,
                     transport_type: *socket_transport,
                     local_addr: *socket_addr,
-                    server_addr: turn_config.turn_server,
+                    server_addr: turn_config.addr(),
                     other_preference,
                     completed: false,
                     agent_request_time: None,
-                    method: Method::Turn(turn_config.credentials.clone()),
+                    method: Method::Turn((*turn_config).clone()),
                 });
             }
         }
@@ -376,14 +409,38 @@ impl StunGatherer {
                             );
                             StunOrTurnClient::Stun(Box::new(agent))
                         }
-                        Method::Turn(credentials) => {
-                            let client = TurnClientUdp::allocate(
-                                pending_request.local_addr,
-                                pending_request.server_addr,
-                                credentials.clone(),
-                                &[AddressFamily::IPV4],
-                            )
-                            .into();
+                        Method::Turn(config) => {
+                            let mut client = None;
+                            if let Some(tls) = config.tls_config() {
+                                match tls {
+                                    #[cfg(feature = "rustls")]
+                                    TurnTlsConfig::Rustls(_rustls) => {
+                                        pending_request.completed = true;
+                                        continue;
+                                    }
+                                    #[cfg(feature = "openssl")]
+                                    TurnTlsConfig::Openssl(ossl) => {
+                                        client =
+                                            Some(TurnClient::from(TurnClientOpensslTls::allocate(
+                                                TransportType::Udp,
+                                                pending_request.local_addr,
+                                                pending_request.server_addr,
+                                                config.credentials().clone(),
+                                                &[AddressFamily::IPV4],
+                                                ossl.ssl_context().clone(),
+                                            )))
+                                    }
+                                }
+                            }
+                            let client = client.unwrap_or_else(|| {
+                                TurnClientUdp::allocate(
+                                    pending_request.local_addr,
+                                    pending_request.server_addr,
+                                    config.credentials().clone(),
+                                    &[AddressFamily::IPV4],
+                                )
+                                .into()
+                            });
                             StunOrTurnClient::Turn(Box::new(client))
                         }
                     };
@@ -968,6 +1025,7 @@ fn transmit_send_unframed<'a, T: AsRef<[u8]>>(transmit: &Transmit<T>) -> Transmi
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+    use turn_client_proto::types::TurnCredentials;
 
     use crate::candidate::{CandidateType, TcpType};
     use stun_proto::types::{

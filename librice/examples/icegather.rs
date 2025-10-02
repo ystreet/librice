@@ -6,13 +6,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use librice::agent::{Agent, AgentMessage};
+use librice::agent::{Agent, AgentMessage, TurnConfig, TurnCredentials};
 
 use std::io;
 
 use futures::prelude::*;
 
-use librice::agent::TurnCredentials;
 use librice::candidate::TransportType;
 
 fn init_logs() {
@@ -49,7 +48,8 @@ fn main() -> io::Result<()> {
         for ss in stun_servers {
             agent.add_stun_server(TransportType::Udp, ss);
             agent.add_stun_server(TransportType::Tcp, ss);
-            agent.add_turn_server(TransportType::Udp, ss, credentials.clone());
+            let turn_cfg = TurnConfig::new(TransportType::Udp, ss.into(), credentials.clone());
+            agent.add_turn_server(turn_cfg);
         }
         let stream = agent.add_stream();
         let _comp = stream.add_component();

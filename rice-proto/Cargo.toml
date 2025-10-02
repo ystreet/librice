@@ -13,18 +13,25 @@ rust-version.workspace = true
 workspace = ".."
 
 [features]
-default = ["std"]
+default = ["std", "rustls", "openssl"]
 capi = ["dep:libc", "dep:tracing-subscriber", "std", "dep:rice-ctypes"]
 std = ["rice-stun-types/std", "stun-proto/std", "turn-client-proto/std", "rand/thread_rng"]
+# allows TLS connections to TURN servers
+rustls = ["std", "turn-client-proto/rustls", "dep:rustls", "dep:rustls-platform-verifier"]
+# allows (D)TLS connections to TURN servers
+openssl = ["std", "turn-client-proto/openssl", "dep:openssl"]
 
 [dependencies]
 arbitrary = { workspace = true, optional = true }
 byteorder.workspace = true
 libc = { version = "0.2", optional = true }
 nom = { version = "8", default-features = false }
+openssl = { version = "0.10", optional = true }
 rand.workspace = true
 rice-stun-types.workspace = true
 rice-ctypes = { workspace = true, optional = true }
+rustls = { version = "0.23", optional = true }
+rustls-platform-verifier = { version = "0.5", optional = true }
 stun-proto.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, optional = true }
