@@ -37,7 +37,7 @@ more scenarios is part of the near and long term future roadmap.
    Test Vectors for Session Traversal Utilities for NAT (STUN)
  - [ ] [RFC6062](https://tools.ietf.org/html/rfc6062):
    Traversal Using Relays around NAT (TURN) Extensions for TCP Allocations
- - [ ] [RFC6156](https://tools.ietf.org/html/rfc6156):
+ - [x] [RFC6156](https://tools.ietf.org/html/rfc6156):
    Traversal Using Relays around NAT (TURN) Extension for IPv6
  - [x] [RFC6544](https://tools.ietf.org/html/rfc6544):
    TCP Candidates with Interactive Connectivity Establishment (ICE)
@@ -48,7 +48,7 @@ more scenarios is part of the near and long term future roadmap.
    Translator (NAT) Traversal
  - [x] [RFC8489](https://tools.ietf.org/html/rfc8489):
    Session Traversal Utilities for NAT (STUN)
- - [ ] [RFC8656](https://tools.ietf.org/html/rfc8656):
+ - [x] [RFC8656](https://tools.ietf.org/html/rfc8656):
    Traversal Using Relays around NAT (TURN): Relay Extensions to Session
    Traversal Utilities for NAT (STUN)
  - [x] [RFC8838](https://tools.ietf.org/html/rfc8838):
@@ -58,9 +58,7 @@ more scenarios is part of the near and long term future roadmap.
 ## TODO
 
 - RFC6062
-- RFC6156
 - RFC7675
-- RFC8656
 
 ## Building
 

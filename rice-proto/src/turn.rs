@@ -8,12 +8,11 @@
 
 //! TURN module.
 
-use alloc::sync::Arc;
 use core::net::SocketAddr;
+use stun_proto::types::AddressFamily;
 
 use crate::candidate::TransportType;
-#[cfg(feature = "rustls")]
-use rustls::{pki_types::ServerName, ClientConfig};
+
 pub use turn_client_proto::types::TurnCredentials;
 
 /// Configuration for a particular TURN server connection.
@@ -22,6 +21,7 @@ pub struct TurnConfig {
     client_transport: TransportType,
     turn_server: SocketAddr,
     credentials: TurnCredentials,
+    families: smallvec::SmallVec<[AddressFamily; 2]>,
     tls_config: Option<TurnTlsConfig>,
 }
 
@@ -30,30 +30,40 @@ impl TurnConfig {
     ///
     /// # Examples
     /// ```
+    /// # use rice_proto::AddressFamily;
     /// # use rice_proto::turn::{TurnConfig, TurnCredentials};
     /// # use rice_proto::candidate::TransportType;
     /// let credentials = TurnCredentials::new("user", "pass");
     /// let server_addr = "127.0.0.1:3478".parse().unwrap();
-    /// let config = TurnConfig::new(TransportType::Udp, server_addr, credentials.clone());
+    /// let families = [AddressFamily::IPV4];
+    /// let config = TurnConfig::new(
+    ///     TransportType::Udp,
+    ///     server_addr,
+    ///     credentials.clone(),
+    ///     &families
+    /// );
     /// assert_eq!(config.client_transport(), TransportType::Udp);
     /// assert_eq!(config.addr(), server_addr);
     /// assert_eq!(config.credentials().username(), credentials.username());
+    /// assert_eq!(config.families(), families);
     /// ```
     pub fn new(
         client_transport: TransportType,
         server_addr: SocketAddr,
         credentials: TurnCredentials,
+        families: &[AddressFamily],
     ) -> Self {
         Self {
             client_transport,
             turn_server: server_addr,
             credentials,
+            families: families.into(),
             tls_config: None,
         }
     }
 
     /// Connect to the TURN server over TLS.
-    pub fn with_config(mut self, config: TurnTlsConfig) -> Self {
+    pub fn with_tls_config(mut self, config: TurnTlsConfig) -> Self {
         self.tls_config = Some(config);
         self
     }
@@ -77,6 +87,11 @@ impl TurnConfig {
     pub fn credentials(&self) -> &TurnCredentials {
         &self.credentials
     }
+
+    /// The address family to allocate on the TURN server.
+    pub fn families(&self) -> &[AddressFamily] {
+        &self.families
+    }
 }
 
 /// Configuration parameters for TURN use over (D)TLS.
@@ -89,6 +104,11 @@ pub enum TurnTlsConfig {
     #[cfg(feature = "openssl")]
     Openssl(OpensslTurnConfig),
 }
+
+#[cfg(feature = "rustls")]
+use alloc::sync::Arc;
+#[cfg(feature = "rustls")]
+use rustls::{pki_types::ServerName, ClientConfig};
 
 /// Configuration parameters for TURN use over TLS with Rustls.
 #[cfg(feature = "rustls")]

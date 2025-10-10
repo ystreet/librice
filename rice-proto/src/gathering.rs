@@ -14,13 +14,10 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::net::{IpAddr, SocketAddr};
 use core::time::Duration;
-#[cfg(feature = "openssl")]
-use turn_client_proto::openssl::TurnClientOpensslTls;
-use turn_client_proto::rustls::TurnClientRustls;
 
 use crate::candidate::{Candidate, TcpType, TransportType};
 use crate::turn::TurnConfig;
-#[cfg(feature = "rustls")]
+#[cfg(any(feature = "openssl", feature = "rustls"))]
 use crate::turn::TurnTlsConfig;
 use stun_proto::agent::{HandleStunReply, StunAgent, StunAgentPollRet, StunError, Transmit};
 use stun_proto::types::attribute::XorMappedAddress;
@@ -29,7 +26,6 @@ use stun_proto::types::message::{
     Message, MessageHeader, MessageWriteVec, StunParseError, TransactionId, BINDING,
 };
 use stun_proto::types::prelude::{MessageWrite, MessageWriteExt};
-use stun_proto::types::AddressFamily;
 use stun_proto::Instant;
 use turn_client_proto::api::{TurnEvent, TurnPollRet, TurnRecvRet};
 use turn_client_proto::client::TurnClient;
@@ -37,6 +33,11 @@ use turn_client_proto::prelude::*;
 use turn_client_proto::tcp::TurnClientTcp;
 use turn_client_proto::types::message::ALLOCATE;
 use turn_client_proto::udp::TurnClientUdp;
+
+#[cfg(feature = "openssl")]
+use turn_client_proto::openssl::TurnClientOpensslTls;
+#[cfg(feature = "rustls")]
+use turn_client_proto::rustls::TurnClientRustls;
 
 use tracing::{debug, info, trace};
 
@@ -120,39 +121,39 @@ impl PendingRequest {
                 }
             }
             Method::Turn(config) => {
-                let mut client = None;
-                if let Some(tls) = config.tls_config() {
-                    match tls {
-                        #[cfg(feature = "rustls")]
-                        TurnTlsConfig::Rustls(rustls) => {
-                            client = Some(TurnClient::from(TurnClientRustls::allocate(
-                                local_addr,
-                                self.server_addr,
-                                config.credentials().clone(),
-                                &[AddressFamily::IPV4],
-                                rustls.server_name(),
-                                rustls.client_config(),
-                            )))
-                        }
-                        #[cfg(feature = "openssl")]
-                        TurnTlsConfig::Openssl(ossl) => {
-                            client = Some(TurnClient::from(TurnClientOpensslTls::allocate(
-                                TransportType::Tcp,
-                                local_addr,
-                                self.server_addr,
-                                config.credentials().clone(),
-                                &[AddressFamily::IPV4],
-                                ossl.ssl_context().clone(),
-                            )))
-                        }
+                let client = match config.tls_config() {
+                    #[cfg(feature = "rustls")]
+                    Some(TurnTlsConfig::Rustls(rustls)) => {
+                        Some(TurnClient::from(TurnClientRustls::allocate(
+                            local_addr,
+                            self.server_addr,
+                            config.credentials().clone(),
+                            config.families(),
+                            rustls.server_name(),
+                            rustls.client_config(),
+                        )))
                     }
-                }
+                    #[cfg(feature = "openssl")]
+                    Some(TurnTlsConfig::Openssl(ossl)) => {
+                        Some(TurnClient::from(TurnClientOpensslTls::allocate(
+                            TransportType::Tcp,
+                            local_addr,
+                            self.server_addr,
+                            config.credentials().clone(),
+                            config.families(),
+                            ossl.ssl_context().clone(),
+                        )))
+                    }
+                    #[cfg(all(not(feature = "rustls"), not(feature = "openssl")))]
+                    Some(_) => None,
+                    None => None,
+                };
                 let client = client.unwrap_or_else(|| {
                     TurnClientTcp::allocate(
                         local_addr,
                         self.server_addr,
                         config.credentials().clone(),
-                        &[AddressFamily::IPV4],
+                        config.families(),
                     )
                     .into()
                 });
@@ -232,18 +233,19 @@ impl StunGatherer {
     /// Create a new gatherer
     pub(crate) fn new(
         component_id: usize,
-        sockets: &[(TransportType, SocketAddr)],
+        stun_sockets: &[(TransportType, SocketAddr)],
         stun_servers: &[(TransportType, SocketAddr)],
-        turn_servers: &[&TurnConfig],
+        turn_servers: &[(SocketAddr, &TurnConfig)],
     ) -> Self {
         // TODO: what to do on duplicate socket or stun_server addresses?
         let mut pending_candidates = VecDeque::new();
         let mut pending_requests = VecDeque::new();
-        for (i, (socket_transport, socket_addr)) in sockets.iter().enumerate() {
+        for (i, (socket_transport, socket_addr)) in stun_sockets.iter().enumerate() {
             if address_is_ignorable(socket_addr.ip()) {
                 continue;
             }
-            let other_preference = (sockets.len() - i) as u32 * 2;
+            let other_preference =
+                turn_servers.len() as u32 * 2 + (stun_sockets.len() - i) as u32 * 2;
             match socket_transport {
                 TransportType::Udp => {
                     let priority = Candidate::calculate_priority(
@@ -312,12 +314,8 @@ impl StunGatherer {
                     });
                 }
             }
-            for (stun_transport, stun_addr) in stun_servers.iter().copied().chain(
-                turn_servers
-                    .iter()
-                    .map(|turn_config| (turn_config.client_transport(), turn_config.addr())),
-            ) {
-                if *socket_transport != stun_transport {
+            for (stun_transport, stun_addr) in stun_servers {
+                if socket_transport != stun_transport {
                     continue;
                 }
                 if socket_addr.is_ipv4() && !stun_addr.is_ipv4() {
@@ -326,46 +324,46 @@ impl StunGatherer {
                 if socket_addr.is_ipv6() && !stun_addr.is_ipv6() {
                     continue;
                 }
+                let other_preference =
+                    turn_servers.len() as u32 * 2 + (stun_sockets.len() - i) as u32 * 2;
                 pending_requests.push_back(PendingRequest {
                     component_id,
                     transport_type: *socket_transport,
                     local_addr: *socket_addr,
-                    server_addr: stun_addr,
+                    server_addr: *stun_addr,
                     other_preference,
                     completed: false,
                     agent_request_time: None,
                     method: Method::Stun,
                 });
             }
-            for turn_config in turn_servers.iter() {
-                if *socket_transport != turn_config.client_transport() {
-                    continue;
-                }
-                if socket_addr.is_ipv4() && !turn_config.addr().is_ipv4() {
-                    continue;
-                }
-                if socket_addr.is_ipv6() && !turn_config.addr().is_ipv6() {
-                    continue;
-                }
-                pending_requests.push_back(PendingRequest {
-                    component_id,
-                    transport_type: *socket_transport,
-                    local_addr: *socket_addr,
-                    server_addr: turn_config.addr(),
-                    other_preference,
-                    completed: false,
-                    agent_request_time: None,
-                    method: Method::Turn((*turn_config).clone()),
-                });
+        }
+        for (i, (turn_socket, turn_config)) in turn_servers.iter().enumerate() {
+            if turn_socket.is_ipv4() && !turn_config.addr().is_ipv4() {
+                continue;
             }
+            if turn_socket.is_ipv6() && !turn_config.addr().is_ipv6() {
+                continue;
+            }
+            let other_preference = (turn_servers.len() - i) as u32 * 2;
+            pending_requests.push_back(PendingRequest {
+                component_id,
+                transport_type: turn_config.client_transport(),
+                local_addr: *turn_socket,
+                server_addr: turn_config.addr(),
+                other_preference,
+                completed: false,
+                agent_request_time: None,
+                method: Method::Turn((*turn_config).clone()),
+            });
         }
 
         Self {
             component_id,
             requests: Vec::new(),
-            pending_candidates,
             produced_candidates: Default::default(),
-            produced_i: 0,
+            produced_i: pending_candidates.len(),
+            pending_candidates,
             pending_transmits: Default::default(),
             pending_requests,
             pending_tcp: Default::default(),
@@ -410,34 +408,33 @@ impl StunGatherer {
                             StunOrTurnClient::Stun(Box::new(agent))
                         }
                         Method::Turn(config) => {
-                            let mut client = None;
-                            if let Some(tls) = config.tls_config() {
-                                match tls {
-                                    #[cfg(feature = "rustls")]
-                                    TurnTlsConfig::Rustls(_rustls) => {
-                                        pending_request.completed = true;
-                                        continue;
-                                    }
-                                    #[cfg(feature = "openssl")]
-                                    TurnTlsConfig::Openssl(ossl) => {
-                                        client =
-                                            Some(TurnClient::from(TurnClientOpensslTls::allocate(
-                                                TransportType::Udp,
-                                                pending_request.local_addr,
-                                                pending_request.server_addr,
-                                                config.credentials().clone(),
-                                                &[AddressFamily::IPV4],
-                                                ossl.ssl_context().clone(),
-                                            )))
-                                    }
+                            let client = match config.tls_config() {
+                                #[cfg(feature = "rustls")]
+                                Some(TurnTlsConfig::Rustls(_rustls)) => {
+                                    pending_request.completed = true;
+                                    continue;
                                 }
-                            }
+                                #[cfg(feature = "openssl")]
+                                Some(TurnTlsConfig::Openssl(ossl)) => {
+                                    Some(TurnClient::from(TurnClientOpensslTls::allocate(
+                                        TransportType::Udp,
+                                        pending_request.local_addr,
+                                        pending_request.server_addr,
+                                        config.credentials().clone(),
+                                        config.families(),
+                                        ossl.ssl_context().clone(),
+                                    )))
+                                }
+                                #[cfg(all(not(feature = "rustls"), not(feature = "openssl")))]
+                                Some(_) => None,
+                                None => None,
+                            };
                             let client = client.unwrap_or_else(|| {
                                 TurnClientUdp::allocate(
                                     pending_request.local_addr,
                                     pending_request.server_addr,
                                     config.credentials().clone(),
-                                    &[AddressFamily::IPV4],
+                                    config.families(),
                                 )
                                 .into()
                             });
@@ -505,7 +502,8 @@ impl StunGatherer {
             return GatherPoll::NewCandidate(cand);
         }
 
-        for request in self.requests.iter_mut() {
+        let mut turn_ret = None;
+        for (idx, request) in self.requests.iter_mut().enumerate() {
             if request.completed {
                 continue;
             }
@@ -514,11 +512,6 @@ impl StunGatherer {
                 RequestProtocol::Tcp(ref mut tcp) => {
                     if tcp.is_none() {
                         return GatherPoll::WaitUntil(now);
-                    } else {
-                        if lowest_wait.is_none() {
-                            lowest_wait = Some(now + Duration::from_secs(600));
-                        }
-                        continue;
                     }
                 }
             };
@@ -540,21 +533,71 @@ impl StunGatherer {
                         }
                     }
                 },
-                StunOrTurnClient::Turn(client) => match client.poll(now) {
-                    TurnPollRet::Closed => {
-                        request.completed = true;
-                    }
-                    TurnPollRet::WaitUntil(new_time) => {
-                        if let Some(time) = lowest_wait {
-                            if new_time < time {
-                                lowest_wait = Some(new_time);
+                StunOrTurnClient::Turn(client) => {
+                    while let Some(event) = client.poll_event() {
+                        match event {
+                            TurnEvent::AllocationCreateFailed(family) => {
+                                // TODO: handle RFC 8656 dual allocations
+                                debug!(
+                                    "failed to create allocation on server {} for family {family}",
+                                    request.server
+                                );
+                                request.completed = true;
                             }
-                        } else {
-                            lowest_wait = Some(new_time);
+                            TurnEvent::AllocationCreated(transport, relayed_address) => {
+                                request.completed = true;
+                                let foundation = self.produced_i.to_string();
+                                let priority = Candidate::calculate_priority(
+                                    crate::candidate::CandidateType::Relayed,
+                                    transport,
+                                    None,
+                                    request.other_preference,
+                                    self.component_id,
+                                );
+                                let cand = Candidate::builder(
+                                    self.component_id,
+                                    crate::candidate::CandidateType::Relayed,
+                                    transport,
+                                    &foundation,
+                                    relayed_address,
+                                )
+                                .priority(priority)
+                                .related_address(request.server)
+                                .base_address(relayed_address)
+                                .build();
+                                self.produced_i += 1;
+                                turn_ret = Some((idx, cand));
+                                break;
+                            }
+                            _ => (),
                         }
                     }
-                },
+                    match client.poll(now) {
+                        TurnPollRet::Closed => {
+                            request.completed = true;
+                        }
+                        TurnPollRet::WaitUntil(new_time) => {
+                            if let Some(time) = lowest_wait {
+                                if new_time < time {
+                                    lowest_wait = Some(new_time);
+                                }
+                            } else {
+                                lowest_wait = Some(new_time);
+                            }
+                        }
+                    }
+                }
             }
+        }
+        if let Some((turn_idx, cand)) = turn_ret {
+            let request = self.requests.remove(turn_idx);
+            let StunOrTurnClient::Turn(client) = request.agent else {
+                unreachable!();
+            };
+            return GatherPoll::NewCandidate(GatheredCandidate {
+                candidate: cand,
+                turn_agent: Some(client),
+            });
         }
         if let Some(lowest_wait) = lowest_wait {
             GatherPoll::WaitUntil(lowest_wait)
@@ -720,9 +763,8 @@ impl StunGatherer {
         );
         trace!("requests {:?}", self.requests);
 
-        let mut turn_ret = None;
         let mut handled = false;
-        for (idx, request) in self.requests.iter_mut().enumerate() {
+        for request in self.requests.iter_mut() {
             if request.completed
                 || request.protocol.transport() != transmit.transport
                 || request.server != transmit.from
@@ -730,34 +772,35 @@ impl StunGatherer {
             {
                 continue;
             }
-            match &mut request.protocol {
-                RequestProtocol::Tcp(_stun_transaction) => {
-                    let Some(tcp_idx) = self.tcp_buffers.iter().position(|tcp| {
-                        tcp.local_addr == transmit.to && tcp.remote_addr == transmit.from
-                    }) else {
-                        unreachable!();
-                    };
-                    self.tcp_buffers[tcp_idx]
-                        .tcp_buffer
-                        .extend_from_slice(transmit.data.as_ref());
-                    match MessageHeader::from_bytes(&self.tcp_buffers[tcp_idx].tcp_buffer) {
-                        // we fail for anything that is not a BINDING/ALLOCATE response
-                        Ok(header) => {
-                            if !header.get_type().is_response()
-                                || ![BINDING, ALLOCATE].contains(&header.get_type().method())
-                            {
-                                request.completed = true;
-                                return false;
+            match &mut request.agent {
+                StunOrTurnClient::Stun(agent) => {
+                    match &mut request.protocol {
+                        RequestProtocol::Tcp(_stun_transaction) => {
+                            let Some(tcp_idx) = self.tcp_buffers.iter().position(|tcp| {
+                                tcp.local_addr == transmit.to && tcp.remote_addr == transmit.from
+                            }) else {
+                                unreachable!();
+                            };
+                            self.tcp_buffers[tcp_idx]
+                                .tcp_buffer
+                                .extend_from_slice(transmit.data.as_ref());
+                            match MessageHeader::from_bytes(&self.tcp_buffers[tcp_idx].tcp_buffer) {
+                                // we fail for anything that is not a BINDING/ALLOCATE response
+                                Ok(header) => {
+                                    if !header.get_type().is_response()
+                                        || ![BINDING, ALLOCATE]
+                                            .contains(&header.get_type().method())
+                                    {
+                                        request.completed = true;
+                                        return false;
+                                    }
+                                }
+                                Err(StunParseError::NotStun) => {
+                                    request.completed = true;
+                                    return false;
+                                }
+                                _ => (),
                             }
-                        }
-                        Err(StunParseError::NotStun) => {
-                            request.completed = true;
-                            return false;
-                        }
-                        _ => (),
-                    }
-                    match &mut request.agent {
-                        StunOrTurnClient::Stun(agent) => {
                             let Ok(msg) =
                                 Message::from_bytes(&self.tcp_buffers[tcp_idx].tcp_buffer)
                             else {
@@ -796,8 +839,7 @@ impl StunGatherer {
                                         server,
                                         Some(tcp_type),
                                     ) {
-                                        self.produced_i += 1;
-                                        self.pending_candidates.push_front(GatheredCandidate {
+                                        self.gathered_candidate(GatheredCandidate {
                                             candidate: cand.clone(),
                                             turn_agent: None,
                                         });
@@ -807,62 +849,13 @@ impl StunGatherer {
                                 break;
                             }
                         }
-                        StunOrTurnClient::Turn(client) => {
-                            let transmit = transmit_send_unframed(transmit);
-                            match client.recv(transmit, now) {
-                                TurnRecvRet::PeerData(_peer) => handled = true,
-                                TurnRecvRet::Handled => {
-                                    handled = true;
-                                    if let Some(TurnEvent::AllocationCreated(
-                                        transport,
-                                        relayed_address,
-                                    )) = client.poll_event()
-                                    {
-                                        request.completed = true;
-                                        let foundation = self.produced_i.to_string();
-                                        let priority = Candidate::calculate_priority(
-                                            crate::candidate::CandidateType::Host,
-                                            transport,
-                                            None,
-                                            request.other_preference,
-                                            self.component_id,
-                                        );
-                                        let cand = Candidate::builder(
-                                            self.component_id,
-                                            crate::candidate::CandidateType::Relayed,
-                                            transport,
-                                            &foundation,
-                                            relayed_address,
-                                        )
-                                        .priority(priority)
-                                        .related_address(request.server)
-                                        .base_address(relayed_address)
-                                        .build();
-                                        self.produced_i += 1;
-                                        turn_ret = Some((idx, cand));
-                                    }
-                                    break;
-                                }
-                                TurnRecvRet::Ignored(_) => (),
-                                TurnRecvRet::PeerIcmp {
-                                    transport,
-                                    peer,
-                                    icmp_type,
-                                    icmp_code,
-                                    icmp_data: _,
-                                } => {
-                                    debug!("gathering received ICMP(type:{icmp_type:x}, code:{icmp_code:x}) over TURN from {transport}:{peer}");
-                                    return true;
-                                }
-                            }
-                        }
-                    }
-                }
-                RequestProtocol::Udp => match Message::from_bytes(transmit.data.as_ref()) {
-                    Ok(msg) => {
-                        trace!("parsed STUN message {msg}, {request:?}");
-                        match &mut request.agent {
-                            StunOrTurnClient::Stun(agent) => {
+                        RequestProtocol::Udp => match Message::from_bytes(transmit.data.as_ref()) {
+                            Ok(msg) => {
+                                trace!(
+                                    "parsed STUN message {msg} from {} to {}",
+                                    transmit.from,
+                                    transmit.to
+                                );
                                 if let HandleStunReply::ValidatedStunResponse(response) =
                                     agent.handle_stun(msg, transmit.from)
                                 {
@@ -883,8 +876,7 @@ impl StunGatherer {
                                         request.server,
                                         None,
                                     ) {
-                                        self.produced_i += 1;
-                                        self.pending_candidates.push_front(GatheredCandidate {
+                                        self.gathered_candidate(GatheredCandidate {
                                             candidate: cand.clone(),
                                             turn_agent: None,
                                         });
@@ -893,74 +885,36 @@ impl StunGatherer {
                                     break;
                                 }
                             }
-                            StunOrTurnClient::Turn(client) => {
-                                let transmit = transmit_send_unframed(transmit);
-                                match client.recv(transmit, now) {
-                                    TurnRecvRet::PeerData(_peer) => {
-                                        handled = true;
-                                    }
-                                    TurnRecvRet::Handled => {
-                                        if let Some(TurnEvent::AllocationCreated(
-                                            transport,
-                                            relayed_address,
-                                        )) = client.poll_event()
-                                        {
-                                            request.completed = true;
-                                            let foundation = self.produced_i.to_string();
-                                            let priority = Candidate::calculate_priority(
-                                                crate::candidate::CandidateType::Host,
-                                                transport,
-                                                None,
-                                                request.other_preference,
-                                                self.component_id,
-                                            );
-                                            let cand = Candidate::builder(
-                                                self.component_id,
-                                                crate::candidate::CandidateType::Relayed,
-                                                transport,
-                                                &foundation,
-                                                relayed_address,
-                                            )
-                                            .priority(priority)
-                                            .related_address(request.server)
-                                            .base_address(relayed_address)
-                                            .build();
-                                            self.produced_i += 1;
-                                            turn_ret = Some((idx, cand));
-                                        }
-                                        handled = true;
-                                        break;
-                                    }
-                                    TurnRecvRet::Ignored(_) => (),
-                                    TurnRecvRet::PeerIcmp {
-                                        transport,
-                                        peer,
-                                        icmp_type,
-                                        icmp_code,
-                                        icmp_data: _,
-                                    } => {
-                                        debug!("gathering received ICMP(type:{icmp_type:x}, code:{icmp_code:x}) over TURN from {transport}:{peer}");
-                                        return true;
-                                    }
-                                }
-                            }
+                            Err(_e) => (),
+                        },
+                    }
+                }
+                StunOrTurnClient::Turn(client) => {
+                    let transmit = transmit_send_unframed(transmit);
+                    match client.recv(transmit, now) {
+                        TurnRecvRet::PeerData(_peer) => handled = true,
+                        TurnRecvRet::Handled => handled = true,
+                        TurnRecvRet::Ignored(_) => (),
+                        TurnRecvRet::PeerIcmp {
+                            transport,
+                            peer,
+                            icmp_type,
+                            icmp_code,
+                            icmp_data: _,
+                        } => {
+                            debug!("gathering received ICMP(type:{icmp_type:x}, code:{icmp_code:x}) over TURN from {transport}:{peer}");
+                            return true;
                         }
                     }
-                    Err(_e) => (),
-                },
+                }
             }
         }
-        if let Some((turn_idx, cand)) = turn_ret {
-            let request = self.requests.remove(turn_idx);
-            let StunOrTurnClient::Turn(client) = request.agent else {
-                unreachable!();
-            };
-            self.pending_candidates.push_front(GatheredCandidate {
-                candidate: cand.clone(),
-                turn_agent: Some(client),
-            });
-        }
         handled
+    }
+
+    fn gathered_candidate(&mut self, gathered: GatheredCandidate) {
+        self.produced_i += 1;
+        self.pending_candidates.push_front(gathered);
     }
 
     /// Provide a socket as requested through [`GatherPoll::AllocateSocket`].  The transport and address
@@ -1031,6 +985,7 @@ mod tests {
     use stun_proto::types::{
         message::{MessageClass, MessageWriteVec},
         prelude::{MessageWrite, MessageWriteExt},
+        AddressFamily,
     };
     use turn_server_proto::api::{TurnServerApi, TurnServerPollRet};
 
@@ -1321,11 +1276,15 @@ mod tests {
         let mut gather = StunGatherer::new(
             1,
             &[(TransportType::Udp, local_addr)],
-            &[],
-            &[&TurnConfig::new(
-                TransportType::Udp,
-                turn_listen_addr,
-                turn_credentials,
+            &[(TransportType::Udp, turn_listen_addr)],
+            &[(
+                local_addr,
+                &TurnConfig::new(
+                    TransportType::Udp,
+                    turn_listen_addr,
+                    turn_credentials,
+                    &[AddressFamily::IPV4],
+                ),
             )],
         );
         let now = Instant::ZERO;
@@ -1426,11 +1385,15 @@ mod tests {
         let mut gather = StunGatherer::new(
             1,
             &[(TransportType::Tcp, local_addr)],
-            &[],
-            &[&TurnConfig::new(
-                TransportType::Tcp,
-                turn_listen_addr,
-                turn_credentials,
+            &[(TransportType::Tcp, turn_listen_addr)],
+            &[(
+                local_addr,
+                &TurnConfig::new(
+                    TransportType::Tcp,
+                    turn_listen_addr,
+                    turn_credentials,
+                    &[AddressFamily::IPV4],
+                ),
             )],
         );
         let now = Instant::ZERO;

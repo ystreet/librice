@@ -552,6 +552,28 @@ impl From<TransportType> for crate::ffi::RiceTransportType {
     }
 }
 
+impl core::str::FromStr for TransportType {
+    type Err = ParseTransportTypeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.eq_ignore_ascii_case("udp") {
+            Ok(Self::Udp)
+        } else if s.eq_ignore_ascii_case("tcp") {
+            Ok(Self::Tcp)
+        } else {
+            Err(ParseTransportTypeError::UnknownTransport)
+        }
+    }
+}
+
+/// Errors when parsing a [`TransportType`]
+#[derive(Debug, thiserror::Error)]
+pub enum ParseTransportTypeError {
+    /// An unknown transport value was provided
+    #[error("Unknown transport value was provided")]
+    UnknownTransport,
+}
+
 /// Paired local and remote candidate
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidatePair {

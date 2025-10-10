@@ -191,7 +191,7 @@ impl Agent {
 
     /// Add a TURN server by address and transport to use for gathering potential candidates
     pub fn add_turn_server(&self, config: TurnConfig) {
-        self.agent.lock().unwrap().add_turn_server(config)
+        self.inner.lock().unwrap().turn_servers.push(config);
         // TODO: propagate towards the gatherer as required
     }
 }
@@ -200,6 +200,7 @@ impl Agent {
 pub(crate) struct AgentInner {
     pub(crate) waker: Option<Waker>,
     streams: Vec<Stream>,
+    pub(crate) turn_servers: Vec<TurnConfig>,
 }
 
 /// Events that users might like to know
