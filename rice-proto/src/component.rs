@@ -124,7 +124,7 @@ impl<'a> ComponentMut<'a> {
         &mut self,
         sockets: &[(TransportType, SocketAddr)],
         stun_servers: &[(TransportType, SocketAddr)],
-        turn_servers: &[&TurnConfig],
+        turn_servers: &[(SocketAddr, &TurnConfig)],
     ) -> Result<(), AgentError> {
         let stream = self.agent.mut_stream_state(self.stream_id).unwrap();
         let component = stream.mut_component_state(self.component_id).unwrap();
@@ -289,7 +289,7 @@ impl ComponentState {
         &mut self,
         sockets: &[(TransportType, SocketAddr)],
         stun_servers: &[(TransportType, SocketAddr)],
-        turn_servers: &[&TurnConfig],
+        turn_servers: &[(SocketAddr, &TurnConfig)],
     ) -> Result<(), AgentError> {
         if self.gather_state != GatherProgress::New {
             return Err(AgentError::AlreadyInProgress);

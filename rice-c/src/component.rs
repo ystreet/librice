@@ -12,6 +12,7 @@ use sans_io_time::Instant;
 
 use crate::agent::{AgentError, AgentTransmit};
 use crate::candidate::{CandidatePair, TransportType};
+use crate::turn::TurnConfig;
 use crate::{const_override, mut_override, Address};
 
 /// A [`Component`] in an ICE [`Stream`](crate::stream::Stream)
@@ -78,24 +79,34 @@ impl Component {
     /// Start gathering candidates for this component.  The parent
     /// [`Agent::poll`](crate::agent::Agent::poll) is used to progress
     /// the gathering.
-    pub fn gather_candidates(
+    pub fn gather_candidates<'a, 'b>(
         &self,
-        sockets: impl IntoIterator<Item = (TransportType, Address)>,
+        sockets: impl IntoIterator<Item = (TransportType, &'a Address)>,
+        turn_servers: impl IntoIterator<Item = (&'b Address, TurnConfig)>,
     ) -> Result<(), AgentError> {
-        let mut transports = vec![];
-        let mut socket_addr = vec![];
-        let mut socket_addresses = vec![];
-        for (ttype, addr) in sockets.into_iter() {
-            transports.push(ttype.into());
-            socket_addresses.push(const_override(addr.ffi));
-            socket_addr.push(addr);
-        }
         unsafe {
+            let mut transports = vec![];
+            let mut socket_addr = vec![];
+            let mut socket_addresses = vec![];
+            for (ttype, addr) in sockets.into_iter() {
+                transports.push(ttype.into());
+                socket_addresses.push(const_override(addr.ffi));
+                socket_addr.push(addr);
+            }
+            let mut turn_sockets = vec![];
+            let mut turn_configs = vec![];
+            for (turn_addr, config) in turn_servers.into_iter() {
+                turn_sockets.push(const_override(turn_addr.ffi));
+                turn_configs.push(config.into_c_full());
+            }
             AgentError::from_c(crate::ffi::rice_component_gather_candidates(
                 self.ffi,
                 transports.len(),
                 socket_addresses.as_ptr(),
                 transports.as_ptr(),
+                turn_sockets.len(),
+                turn_sockets.as_ptr(),
+                turn_configs.as_ptr(),
             ))
         }
     }

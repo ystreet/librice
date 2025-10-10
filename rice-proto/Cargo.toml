@@ -32,6 +32,7 @@ rice-stun-types.workspace = true
 rice-ctypes = { workspace = true, optional = true }
 rustls = { version = "0.23", optional = true }
 rustls-platform-verifier = { version = "0.5", optional = true }
+smallvec.workspace = true
 stun-proto.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, optional = true }

@@ -387,7 +387,9 @@ mod tests {
         agent.add_stun_server(transport, stun_addr);
         stream.set_local_credentials(&local_credentials);
         stream.set_remote_credentials(&remote_credentials);
-        component.gather_candidates([(transport, addr)]).unwrap();
+        component
+            .gather_candidates([(transport, &addr)], [])
+            .unwrap();
 
         let AgentPoll::AllocateSocket(ref alloc) = agent.poll(Instant::ZERO) else {
             unreachable!()

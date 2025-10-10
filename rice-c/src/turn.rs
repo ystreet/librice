@@ -9,33 +9,38 @@
 //! TURN module.
 
 use crate::candidate::TransportType;
-use crate::const_override;
-use crate::ffi::RiceTlsConfig;
+use crate::{const_override, AddressFamily};
 
 pub use crate::stream::Credentials as TurnCredentials;
 
 /// Configuration for a particular TURN server connection.
 #[derive(Debug, Clone)]
 pub struct TurnConfig {
-    pub(crate) client_transport: TransportType,
-    pub(crate) turn_server: crate::Address,
-    pub(crate) credentials: TurnCredentials,
-    pub(crate) tls_config: Option<TurnTlsConfig>,
+    ffi: *mut crate::ffi::RiceTurnConfig,
 }
+
+unsafe impl Send for TurnConfig {}
 
 impl TurnConfig {
     /// Create a new [`TurnConfig`] from the provided details.
     ///
     /// # Examples
     /// ```
+    /// # use rice_c::AddressFamily;
     /// # use rice_c::turn::{TurnConfig, TurnCredentials};
     /// # use rice_c::candidate::TransportType;
     /// # use core::net::SocketAddr;
     /// let credentials = TurnCredentials::new("user", "pass");
     /// let server_addr = rice_c::Address::from("127.0.0.1:3478".parse::<SocketAddr>().unwrap());
-    /// let config = TurnConfig::new(TransportType::Udp, server_addr.clone(), credentials.clone());
+    /// let config = TurnConfig::new(
+    ///     TransportType::Udp,
+    ///     server_addr.clone(),
+    ///     credentials.clone(),
+    ///     &[AddressFamily::IPV4],
+    ///     None,
+    /// );
     /// assert_eq!(config.client_transport(), TransportType::Udp);
-    /// assert_eq!(config.addr(), &server_addr);
+    /// assert_eq!(config.addr(), server_addr);
     /// // FIXME
     /// //assert_eq!(config.credentials().username(), credentials.username());
     /// ```
@@ -43,39 +48,76 @@ impl TurnConfig {
         client_transport: TransportType,
         turn_server: crate::Address,
         credentials: TurnCredentials,
+        families: &[AddressFamily],
+        tls_config: Option<TurnTlsConfig>,
     ) -> Self {
-        Self {
-            client_transport,
-            turn_server,
-            credentials,
-            tls_config: None,
+        unsafe {
+            let tls_config = if let Some(tls_config) = tls_config {
+                tls_config.into_c_full()
+            } else {
+                core::ptr::null_mut()
+            };
+            let families = families
+                .iter()
+                .map(|&family| family as u32)
+                .collect::<Vec<_>>();
+            let ffi = crate::ffi::rice_turn_config_new(
+                client_transport.into(),
+                const_override(turn_server.as_c()),
+                credentials.into_c_none(),
+                families.len(),
+                families.as_ptr(),
+                tls_config,
+            );
+            Self { ffi }
         }
     }
 
-    /// Connect to the TURN server over TLS.
-    pub fn with_tls_config(mut self, tls_config: TurnTlsConfig) -> Self {
-        self.tls_config = Some(tls_config);
-        self
-    }
-
     /// The TLS configuration to use for connecting to this TURN server.
-    pub fn tls_config(&self) -> Option<&TurnTlsConfig> {
-        self.tls_config.as_ref()
+    pub fn tls_config(&self) -> Option<TurnTlsConfig> {
+        unsafe {
+            let ret = crate::ffi::rice_turn_config_get_tls_config(self.ffi);
+            if ret.is_null() {
+                None
+            } else {
+                match crate::ffi::rice_tls_config_variant(ret) {
+                    #[cfg(feature = "openssl")]
+                    crate::ffi::RICE_TLS_VARIANT_OPENSSL => Some(TurnTlsConfig::Openssl(ret)),
+                    #[cfg(feature = "rustls")]
+                    crate::ffi::RICE_TLS_VARIANT_RUSTLS => Some(TurnTlsConfig::Rustls(ret)),
+                    _ => None,
+                }
+            }
+        }
     }
 
     /// The TURN server address to connect to.
-    pub fn addr(&self) -> &crate::Address {
-        &self.turn_server
+    pub fn addr(&self) -> crate::Address {
+        unsafe { crate::Address::from_c_full(crate::ffi::rice_turn_config_get_addr(self.ffi)) }
     }
 
     /// The [`TransportType`] between the client and the TURN server.
     pub fn client_transport(&self) -> TransportType {
-        self.client_transport
+        unsafe { crate::ffi::rice_turn_config_get_client_transport(self.ffi).into() }
     }
 
     /// The credentials for accessing the TURN server.
-    pub fn credentials(&self) -> &TurnCredentials {
-        &self.credentials
+    pub fn credentials(&self) -> TurnCredentials {
+        unsafe {
+            TurnCredentials::from_c_full(crate::ffi::rice_turn_config_get_credentials(self.ffi))
+        }
+    }
+
+    pub(crate) fn into_c_full(self) -> *mut crate::ffi::RiceTurnConfig {
+        self.ffi
+    }
+}
+
+impl Drop for TurnConfig {
+    fn drop(&mut self) {
+        unsafe {
+            crate::ffi::rice_turn_config_free(self.ffi);
+        }
     }
 }
 
@@ -84,10 +126,10 @@ impl TurnConfig {
 pub enum TurnTlsConfig {
     /// Rustls variant for TLS configuration.
     #[cfg(feature = "rustls")]
-    Rustls(*mut RiceTlsConfig),
+    Rustls(*mut crate::ffi::RiceTlsConfig),
     /// Openssl variant for TLS configuration.
     #[cfg(feature = "openssl")]
-    Openssl(*mut RiceTlsConfig),
+    Openssl(*mut crate::ffi::RiceTlsConfig),
 }
 
 impl Clone for TurnTlsConfig {
@@ -136,13 +178,17 @@ impl TurnTlsConfig {
         unsafe { Self::Openssl(crate::ffi::rice_tls_config_new_openssl(transport.into())) }
     }
 
-    pub(crate) fn as_c(&self) -> *const RiceTlsConfig {
-        match self {
+    pub(crate) fn into_c_full(self) -> *mut crate::ffi::RiceTlsConfig {
+        #[allow(unreachable_patterns)]
+        let ret = match self {
             #[cfg(feature = "rustls")]
-            Self::Rustls(cfg) => const_override(*cfg),
+            Self::Rustls(cfg) => cfg,
             #[cfg(feature = "openssl")]
-            Self::Openssl(cfg) => const_override(*cfg),
-        }
+            Self::Openssl(cfg) => cfg,
+            _ => core::ptr::null_mut(),
+        };
+        core::mem::forget(self);
+        ret
     }
 }
 
@@ -152,19 +198,78 @@ mod tests {
 
     use core::net::SocketAddr;
 
-    #[cfg(feature = "rustls")]
+    fn turn_server_address() -> crate::Address {
+        "127.0.0.1:3478".parse::<SocketAddr>().unwrap().into()
+    }
+
+    fn turn_credentials() -> TurnCredentials {
+        TurnCredentials::new("tuser", "tpass")
+    }
+
     #[test]
-    fn test_rustls_roundtrip() {
-        let dns = "turn.example.com";
-        let cfg = TurnTlsConfig::new_rustls_with_dns(dns);
-        drop(cfg);
-        let addr = "127.0.0.1:3478".parse::<SocketAddr>().unwrap();
-        let _cfg = TurnTlsConfig::new_rustls_with_ip(&addr.into());
+    fn test_config_getter() {
+        let cfg = TurnConfig::new(
+            TransportType::Udp,
+            turn_server_address(),
+            turn_credentials(),
+            &[AddressFamily::IPV4],
+            None,
+        );
+        assert_eq!(cfg.addr(), turn_server_address());
+        assert_eq!(cfg.client_transport(), TransportType::Udp);
+        // TODO credentials
+        //assert_eq!(cfg.credentials().username(), turn_credentials().username());
+        assert!(cfg.tls_config().is_none());
+    }
+
+    #[cfg(feature = "rustls")]
+    mod rustls {
+        use super::*;
+        #[test]
+        fn test_rustls_roundtrip() {
+            let dns = "turn.example.com";
+            let cfg = TurnTlsConfig::new_rustls_with_dns(dns);
+            drop(cfg);
+            let addr = "127.0.0.1:3478".parse::<SocketAddr>().unwrap();
+            let _cfg = TurnTlsConfig::new_rustls_with_ip(&addr.into());
+        }
+
+        #[test]
+        fn test_rustls_getter() {
+            let dns = "turn.example.com";
+            let tls = TurnTlsConfig::new_rustls_with_dns(dns);
+            let cfg = TurnConfig::new(
+                TransportType::Udp,
+                turn_server_address(),
+                turn_credentials(),
+                &[AddressFamily::IPV4],
+                Some(tls.clone()),
+            );
+            let retrieved = cfg.tls_config().unwrap();
+            assert!(matches!(retrieved, TurnTlsConfig::Rustls(_)));
+        }
     }
 
     #[cfg(feature = "openssl")]
-    #[test]
-    fn test_openssl_roundtrip() {
-        let cfg = TurnTlsConfig::new_openssl(TransportType::Udp);
+    mod openssl {
+        use super::*;
+        #[test]
+        fn test_openssl_roundtrip() {
+            let _cfg = TurnTlsConfig::new_openssl(TransportType::Udp);
+        }
+
+        #[test]
+        fn test_openssl_getter() {
+            let tls = TurnTlsConfig::new_openssl(TransportType::Udp);
+            let cfg = TurnConfig::new(
+                TransportType::Udp,
+                turn_server_address(),
+                turn_credentials(),
+                &[AddressFamily::IPV4],
+                Some(tls),
+            );
+            let retrieved = cfg.tls_config().unwrap();
+            assert!(matches!(retrieved, TurnTlsConfig::Openssl(_)));
+        }
     }
 }

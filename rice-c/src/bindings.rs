@@ -66,6 +66,11 @@ pub const RICE_TCP_TYPE_PASSIVE: RiceTcpType = 2;
 #[doc = " Simultaneous open.  The candidate will both listen for incoming connections, and connect to\n remote addresses."]
 pub const RICE_TCP_TYPE_SO: RiceTcpType = 3;
 pub type RiceTcpType = u32;
+#[doc = " Openssl."]
+pub const RICE_TLS_VARIANT_OPENSSL: RiceTlsVariant = 1;
+#[doc = " Rustls."]
+pub const RICE_TLS_VARIANT_RUSTLS: RiceTlsVariant = 2;
+pub type RiceTlsVariant = u32;
 #[doc = " The UDP transport"]
 pub const RICE_TRANSPORT_TYPE_UDP: RiceTransportType = 0;
 #[doc = " The TCP transport"]
@@ -99,6 +104,11 @@ pub struct RiceStream {
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct RiceTlsConfig {
+    _unused: [u8; 0],
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct RiceTurnConfig {
     _unused: [u8; 0],
 }
 #[doc = " A pointer to a sequence of bytes and the associated size."]
@@ -638,14 +648,45 @@ unsafe extern "C" {
     );
 }
 unsafe extern "C" {
-    #[doc = " Add a TURN server to this `RiceAgent`."]
-    pub fn rice_agent_add_turn_server(
-        agent: *const RiceAgent,
+    #[doc = " Create a new TURN configuration."]
+    pub fn rice_turn_config_new(
         transport: RiceTransportType,
         addr: *const RiceAddress,
         credentials: *const RiceCredentials,
-        tls_config: *const RiceTlsConfig,
+        n_families: usize,
+        families: *const RiceAddressFamily,
+        tls_config: *mut RiceTlsConfig,
+    ) -> *mut RiceTurnConfig;
+}
+unsafe extern "C" {
+    #[doc = " Free a [`RiceTurnConfig`]."]
+    pub fn rice_turn_config_free(config: *mut RiceTurnConfig);
+}
+unsafe extern "C" {
+    #[doc = " The address of the TURN server."]
+    pub fn rice_turn_config_get_addr(config: *const RiceTurnConfig) -> *mut RiceAddress;
+}
+unsafe extern "C" {
+    #[doc = " The transport to connect to the TURN server."]
+    pub fn rice_turn_config_get_client_transport(
+        config: *const RiceTurnConfig,
+    ) -> RiceTransportType;
+}
+unsafe extern "C" {
+    #[doc = " The credentials to use for accessing the TURN server."]
+    pub fn rice_turn_config_get_credentials(config: *const RiceTurnConfig) -> *mut RiceCredentials;
+}
+unsafe extern "C" {
+    #[doc = " The transport to connect to the TURN server."]
+    pub fn rice_turn_config_get_families(
+        config: *const RiceTurnConfig,
+        n_families: *mut usize,
+        families: *mut RiceAddressFamily,
     );
+}
+unsafe extern "C" {
+    #[doc = " The TLS config associated with this TURN configuration."]
+    pub fn rice_turn_config_get_tls_config(config: *const RiceTurnConfig) -> *mut RiceTlsConfig;
 }
 unsafe extern "C" {
     #[doc = " Increase the reference count of the `RiceTlsConfig`.\n\n This function is multi-threading safe."]
@@ -654,6 +695,10 @@ unsafe extern "C" {
 unsafe extern "C" {
     #[doc = " Decrease the reference count of the `RiceTlsConfig`.\n\n If this is the last reference, then the `RiceTlsConfig` is freed.\n\n This function is multi-threading safe."]
     pub fn rice_tls_config_unref(config: *mut RiceTlsConfig);
+}
+unsafe extern "C" {
+    #[doc = " The TLS variant for a [`RiceTlsConfig`]"]
+    pub fn rice_tls_config_variant(config: *const RiceTlsConfig) -> RiceTlsVariant;
 }
 unsafe extern "C" {
     #[doc = " Construct a new TLS configuration using Openssl."]
@@ -926,6 +971,9 @@ unsafe extern "C" {
         sockets_len: usize,
         sockets_addr: *const *const RiceAddress,
         sockets_transports: *const RiceTransportType,
+        turn_len: usize,
+        turn_sockets: *const *const RiceAddress,
+        turn_config: *const *mut RiceTurnConfig,
     ) -> RiceError;
 }
 unsafe extern "C" {

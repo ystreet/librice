@@ -408,21 +408,48 @@ impl Stream {
             .weak_proto_agent
             .upgrade()
             .ok_or(AgentError::Proto(ProtoAgentError::ResourceNotFound))?;
+        let agent_inner = self
+            .weak_agent_inner
+            .upgrade()
+            .ok_or(AgentError::Proto(ProtoAgentError::ResourceNotFound))?;
         let component_ids = self.proto_stream.component_ids();
         let weak_inner = Arc::downgrade(&self.inner);
         let base_instant = self.base_instant;
+        let turn_configs = agent_inner.lock().unwrap().turn_servers.clone();
 
         for component_id in component_ids {
             let weak_component = Arc::downgrade(&self.component(component_id).unwrap().inner);
-            let sockets = iface_sockets()
+            let mut sockets = iface_sockets()
                 .unwrap()
                 .filter_map(|s| async move { s.ok() })
                 .collect::<Vec<_>>()
                 .await;
-            let proto_sockets = sockets
+            let proto_stun_sockets = sockets
                 .iter()
                 .map(|s| (s.transport(), s.local_addr().into()))
                 .collect::<Vec<_>>();
+
+            let mut proto_turn_configs = vec![];
+            for turn_config in turn_configs.iter() {
+                let turn_sockets = iface_sockets()
+                    .unwrap()
+                    .filter_map(|s| {
+                        let turn_config = turn_config.clone();
+                        async move {
+                            s.ok().filter(|s| {
+                                s.transport() == turn_config.client_transport()
+                                    && s.local_addr().is_ipv4()
+                                        == turn_config.addr().as_socket().is_ipv4()
+                            })
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .await;
+                for s in turn_sockets.iter() {
+                    proto_turn_configs.push((s.local_addr().into(), turn_config.clone()));
+                }
+                sockets.extend(turn_sockets);
+            }
 
             for socket in sockets {
                 let weak_inner = weak_inner.clone();
@@ -511,7 +538,14 @@ impl Stream {
                 let proto_agent = proto_agent.lock().unwrap();
                 let proto_stream = proto_agent.stream(self.id).unwrap();
                 let component = proto_stream.component(component_id).unwrap();
-                component.gather_candidates(proto_sockets)?;
+                component.gather_candidates(
+                    proto_stun_sockets
+                        .iter()
+                        .map(|(transport, addr)| (*transport, addr)),
+                    proto_turn_configs
+                        .iter()
+                        .map(|(addr, config)| (addr, config.clone())),
+                )?;
             }
         }
         Ok(())

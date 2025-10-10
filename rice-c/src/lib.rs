@@ -176,6 +176,16 @@ impl PartialEq<Address> for Address {
     }
 }
 
+/// The family of an address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum AddressFamily {
+    /// Version 4 of the Internet Protocol.
+    IPV4 = crate::ffi::RICE_ADDRESS_FAMILY_IPV4,
+    /// Version 6 of the Internet Protocol.
+    IPV6 = crate::ffi::RICE_ADDRESS_FAMILY_IPV6,
+}
+
 fn mut_override<T>(val: *const T) -> *mut T {
     val as *mut T
 }

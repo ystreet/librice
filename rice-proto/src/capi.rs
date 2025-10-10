@@ -64,6 +64,7 @@ use crate::turn::RustlsTurnConfig;
 use crate::turn::{TurnConfig, TurnCredentials, TurnTlsConfig};
 use stun_proto::agent::{StunError, Transmit};
 use stun_proto::types::data::{Data, DataOwned, DataSlice};
+use stun_proto::types::AddressFamily;
 use stun_proto::Instant;
 use turn_client_proto::client::TurnClient;
 
@@ -164,7 +165,6 @@ fn transport_type_to_c(transport: TransportType) -> RiceTransportType {
 #[derive(Debug)]
 struct RiceAgentInner {
     stun_servers: Vec<(TransportType, SocketAddr)>,
-    turn_servers: Vec<TurnConfig>,
     streams: Vec<Arc<RiceStream>>,
 }
 
@@ -191,7 +191,6 @@ pub unsafe extern "C" fn rice_agent_new(controlling: bool, trickle_ice: bool) ->
         proto_agent,
         inner: Arc::new(Mutex::new(RiceAgentInner {
             stun_servers: vec![],
-            turn_servers: vec![],
             streams: vec![],
         })),
     });
@@ -717,35 +716,152 @@ pub unsafe extern "C" fn rice_agent_add_stun_server(
     core::mem::forget(agent);
 }
 
-/// Add a TURN server to this `RiceAgent`.
+/// Configuration for accessing a TURN server.
+#[derive(Debug, Clone)]
+pub struct RiceTurnConfig(TurnConfig);
+
+impl RiceTurnConfig {
+    /// Create a new `RiceTurnConfig`.
+    pub fn new(config: TurnConfig) -> Self {
+        Self(config)
+    }
+
+    /// Convert this `RiceTurnConfig` into it's C API equivalent.
+    ///
+    /// The returned value should be converted back into the Rust equivalent using
+    /// `RiceTurnConfig::into_rust_full()` in order to free the resource.
+    pub fn into_c_full(self) -> *const RiceTurnConfig {
+        const_override(Box::into_raw(Box::new(self)))
+    }
+
+    /// Consume a C representation of a `RiceTurnConfig` into the Rust equivalent.
+    pub unsafe fn into_rice_full(value: *mut RiceTurnConfig) -> Box<Self> {
+        Box::from_raw(value)
+    }
+
+    /// Copy a C representation of a `RiceTurnConfig` into the Rust equivalent.
+    pub unsafe fn into_rice_none(value: *const RiceTurnConfig) -> Self {
+        let boxed = Box::from_raw(mut_override(value));
+        let ret = (*boxed).clone();
+        core::mem::forget(boxed);
+        ret
+    }
+
+    /// The inner representation of the [`RiceTurnConfig`].
+    pub fn inner(self) -> TurnConfig {
+        self.0
+    }
+}
+
+/// Create a new TURN configuration.
 #[no_mangle]
-pub unsafe extern "C" fn rice_agent_add_turn_server(
-    agent: *const RiceAgent,
+pub unsafe extern "C" fn rice_turn_config_new(
     transport: RiceTransportType,
     addr: *const RiceAddress,
     credentials: *const RiceCredentials,
-    tls_config: *const RiceTlsConfig,
-) {
+    n_families: usize,
+    families: *const RiceAddressFamily,
+    tls_config: *mut RiceTlsConfig,
+) -> *mut RiceTurnConfig {
     let creds = Box::from_raw(mut_override(credentials));
-
-    let agent = Arc::from_raw(agent);
     let addr = Box::from_raw(mut_override(addr));
-    let mut inner = agent.inner.lock().unwrap();
+    let families = core::slice::from_raw_parts(families, n_families);
+    let families = families
+        .iter()
+        .map(|family| family.into_rice())
+        .collect::<Vec<_>>();
+
     let mut turn_config = TurnConfig::new(
         transport_type_from_c(transport),
         **addr,
         TurnCredentials::new(&creds.credentials.ufrag, &creds.credentials.passwd),
+        &families,
     );
     if !tls_config.is_null() {
         let tls_config = Arc::from_raw(tls_config);
-        turn_config = turn_config.with_config(tls_config.variant.clone());
-        core::mem::forget(tls_config);
+        turn_config = turn_config.with_tls_config(tls_config.variant.clone());
     }
-    inner.turn_servers.push(turn_config);
-    drop(inner);
     core::mem::forget(addr);
-    core::mem::forget(agent);
     core::mem::forget(creds);
+    Box::into_raw(Box::new(RiceTurnConfig::new(turn_config)))
+}
+
+/// Free a [`RiceTurnConfig`].
+#[no_mangle]
+pub unsafe extern "C" fn rice_turn_config_free(config: *mut RiceTurnConfig) {
+    let _ = RiceTurnConfig::into_rice_full(config);
+}
+
+/// The address of the TURN server.
+#[no_mangle]
+pub unsafe extern "C" fn rice_turn_config_get_addr(
+    config: *const RiceTurnConfig,
+) -> *mut RiceAddress {
+    let config = RiceTurnConfig::into_rice_none(config).inner();
+    mut_override(RiceAddress::new(config.addr()).into_c_full())
+}
+
+/// The transport to connect to the TURN server.
+#[no_mangle]
+pub unsafe extern "C" fn rice_turn_config_get_client_transport(
+    config: *const RiceTurnConfig,
+) -> RiceTransportType {
+    let config = RiceTurnConfig::into_rice_none(config).inner();
+    transport_type_to_c(config.client_transport())
+}
+
+fn turn_credentials_to_c(credentials: &TurnCredentials) -> *mut RiceCredentials {
+    Box::into_raw(Box::new(RiceCredentials {
+        credentials: Credentials::new(
+            credentials.username().to_owned(),
+            credentials.password().to_owned(),
+        ),
+    }))
+}
+
+/// The credentials to use for accessing the TURN server.
+#[no_mangle]
+pub unsafe extern "C" fn rice_turn_config_get_credentials(
+    config: *const RiceTurnConfig,
+) -> *mut RiceCredentials {
+    let config = RiceTurnConfig::into_rice_none(config).inner();
+    turn_credentials_to_c(config.credentials())
+}
+
+/// The transport to connect to the TURN server.
+#[no_mangle]
+pub unsafe extern "C" fn rice_turn_config_get_families(
+    config: *const RiceTurnConfig,
+    n_families: *mut usize,
+    families: *mut RiceAddressFamily,
+) {
+    let config = RiceTurnConfig::into_rice_none(config).inner();
+    let output_len = *n_families;
+    *n_families = config.families().len();
+    if families.is_null() {
+        return;
+    }
+    let families = core::slice::from_raw_parts_mut(families, output_len);
+    for (i, family) in config.families().iter().enumerate() {
+        *n_families = i;
+        if i >= output_len {
+            break;
+        }
+        families[i] = RiceAddressFamily::from_rice(*family);
+    }
+}
+
+/// The TLS config associated with this TURN configuration.
+#[no_mangle]
+pub unsafe extern "C" fn rice_turn_config_get_tls_config(
+    config: *const RiceTurnConfig,
+) -> *mut RiceTlsConfig {
+    let config = RiceTurnConfig::into_rice_none(config).inner();
+    if let Some(variant) = config.tls_config().cloned() {
+        mut_override(Arc::into_raw(Arc::new(RiceTlsConfig { variant })))
+    } else {
+        core::ptr::null_mut()
+    }
 }
 
 /// TLS configuration data.
@@ -773,6 +889,30 @@ pub unsafe extern "C" fn rice_tls_config_unref(config: *mut RiceTlsConfig) {
     Arc::decrement_strong_count(config)
 }
 
+/// The TLS variant.
+#[derive(Debug)]
+#[repr(u32)]
+pub enum RiceTlsVariant {
+    /// Openssl.
+    Openssl = 1,
+    /// Rustls.
+    Rustls = 2,
+}
+
+/// The TLS variant for a [`RiceTlsConfig`]
+#[no_mangle]
+pub unsafe extern "C" fn rice_tls_config_variant(config: *const RiceTlsConfig) -> RiceTlsVariant {
+    let config = Arc::from_raw(config);
+    let ret = match config.variant {
+        #[cfg(feature = "rustls")]
+        TurnTlsConfig::Rustls(_) => RiceTlsVariant::Rustls,
+        #[cfg(feature = "openssl")]
+        TurnTlsConfig::Openssl(_) => RiceTlsVariant::Openssl,
+    };
+    core::mem::forget(config);
+    ret
+}
+
 /// Construct a new TLS configuration using Openssl.
 #[no_mangle]
 #[cfg(feature = "openssl")]
@@ -783,11 +923,11 @@ pub unsafe extern "C" fn rice_tls_config_new_openssl(
         TransportType::Udp => openssl::ssl::SslMethod::dtls_client(),
         TransportType::Tcp => openssl::ssl::SslMethod::tls_client(),
     };
-    let Ok(ctx) = openssl::ssl::SslContext::builder(method) else {
+    let Ok(ctx) = openssl::ssl::SslConnector::builder(method) else {
         return core::ptr::null_mut();
     };
     mut_override(Arc::into_raw(Arc::new(RiceTlsConfig {
-        variant: OpensslTurnConfig::new(ctx.build()).into(),
+        variant: OpensslTurnConfig::new(ctx.build().into_context()).into(),
     })))
 }
 
@@ -1983,14 +2123,17 @@ pub unsafe extern "C" fn rice_component_gather_candidates(
     sockets_len: usize,
     sockets_addr: *const *const RiceAddress,
     sockets_transports: *const RiceTransportType,
+    turn_len: usize,
+    turn_sockets: *const *const RiceAddress,
+    turn_config: *const *mut RiceTurnConfig,
 ) -> RiceError {
     let component = Arc::from_raw(component);
-    let (stun_servers, turn_servers) = {
+    let stun_servers = {
         let Some(agent) = component.weak_agent.upgrade() else {
             return RiceError::ResourceNotFound;
         };
         let agent = agent.lock().unwrap();
-        (agent.stun_servers.clone(), agent.turn_servers.clone())
+        agent.stun_servers.clone()
     };
     debug!("stun_servers: {stun_servers:?}");
     let mut proto_agent = component.proto_agent.lock().unwrap();
@@ -2011,9 +2154,30 @@ pub unsafe extern "C" fn rice_component_gather_candidates(
 
     debug!("sockets: {sockets:?}");
 
-    let turn_servers = turn_servers.iter().collect::<Vec<_>>();
+    let turn_sockets = if turn_len > 0 {
+        core::slice::from_raw_parts(turn_sockets, turn_len)
+    } else {
+        &[]
+    };
+    let turn_configs = if turn_len > 0 {
+        core::slice::from_raw_parts(turn_config, turn_len)
+            .iter()
+            .map(|config| RiceTurnConfig::into_rice_full(*config))
+            .collect::<Vec<_>>()
+    } else {
+        vec![]
+    };
+    let turn_servers = turn_sockets
+        .iter()
+        .zip(turn_configs.iter())
+        .map(|(socket, config)| {
+            let turn_addr = RiceAddress::into_rice_none(*socket);
+            (turn_addr.inner(), &config.0)
+        })
+        .collect::<Vec<_>>();
+    debug!("turn_servers: {turn_servers:?}");
 
-    let ret = proto_component.gather_candidates(&sockets, &stun_servers, &turn_servers);
+    let ret = proto_component.gather_candidates(&sockets, &stun_servers, turn_servers.as_slice());
     drop(proto_agent);
     core::mem::forget(component);
 
@@ -2110,13 +2274,29 @@ pub unsafe extern "C" fn rice_address_new_from_string(string: *const c_char) -> 
 }
 
 /// The address family.
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u32)]
 pub enum RiceAddressFamily {
     /// IP version 4.
     Ipv4 = 1,
     /// IP version 6.
     Ipv6,
+}
+
+impl RiceAddressFamily {
+    fn from_rice(family: AddressFamily) -> Self {
+        match family {
+            AddressFamily::IPV4 => Self::Ipv4,
+            AddressFamily::IPV6 => Self::Ipv6,
+        }
+    }
+
+    fn into_rice(self) -> AddressFamily {
+        match self {
+            Self::Ipv4 => AddressFamily::IPV4,
+            Self::Ipv6 => AddressFamily::IPV6,
+        }
+    }
 }
 
 /// Construct a `RiceAddress` from a sequence of bytes.
@@ -2332,7 +2512,15 @@ mod tests {
             rice_credentials_free(local_credentials);
             rice_stream_set_remote_credentials(stream, remote_credentials);
             rice_credentials_free(remote_credentials);
-            rice_component_gather_candidates(component, 1, &addr, &transport_type_to_c(transport));
+            rice_component_gather_candidates(
+                component,
+                1,
+                &addr,
+                &transport_type_to_c(transport),
+                0,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            );
             rice_address_free(mut_override(addr));
 
             let mut poll = RiceAgentPoll::Closed;

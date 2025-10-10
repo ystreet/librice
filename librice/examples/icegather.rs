@@ -6,9 +6,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use librice::agent::{Agent, AgentMessage, TurnConfig, TurnCredentials};
+use clap::Parser;
 
-use std::io;
+use librice::agent::{Agent, AgentMessage, TurnConfig, TurnCredentials};
+use rice_c::{turn::TurnTlsConfig, AddressFamily};
+
+use std::{io, net::SocketAddr, str::FromStr};
 
 use futures::prelude::*;
 
@@ -34,21 +37,186 @@ fn init_logs() {
     tracing::subscriber::set_global_default(registry).unwrap();
 }
 
+#[derive(Clone, Debug)]
+struct TurnServerConfig {
+    addr: SocketAddr,
+    client_transport: TransportType,
+    user: String,
+    pass: String,
+    tls: Option<TlsConfig>,
+}
+
+#[derive(Clone, Debug)]
+enum TlsConfig {
+    Rustls(Option<String>),
+    Openssl,
+}
+
+impl clap::builder::ValueParserFactory for TurnServerConfig {
+    type Parser = TurnServerConfigParser;
+    fn value_parser() -> Self::Parser {
+        TurnServerConfigParser
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TurnServerConfigParser;
+impl clap::builder::TypedValueParser for TurnServerConfigParser {
+    type Value = TurnServerConfig;
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        _arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        let split = value.to_str().ok_or_else(|| {
+            clap::Error::new(clap::error::ErrorKind::ValueValidation).with_cmd(cmd)
+        })?;
+        let mut split = split.splitn(6, ",");
+        let Some(addr) = split.next() else {
+            eprintln!("No TURN address");
+            return Err(clap::Error::new(clap::error::ErrorKind::ValueValidation).with_cmd(cmd));
+        };
+        let Ok(addr) = SocketAddr::from_str(addr) else {
+            eprintln!("Failed to parse TURN address");
+            return Err(clap::Error::new(clap::error::ErrorKind::ValueValidation).with_cmd(cmd));
+        };
+        let Some(client_transport) = split.next() else {
+            eprintln!("No TURN client transport");
+            return Err(clap::Error::new(clap::error::ErrorKind::ValueValidation).with_cmd(cmd));
+        };
+        let Ok(client_transport) = TransportType::from_str(client_transport) else {
+            eprintln!("Failed to parse TURN client transport");
+            return Err(clap::Error::new(clap::error::ErrorKind::ValueValidation).with_cmd(cmd));
+        };
+        let Some(user) = split.next() else {
+            eprintln!("No TURN user name");
+            return Err(clap::Error::new(clap::error::ErrorKind::ValueValidation).with_cmd(cmd));
+        };
+        let Some(pass) = split.next() else {
+            eprintln!("No TURN password");
+            return Err(clap::Error::new(clap::error::ErrorKind::ValueValidation).with_cmd(cmd));
+        };
+        let tls = if let Some(tls) = split.next() {
+            match tls {
+                "rustls" => Some(TlsConfig::Rustls(split.next().map(|s| s.to_string()))),
+                "openssl" => Some(TlsConfig::Openssl),
+                tls_name => {
+                    eprintln!("Unknown TLS implementation: {tls_name}");
+                    return Err(
+                        clap::Error::new(clap::error::ErrorKind::InvalidValue).with_cmd(cmd)
+                    );
+                }
+            }
+        } else {
+            None
+        };
+        if split.next().is_some() {
+            eprintln!("trailing unhandled options");
+            return Err(clap::Error::new(clap::error::ErrorKind::ValueValidation).with_cmd(cmd));
+        }
+
+        Ok(TurnServerConfig {
+            addr,
+            client_transport,
+            user: user.to_string(),
+            pass: pass.to_string(),
+            tls,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Parser)]
+struct StunServer {
+    transport: TransportType,
+    server: SocketAddr,
+}
+
+impl clap::builder::ValueParserFactory for StunServer {
+    type Parser = StunServerParser;
+    fn value_parser() -> Self::Parser {
+        StunServerParser
+    }
+}
+#[derive(Debug, Clone)]
+struct StunServerParser;
+impl clap::builder::TypedValueParser for StunServerParser {
+    type Value = StunServer;
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        _arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        let split = value.to_str().ok_or_else(|| {
+            clap::Error::new(clap::error::ErrorKind::ValueValidation).with_cmd(cmd)
+        })?;
+        let mut split = split.splitn(2, ",");
+        let Some(server) = split.next() else {
+            return Err(clap::Error::new(clap::error::ErrorKind::ValueValidation).with_cmd(cmd));
+        };
+        let Ok(server) = SocketAddr::from_str(server) else {
+            return Err(clap::Error::new(clap::error::ErrorKind::ValueValidation).with_cmd(cmd));
+        };
+        let transport = split
+            .next()
+            .and_then(|s| TransportType::from_str(s).ok())
+            .unwrap_or(TransportType::Udp);
+        if split.next().is_some() {
+            return Err(clap::Error::new(clap::error::ErrorKind::ValueValidation).with_cmd(cmd));
+        }
+
+        Ok(StunServer { transport, server })
+    }
+}
+
+#[derive(Debug, Parser)]
+#[command(version, about)]
+struct Cli {
+    #[arg(long, value_name = "ADDRESS[,udp|tcp]", action = clap::ArgAction::Append)]
+    stun_server: Vec<StunServer>,
+    #[arg(
+        long,
+        value_name = "ADDRESS,udp|tcp,USERNAME,PASSWORD[,openssl|rustls[,SERVER_IDENTITY]]",
+        action = clap::ArgAction::Append,
+    )]
+    turn_server: Vec<TurnServerConfig>,
+}
+
 fn main() -> io::Result<()> {
     init_logs();
+    let cli = Cli::parse();
+    eprintln!("command parameters: {cli:?}");
     smol::block_on(async move {
-        // non-existent
-        //let stun_servers = ["192.168.1.200:3000".parse().unwrap()].to_vec();
-        let stun_servers = ["127.0.0.1:3478".parse().unwrap()];
-        //let stun_servers = ["172.253.56.127:19302".parse().unwrap()].to_vec();
-
-        let credentials = TurnCredentials::new("coturn", "password");
-
         let agent = Agent::builder().build();
-        for ss in stun_servers {
-            agent.add_stun_server(TransportType::Udp, ss);
-            agent.add_stun_server(TransportType::Tcp, ss);
-            let turn_cfg = TurnConfig::new(TransportType::Udp, ss.into(), credentials.clone());
+        for server in cli.stun_server {
+            agent.add_stun_server(server.transport, server.server);
+        }
+        for ts in cli.turn_server {
+            let credentials = TurnCredentials::new(&ts.user, &ts.pass);
+            let tls_config = ts.tls.and_then(|tls| match tls {
+                TlsConfig::Openssl => Some(TurnTlsConfig::new_openssl(ts.client_transport)),
+                TlsConfig::Rustls(server_name) => {
+                    if ts.client_transport != TransportType::Tcp {
+                        eprintln!(
+                            "rustls only supports TCP connections, {} was requested",
+                            ts.client_transport
+                        );
+                        None
+                    } else if let Some(server_name) = server_name {
+                        Some(TurnTlsConfig::new_rustls_with_dns(&server_name))
+                    } else {
+                        Some(TurnTlsConfig::new_rustls_with_ip(&ts.addr.into()))
+                    }
+                }
+            });
+            let turn_cfg = TurnConfig::new(
+                ts.client_transport,
+                ts.addr.into(),
+                credentials.clone(),
+                &[AddressFamily::IPV4, AddressFamily::IPV6],
+                tls_config,
+            );
             agent.add_turn_server(turn_cfg);
         }
         let stream = agent.add_stream();
@@ -58,7 +226,9 @@ fn main() -> io::Result<()> {
         let mut messages = agent.messages();
         while let Some(msg) = messages.next().await {
             match msg {
-                AgentMessage::GatheredCandidate(_stream, candidate) => println! {"{:?}", candidate},
+                AgentMessage::GatheredCandidate(_stream, candidate) => {
+                    println! {"{}", candidate.to_sdp_string()}
+                }
                 AgentMessage::GatheringComplete(_component) => break,
                 _ => (),
             }
