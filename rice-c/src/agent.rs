@@ -8,7 +8,7 @@
 
 //! ICE Agent implementation as specified in RFC 8445
 
-use crate::{mut_override, stream::Stream};
+use crate::{candidate::TransportType, mut_override, stream::Stream};
 
 use sans_io_time::Instant;
 
@@ -235,11 +235,27 @@ impl AgentPoll {
                     crate::ffi::rice_candidate_clear(&mut ty.local);
                     crate::ffi::rice_candidate_clear(&mut ty.remote);
                     ffi.tag = crate::ffi::RICE_AGENT_POLL_CLOSED;
+                    let turn = if !ty.local_turn_local_addr.is_null()
+                        && !ty.local_turn_remote_addr.is_null()
+                    {
+                        Some(SelectedTurn {
+                            transport: ty.local_turn_transport.into(),
+                            local_addr: crate::Address::from_c_none(ty.local_turn_local_addr),
+                            remote_addr: crate::Address::from_c_none(ty.local_turn_remote_addr),
+                        })
+                    } else {
+                        None
+                    };
+                    crate::ffi::rice_address_free(mut_override(ty.local_turn_local_addr));
+                    ty.local_turn_local_addr = core::ptr::null_mut();
+                    crate::ffi::rice_address_free(mut_override(ty.local_turn_remote_addr));
+                    ty.local_turn_remote_addr = core::ptr::null_mut();
                     Self::SelectedPair(AgentSelectedPair {
                         stream_id: ty.stream_id,
                         component_id: ty.component_id,
                         local,
                         remote,
+                        turn,
                     })
                 }
                 crate::ffi::RICE_AGENT_POLL_COMPONENT_STATE_CHANGE => {
@@ -376,6 +392,19 @@ pub struct AgentSelectedPair {
     pub local: crate::candidate::Candidate,
     /// The remote candidate that has been selected.
     pub remote: crate::candidate::Candidate,
+    /// The selected local candidate TURN connection (if any).
+    pub turn: Option<SelectedTurn>,
+}
+
+/// The selected TURN server socket parameters.
+#[derive(Debug)]
+pub struct SelectedTurn {
+    /// The transport.
+    pub transport: TransportType,
+    /// The local address.
+    pub local_addr: crate::Address,
+    /// The remote address.
+    pub remote_addr: crate::Address,
 }
 
 /// A [`Component`](crate::component::Component) has changed state.

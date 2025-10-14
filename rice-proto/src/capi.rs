@@ -504,16 +504,35 @@ pub struct RiceAgentSelectedPair {
     local: RiceCandidate,
     /// The remote candidate of a selected pair.
     remote: RiceCandidate,
+    /// The local TURN transport type (if any).
+    local_turn_transport: RiceTransportType,
+    /// The local TURN address to send data from.
+    local_turn_local_addr: *const RiceAddress,
+    /// The local TURN address to send data to.
+    local_turn_remote_addr: *const RiceAddress,
 }
 
 impl RiceAgentSelectedPair {
     fn into_c_full(value: crate::agent::AgentSelectedPair) -> Self {
         let pair = value.selected.candidate_pair().clone();
+        let (local_turn_transport, local_turn_local_addr, local_turn_remote_addr) =
+            if let Some(turn) = value.selected.local_turn() {
+                (
+                    transport_type_to_c(turn.transport()),
+                    RiceAddress::into_c_full(RiceAddress::new(turn.local_addr())),
+                    RiceAddress::into_c_full(RiceAddress::new(turn.remote_addr())),
+                )
+            } else {
+                (RiceTransportType::Udp, core::ptr::null(), core::ptr::null())
+            };
         Self {
             stream_id: value.stream_id,
             component_id: value.component_id,
             local: RiceCandidate::into_c_full(pair.local),
             remote: RiceCandidate::into_c_full(pair.remote),
+            local_turn_transport,
+            local_turn_local_addr,
+            local_turn_remote_addr,
         }
     }
 }
@@ -634,6 +653,14 @@ pub unsafe extern "C" fn rice_agent_poll_clear(poll: *mut RiceAgentPoll) {
         RiceAgentPoll::SelectedPair(mut pair) => {
             rice_candidate_clear(&mut pair.local);
             rice_candidate_clear(&mut pair.remote);
+            if !pair.local_turn_local_addr.is_null() {
+                rice_address_free(mut_override(pair.local_turn_local_addr));
+                pair.local_turn_local_addr = core::ptr::null();
+            }
+            if !pair.local_turn_remote_addr.is_null() {
+                rice_address_free(mut_override(pair.local_turn_remote_addr));
+                pair.local_turn_remote_addr = core::ptr::null();
+            }
         }
         RiceAgentPoll::GatheredCandidate(mut gathered) => {
             let turn = gathered.gathered.turn_agent;
@@ -731,17 +758,17 @@ impl RiceTurnConfig {
     /// The returned value should be converted back into the Rust equivalent using
     /// `RiceTurnConfig::into_rust_full()` in order to free the resource.
     pub fn into_c_full(self) -> *const RiceTurnConfig {
-        const_override(Box::into_raw(Box::new(self)))
+        Arc::into_raw(Arc::new(self))
     }
 
     /// Consume a C representation of a `RiceTurnConfig` into the Rust equivalent.
-    pub unsafe fn into_rice_full(value: *mut RiceTurnConfig) -> Box<Self> {
-        Box::from_raw(value)
+    pub unsafe fn into_rice_full(value: *mut RiceTurnConfig) -> Arc<Self> {
+        Arc::from_raw(value)
     }
 
     /// Copy a C representation of a `RiceTurnConfig` into the Rust equivalent.
     pub unsafe fn into_rice_none(value: *const RiceTurnConfig) -> Self {
-        let boxed = Box::from_raw(mut_override(value));
+        let boxed = Arc::from_raw(mut_override(value));
         let ret = (*boxed).clone();
         core::mem::forget(boxed);
         ret
@@ -783,13 +810,28 @@ pub unsafe extern "C" fn rice_turn_config_new(
     }
     core::mem::forget(addr);
     core::mem::forget(creds);
-    Box::into_raw(Box::new(RiceTurnConfig::new(turn_config)))
+    mut_override(Arc::into_raw(Arc::new(RiceTurnConfig::new(turn_config))))
 }
 
-/// Free a [`RiceTurnConfig`].
+/// Increase the reference count of the [`RiceTurnConfig`].
+///
+/// This function is multi-threading safe.
 #[no_mangle]
-pub unsafe extern "C" fn rice_turn_config_free(config: *mut RiceTurnConfig) {
-    let _ = RiceTurnConfig::into_rice_full(config);
+pub unsafe extern "C" fn rice_turn_config_ref(
+    config: *const RiceTurnConfig,
+) -> *mut RiceTurnConfig {
+    Arc::increment_strong_count(config);
+    mut_override(config)
+}
+
+/// Decrease the reference count of a[`RiceTurnConfig`].
+///
+/// If this is the last reference, then the [`RiceTurnConfig`] is freed.
+///
+/// This function is multi-threading safe.
+#[no_mangle]
+pub unsafe extern "C" fn rice_turn_config_unref(config: *mut RiceTurnConfig) {
+    Arc::decrement_strong_count(config)
 }
 
 /// The address of the TURN server.

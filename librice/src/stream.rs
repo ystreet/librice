@@ -22,7 +22,7 @@ use crate::component::{Component, ComponentInner};
 use crate::gathering::{iface_sockets, GatherSocket};
 use crate::socket::{StunChannel, TcpChannel, Transmit};
 
-use rice_c::agent::{AgentError as ProtoAgentError, AgentTransmit};
+use rice_c::agent::{AgentError as ProtoAgentError, AgentTransmit, SelectedTurn};
 use rice_c::candidate::{Candidate, TransportType};
 use rice_c::stream::GatheredCandidate;
 
@@ -777,18 +777,26 @@ impl Stream {
         &self,
         local: &Candidate,
         remote: &Candidate,
+        local_turn: &Option<SelectedTurn>,
     ) -> Option<StunChannel> {
         let inner = self.inner.lock().unwrap();
-        inner
-            .socket_for_5tuple(
-                local.transport(),
+        let (local_addr, remote_addr) = if let Some(turn) = local_turn {
+            (turn.local_addr.as_socket(), turn.remote_addr.as_socket())
+        } else {
+            (
                 local.base_address().as_socket(),
                 remote.address().as_socket(),
             )
+        };
+        inner
+            .socket_for_5tuple(local.transport(), local_addr, remote_addr)
             .cloned()
     }
 
-    pub(crate) fn add_local_gathered_candidates(&self, gathered: GatheredCandidate) -> bool {
+    /// Add a local candidate for this stream.
+    ///
+    /// Returns whether the candidate was added internally.
+    pub fn add_local_gathered_candidates(&self, gathered: GatheredCandidate) -> bool {
         self.proto_stream.add_local_gathered_candidate(gathered)
     }
 }

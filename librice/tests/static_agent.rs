@@ -6,15 +6,20 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use core::net::SocketAddr;
+
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
+use rice_c::candidate::CandidateType;
+use rice_c::stream::GatheredCandidate;
+use rice_c::turn::TurnConfig;
 use smol::net::{TcpListener, UdpSocket};
 
 use futures::future::{AbortHandle, Abortable, Aborted};
 use futures::{SinkExt, StreamExt};
 
-use rice_c::prelude::*;
+use rice_c::{prelude::*, AddressFamily};
 
 use librice::agent::{Agent, AgentMessage};
 use librice::candidate::TransportType;
@@ -25,12 +30,84 @@ use librice::stream::Credentials;
 extern crate tracing;
 
 mod common;
+mod turn_server;
+
+use turn_server::TurnServer;
+
+struct DebugWrapper<T> {
+    inner: T,
+}
+
+impl<T> DebugWrapper<T> {
+    fn new(inner: T) -> Self {
+        Self { inner }
+    }
+}
+
+impl<T> core::fmt::Debug for DebugWrapper<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("...")
+    }
+}
+
+impl<T> core::ops::Deref for DebugWrapper<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl<T> core::ops::DerefMut for DebugWrapper<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
 
 #[derive(Debug)]
 struct AgentConfig {
     controlling: bool,
     trickle_ice: bool,
     transports: Vec<TransportType>,
+    candidate_filter: DebugWrapper<Box<dyn Fn(&GatheredCandidate) -> bool + core::marker::Send>>,
+    turn_servers: Vec<TurnConfig>,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            controlling: false,
+            trickle_ice: false,
+            transports: vec![],
+            candidate_filter: DebugWrapper::new(Box::new(candidate_filter_accept_all)),
+            turn_servers: vec![],
+        }
+    }
+}
+
+impl AgentConfig {
+    fn controlling(mut self, controlling: bool) -> Self {
+        self.controlling = controlling;
+        self
+    }
+    fn trickle_ice(mut self, trickle_ice: bool) -> Self {
+        self.trickle_ice = trickle_ice;
+        self
+    }
+    fn transports(mut self, transports: &[TransportType]) -> Self {
+        self.transports = transports.to_vec();
+        self
+    }
+    fn turn_servers(mut self, turn_servers: Vec<TurnConfig>) -> Self {
+        self.turn_servers = turn_servers;
+        self
+    }
+    fn candidate_filter(
+        mut self,
+        candidate_filter: Box<dyn Fn(&GatheredCandidate) -> bool + core::marker::Send>,
+    ) -> Self {
+        self.candidate_filter.inner = candidate_filter;
+        self
+    }
 }
 
 #[derive(Debug)]
@@ -66,6 +143,10 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
         lagent.add_stun_server(TransportType::Tcp, tcp_stun_addr);
     }
 
+    for turn in config.local.turn_servers {
+        lagent.add_turn_server(turn);
+    }
+
     let ragent = Arc::new(
         Agent::builder()
             .controlling(config.remote.controlling)
@@ -77,6 +158,10 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     }
     if config.remote.transports.contains(&TransportType::Tcp) {
         ragent.add_stun_server(TransportType::Tcp, tcp_stun_addr);
+    }
+
+    for turn in config.remote.turn_servers {
+        ragent.add_turn_server(turn);
     }
 
     let lcreds = Credentials::new("luser", "lpass");
@@ -104,11 +189,15 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
         let n_completed = n_completed.clone();
         let complete_send = complete_send.clone();
         let lgath_send = lgath_send.clone();
+        let lstream = lstream.clone();
+        let rstream = rstream.clone();
         async move {
             while let Some(msg) = lmessages.next().await {
                 match msg {
-                    AgentMessage::GatheredCandidate(_stream, candidate) => {
-                        if config.remote.transports.contains(&candidate.transport()) {
+                    AgentMessage::GatheredCandidate(_stream, gathered) => {
+                        if config.local.candidate_filter.as_ref()(&gathered) {
+                            let candidate = gathered.candidate();
+                            lstream.add_local_gathered_candidates(gathered);
                             rstream.add_remote_candidate(&candidate);
                         }
                     }
@@ -135,8 +224,10 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
         async move {
             while let Some(msg) = rmessages.next().await {
                 match msg {
-                    AgentMessage::GatheredCandidate(_stream, candidate) => {
-                        if config.local.transports.contains(&candidate.transport()) {
+                    AgentMessage::GatheredCandidate(_stream, gathered) => {
+                        if config.remote.candidate_filter.as_ref()(&gathered) {
+                            let candidate = gathered.candidate();
+                            rstream.add_local_gathered_candidates(gathered);
                             lstream.add_remote_candidate(&candidate);
                         }
                     }
@@ -206,20 +297,31 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     trace!("done");
 }
 
+fn candidate_filter_accept_all(_gathered: &GatheredCandidate) -> bool {
+    true
+}
+
+fn candidate_filter_accept_transport(
+    gathered: &GatheredCandidate,
+    transports: &[TransportType],
+) -> bool {
+    transports.contains(&gathered.candidate().transport())
+}
+
 #[test]
 fn agent_static_connection_none_controlling_udp() {
     common::debug_init();
     smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
-        local: AgentConfig {
-            controlling: false,
-            trickle_ice: false,
-            transports: vec![TransportType::Udp],
-        },
-        remote: AgentConfig {
-            controlling: false,
-            trickle_ice: false,
-            transports: vec![TransportType::Udp],
-        },
+        local: AgentConfig::default()
+            .transports(&[TransportType::Udp])
+            .candidate_filter(Box::new(move |candidate| {
+                candidate_filter_accept_transport(candidate, &[TransportType::Udp])
+            })),
+        remote: AgentConfig::default()
+            .transports(&[TransportType::Udp])
+            .candidate_filter(Box::new(move |candidate| {
+                candidate_filter_accept_transport(candidate, &[TransportType::Udp])
+            })),
     }));
 }
 
@@ -227,16 +329,18 @@ fn agent_static_connection_none_controlling_udp() {
 fn agent_static_connection_both_controlling_udp() {
     common::debug_init();
     smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
-        local: AgentConfig {
-            controlling: true,
-            trickle_ice: false,
-            transports: vec![TransportType::Udp],
-        },
-        remote: AgentConfig {
-            controlling: true,
-            trickle_ice: false,
-            transports: vec![TransportType::Udp],
-        },
+        local: AgentConfig::default()
+            .controlling(true)
+            .transports(&[TransportType::Udp])
+            .candidate_filter(Box::new(move |candidate| {
+                candidate_filter_accept_transport(candidate, &[TransportType::Udp])
+            })),
+        remote: AgentConfig::default()
+            .controlling(true)
+            .transports(&[TransportType::Udp])
+            .candidate_filter(Box::new(move |candidate| {
+                candidate_filter_accept_transport(candidate, &[TransportType::Udp])
+            })),
     }));
 }
 
@@ -244,16 +348,17 @@ fn agent_static_connection_both_controlling_udp() {
 fn agent_static_connection_remote_controlling_udp() {
     common::debug_init();
     smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
-        local: AgentConfig {
-            controlling: false,
-            trickle_ice: false,
-            transports: vec![TransportType::Udp],
-        },
-        remote: AgentConfig {
-            controlling: true,
-            trickle_ice: false,
-            transports: vec![TransportType::Udp],
-        },
+        local: AgentConfig::default()
+            .transports(&[TransportType::Udp])
+            .candidate_filter(Box::new(move |candidate| {
+                candidate_filter_accept_transport(candidate, &[TransportType::Udp])
+            })),
+        remote: AgentConfig::default()
+            .controlling(true)
+            .transports(&[TransportType::Udp])
+            .candidate_filter(Box::new(move |candidate| {
+                candidate_filter_accept_transport(candidate, &[TransportType::Udp])
+            })),
     }));
 }
 
@@ -261,16 +366,17 @@ fn agent_static_connection_remote_controlling_udp() {
 fn agent_static_connection_local_controlling_udp() {
     common::debug_init();
     smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
-        local: AgentConfig {
-            controlling: true,
-            trickle_ice: false,
-            transports: vec![TransportType::Udp],
-        },
-        remote: AgentConfig {
-            controlling: false,
-            trickle_ice: false,
-            transports: vec![TransportType::Udp],
-        },
+        local: AgentConfig::default()
+            .controlling(true)
+            .transports(&[TransportType::Udp])
+            .candidate_filter(Box::new(move |candidate| {
+                candidate_filter_accept_transport(candidate, &[TransportType::Udp])
+            })),
+        remote: AgentConfig::default()
+            .transports(&[TransportType::Udp])
+            .candidate_filter(Box::new(move |candidate| {
+                candidate_filter_accept_transport(candidate, &[TransportType::Udp])
+            })),
     }));
 }
 
@@ -278,16 +384,19 @@ fn agent_static_connection_local_controlling_udp() {
 fn agent_static_connection_local_controlling_udp_both_trickle() {
     common::debug_init();
     smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
-        local: AgentConfig {
-            controlling: true,
-            trickle_ice: true,
-            transports: vec![TransportType::Udp],
-        },
-        remote: AgentConfig {
-            controlling: false,
-            trickle_ice: true,
-            transports: vec![TransportType::Udp],
-        },
+        local: AgentConfig::default()
+            .controlling(true)
+            .trickle_ice(true)
+            .transports(&[TransportType::Udp])
+            .candidate_filter(Box::new(move |candidate| {
+                candidate_filter_accept_transport(candidate, &[TransportType::Udp])
+            })),
+        remote: AgentConfig::default()
+            .trickle_ice(true)
+            .transports(&[TransportType::Udp])
+            .candidate_filter(Box::new(move |candidate| {
+                candidate_filter_accept_transport(candidate, &[TransportType::Udp])
+            })),
     }));
 }
 
@@ -295,16 +404,18 @@ fn agent_static_connection_local_controlling_udp_both_trickle() {
 fn agent_static_connection_local_controlling_udp_local_trickle() {
     common::debug_init();
     smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
-        local: AgentConfig {
-            controlling: true,
-            trickle_ice: true,
-            transports: vec![TransportType::Udp],
-        },
-        remote: AgentConfig {
-            controlling: false,
-            trickle_ice: false,
-            transports: vec![TransportType::Udp],
-        },
+        local: AgentConfig::default()
+            .controlling(true)
+            .trickle_ice(true)
+            .transports(&[TransportType::Udp])
+            .candidate_filter(Box::new(move |candidate| {
+                candidate_filter_accept_transport(candidate, &[TransportType::Udp])
+            })),
+        remote: AgentConfig::default()
+            .transports(&[TransportType::Udp])
+            .candidate_filter(Box::new(move |candidate| {
+                candidate_filter_accept_transport(candidate, &[TransportType::Udp])
+            })),
     }));
 }
 
@@ -312,15 +423,60 @@ fn agent_static_connection_local_controlling_udp_local_trickle() {
 fn agent_static_connection_local_controlling_tcp() {
     common::debug_init();
     smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
-        local: AgentConfig {
-            controlling: true,
-            trickle_ice: false,
-            transports: vec![TransportType::Tcp],
-        },
-        remote: AgentConfig {
-            controlling: false,
-            trickle_ice: false,
-            transports: vec![TransportType::Tcp],
-        },
+        local: AgentConfig::default()
+            .controlling(true)
+            .transports(&[TransportType::Tcp])
+            .candidate_filter(Box::new(move |candidate| {
+                candidate_filter_accept_transport(candidate, &[TransportType::Tcp])
+            })),
+        remote: AgentConfig::default()
+            .transports(&[TransportType::Tcp])
+            .candidate_filter(Box::new(move |candidate| {
+                candidate_filter_accept_transport(candidate, &[TransportType::Tcp])
+            })),
     }));
+}
+
+fn candidate_filter_relay_only(gathered: &GatheredCandidate) -> bool {
+    gathered.candidate().candidate_type() == CandidateType::Relayed
+}
+
+fn turn_credentials() -> Credentials {
+    Credentials::new("tuser", "tpass")
+}
+
+async fn turn_server_localhost_ipv4() -> (TurnServer, TurnConfig) {
+    let listen_addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
+    let relay_addr = listen_addr.ip();
+    let server = TurnServer::new(listen_addr, "realm".to_string(), relay_addr).await;
+    server.add_user("tuser", "tpass");
+    let listen_addr = server.listen_address();
+    (
+        server,
+        TurnConfig::new(
+            TransportType::Udp,
+            listen_addr.into(),
+            turn_credentials(),
+            &[AddressFamily::IPV4],
+            None,
+        ),
+    )
+}
+
+#[test]
+fn agent_static_connection_local_controlling_udp_turn_server() {
+    common::debug_init();
+    smol::block_on(async move {
+        let local_turn = turn_server_localhost_ipv4().await;
+        agent_static_connection_test(AgentStaticTestConfig {
+            local: AgentConfig::default()
+                .controlling(true)
+                .candidate_filter(Box::new(candidate_filter_relay_only))
+                .turn_servers(vec![local_turn.1]),
+            remote: AgentConfig::default().candidate_filter(Box::new(move |candidate| {
+                candidate_filter_accept_transport(candidate, &[TransportType::Udp])
+            })),
+        })
+        .await
+    });
 }

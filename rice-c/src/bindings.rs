@@ -295,10 +295,16 @@ pub struct RiceAgentSelectedPair {
     pub local: RiceCandidate,
     #[doc = " The remote candidate of a selected pair."]
     pub remote: RiceCandidate,
+    #[doc = " The local TURN transport type (if any)."]
+    pub local_turn_transport: RiceTransportType,
+    #[doc = " The local TURN address to send data from."]
+    pub local_turn_local_addr: *const RiceAddress,
+    #[doc = " The local TURN address to send data to."]
+    pub local_turn_remote_addr: *const RiceAddress,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of RiceAgentSelectedPair"][::core::mem::size_of::<RiceAgentSelectedPair>() - 176usize];
+    ["Size of RiceAgentSelectedPair"][::core::mem::size_of::<RiceAgentSelectedPair>() - 200usize];
     ["Alignment of RiceAgentSelectedPair"]
         [::core::mem::align_of::<RiceAgentSelectedPair>() - 8usize];
     ["Offset of field: RiceAgentSelectedPair::stream_id"]
@@ -309,6 +315,12 @@ const _: () = {
         [::core::mem::offset_of!(RiceAgentSelectedPair, local) - 16usize];
     ["Offset of field: RiceAgentSelectedPair::remote"]
         [::core::mem::offset_of!(RiceAgentSelectedPair, remote) - 96usize];
+    ["Offset of field: RiceAgentSelectedPair::local_turn_transport"]
+        [::core::mem::offset_of!(RiceAgentSelectedPair, local_turn_transport) - 176usize];
+    ["Offset of field: RiceAgentSelectedPair::local_turn_local_addr"]
+        [::core::mem::offset_of!(RiceAgentSelectedPair, local_turn_local_addr) - 184usize];
+    ["Offset of field: RiceAgentSelectedPair::local_turn_remote_addr"]
+        [::core::mem::offset_of!(RiceAgentSelectedPair, local_turn_remote_addr) - 192usize];
 };
 #[doc = " A [`Component`](crate::component::Component) has changed state."]
 #[repr(C)]
@@ -480,7 +492,7 @@ pub struct RiceAgentPoll__bindgen_ty_1__bindgen_ty_4 {
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
     ["Size of RiceAgentPoll__bindgen_ty_1__bindgen_ty_4"]
-        [::core::mem::size_of::<RiceAgentPoll__bindgen_ty_1__bindgen_ty_4>() - 176usize];
+        [::core::mem::size_of::<RiceAgentPoll__bindgen_ty_1__bindgen_ty_4>() - 200usize];
     ["Alignment of RiceAgentPoll__bindgen_ty_1__bindgen_ty_4"]
         [::core::mem::align_of::<RiceAgentPoll__bindgen_ty_1__bindgen_ty_4>() - 8usize];
     ["Offset of field: RiceAgentPoll__bindgen_ty_1__bindgen_ty_4::selected_pair"][::core::mem::offset_of!(
@@ -540,13 +552,13 @@ const _: () = {
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
     ["Size of RiceAgentPoll__bindgen_ty_1"]
-        [::core::mem::size_of::<RiceAgentPoll__bindgen_ty_1>() - 176usize];
+        [::core::mem::size_of::<RiceAgentPoll__bindgen_ty_1>() - 200usize];
     ["Alignment of RiceAgentPoll__bindgen_ty_1"]
         [::core::mem::align_of::<RiceAgentPoll__bindgen_ty_1>() - 8usize];
 };
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of RiceAgentPoll"][::core::mem::size_of::<RiceAgentPoll>() - 184usize];
+    ["Size of RiceAgentPoll"][::core::mem::size_of::<RiceAgentPoll>() - 208usize];
     ["Alignment of RiceAgentPoll"][::core::mem::align_of::<RiceAgentPoll>() - 8usize];
     ["Offset of field: RiceAgentPoll::tag"][::core::mem::offset_of!(RiceAgentPoll, tag) - 0usize];
 };
@@ -659,8 +671,12 @@ unsafe extern "C" {
     ) -> *mut RiceTurnConfig;
 }
 unsafe extern "C" {
-    #[doc = " Free a [`RiceTurnConfig`]."]
-    pub fn rice_turn_config_free(config: *mut RiceTurnConfig);
+    #[doc = " Increase the reference count of the [`RiceTurnConfig`].\n\n This function is multi-threading safe."]
+    pub fn rice_turn_config_ref(config: *const RiceTurnConfig) -> *mut RiceTurnConfig;
+}
+unsafe extern "C" {
+    #[doc = " Decrease the reference count of a[`RiceTurnConfig`].\n\n If this is the last reference, then the [`RiceTurnConfig`] is freed.\n\n This function is multi-threading safe."]
+    pub fn rice_turn_config_unref(config: *mut RiceTurnConfig);
 }
 unsafe extern "C" {
     #[doc = " The address of the TURN server."]

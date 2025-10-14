@@ -227,7 +227,7 @@ fn main() -> io::Result<()> {
         while let Some(msg) = messages.next().await {
             match msg {
                 AgentMessage::GatheredCandidate(_stream, candidate) => {
-                    println! {"{}", candidate.to_sdp_string()}
+                    println! {"{}", candidate.candidate().to_sdp_string()}
                 }
                 AgentMessage::GatheringComplete(_component) => break,
                 _ => (),
