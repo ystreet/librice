@@ -12,16 +12,16 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
-use std::time::Duration;
 
 use rice_c::agent::{AgentError as ProtoAgentError, AgentPoll, AgentTransmit};
 use rice_c::component::ComponentConnectionState;
+use rice_c::stream::GatheredCandidate;
 use rice_c::Instant;
 use tracing::warn;
 
 use crate::component::{Component, SelectedPair};
 use crate::stream::Stream;
-use rice_c::candidate::{Candidate, CandidatePair, TransportType};
+use rice_c::candidate::{CandidatePair, TransportType};
 pub use rice_c::turn::{TurnConfig, TurnCredentials};
 
 /// Errors that can be returned as a result of agent operations.
@@ -209,7 +209,7 @@ pub enum AgentMessage {
     /// A [`Component`] has changed state.
     ComponentStateChange(Component, ComponentConnectionState),
     /// A [`Component`] has gathered a candidate.
-    GatheredCandidate(Stream, Candidate),
+    GatheredCandidate(Stream, GatheredCandidate),
     /// A [`Component`] has completed gathering.
     GatheringComplete(Component),
 }
@@ -293,7 +293,8 @@ impl futures::stream::Stream for AgentStream {
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(pair.stream_id) {
                         if let Some(component) = stream.component(pair.component_id) {
-                            if let Some(socket) = stream.socket_for_pair(&pair.local, &pair.remote)
+                            if let Some(socket) =
+                                stream.socket_for_pair(&pair.local, &pair.remote, &pair.turn)
                             {
                                 if let Err(e) = component.set_selected_pair(SelectedPair::new(
                                     CandidatePair::new(
@@ -304,6 +305,8 @@ impl futures::stream::Stream for AgentStream {
                                 )) {
                                     warn!("Failed setting the selected pair: {e:?}");
                                 }
+                            } else {
+                                warn!("Could not find existing socket for pair (local: {:?}, remote: {:?}, turn: {:?})", pair.local, pair.remote, pair.turn);
                             }
                         }
                     }
@@ -328,15 +331,10 @@ impl futures::stream::Stream for AgentStream {
                     drop(agent);
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(gathered.stream_id) {
-                        let candidate = gathered.gathered.candidate();
-                        if stream.add_local_gathered_candidates(
+                        return Poll::Ready(Some(AgentMessage::GatheredCandidate(
+                            stream.clone(),
                             rice_c::stream::GatheredCandidate::take(&mut gathered.gathered),
-                        ) {
-                            return Poll::Ready(Some(AgentMessage::GatheredCandidate(
-                                stream.clone(),
-                                candidate,
-                            )));
-                        }
+                        )));
                     }
                     cx.waker().wake_by_ref();
                     return Poll::Pending;
@@ -374,13 +372,7 @@ impl futures::stream::Stream for AgentStream {
         drop(agent);
 
         if let Some(wait) = wait {
-            let dur_nanos = wait.as_nanos();
-            let mut wait_instant = self.base_instant;
-            if dur_nanos < 0 {
-                wait_instant -= Duration::from_nanos(wait.as_nanos().unsigned_abs());
-            } else {
-                wait_instant += Duration::from_nanos(wait.as_nanos() as u64);
-            };
+            let wait_instant = wait.to_std(self.base_instant);
             match self.as_mut().timer.as_mut() {
                 Some(timer) => timer.set_at(wait_instant),
                 None => self.as_mut().timer = Some(Box::pin(async_io::Timer::at(wait_instant))),

@@ -14,7 +14,7 @@ use crate::{const_override, AddressFamily};
 pub use crate::stream::Credentials as TurnCredentials;
 
 /// Configuration for a particular TURN server connection.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TurnConfig {
     ffi: *mut crate::ffi::RiceTurnConfig,
 }
@@ -109,14 +109,26 @@ impl TurnConfig {
     }
 
     pub(crate) fn into_c_full(self) -> *mut crate::ffi::RiceTurnConfig {
-        self.ffi
+        let ret = self.ffi;
+        core::mem::forget(self);
+        ret
+    }
+}
+
+impl Clone for TurnConfig {
+    fn clone(&self) -> Self {
+        unsafe {
+            Self {
+                ffi: crate::ffi::rice_turn_config_ref(self.ffi),
+            }
+        }
     }
 }
 
 impl Drop for TurnConfig {
     fn drop(&mut self) {
         unsafe {
-            crate::ffi::rice_turn_config_free(self.ffi);
+            crate::ffi::rice_turn_config_unref(self.ffi);
         }
     }
 }

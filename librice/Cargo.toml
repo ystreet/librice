@@ -27,4 +27,5 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 stun-proto.workspace = true
+turn-server-proto = { workspace = true, features = ["std"] }
 clap = { version = "4", features = ["derive"]}

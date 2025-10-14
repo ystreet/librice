@@ -88,24 +88,55 @@ impl Credentials {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SelectedTurn {
+    transport: TransportType,
+    local_addr: SocketAddr,
+    remote_addr: SocketAddr,
+}
+
+impl SelectedTurn {
+    pub fn transport(&self) -> TransportType {
+        self.transport
+    }
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+    pub fn remote_addr(&self) -> SocketAddr {
+        self.remote_addr
+    }
+}
+
 /// A pair that has been selected for a component
 #[derive(Debug, Clone)]
 pub struct SelectedPair {
     candidate_pair: CandidatePair,
     local_stun_agent: StunAgentId,
+    turn: Option<SelectedTurn>,
 }
+
 impl SelectedPair {
     /// Create a new [`SelectedPair`].  The pair and stun agent must be compatible.
-    pub(crate) fn new(candidate_pair: CandidatePair, local_stun_agent: StunAgentId) -> Self {
+    pub(crate) fn new(
+        candidate_pair: CandidatePair,
+        local_stun_agent: StunAgentId,
+        turn: Option<SelectedTurn>,
+    ) -> Self {
         Self {
             candidate_pair,
             local_stun_agent,
+            turn,
         }
     }
 
     /// The pair for this [`SelectedPair`]
     pub fn candidate_pair(&self) -> &CandidatePair {
         &self.candidate_pair
+    }
+
+    /// Any TURN connection the local candidate must be connected through.
+    pub fn local_turn(&self) -> Option<&SelectedTurn> {
+        self.turn.as_ref()
     }
 
     /// The local STUN agent for this [`SelectedPair`]
@@ -1592,7 +1623,7 @@ impl ConnCheckList {
         self.dump_check_state();
         if let Some(idx) = self.valid.iter().position(|&check_id| {
             self.check_by_id(check_id).map_or(false, |check| {
-                candidate_pair_is_same_connection(&check.pair, pair) && check.nominate
+                check.nominate && candidate_pair_is_same_connection(&check.pair, pair)
             })
         }) {
             info!(
@@ -1677,9 +1708,25 @@ impl ConnCheckList {
                         }
                         if let Some(component_id) = component_id {
                             let agent_id = check.agent_id().unwrap();
+                            let turn = if check.pair.local.candidate_type == CandidateType::Relayed
+                            {
+                                self.turn_client_by_allocated_address(
+                                    check.pair.local.transport_type,
+                                    check.pair.local.address,
+                                )
+                                .map(|(_turn_id, client)| {
+                                    SelectedTurn {
+                                        transport: client.transport(),
+                                        local_addr: client.local_addr(),
+                                        remote_addr: client.remote_addr(),
+                                    }
+                                })
+                            } else {
+                                None
+                            };
                             self.events.push_front(ConnCheckEvent::SelectedPair(
                                 component_id,
-                                Box::new(SelectedPair::new(pair.clone(), agent_id)),
+                                Box::new(SelectedPair::new(pair.clone(), agent_id, turn)),
                             ));
                             debug!("trying to signal component {:?}", component_id);
                             self.events.push_front(ConnCheckEvent::ComponentState(
@@ -1694,7 +1741,7 @@ impl ConnCheckList {
                 self.set_state(CheckListState::Completed);
             }
         } else {
-            warn!("unknown nomination");
+            warn!("unknown nomination for pair {pair:?}");
         }
     }
 
@@ -2505,6 +2552,7 @@ impl ConnCheckListSet {
                         );
                         checklist.add_check(check);
                         new_check.set_state(CandidatePairState::Waiting);
+                        checklist.add_valid(new_check.conncheck_id, &pair);
                         checklist.add_check(new_check);
                         checklist.nominated_pair(&pair);
                     } else {
@@ -3363,6 +3411,13 @@ impl ConnCheckListSet {
             }
         }
         if let Some(pending) = self.pending_transmits.pop_back() {
+            trace!(
+                "pending {} {} -> {} transmit of {} bytes",
+                pending.transmit.transport,
+                pending.transmit.from,
+                pending.transmit.to,
+                pending.transmit.data.len()
+            );
             return Some(pending);
         }
 
@@ -3381,12 +3436,7 @@ impl ConnCheckListSet {
                     pending.agent_id,
                     pending.turn_id
                 );
-                let to = if let Some((_turn_id, turn_to)) = pending.turn_id {
-                    turn_to
-                } else {
-                    pending.to
-                };
-                match agent.send_request(pending.msg, to, now) {
+                match agent.send_request(pending.msg, pending.to, now) {
                     Ok(transmit) => {
                         if let Some((turn_id, _turn_to)) = pending.turn_id {
                             let transport = transmit.transport;
@@ -3419,12 +3469,7 @@ impl ConnCheckListSet {
                 }
             } else {
                 debug!("Sending response {:?} to {:?}", pending.msg, pending.to);
-                let to = if let Some((_turn_id, turn_to)) = pending.turn_id {
-                    turn_to
-                } else {
-                    pending.to
-                };
-                match agent.send(pending.msg, to, now) {
+                match agent.send(pending.msg, pending.to, now) {
                     Ok(transmit) => {
                         if let Some((turn_id, _turn_to)) = pending.turn_id {
                             let transport = transmit.transport;
@@ -3463,21 +3508,59 @@ impl ConnCheckListSet {
             return None;
         }
 
-        for checklist in self.checklists.iter_mut() {
+        for checklist_i in 0..self.checklists.len() {
+            let checklist = &self.checklists[checklist_i];
             let checklist_id = checklist.checklist_id;
-            for check_agent in checklist.agents.iter_mut() {
-                let Some(transmit) = check_agent.agent.poll_transmit(now) else {
-                    continue;
+            let agents_len = self.checklists[checklist_i].agents.len();
+            for check_agent_i in 0..agents_len {
+                let checklist = &mut self.checklists[checklist_i];
+                let (transport, local_addr) = {
+                    let check_agent = &mut checklist.agents[check_agent_i];
+                    (
+                        check_agent.agent.transport(),
+                        check_agent.agent.local_addr(),
+                    )
                 };
+                let checklist = &mut self.checklists[checklist_i];
+                if let Some((turn_id, _client)) =
+                    checklist.mut_turn_client_by_allocated_address(transport, local_addr)
+                {
+                    let check_agent = &mut checklist.agents[check_agent_i];
+                    let Some(transmit) = check_agent.agent.poll_transmit(now) else {
+                        continue;
+                    };
+                    let transmit = transmit.reinterpret_data(|data| data.to_vec());
 
-                self.last_send_time = Some(now);
-                let transport = transmit.transport;
-                return Some(CheckListSetTransmit {
-                    checklist_id,
-                    transmit: transmit.reinterpret_data(|data| transmit_send(transport, data)),
-                });
+                    let transport = transmit.transport;
+                    let client = checklist.mut_turn_client_by_id(turn_id).unwrap();
+                    match client.send_to(transport, transmit.to, transmit.data, now) {
+                        Ok(transmit) => {
+                            if let Some(transmit) = transmit {
+                                self.last_send_time = Some(now);
+                                return Some(CheckListSetTransmit {
+                                    checklist_id,
+                                    transmit: transmit_send_build_unframed(transmit),
+                                });
+                            }
+                        }
+                        Err(e) => warn!("error sending: {e}"),
+                    }
+                } else {
+                    let check_agent = &mut checklist.agents[check_agent_i];
+                    let Some(transmit) = check_agent.agent.poll_transmit(now) else {
+                        continue;
+                    };
+
+                    let transport = transmit.transport;
+                    self.last_send_time = Some(now);
+                    return Some(CheckListSetTransmit {
+                        checklist_id,
+                        transmit: transmit.reinterpret_data(|data| transmit_send(transport, data)),
+                    });
+                }
             }
 
+            let checklist = &mut self.checklists[checklist_i];
             for (_id, client) in checklist.turn_clients.iter_mut() {
                 let Some(transmit) = client.poll_transmit(now) else {
                     continue;

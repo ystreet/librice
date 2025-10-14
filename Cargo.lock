@@ -1039,6 +1039,7 @@ dependencies = [
  "tracing",
  "tracing-futures",
  "tracing-subscriber",
+ "turn-server-proto",
 ]
 
 [[package]]

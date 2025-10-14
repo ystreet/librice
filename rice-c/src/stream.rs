@@ -339,6 +339,8 @@ pub struct GatheredCandidate {
     pub(crate) ffi: crate::ffi::RiceGatheredCandidate,
 }
 
+unsafe impl Send for GatheredCandidate {}
+
 impl GatheredCandidate {
     pub(crate) fn from_c_full(ffi: crate::ffi::RiceGatheredCandidate) -> Self {
         Self { ffi }

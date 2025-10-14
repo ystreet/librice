@@ -173,7 +173,8 @@ impl<'a> ComponentMut<'a> {
             agent.handle_stun(response, selected.remote.address);
         }
 
-        let selected_pair = SelectedPair::new(selected, agent_id);
+        // TODO: handle TURN
+        let selected_pair = SelectedPair::new(selected, agent_id, None);
         self.set_selected_pair_with_agent(selected_pair);
         Ok(())
     }

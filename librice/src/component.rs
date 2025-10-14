@@ -116,6 +116,7 @@ impl Component {
 
     pub(crate) fn set_selected_pair(&self, selected: SelectedPair) -> Result<(), AgentError> {
         let mut inner = self.inner.lock().unwrap();
+        tracing::info!("set selected pair {selected:?}");
         self.proto.set_selected_pair(selected.pair.clone())?;
         inner.selected_pair = Some(selected);
 

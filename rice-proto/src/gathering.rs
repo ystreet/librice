@@ -626,7 +626,6 @@ impl StunGatherer {
             if request.completed {
                 continue;
             }
-            trace!("poll transmit request {request:?}");
 
             match request.protocol {
                 RequestProtocol::Udp => (),
