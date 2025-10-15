@@ -6,8 +6,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use futures::AsyncReadExt;
-use futures::AsyncWriteExt;
+use futures::{AsyncReadExt, AsyncWriteExt};
 use rice_c::Instant;
 use stun_proto::agent::HandleStunReply;
 use stun_proto::agent::StunAgent;

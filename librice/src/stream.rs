@@ -780,16 +780,21 @@ impl Stream {
         local_turn: &Option<SelectedTurn>,
     ) -> Option<StunChannel> {
         let inner = self.inner.lock().unwrap();
-        let (local_addr, remote_addr) = if let Some(turn) = local_turn {
-            (turn.local_addr.as_socket(), turn.remote_addr.as_socket())
+        let (transport, local_addr, remote_addr) = if let Some(turn) = local_turn {
+            (
+                turn.transport,
+                turn.local_addr.as_socket(),
+                turn.remote_addr.as_socket(),
+            )
         } else {
             (
+                local.transport(),
                 local.base_address().as_socket(),
                 remote.address().as_socket(),
             )
         };
         inner
-            .socket_for_5tuple(local.transport(), local_addr, remote_addr)
+            .socket_for_5tuple(transport, local_addr, remote_addr)
             .cloned()
     }
 

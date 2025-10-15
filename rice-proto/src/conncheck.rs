@@ -2310,6 +2310,7 @@ impl ConnCheckListSet {
                     transmit = ignored;
                 }
                 TurnRecvRet::PeerData(peer) => {
+                    let turn_client_transport = client.transport();
                     turn_client_id = Some((turn_id, turn_server_addr));
                     checklist_i = checklist_i2;
                     // FIXME: dual allocation TURN
@@ -2331,6 +2332,35 @@ impl ConnCheckListSet {
                             component_id,
                             data: data.as_ref().to_vec(),
                         });
+                    }
+                    if turn_client_transport != TransportType::Udp {
+                        loop {
+                            let client = self.checklists[checklist_i]
+                                .mut_turn_client_by_id(turn_id)
+                                .unwrap();
+                            let Some(peer) = client.poll_recv(now) else {
+                                break;
+                            };
+                            let transmit = Transmit::new(
+                                peer.data(),
+                                peer.transport,
+                                peer.peer,
+                                client.relayed_addresses().next().unwrap().1,
+                            );
+                            let ret = self.incoming_data_or_stun(
+                                checklist_i,
+                                component_id,
+                                transmit,
+                                turn_client_id,
+                            );
+                            if let Some(data) = ret.data.as_ref() {
+                                let checklist = &mut self.checklists[checklist_i];
+                                checklist.pending_recv.push_back(PendingRecv {
+                                    component_id,
+                                    data: data.as_ref().to_vec(),
+                                });
+                            }
+                        }
                     }
                     return HandleRecvReply {
                         handled: ret.handled,
