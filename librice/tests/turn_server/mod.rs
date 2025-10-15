@@ -11,9 +11,10 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::Waker;
 
+use futures::{AsyncReadExt, AsyncWriteExt};
 use rice_c::Instant;
 use smol::channel::Sender;
-use smol::net::UdpSocket;
+use smol::net::{TcpListener, TcpStream, UdpSocket};
 use smol::stream::StreamExt;
 use stun_proto::agent::Transmit;
 use stun_proto::types::{AddressFamily, TransportType};
@@ -21,7 +22,7 @@ use turn_server_proto::api::{SocketAllocateError, TurnServerApi, TurnServerPollR
 use turn_server_proto::server::TurnServer as TurnServerProto;
 
 #[derive(Debug, Clone)]
-#[allow(unused_variables)]
+#[allow(dead_code)]
 struct Allocation {
     client_transport: TransportType,
     client_addr: SocketAddr,
@@ -35,17 +36,35 @@ pub struct TurnServer {
 }
 
 impl TurnServer {
-    pub async fn new(listen_addr: SocketAddr, realm: String, relay_addr: IpAddr) -> Self {
+    pub async fn new_udp(listen_addr: SocketAddr, realm: String, relay_addr: IpAddr) -> Self {
         let socket = Arc::new(UdpSocket::bind(listen_addr).await.unwrap());
         let listen_addr = socket.local_addr().unwrap();
         let inner = Arc::new(Mutex::new(TurnServerInner {
             proto: TurnServerProto::new(TransportType::Udp, listen_addr, realm),
             allocations: Default::default(),
             waker: None,
-            udp_listener: socket.clone(),
+            socket: ListenSocket::Udp(socket.clone()),
         }));
         let base_instant = std::time::Instant::now();
-        Self::listen_task(inner.clone(), socket, base_instant).detach();
+        Self::udp_listen_task(inner.clone(), socket, base_instant).detach();
+        Self::start_task(inner.clone(), relay_addr, base_instant).detach();
+        Self { inner }
+    }
+
+    pub async fn new_tcp(listen_addr: SocketAddr, realm: String, relay_addr: IpAddr) -> Self {
+        let listener = TcpListener::bind(listen_addr).await.unwrap();
+        let listen_addr = listener.local_addr().unwrap();
+        let inner = Arc::new(Mutex::new(TurnServerInner {
+            proto: TurnServerProto::new(TransportType::Tcp, listen_addr, realm),
+            allocations: Default::default(),
+            waker: None,
+            socket: ListenSocket::Tcp(TcpTurnClient {
+                listener: listener.clone(),
+                clients: vec![],
+            }),
+        }));
+        let base_instant = std::time::Instant::now();
+        Self::tcp_listen_task(inner.clone(), listener, base_instant).detach();
         Self::start_task(inner.clone(), relay_addr, base_instant).detach();
         Self { inner }
     }
@@ -71,7 +90,7 @@ impl TurnServer {
         smol::spawn(async move { while driver.next().await.is_some() {} })
     }
 
-    fn listen_task(
+    fn udp_listen_task(
         inner: Arc<Mutex<TurnServerInner>>,
         socket: Arc<UdpSocket>,
         base_instant: std::time::Instant,
@@ -90,9 +109,114 @@ impl TurnServer {
                 };
                 let (socket, reply) = {
                     let mut inner = inner.lock().unwrap();
-                    trace!("listen server received {} bytes from {from}", buf.len());
+                    trace!(
+                        "udp listen {listen_addr} server received {} bytes from {from}",
+                        buf.len()
+                    );
                     let Some(reply) = inner.proto.recv(
                         Transmit::new(buf, TransportType::Udp, from, listen_addr),
+                        Instant::from_std(base_instant),
+                    ) else {
+                        trace!("udp listen {listen_addr} server no direct reply");
+                        if let Some(waker) = inner.waker.take() {
+                            waker.wake();
+                        }
+                        continue;
+                    };
+                    let Some(socket) =
+                        inner.socket_for_5tuple(reply.transport, reply.from, reply.to)
+                    else {
+                        warn!(
+                            "no {} socket for {} -> {}",
+                            reply.transport, reply.from, reply.to
+                        );
+                        continue;
+                    };
+                    (socket, reply.build())
+                };
+                trace!(
+                    "udp listen {listen_addr} server reply to incoming data: {}",
+                    reply.to
+                );
+                let _ = socket.send_to(reply.data, reply.to).await;
+                {
+                    let mut inner = inner.lock().unwrap();
+                    if let Some(waker) = inner.waker.take() {
+                        waker.wake();
+                    }
+                }
+            }
+        })
+    }
+
+    fn tcp_listen_task(
+        inner: Arc<Mutex<TurnServerInner>>,
+        listener: TcpListener,
+        base_instant: std::time::Instant,
+    ) -> smol::Task<()> {
+        let weak_inner = Arc::downgrade(&inner);
+        smol::spawn(async move {
+            let mut incoming = listener.incoming();
+            while let Some(Ok(stream)) = incoming.next().await {
+                let Some(inner) = weak_inner.upgrade() else {
+                    break;
+                };
+                Self::tcp_stream_listen_task(inner, stream, base_instant).detach();
+            }
+        })
+    }
+
+    fn tcp_stream_listen_task(
+        inner: Arc<Mutex<TurnServerInner>>,
+        mut stream: TcpStream,
+        base_instant: std::time::Instant,
+    ) -> smol::Task<()> {
+        let weak_inner = Arc::downgrade(&inner);
+        let Ok(remote_addr) = stream.peer_addr() else {
+            return smol::spawn(async move {});
+        };
+        let (send, recv) = smol::channel::bounded(4);
+        {
+            let mut inner = inner.lock().unwrap();
+            if let ListenSocket::Tcp(ref mut tcp) = inner.socket {
+                tcp.clients.push((remote_addr, send));
+            }
+        }
+        smol::spawn({
+            let mut stream = stream.clone();
+            async move {
+                while let Ok(data) = recv.recv().await {
+                    let Ok(_) = stream.write_all(&data).await else {
+                        break;
+                    };
+                }
+            }
+        })
+        .detach();
+        smol::spawn(async move {
+            let Ok(local_addr) = stream.local_addr() else {
+                return;
+            };
+            let Ok(remote_addr) = stream.peer_addr() else {
+                return;
+            };
+            let mut buf = [0; 2048];
+            loop {
+                let Ok(n) = stream.read(&mut buf).await else {
+                    break;
+                };
+                if n == 0 {
+                    break;
+                }
+                let buf = &buf[..n];
+                let Some(inner) = weak_inner.upgrade() else {
+                    break;
+                };
+                let (socket, reply) = {
+                    let mut inner = inner.lock().unwrap();
+                    trace!("tcp stream received {} bytes from {remote_addr}", buf.len());
+                    let Some(reply) = inner.proto.recv(
+                        Transmit::new(buf, TransportType::Tcp, remote_addr, local_addr),
                         Instant::from_std(base_instant),
                     ) else {
                         trace!("listen server no direct reply");
@@ -102,15 +226,23 @@ impl TurnServer {
                         continue;
                     };
                     let Some(socket) =
-                        inner.socket_for_5tuple(TransportType::Udp, reply.from, reply.to)
+                        inner.socket_for_5tuple(reply.transport, reply.from, reply.to)
                     else {
-                        warn!("no UDP socket for {} -> {}", reply.from, reply.to);
+                        warn!(
+                            "no {} socket for {} -> {}",
+                            reply.transport, reply.from, reply.to
+                        );
                         continue;
                     };
                     (socket, reply.build())
                 };
-                trace!("listen server reply to incoming data: {}", reply.to);
-                let _ = socket.send_to(&reply.data, reply.to).await;
+                trace!(
+                    "tcp listen {remote_addr} server reply to incoming data over {}: {} -> {}",
+                    reply.transport,
+                    reply.from,
+                    reply.to
+                );
+                let _ = socket.send_to(reply.data, reply.to).await;
                 {
                     let mut inner = inner.lock().unwrap();
                     if let Some(waker) = inner.waker.take() {
@@ -127,7 +259,38 @@ struct TurnServerInner {
     proto: TurnServerProto,
     allocations: Vec<Allocation>,
     waker: Option<Waker>,
-    udp_listener: Arc<UdpSocket>,
+    socket: ListenSocket,
+}
+
+#[derive(Debug)]
+enum ListenSocket {
+    Udp(Arc<UdpSocket>),
+    Tcp(TcpTurnClient),
+}
+
+#[derive(Debug)]
+struct TcpTurnClient {
+    listener: TcpListener,
+    clients: Vec<(SocketAddr, Sender<Vec<u8>>)>,
+}
+
+#[derive(Debug)]
+enum SocketOrChannel {
+    Socket(Arc<UdpSocket>),
+    Channel(Sender<Vec<u8>>),
+}
+
+impl SocketOrChannel {
+    async fn send_to(&self, data: Vec<u8>, to: SocketAddr) -> std::io::Result<()> {
+        match self {
+            Self::Socket(socket) => socket.send_to(&data, to).await.map(|_| ()),
+            Self::Channel(channel) => channel.send(data).await.map(|_| ()).map_err(|e| match e {
+                smol::channel::SendError(_) => {
+                    std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "aborted")
+                }
+            }),
+        }
+    }
 }
 
 impl TurnServerInner {
@@ -135,18 +298,35 @@ impl TurnServerInner {
         &self,
         transport: TransportType,
         local_addr: SocketAddr,
-        _remote_addr: SocketAddr,
-    ) -> Option<Arc<UdpSocket>> {
-        if transport == TransportType::Udp && local_addr == self.udp_listener.local_addr().unwrap()
-        {
-            return Some(self.udp_listener.clone());
+        remote_addr: SocketAddr,
+    ) -> Option<SocketOrChannel> {
+        match &self.socket {
+            ListenSocket::Udp(socket)
+                if transport == TransportType::Udp
+                    && socket.local_addr().unwrap() == local_addr =>
+            {
+                return Some(SocketOrChannel::Socket(socket.clone()))
+            }
+            ListenSocket::Tcp(tcp)
+                if transport == TransportType::Tcp
+                    && tcp.listener.local_addr().unwrap() == local_addr =>
+            {
+                return tcp.clients.iter().find_map(|(client_addr, sender)| {
+                    if remote_addr == *client_addr {
+                        Some(SocketOrChannel::Channel(sender.clone()))
+                    } else {
+                        None
+                    }
+                });
+            }
+            _ => (),
         }
         trace!("allocations: {:?}", self.allocations);
         for alloc in self.allocations.iter() {
             if transport == TransportType::Udp
                 && alloc.relayed_udp.local_addr().unwrap() == local_addr
             {
-                return Some(alloc.relayed_udp.clone());
+                return Some(SocketOrChannel::Socket(alloc.relayed_udp.clone()));
             }
         }
         None
@@ -181,6 +361,10 @@ impl TurnServerDriver {
                     let Some(socket) =
                         inner.socket_for_5tuple(transmit.transport, transmit.from, transmit.to)
                     else {
+                        warn!(
+                            "no {} socket for {} -> {}",
+                            transmit.transport, transmit.from, transmit.to
+                        );
                         continue;
                     };
                     socket
@@ -192,7 +376,7 @@ impl TurnServerDriver {
                     transmit.from,
                     transmit.to
                 );
-                let _ = socket.send_to(&transmit.data, transmit.to).await;
+                let _ = socket.send_to(transmit.data, transmit.to).await;
                 {
                     let mut inner = inner.lock().unwrap();
                     if let Some(waker) = inner.waker.take() {
@@ -241,7 +425,7 @@ impl TurnServerDriver {
                 .and_then(|s| {
                     s.local_addr().map(|local_addr| {
                         let socket = Arc::new(s);
-                        TurnServer::listen_task(inner.clone(), socket.clone(), base_instant)
+                        TurnServer::udp_listen_task(inner.clone(), socket.clone(), base_instant)
                             .detach();
                         (local_addr, socket)
                     })

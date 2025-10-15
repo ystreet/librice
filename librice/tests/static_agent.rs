@@ -445,10 +445,10 @@ fn turn_credentials() -> Credentials {
     Credentials::new("tuser", "tpass")
 }
 
-async fn turn_server_localhost_ipv4() -> (TurnServer, TurnConfig) {
+async fn udp_turn_server_localhost_ipv4() -> (TurnServer, TurnConfig) {
     let listen_addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
     let relay_addr = listen_addr.ip();
-    let server = TurnServer::new(listen_addr, "realm".to_string(), relay_addr).await;
+    let server = TurnServer::new_udp(listen_addr, "realm".to_string(), relay_addr).await;
     server.add_user("tuser", "tpass");
     let listen_addr = server.listen_address();
     (
@@ -464,10 +464,46 @@ async fn turn_server_localhost_ipv4() -> (TurnServer, TurnConfig) {
 }
 
 #[test]
-fn agent_static_connection_local_controlling_udp_turn_server() {
+fn agent_static_connection_local_controlling_udp_client_turn_server() {
     common::debug_init();
     smol::block_on(async move {
-        let local_turn = turn_server_localhost_ipv4().await;
+        let local_turn = udp_turn_server_localhost_ipv4().await;
+        agent_static_connection_test(AgentStaticTestConfig {
+            local: AgentConfig::default()
+                .controlling(true)
+                .candidate_filter(Box::new(candidate_filter_relay_only))
+                .turn_servers(vec![local_turn.1]),
+            remote: AgentConfig::default().candidate_filter(Box::new(move |candidate| {
+                candidate_filter_accept_transport(candidate, &[TransportType::Udp])
+            })),
+        })
+        .await
+    });
+}
+
+async fn tcp_turn_server_localhost_ipv4() -> (TurnServer, TurnConfig) {
+    let listen_addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
+    let relay_addr = listen_addr.ip();
+    let server = TurnServer::new_tcp(listen_addr, "realm".to_string(), relay_addr).await;
+    server.add_user("tuser", "tpass");
+    let listen_addr = server.listen_address();
+    (
+        server,
+        TurnConfig::new(
+            TransportType::Tcp,
+            listen_addr.into(),
+            turn_credentials(),
+            &[AddressFamily::IPV4],
+            None,
+        ),
+    )
+}
+
+#[test]
+fn agent_static_connection_local_controlling_tcp_client_turn_server() {
+    common::debug_init();
+    smol::block_on(async move {
+        let local_turn = tcp_turn_server_localhost_ipv4().await;
         agent_static_connection_test(AgentStaticTestConfig {
             local: AgentConfig::default()
                 .controlling(true)
