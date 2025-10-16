@@ -134,6 +134,7 @@ impl<'a> ComponentMut<'a> {
     /// Set the pair that will be used to send/receive data.  This will override the ICE
     /// negotiation chosen value.
     pub fn set_selected_pair(&mut self, selected: CandidatePair) -> Result<(), AgentError> {
+        // TODO: handle TURN
         let stream = self.agent.mut_stream_state(self.stream_id).unwrap();
         let checklist_id = stream.checklist_id;
         let checklist = self
@@ -173,7 +174,6 @@ impl<'a> ComponentMut<'a> {
             agent.handle_stun(response, selected.remote.address);
         }
 
-        // TODO: handle TURN
         let selected_pair = SelectedPair::new(selected, agent_id, None);
         self.set_selected_pair_with_agent(selected_pair);
         Ok(())
@@ -205,6 +205,7 @@ impl<'a> ComponentMut<'a> {
         let local_transport = pair.local.transport_type;
         let local_addr = pair.local.address;
         let remote_addr = pair.remote.address;
+        let local_related_addr = pair.local.related_address;
         let stun_agent_id = selected_pair.stun_agent_id();
 
         let data_len = data.as_ref().len();
@@ -212,7 +213,7 @@ impl<'a> ComponentMut<'a> {
         let checklist = self.agent.checklistset.mut_list(checklist_id).unwrap();
         if local_candidate_type == CandidateType::Relayed {
             let turn_client = checklist
-                .mut_turn_client_by_allocated_address(local_transport, local_addr)
+                .mut_turn_client_by_allocated_address(local_transport, local_related_addr.unwrap(), local_addr)
                 .ok_or(AgentError::ResourceNotFound)?
                 .1;
             let transmit = turn_client
