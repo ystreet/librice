@@ -1710,7 +1710,7 @@ impl ConnCheckList {
                             let agent_id = check.agent_id().unwrap();
                             let turn = if check.pair.local.candidate_type == CandidateType::Relayed
                             {
-                                self.turn_client_by_allocated_address(
+                                let ret = self.turn_client_by_allocated_address(
                                     check.pair.local.transport_type,
                                     check.pair.local.address,
                                 )
@@ -1720,7 +1720,9 @@ impl ConnCheckList {
                                         local_addr: client.local_addr(),
                                         remote_addr: client.remote_addr(),
                                     }
-                                })
+                                });
+                                debug_assert!(ret.is_some());
+                                ret
                             } else {
                                 None
                             };
