@@ -203,9 +203,9 @@ impl<'a> ComponentMut<'a> {
         let pair = selected_pair.candidate_pair();
         let local_candidate_type = pair.local.candidate_type;
         let local_transport = pair.local.transport_type;
+        let local_base_addr = pair.local.base_address;
         let local_addr = pair.local.address;
         let remote_addr = pair.remote.address;
-        let local_related_addr = pair.local.related_address;
         let stun_agent_id = selected_pair.stun_agent_id();
 
         let data_len = data.as_ref().len();
@@ -213,7 +213,7 @@ impl<'a> ComponentMut<'a> {
         let checklist = self.agent.checklistset.mut_list(checklist_id).unwrap();
         if local_candidate_type == CandidateType::Relayed {
             let turn_client = checklist
-                .mut_turn_client_by_allocated_address(local_transport, local_related_addr.unwrap(), local_addr)
+                .mut_turn_client_by_allocated_address(local_transport, local_base_addr)
                 .ok_or(AgentError::ResourceNotFound)?
                 .1;
             let transmit = turn_client
@@ -221,7 +221,7 @@ impl<'a> ComponentMut<'a> {
                 .map_err(|_| AgentError::ResourceNotFound)?
                 .unwrap();
             trace!(
-                "sending {} bytes from {} {} through TURN server {} with allocation {local_transport} {local_addr} to {remote_addr}",
+                "sending {} bytes from {} {} through TURN server {} with allocation {local_transport} {local_base_addr} to {remote_addr}",
                 data_len, transmit.transport, transmit.from, transmit.to,
             );
             Ok(Transmit::new(
