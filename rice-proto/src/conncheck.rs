@@ -1742,6 +1742,7 @@ impl ConnCheckList {
                                         local_addr: client.local_addr(),
                                         remote_addr: client.remote_addr(),
                                     });
+                                error!("turn clients: {:?}", self.turn_clients);
                                 debug_assert!(ret.is_some());
                                 ret
                             } else {
