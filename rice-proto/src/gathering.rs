@@ -563,7 +563,7 @@ impl StunGatherer {
                                 )
                                 .priority(priority)
                                 .related_address(request.server)
-                                .base_address(relayed_address)
+                                .base_address(client.local_addr())
                                 .build();
                                 self.produced_i += 1;
                                 turn_ret = Some((idx, cand));
@@ -1351,7 +1351,7 @@ mod tests {
             assert_eq!(cand.candidate_type, CandidateType::Relayed);
             assert_eq!(cand.transport_type, TransportType::Udp);
             assert_eq!(cand.address, turn_alloc_addr);
-            assert_eq!(cand.base_address, turn_alloc_addr);
+            assert_eq!(cand.base_address, remote_addr);
             assert_eq!(cand.tcp_type, None);
             assert_eq!(cand.extensions, vec![]);
         } else {
@@ -1480,7 +1480,7 @@ mod tests {
             assert_eq!(cand.candidate_type, CandidateType::Relayed);
             assert_eq!(cand.transport_type, TransportType::Udp);
             assert_eq!(cand.address, turn_alloc_addr);
-            assert_eq!(cand.base_address, turn_alloc_addr);
+            assert_eq!(cand.base_address, remote_addr);
             assert_eq!(cand.tcp_type, None);
             assert_eq!(cand.extensions, vec![]);
         } else {
