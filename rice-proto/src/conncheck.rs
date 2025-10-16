@@ -388,6 +388,7 @@ static CONN_CHECK_LIST_COUNT: AtomicUsize = AtomicUsize::new(0);
 struct CheckStunAgent {
     id: StunAgentId,
     agent: StunAgent,
+    turn_id: Option<StunAgentId>,
 }
 
 /// A list of connectivity checks for an ICE stream
@@ -664,14 +665,20 @@ impl ConnCheckList {
             agent = agent.remote_addr(remote);
         }
         let agent = agent.build();
-        self.add_agent(agent)
+        // TODO: handle TURN
+        self.add_agent(agent, None)
     }
 
-    fn add_agent(&mut self, agent: StunAgent) -> (StunAgentId, usize) {
+    fn add_agent(
+        &mut self,
+        agent: StunAgent,
+        turn_id: Option<StunAgentId>,
+    ) -> (StunAgentId, usize) {
         let agent_id = StunAgentId::generate();
         self.agents.push(CheckStunAgent {
             id: agent_id,
             agent,
+            turn_id,
         });
         (agent_id, self.agents.len() - 1)
     }
@@ -751,6 +758,7 @@ impl ConnCheckList {
         candidate: &Candidate,
         local_credentials: &Credentials,
         remote_credentials: &Credentials,
+        turn_id: Option<StunAgentId>,
     ) -> (StunAgentId, &StunAgent) {
         if let Some(agent_id) = self
             .agents
@@ -780,7 +788,7 @@ impl ConnCheckList {
         agent.set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
             remote_credentials.clone().into(),
         ));
-        let (agent_id, agent_idx) = self.add_agent(agent);
+        let (agent_id, agent_idx) = self.add_agent(agent, turn_id);
         (agent_id, &self.agents[agent_idx].agent)
     }
 
@@ -806,14 +814,16 @@ impl ConnCheckList {
     fn turn_client_by_allocated_address(
         &self,
         transport: TransportType,
+        server_addr: SocketAddr,
         allocated: SocketAddr,
     ) -> Option<(StunAgentId, &TurnClient)> {
         self.turn_clients.iter().find_map(|(id, client)| {
-            if client
-                .relayed_addresses()
-                .any(|(relayed_transport, relayed)| {
-                    relayed_transport == transport && relayed == allocated
-                })
+            if client.remote_addr() == server_addr
+                && client
+                    .relayed_addresses()
+                    .any(|(relayed_transport, relayed)| {
+                        relayed_transport == transport && relayed == allocated
+                    })
             {
                 Some((*id, client))
             } else {
@@ -825,17 +835,19 @@ impl ConnCheckList {
     pub(crate) fn mut_turn_client_by_allocated_address(
         &mut self,
         transport: TransportType,
+        server_addr: SocketAddr,
         allocated: SocketAddr,
     ) -> Option<(StunAgentId, &mut TurnClient)> {
         self.turn_clients
             .iter_mut()
             .chain(self.pending_delete_turn_clients.iter_mut())
             .find_map(|(id, client)| {
-                if client
-                    .relayed_addresses()
-                    .any(|(relayed_transport, relayed)| {
-                        relayed_transport == transport && relayed == allocated
-                    })
+                if client.remote_addr() == server_addr
+                    && client
+                        .relayed_addresses()
+                        .any(|(relayed_transport, relayed)| {
+                            relayed_transport == transport && relayed == allocated
+                        })
                 {
                     Some((*id, client))
                 } else {
@@ -883,13 +895,17 @@ impl ConnCheckList {
     )]
     pub fn add_local_gathered_candidate(&mut self, gathered: GatheredCandidate) -> bool {
         let candidate_type = gathered.candidate.candidate_type;
-        if !self.add_local_candidate_internal(gathered.candidate) {
+        let turn_id = if candidate_type == CandidateType::Relayed {
+            Some(StunAgentId::generate())
+        } else {
+            None
+        };
+        if !self.add_local_candidate_internal(gathered.candidate, turn_id) {
             return false;
         }
         if candidate_type == CandidateType::Relayed {
             let client = gathered.turn_agent.unwrap();
-            let agent_id = StunAgentId::generate();
-            self.turn_clients.push((agent_id, *client));
+            self.turn_clients.push((turn_id.unwrap(), *client));
         }
         self.generate_checks();
         true
@@ -911,7 +927,7 @@ impl ConnCheckList {
         )
     )]
     pub fn add_local_candidate(&mut self, local: Candidate) -> bool {
-        if self.add_local_candidate_internal(local) {
+        if self.add_local_candidate_internal(local, None) {
             self.generate_checks();
             true
         } else {
@@ -919,7 +935,7 @@ impl ConnCheckList {
         }
     }
 
-    fn add_local_candidate_internal(&mut self, local: Candidate) -> bool {
+    fn add_local_candidate_internal(&mut self, local: Candidate, turn_id: Option<StunAgentId>) -> bool {
         let (local_credentials, remote_credentials) = {
             if self.local_end_of_candidates {
                 panic!("Attempt made to add a local candidate after end-of-candidate received");
@@ -972,7 +988,7 @@ impl ConnCheckList {
         match local.transport_type {
             TransportType::Udp => {
                 let (agent_id, _) =
-                    self.find_or_create_udp_agent(&local, &local_credentials, &remote_credentials);
+                    self.find_or_create_udp_agent(&local, &local_credentials, &remote_credentials, turn_id);
                 self.local_candidates.push(ConnCheckLocalCandidate {
                     candidate: local,
                     variant: LocalCandidateVariant::Agent(agent_id),
@@ -1114,8 +1130,10 @@ impl ConnCheckList {
 
     fn check_has_turn_permission(&self, check: &ConnCheck) -> bool {
         if check.pair.local.candidate_type == CandidateType::Relayed {
+            let related_addr = check.pair.local.related_address.unwrap();
             let Some((_id, client)) = self.turn_client_by_allocated_address(
                 check.pair.local.transport_type,
+                related_addr,
                 check.pair.local.address,
             ) else {
                 return false;
@@ -1286,9 +1304,11 @@ impl ConnCheckList {
 
         for local in self.local_candidates.iter() {
             let turn_client_id = if local.candidate.candidate_type == CandidateType::Relayed {
+                let related_addr = local.candidate.related_address.unwrap();
                 let turn_client_id = self
                     .turn_client_by_allocated_address(
                         local.candidate.transport_type,
+                        related_addr,
                         local.candidate.address,
                     )
                     .map(|(id, _client)| id);
@@ -1710,17 +1730,18 @@ impl ConnCheckList {
                             let agent_id = check.agent_id().unwrap();
                             let turn = if check.pair.local.candidate_type == CandidateType::Relayed
                             {
-                                let ret = self.turn_client_by_allocated_address(
-                                    check.pair.local.transport_type,
-                                    check.pair.local.address,
-                                )
-                                .map(|(_turn_id, client)| {
-                                    SelectedTurn {
+                                let related_addr = check.pair.local.related_address.unwrap();
+                                let ret = self
+                                    .turn_client_by_allocated_address(
+                                        check.pair.local.transport_type,
+                                        related_addr,
+                                        check.pair.local.address,
+                                    )
+                                    .map(|(_turn_id, client)| SelectedTurn {
                                         transport: client.transport(),
                                         local_addr: client.local_addr(),
                                         remote_addr: client.remote_addr(),
-                                    }
-                                });
+                                    });
                                 debug_assert!(ret.is_some());
                                 ret
                             } else {
@@ -2161,7 +2182,8 @@ impl ConnCheckListSet {
                                 .clone()
                                 .into(),
                         ));
-                        let (agent_id, _agent_idx) = self.checklists[checklist_i].add_agent(agent);
+                        let (agent_id, _agent_idx) = self.checklists[checklist_i]
+                            .add_agent(agent, turn_client_id.map(|(id, _addr)| id));
                         (agent_id, checklist_i)
                     })
             });
@@ -2890,9 +2912,10 @@ impl ConnCheckListSet {
         let conncheck = checklist.mut_check_by_id(conncheck_id).unwrap();
         let turn_id = if conncheck.pair.local.candidate_type == CandidateType::Relayed {
             let transport = conncheck.pair.local.transport_type;
-            let turn_addr = conncheck.pair.local.address;
+            let relayed_addr = conncheck.pair.local.address;
+            let related_addr = conncheck.pair.local.related_address.unwrap();
             checklist
-                .turn_client_by_allocated_address(transport, turn_addr)
+                .turn_client_by_allocated_address(transport, related_addr, relayed_addr)
                 .map(|(id, client)| (id, client.remote_addr()))
         } else {
             None
@@ -3087,57 +3110,59 @@ impl ConnCheckListSet {
         let remote_addr = agent.remote_addr();
         debug!("found agent {transport}: {local_addr} -> {remote_addr:?} to maybe remove");
 
-        let (transport, local_addr, remote_addr) =
-            if check.pair.local.candidate_type == CandidateType::Relayed {
-                let Some((turn_id, _turn_client)) =
-                    checklist.mut_turn_client_by_allocated_address(transport, local_addr)
-                else {
-                    return;
-                };
+        let (transport, local_addr, remote_addr) = if check.pair.local.candidate_type
+            == CandidateType::Relayed
+        {
+            let related_addr = check.pair.local.related_address.unwrap();
+            let Some((turn_id, _turn_client)) =
+                checklist.mut_turn_client_by_allocated_address(transport, related_addr, local_addr)
+            else {
+                return;
+            };
 
-                if self.checklists.iter().any(|checklist| {
-                    checklist.pairs.iter().any(|pair| {
-                        pair.pair.local.candidate_type == CandidateType::Relayed
-                            && pair.pair.local.address == check.pair.local.address
-                    })
-                }) {
-                    // TODO: remove permission for remote address here
-                    warn!(
-                        "should remove {transport} permission from {local_addr} to {}",
-                        check.pair.remote.address.ip()
-                    );
-                    return;
-                }
-                let checklist = &mut self.checklists[checklist_i];
-                let mut turn_client = checklist.remove_turn_client_by_id(turn_id).unwrap();
-                let _ = turn_client.delete(now);
-                let checklist = &mut self.checklists[checklist_i];
-                checklist
-                    .pending_delete_turn_clients
-                    .push((turn_id, turn_client));
-                // socket remove will occur when the delete reply is received, or on timeout
+            if self.checklists.iter().any(|checklist| {
+                checklist.pairs.iter().any(|pair| {
+                    pair.pair.local.candidate_type == CandidateType::Relayed
+                        && pair.pair.local.address == check.pair.local.address
+                })
+            }) {
+                // TODO: remove permission for remote address here
+                warn!(
+                    "should remove {transport} permission from {local_addr} to {}",
+                    check.pair.remote.address.ip()
+                );
+                return;
+            }
+            let checklist = &mut self.checklists[checklist_i];
+            let mut turn_client = checklist.remove_turn_client_by_id(turn_id).unwrap();
+            let _ = turn_client.delete(now);
+            let checklist = &mut self.checklists[checklist_i];
+            checklist
+                .pending_delete_turn_clients
+                .push((turn_id, turn_client));
+            // socket remove will occur when the delete reply is received, or on timeout
+            return;
+        } else {
+            let checklist = &mut self.checklists[checklist_i];
+            if checklist
+                .turn_clients
+                .iter()
+                .chain(checklist.pending_delete_turn_clients.iter())
+                .any(|(_id, turn_client)| {
+                    turn_client.transport() == transport
+                        && turn_client.local_addr() == local_addr
+                        && if transport == TransportType::Tcp {
+                            remote_addr == Some(turn_client.remote_addr())
+                        } else {
+                            true
+                        }
+                })
+            {
                 return;
             } else {
-                let checklist = &mut self.checklists[checklist_i];
-                if checklist
-                    .turn_clients
-                    .iter()
-                    .chain(checklist.pending_delete_turn_clients.iter())
-                    .any(|(_id, turn_client)| {
-                        turn_client.transport() == transport
-                            && turn_client.local_addr() == local_addr
-                            && if transport == TransportType::Tcp {
-                                remote_addr == Some(turn_client.remote_addr())
-                            } else {
-                                true
-                            }
-                    })
-                {
-                    return;
-                } else {
-                    (transport, local_addr, remote_addr)
-                }
-            };
+                (transport, local_addr, remote_addr)
+            }
+        };
         match transport {
             TransportType::Udp => {
                 self.pending_remove_sockets.push_back(CheckListSetSocket {
@@ -3546,17 +3571,8 @@ impl ConnCheckListSet {
             let agents_len = self.checklists[checklist_i].agents.len();
             for check_agent_i in 0..agents_len {
                 let checklist = &mut self.checklists[checklist_i];
-                let (transport, local_addr) = {
-                    let check_agent = &mut checklist.agents[check_agent_i];
-                    (
-                        check_agent.agent.transport(),
-                        check_agent.agent.local_addr(),
-                    )
-                };
-                let checklist = &mut self.checklists[checklist_i];
-                if let Some((turn_id, _client)) =
-                    checklist.mut_turn_client_by_allocated_address(transport, local_addr)
-                {
+                let turn_id = checklist.agents[check_agent_i].turn_id;
+                if let Some(turn_id) = turn_id {
                     let check_agent = &mut checklist.agents[check_agent_i];
                     let Some(transmit) = check_agent.agent.poll_transmit(now) else {
                         continue;
@@ -3713,7 +3729,8 @@ impl ConnCheckListSet {
                     let nominate = check.nominate;
                     let conncheck_id = check.conncheck_id;
 
-                    let (agent_id, _agent_idx) = checklist.add_agent(agent);
+                    // FIXME: TURN-TCP
+                    let (agent_id, _agent_idx) = checklist.add_agent(agent, None);
                     self.pending_messages
                         .push_front(CheckListSetPendingMessage {
                             checklist_id,
