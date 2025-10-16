@@ -813,17 +813,17 @@ impl ConnCheckList {
 
     fn turn_client_by_allocated_address(
         &self,
-        transport: TransportType,
-        server_addr: SocketAddr,
-        allocated: SocketAddr,
+        allocated_transport: TransportType,
+        allocated_addr: SocketAddr,
     ) -> Option<(StunAgentId, &TurnClient)> {
         self.turn_clients.iter().find_map(|(id, client)| {
-            if client.remote_addr() == server_addr
-                && client
-                    .relayed_addresses()
-                    .any(|(relayed_transport, relayed)| {
-                        relayed_transport == transport && relayed == allocated
-                    })
+            if client
+                .relayed_addresses()
+                .any(|(client_relayed_transport, relayed)| {
+                    // XXX: what about ipv4->6 (and reverse) translators between the turn
+                    // server and the peer.
+                    allocated_transport == client_relayed_transport && relayed == allocated_addr
+                })
             {
                 Some((*id, client))
             } else {
@@ -834,20 +834,20 @@ impl ConnCheckList {
 
     pub(crate) fn mut_turn_client_by_allocated_address(
         &mut self,
-        transport: TransportType,
-        server_addr: SocketAddr,
-        allocated: SocketAddr,
+        allocated_transport: TransportType,
+        allocated_addr: SocketAddr,
     ) -> Option<(StunAgentId, &mut TurnClient)> {
         self.turn_clients
             .iter_mut()
             .chain(self.pending_delete_turn_clients.iter_mut())
             .find_map(|(id, client)| {
-                if client.remote_addr() == server_addr
-                    && client
-                        .relayed_addresses()
-                        .any(|(relayed_transport, relayed)| {
-                            relayed_transport == transport && relayed == allocated
-                        })
+                if client
+                    .relayed_addresses()
+                    .any(|(client_relayed_transport, relayed)| {
+                        // XXX: what about ipv4->6 (and reverse) translators between the turn
+                        // server and the peer.
+                        allocated_transport == client_relayed_transport && relayed == allocated_addr
+                    })
                 {
                     Some((*id, client))
                 } else {
@@ -935,7 +935,11 @@ impl ConnCheckList {
         }
     }
 
-    fn add_local_candidate_internal(&mut self, local: Candidate, turn_id: Option<StunAgentId>) -> bool {
+    fn add_local_candidate_internal(
+        &mut self,
+        local: Candidate,
+        turn_id: Option<StunAgentId>,
+    ) -> bool {
         let (local_credentials, remote_credentials) = {
             if self.local_end_of_candidates {
                 panic!("Attempt made to add a local candidate after end-of-candidate received");
@@ -987,8 +991,12 @@ impl ConnCheckList {
 
         match local.transport_type {
             TransportType::Udp => {
-                let (agent_id, _) =
-                    self.find_or_create_udp_agent(&local, &local_credentials, &remote_credentials, turn_id);
+                let (agent_id, _) = self.find_or_create_udp_agent(
+                    &local,
+                    &local_credentials,
+                    &remote_credentials,
+                    turn_id,
+                );
                 self.local_candidates.push(ConnCheckLocalCandidate {
                     candidate: local,
                     variant: LocalCandidateVariant::Agent(agent_id),
@@ -1130,11 +1138,9 @@ impl ConnCheckList {
 
     fn check_has_turn_permission(&self, check: &ConnCheck) -> bool {
         if check.pair.local.candidate_type == CandidateType::Relayed {
-            let related_addr = check.pair.local.related_address.unwrap();
             let Some((_id, client)) = self.turn_client_by_allocated_address(
                 check.pair.local.transport_type,
-                related_addr,
-                check.pair.local.address,
+                check.pair.local.base_address,
             ) else {
                 return false;
             };
@@ -1303,22 +1309,21 @@ impl ConnCheckList {
         let mut turn_checks = Vec::new();
 
         for local in self.local_candidates.iter() {
-            let turn_client_id = if local.candidate.candidate_type == CandidateType::Relayed {
-                let related_addr = local.candidate.related_address.unwrap();
+            let turn_client_id = {
+                error!("turn clients: {:?}", self.turn_clients);
                 let turn_client_id = self
                     .turn_client_by_allocated_address(
                         local.candidate.transport_type,
-                        related_addr,
-                        local.candidate.address,
+                        local.candidate.base_address,
                     )
                     .map(|(id, _client)| id);
-                if turn_client_id.is_none() {
+                if local.candidate.candidate_type == CandidateType::Relayed
+                    && turn_client_id.is_none()
+                {
                     warn!("No configured TURN client for candidate: {local:?}, ignoring");
                     continue;
                 }
                 turn_client_id
-            } else {
-                None
             };
             for remote in self.remote_candidates.iter() {
                 if candidate_can_pair_with(&local.candidate, remote) {
@@ -1728,25 +1733,22 @@ impl ConnCheckList {
                         }
                         if let Some(component_id) = component_id {
                             let agent_id = check.agent_id().unwrap();
-                            let turn = if check.pair.local.candidate_type == CandidateType::Relayed
-                            {
-                                let related_addr = check.pair.local.related_address.unwrap();
+                            let turn = {
                                 let ret = self
                                     .turn_client_by_allocated_address(
                                         check.pair.local.transport_type,
-                                        related_addr,
-                                        check.pair.local.address,
+                                        check.pair.local.base_address,
                                     )
                                     .map(|(_turn_id, client)| SelectedTurn {
                                         transport: client.transport(),
                                         local_addr: client.local_addr(),
                                         remote_addr: client.remote_addr(),
                                     });
-                                error!("turn clients: {:?}", self.turn_clients);
-                                debug_assert!(ret.is_some());
+                                if check.pair.local.candidate_type == CandidateType::Relayed {
+                                    error!("turn clients: {:?}", self.turn_clients);
+                                    debug_assert!(ret.is_some());
+                                }
                                 ret
-                            } else {
-                                None
                             };
                             self.events.push_front(ConnCheckEvent::SelectedPair(
                                 component_id,
@@ -2911,15 +2913,12 @@ impl ConnCheckListSet {
         let remote_credentials = checklist.remote_credentials.clone();
 
         let conncheck = checklist.mut_check_by_id(conncheck_id).unwrap();
-        let turn_id = if conncheck.pair.local.candidate_type == CandidateType::Relayed {
+        let turn_id = {
             let transport = conncheck.pair.local.transport_type;
-            let relayed_addr = conncheck.pair.local.address;
-            let related_addr = conncheck.pair.local.related_address.unwrap();
+            let base_addr = conncheck.pair.local.base_address;
             checklist
-                .turn_client_by_allocated_address(transport, related_addr, relayed_addr)
+                .turn_client_by_allocated_address(transport, base_addr)
                 .map(|(id, client)| (id, client.remote_addr()))
-        } else {
-            None
         };
         let conncheck = checklist.mut_check_by_id(conncheck_id).unwrap();
         let component_id = conncheck.pair.local.component_id;
@@ -3111,16 +3110,11 @@ impl ConnCheckListSet {
         let remote_addr = agent.remote_addr();
         debug!("found agent {transport}: {local_addr} -> {remote_addr:?} to maybe remove");
 
-        let (transport, local_addr, remote_addr) = if check.pair.local.candidate_type
-            == CandidateType::Relayed
-        {
-            let related_addr = check.pair.local.related_address.unwrap();
-            let Some((turn_id, _turn_client)) =
-                checklist.mut_turn_client_by_allocated_address(transport, related_addr, local_addr)
-            else {
-                return;
-            };
+        let base_addr = check.pair.local.base_address;
 
+        if let Some((turn_id, _turn_client)) =
+            checklist.mut_turn_client_by_allocated_address(transport, base_addr)
+        {
             if self.checklists.iter().any(|checklist| {
                 checklist.pairs.iter().any(|pair| {
                     pair.pair.local.candidate_type == CandidateType::Relayed
@@ -3143,27 +3137,24 @@ impl ConnCheckListSet {
                 .push((turn_id, turn_client));
             // socket remove will occur when the delete reply is received, or on timeout
             return;
-        } else {
-            let checklist = &mut self.checklists[checklist_i];
-            if checklist
-                .turn_clients
-                .iter()
-                .chain(checklist.pending_delete_turn_clients.iter())
-                .any(|(_id, turn_client)| {
-                    turn_client.transport() == transport
-                        && turn_client.local_addr() == local_addr
-                        && if transport == TransportType::Tcp {
-                            remote_addr == Some(turn_client.remote_addr())
-                        } else {
-                            true
-                        }
-                })
-            {
-                return;
-            } else {
-                (transport, local_addr, remote_addr)
-            }
-        };
+        }
+        let checklist = &mut self.checklists[checklist_i];
+        if checklist
+            .turn_clients
+            .iter()
+            .chain(checklist.pending_delete_turn_clients.iter())
+            .any(|(_id, turn_client)| {
+                turn_client.transport() == transport
+                    && turn_client.local_addr() == local_addr
+                    && if transport == TransportType::Tcp {
+                        remote_addr == Some(turn_client.remote_addr())
+                    } else {
+                        true
+                    }
+            })
+        {
+            return;
+        }
         match transport {
             TransportType::Udp => {
                 self.pending_remove_sockets.push_back(CheckListSetSocket {
@@ -6184,8 +6175,8 @@ mod tests {
                     turn_alloc_addr,
                 )
                 .priority(8000)
-                .base_address(local_addr)
-                .related_address(turn_addr)
+                .base_address(turn_alloc_addr)
+                .related_address(local_addr)
                 .build(),
             )
             .trickle_ice(true)
@@ -6369,8 +6360,8 @@ mod tests {
                     turn_alloc_addr,
                 )
                 .priority(8000)
-                .base_address(local_addr)
-                .related_address(turn_addr)
+                .base_address(turn_alloc_addr)
+                .related_address(local_addr)
                 .build(),
             )
             .trickle_ice(true)
