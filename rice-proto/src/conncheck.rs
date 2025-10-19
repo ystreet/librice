@@ -2791,8 +2791,8 @@ impl ConnCheckListSet {
         // If the valid pair equals the pair that generated the check, the
         // pair is added to the valid list associated with the checklist to
         // which the pair belongs; or
-        if let Some(check) = checklist.matching_check(&ok_pair, Nominate::DontCare) {
-            debug!(existing.id = *check.conncheck_id, "found existing check");
+        if candidate_pair_is_same_connection(&pair, &ok_pair) {
+            debug!(existing.id = ?conncheck_id, "found existing check");
             let checklist = &mut self.checklists[checklist_i];
             checklist.add_valid(conncheck_id, &pair);
             if nominate {
@@ -2812,7 +2812,7 @@ impl ConnCheckListSet {
                         existing.id = *check.conncheck_id,
                         "found existing check in checklist {}", checklist.checklist_id
                     );
-                    checklist.add_valid(conncheck_id, &pair);
+                    checklist.add_valid(check.conncheck_id, &pair);
                     if nominate {
                         checklist.nominated_pair(&pair);
                         return;
@@ -4495,7 +4495,7 @@ mod tests {
             .build();
         let local1_ignored2 = Peer::builder()
             .priority(99)
-            .local_addr("127.0.0.1:99".parse().unwrap())
+            .local_addr("127.0.0.1:100".parse().unwrap())
             .build();
         let remote1 = Peer::builder()
             .priority(2)
