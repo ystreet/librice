@@ -1003,14 +1003,9 @@ impl ConnCheckList {
                     "removing already existing redundant candidate {:?}",
                     removed.candidate
                 );
-                self.pairs.retain(|pair| {
-                    pair.pair.local != removed.candidate
-                        || ![
-                            CandidatePairState::InProgress,
-                            CandidatePairState::Succeeded,
-                        ]
-                        .contains(&pair.state)
-                });
+                // FIXME: this may remove in flight checks
+                self.pairs
+                    .retain(|pair| pair.pair.local != removed.candidate);
                 // TODO: signal potential socket/agent removal?
             }
         }
