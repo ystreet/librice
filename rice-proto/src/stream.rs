@@ -621,7 +621,6 @@ impl StreamState {
         }
     }
 
-    #[tracing::instrument(level = "trace", skip(self))]
     pub(crate) fn poll_gather_transmit(
         &mut self,
         now: Instant,
