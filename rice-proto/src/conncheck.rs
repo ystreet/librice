@@ -211,6 +211,45 @@ pub(crate) enum CandidatePairState {
     Frozen,
 }
 
+impl CandidatePairState {
+    fn cmp_progression(&self, other: &Self) -> core::cmp::Ordering {
+        if self == other {
+            return core::cmp::Ordering::Equal;
+        }
+        match (self, other) {
+            (Self::Failed, _) => core::cmp::Ordering::Less,
+            (Self::Frozen, other) => {
+                if *other == Self::Failed {
+                    core::cmp::Ordering::Greater
+                } else {
+                    core::cmp::Ordering::Less
+                }
+            }
+            (Self::Waiting, other) => {
+                if [Self::Failed, Self::Frozen].contains(other) {
+                    core::cmp::Ordering::Greater
+                } else {
+                    core::cmp::Ordering::Less
+                }
+            }
+            (Self::InProgress, other) => {
+                if [Self::Failed, Self::Frozen, Self::Waiting].contains(other) {
+                    core::cmp::Ordering::Greater
+                } else {
+                    core::cmp::Ordering::Less
+                }
+            }
+            (Self::Succeeded, other) => {
+                if [Self::Failed, Self::Frozen, Self::InProgress, Self::Waiting].contains(other) {
+                    core::cmp::Ordering::Greater
+                } else {
+                    core::cmp::Ordering::Less
+                }
+            }
+        }
+    }
+}
+
 impl core::fmt::Display for CandidatePairState {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.pad(&alloc::format!("{self:?}"))
@@ -1451,23 +1490,6 @@ impl ConnCheckList {
             && nominate.eq(&check.nominate)
     }
 
-    #[tracing::instrument(level = "trace", ret, skip(self, pair))]
-    fn take_matching_check(
-        &mut self,
-        pair: &CandidatePair,
-        nominate: Nominate,
-    ) -> Option<ConnCheck> {
-        if let Some(position) = self
-            .pairs
-            .iter()
-            .position(|check| Self::check_is_equal(check, pair, nominate))
-        {
-            self.pairs.remove(position)
-        } else {
-            None
-        }
-    }
-
     #[tracing::instrument(
         level = "trace",
         skip(self, pair),
@@ -1480,18 +1502,51 @@ impl ConnCheckList {
             foundation = %pair.foundation(),
         )
     )]
-    fn matching_check(&self, pair: &CandidatePair, nominate: Nominate) -> Option<&ConnCheck> {
-        let ret = self
+    fn matching_check_idx(&self, pair: &CandidatePair, nominate: Nominate) -> Option<usize> {
+        let mut best_index = None;
+        for (idx, potential) in self
             .pairs
             .iter()
-            .find(|&check| Self::check_is_equal(check, pair, nominate));
-        if let Some(check) = ret {
-            trace!("found check {}", check.conncheck_id);
-            Some(check)
+            .enumerate()
+            .filter(|(_idx, check)| Self::check_is_equal(check, pair, nominate))
+        {
+            let best = best_index.get_or_insert(idx);
+            if *best != idx {
+                let best_check = &self.pairs[*best];
+                error!("comparing current best {best_check:?} with {potential:?}");
+                if potential.nominate && !best_check.nominate {
+                    error!("better because of nomination");
+                    *best = idx;
+                    continue;
+                }
+                if potential.state.cmp_progression(&best_check.state).is_gt() {
+                    error!("better because of state");
+                    *best = idx;
+                    continue;
+                }
+            }
+        }
+        if let Some(idx) = best_index {
+            trace!("found check {}", self.pairs[idx].conncheck_id);
+            Some(idx)
         } else {
             trace!("could not find check");
             None
         }
+    }
+
+    fn take_matching_check(
+        &mut self,
+        pair: &CandidatePair,
+        nominate: Nominate,
+    ) -> Option<ConnCheck> {
+        self.matching_check_idx(pair, nominate)
+            .and_then(|idx| self.pairs.remove(idx))
+    }
+
+    fn matching_check(&self, pair: &CandidatePair, nominate: Nominate) -> Option<&ConnCheck> {
+        self.matching_check_idx(pair, nominate)
+            .map(|idx| &self.pairs[idx])
     }
 
     fn add_check_if_not_duplicate(&mut self, check: ConnCheck) -> bool {
@@ -1842,6 +1897,7 @@ impl ConnCheckList {
         }
     }
 
+    #[tracing::instrument(level = "trace", skip(self))]
     fn dump_check_state(&self) {
         let mut s = alloc::format!("checklist {}", self.checklist_id);
         for pair in self.pairs.iter() {
@@ -4012,6 +4068,89 @@ mod tests {
         assert!(Nominate::False.eq(&Nominate::False));
         assert!(!Nominate::True.eq(&Nominate::False));
         assert!(!Nominate::False.eq(&Nominate::True));
+    }
+
+    #[test]
+    fn candidate_pair_ordering() {
+        assert!(CandidatePairState::Failed
+            .cmp_progression(&CandidatePairState::Failed)
+            .is_eq());
+        assert!(CandidatePairState::Failed
+            .cmp_progression(&CandidatePairState::Frozen)
+            .is_lt());
+        assert!(CandidatePairState::Failed
+            .cmp_progression(&CandidatePairState::Waiting)
+            .is_lt());
+        assert!(CandidatePairState::Failed
+            .cmp_progression(&CandidatePairState::InProgress)
+            .is_lt());
+        assert!(CandidatePairState::Failed
+            .cmp_progression(&CandidatePairState::Succeeded)
+            .is_lt());
+
+        assert!(CandidatePairState::Frozen
+            .cmp_progression(&CandidatePairState::Failed)
+            .is_gt());
+        assert!(CandidatePairState::Frozen
+            .cmp_progression(&CandidatePairState::Frozen)
+            .is_eq());
+        assert!(CandidatePairState::Frozen
+            .cmp_progression(&CandidatePairState::Waiting)
+            .is_lt());
+        assert!(CandidatePairState::Frozen
+            .cmp_progression(&CandidatePairState::InProgress)
+            .is_lt());
+        assert!(CandidatePairState::Frozen
+            .cmp_progression(&CandidatePairState::Succeeded)
+            .is_lt());
+
+        assert!(CandidatePairState::Waiting
+            .cmp_progression(&CandidatePairState::Failed)
+            .is_gt());
+        assert!(CandidatePairState::Waiting
+            .cmp_progression(&CandidatePairState::Frozen)
+            .is_gt());
+        assert!(CandidatePairState::Waiting
+            .cmp_progression(&CandidatePairState::Waiting)
+            .is_eq());
+        assert!(CandidatePairState::Waiting
+            .cmp_progression(&CandidatePairState::InProgress)
+            .is_lt());
+        assert!(CandidatePairState::Waiting
+            .cmp_progression(&CandidatePairState::Succeeded)
+            .is_lt());
+
+        assert!(CandidatePairState::InProgress
+            .cmp_progression(&CandidatePairState::Failed)
+            .is_gt());
+        assert!(CandidatePairState::InProgress
+            .cmp_progression(&CandidatePairState::Frozen)
+            .is_gt());
+        assert!(CandidatePairState::InProgress
+            .cmp_progression(&CandidatePairState::Waiting)
+            .is_gt());
+        assert!(CandidatePairState::InProgress
+            .cmp_progression(&CandidatePairState::InProgress)
+            .is_eq());
+        assert!(CandidatePairState::InProgress
+            .cmp_progression(&CandidatePairState::Succeeded)
+            .is_lt());
+
+        assert!(CandidatePairState::Succeeded
+            .cmp_progression(&CandidatePairState::Failed)
+            .is_gt());
+        assert!(CandidatePairState::Succeeded
+            .cmp_progression(&CandidatePairState::Frozen)
+            .is_gt());
+        assert!(CandidatePairState::Succeeded
+            .cmp_progression(&CandidatePairState::Waiting)
+            .is_gt());
+        assert!(CandidatePairState::Succeeded
+            .cmp_progression(&CandidatePairState::InProgress)
+            .is_gt());
+        assert!(CandidatePairState::Succeeded
+            .cmp_progression(&CandidatePairState::Succeeded)
+            .is_eq());
     }
 
     struct Peer {
