@@ -397,7 +397,7 @@ impl Candidate {
         if self.transport_type == TransportType::Tcp && self.tcp_type != other.tcp_type {
             return false;
         }
-        self.address.ip() == other.address.ip() && self.base_address.ip() == other.base_address.ip()
+        self.address == other.address && self.base_address == other.base_address
     }
 
     // RFC 8445 6.1.2.4.  Pruning the Pairs
