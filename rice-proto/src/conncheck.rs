@@ -489,14 +489,6 @@ fn candidate_pair_is_same_connection(a: &CandidatePair, b: &CandidatePair) -> bo
     true
 }
 
-fn candidate_agent_local_address(candidate: &Candidate) -> SocketAddr {
-    if candidate.candidate_type == CandidateType::Relayed {
-        candidate.address
-    } else {
-        candidate.base_address
-    }
-}
-
 #[derive(Debug)]
 enum LocalCandidateVariant {
     Agent(StunAgentId),
@@ -806,7 +798,7 @@ impl ConnCheckList {
                 let a = &a.agent;
                 match candidate.transport_type {
                     TransportType::Udp => {
-                        a.local_addr() == candidate_agent_local_address(candidate)
+                        a.local_addr() == candidate.base_address
                             && a.transport() == TransportType::Udp
                     }
                     _ => false,
@@ -816,11 +808,8 @@ impl ConnCheckList {
         {
             return (agent_id, self.agent_by_id(agent_id).unwrap());
         }
-        let mut agent = StunAgent::builder(
-            candidate.transport_type,
-            candidate_agent_local_address(candidate),
-        )
-        .build();
+        let mut agent =
+            StunAgent::builder(candidate.transport_type, candidate.base_address).build();
         agent.set_local_credentials(MessageIntegrityCredentials::ShortTerm(
             local_credentials.clone().into(),
         ));
@@ -1184,7 +1173,10 @@ impl ConnCheckList {
                 return false;
             };
             if client
-                .permissions(check.pair.local.transport_type, check.pair.local.address)
+                .permissions(
+                    check.pair.local.transport_type,
+                    check.pair.local.base_address,
+                )
                 .all(|permission| permission != check.pair.remote.address.ip())
             {
                 return false;
@@ -1447,7 +1439,7 @@ impl ConnCheckList {
         for (turn_id, pair) in turn_checks {
             debug!(
                 "Adding turn permission for {} using TURN allocation {} {}",
-                pair.remote.address, pair.local.transport_type, pair.local.address
+                pair.remote.address, pair.local.transport_type, pair.local.base_address
             );
             self.pending_turn_permissions.push_front((
                 turn_id,
@@ -1495,7 +1487,7 @@ impl ConnCheckList {
         skip(self, pair),
         fields(
             ttype = ?pair.local.transport_type,
-            local.address = ?pair.local.address,
+            local.base_address = ?pair.local.base_address,
             remote.address = ?pair.remote.address,
             local.ctype = ?pair.local.candidate_type,
             remote.ctype = ?pair.remote.candidate_type,
@@ -1913,7 +1905,7 @@ impl ConnCheckList {
                 remote_pri = format_args!("{:10}", pair.pair.remote.priority),
                 transport = format_args!("{:4}", pair.pair.local.transport_type),
                 local_cand_type = format_args!("{:5}", pair.pair.local.candidate_type),
-                local_addr = format_args!("{:32}", pair.pair.local.address),
+                local_addr = format_args!("{:32}", pair.pair.local.base_address),
                 remote_cand_type = format_args!("{:5}", pair.pair.remote.candidate_type),
                 remote_addr = format_args!("{:32}", pair.pair.remote.address)
             );
@@ -1954,8 +1946,7 @@ impl ConnCheckList {
         addr: SocketAddr,
     ) -> Option<Candidate> {
         let f = |candidate: &Candidate| -> bool {
-            candidate.transport_type == transport
-                && candidate_agent_local_address(candidate) == addr
+            candidate.transport_type == transport && candidate.base_address == addr
         };
         self.local_candidates
             .iter()
@@ -2168,6 +2159,10 @@ impl ConnCheckListSet {
                     .find_local_candidate(transmit.transport, transmit.to)
                 else {
                     warn!("Could not find local candidate for incoming data");
+                    trace!(
+                        "local candidates: {:?}",
+                        self.checklists[checklist_i].local_candidates
+                    );
                     return false;
                 };
 
@@ -2770,7 +2765,7 @@ impl ConnCheckListSet {
             component.id = conncheck.pair.local.component_id,
             nominate = conncheck.nominate,
             ttype = ?conncheck.pair.local.transport_type,
-            local.address = ?conncheck.pair.local.address,
+            local.base_address = ?conncheck.pair.local.base_address,
             remote.address = ?conncheck.pair.remote.address,
             local.ctype = ?conncheck.pair.local.candidate_type,
             remote.ctype = ?conncheck.pair.remote.candidate_type,
@@ -3174,7 +3169,7 @@ impl ConnCheckListSet {
             if self.checklists.iter().any(|checklist| {
                 checklist.pairs.iter().any(|pair| {
                     pair.pair.local.candidate_type == CandidateType::Relayed
-                        && pair.pair.local.address == check.pair.local.address
+                        && pair.pair.local.base_address == base_addr
                 })
             }) {
                 // TODO: remove permission for remote address here
@@ -3276,7 +3271,7 @@ impl ConnCheckListSet {
                             for idx in 0..checklist.pairs.len() {
                                 let check = &mut checklist.pairs[idx];
                                 if check.pair.local.candidate_type != CandidateType::Relayed
-                                    || check.pair.local.address.ip() != peer_addr
+                                    || check.pair.remote.address.ip() != peer_addr
                                     || check.pair.local.transport_type != transport
                                     || !matches!(
                                         check.state,
@@ -3291,7 +3286,7 @@ impl ConnCheckListSet {
                             for idx in 0..checklist.pairs.len() {
                                 let check = &mut checklist.pairs[idx];
                                 if check.pair.local.candidate_type != CandidateType::Relayed
-                                    || check.pair.local.address.ip() != peer_addr
+                                    || check.pair.remote.address.ip() != peer_addr
                                     || check.pair.local.transport_type != transport
                                 {
                                     continue;
@@ -3958,10 +3953,6 @@ fn pair_construct_valid(pair: &CandidatePair, mapped_address: SocketAddr) -> Can
 
 // can the local candidate pair with 'remote' in any way
 fn candidate_can_pair_with(local: &Candidate, remote: &Candidate) -> bool {
-    let address = match local.candidate_type {
-        CandidateType::Host => local.address,
-        _ => candidate_agent_local_address(local),
-    };
     if local.transport_type == TransportType::Tcp
         && remote.transport_type == TransportType::Tcp
         && (local.tcp_type.is_none()
@@ -3972,8 +3963,8 @@ fn candidate_can_pair_with(local: &Candidate, remote: &Candidate) -> bool {
     }
     local.transport_type == remote.transport_type
         && local.component_id == remote.component_id
-        && address.is_ipv4() == remote.address.is_ipv4()
-        && address.is_ipv6() == remote.address.is_ipv6()
+        && local.base_address.is_ipv4() == remote.address.is_ipv4()
+        && local.base_address.is_ipv6() == remote.address.is_ipv6()
 }
 
 fn validate_username(username: Username, local_credentials: &Credentials) -> bool {
@@ -4984,7 +4975,7 @@ mod tests {
         else {
             unreachable!();
         };
-        assert_eq!(local_addr, pair.local.address);
+        assert_eq!(local_addr, pair.local.base_address);
         let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
@@ -5055,7 +5046,7 @@ mod tests {
         else {
             unreachable!();
         };
-        assert_eq!(local_addr, pair.local.address);
+        assert_eq!(local_addr, pair.local.base_address);
         let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
@@ -5265,7 +5256,7 @@ mod tests {
         else {
             unreachable!();
         };
-        assert_eq!(local_addr, pair.local.address);
+        assert_eq!(local_addr, pair.local.base_address);
         assert_eq!(remote_addr, pair.remote.address);
         let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
             unreachable!();
@@ -5468,7 +5459,7 @@ mod tests {
         else {
             unreachable!();
         };
-        assert_eq!(local_addr, pair.local.address);
+        assert_eq!(local_addr, pair.local.base_address);
         assert_eq!(remote_addr, pair.remote.address);
         let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
             unreachable!();
@@ -5637,7 +5628,7 @@ mod tests {
         else {
             unreachable!();
         };
-        assert_eq!(local_addr, pair.local.address);
+        assert_eq!(local_addr, pair.local.base_address);
         let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
@@ -5743,7 +5734,7 @@ mod tests {
         else {
             unreachable!();
         };
-        assert_eq!(local_addr, pair.local.address);
+        assert_eq!(local_addr, pair.local.base_address);
         let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
@@ -5816,7 +5807,7 @@ mod tests {
         else {
             unreachable!();
         };
-        assert_eq!(local_addr, pair.local.address);
+        assert_eq!(local_addr, pair.local.base_address);
         let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
@@ -5981,7 +5972,7 @@ mod tests {
         else {
             unreachable!();
         };
-        assert_eq!(local_addr, pair.local.address);
+        assert_eq!(local_addr, pair.local.base_address);
         let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
@@ -6101,7 +6092,7 @@ mod tests {
         else {
             unreachable!();
         };
-        assert_eq!(local_addr, pair.local.address);
+        assert_eq!(local_addr, pair.local.base_address);
         let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
@@ -6222,7 +6213,7 @@ mod tests {
         else {
             unreachable!();
         };
-        assert_eq!(local_addr, pair.local.address);
+        assert_eq!(local_addr, pair.local.base_address);
         let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
