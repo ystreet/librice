@@ -46,6 +46,8 @@ pub fn debug_init() {
                 .with_filter(level_filter),
         );
         tracing::subscriber::set_global_default(registry).unwrap();
+
+        turn_server_proto::types::debug_init();
     });
 }
 

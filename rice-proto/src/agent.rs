@@ -127,6 +127,9 @@ impl AgentBuilder {
 
     /// Construct a new [`Agent`]
     pub fn build(self) -> Agent {
+        turn_client_proto::types::debug_init();
+        rice_stun_types::debug_init();
+
         let id = AGENT_COUNT.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
         let tie_breaker = rand_u64();
         let controlling = self.controlling;
