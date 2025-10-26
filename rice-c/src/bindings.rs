@@ -777,6 +777,13 @@ unsafe extern "C" {
     pub fn rice_credentials_free(credentials: *mut RiceCredentials);
 }
 unsafe extern "C" {
+    #[doc = " Retrieve the `RiceCandidate` ufrag attribute bytes.\n The pre-allocated array should be 256 bytes at most.\n\n Returns the actual length of the ufrag attribute."]
+    pub fn rice_credentials_get_ufrag_bytes(
+        credentials: *const RiceCredentials,
+        ptr: *mut ::core::ffi::c_char,
+    ) -> usize;
+}
+unsafe extern "C" {
     #[doc = " Compare two sets of Credentials.\n\n This function is NULL safe."]
     pub fn rice_credentials_eq(
         creds1: *const RiceCredentials,

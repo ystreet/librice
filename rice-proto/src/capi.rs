@@ -1167,6 +1167,24 @@ pub unsafe extern "C" fn rice_credentials_free(credentials: *mut RiceCredentials
     let _ = Box::from_raw(credentials);
 }
 
+/// Retrieve the `RiceCandidate` ufrag attribute bytes.
+/// The pre-allocated array should be 256 bytes at most.
+///
+/// Returns the actual length of the ufrag attribute.
+#[no_mangle]
+pub unsafe extern "C" fn rice_credentials_get_ufrag_bytes(
+    credentials: *const RiceCredentials,
+    ptr: *mut c_char,
+) -> usize {
+    let creds = Box::from_raw(mut_override(credentials));
+    let bytes = creds.credentials.ufrag.as_bytes();
+    let len = bytes.len();
+    std::ptr::copy(bytes.as_ptr().cast(), ptr, len);
+    std::ptr::write(ptr.offset(len as isize) as *mut u8, 0u8);
+    core::mem::forget(creds);
+    len
+}
+
 /// Compare two sets of Credentials.
 ///
 /// This function is NULL safe.
@@ -2636,6 +2654,21 @@ mod tests {
             assert!(transmit.data.ptr.is_null());
             rice_agent_unref(agent);
             rice_stream_unref(stream);
+        }
+    }
+
+    #[test]
+    fn rice_credentials_accessors() {
+        unsafe {
+            let credentials =
+                credentials_to_c(Credentials::new("luser".to_string(), "lpass".to_string()));
+            let mut bytes = [0; 256];
+            let len = rice_credentials_get_ufrag_bytes(credentials, bytes.as_mut_ptr());
+            let c_str = CStr::from_ptr(bytes.as_ptr());
+            let s = c_str.to_str().expect("Bad encoding!");
+            assert_eq!(s, "luser");
+            assert_eq!(len, 5);
+            rice_credentials_free(credentials);
         }
     }
 }
