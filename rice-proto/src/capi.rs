@@ -2445,10 +2445,6 @@ fn mut_override<T>(val: *const T) -> *mut T {
     val as *mut T
 }
 
-fn const_override<T>(val: *mut T) -> *const T {
-    val as *const T
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
