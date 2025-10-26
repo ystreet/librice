@@ -2097,7 +2097,7 @@ pub unsafe extern "C" fn rice_component_get_id(component: *const RiceComponent) 
     ret
 }
 
-/// Retrieve the component id of the `RiceComponent`.
+/// Retrieve the component connection state of the `RiceComponent`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_component_get_state(
     component: *const RiceComponent,
@@ -2112,7 +2112,7 @@ pub unsafe extern "C" fn rice_component_get_state(
     ret
 }
 
-/// Retrieve the component id of the `RiceComponent`.
+/// Retrieve the ICE candidates selected pair of the `RiceComponent`.
 #[no_mangle]
 pub unsafe extern "C" fn rice_component_selected_pair(
     component: *const RiceComponent,
