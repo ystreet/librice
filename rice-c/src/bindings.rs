@@ -967,13 +967,13 @@ unsafe extern "C" {
     pub fn rice_component_get_id(component: *const RiceComponent) -> usize;
 }
 unsafe extern "C" {
-    #[doc = " Retrieve the component id of the `RiceComponent`."]
+    #[doc = " Retrieve the component connection state of the `RiceComponent`."]
     pub fn rice_component_get_state(
         component: *const RiceComponent,
     ) -> RiceComponentConnectionState;
 }
 unsafe extern "C" {
-    #[doc = " Retrieve the component id of the `RiceComponent`."]
+    #[doc = " Retrieve the ICE candidates selected pair of the `RiceComponent`."]
     pub fn rice_component_selected_pair(
         component: *const RiceComponent,
         local: *mut RiceCandidate,
