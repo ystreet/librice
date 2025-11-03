@@ -183,56 +183,76 @@ struct Cli {
     turn_server: Vec<TurnServerConfig>,
 }
 
-fn main() -> io::Result<()> {
+#[cfg(feature = "runtime-tokio")]
+fn tokio_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+async fn run() -> io::Result<()> {
     init_logs();
     let cli = Cli::parse();
     eprintln!("command parameters: {cli:?}");
-    smol::block_on(async move {
-        let agent = Agent::builder().build();
-        for server in cli.stun_server {
-            agent.add_stun_server(server.transport, server.server);
-        }
-        for ts in cli.turn_server {
-            let credentials = TurnCredentials::new(&ts.user, &ts.pass);
-            let tls_config = ts.tls.and_then(|tls| match tls {
-                TlsConfig::Openssl => Some(TurnTlsConfig::new_openssl(ts.client_transport)),
-                TlsConfig::Rustls(server_name) => {
-                    if ts.client_transport != TransportType::Tcp {
-                        eprintln!(
-                            "rustls only supports TCP connections, {} was requested",
-                            ts.client_transport
-                        );
-                        None
-                    } else if let Some(server_name) = server_name {
-                        Some(TurnTlsConfig::new_rustls_with_dns(&server_name))
-                    } else {
-                        Some(TurnTlsConfig::new_rustls_with_ip(&ts.addr.into()))
-                    }
+    let agent = Agent::builder().build();
+    for server in cli.stun_server {
+        agent.add_stun_server(server.transport, server.server);
+    }
+    for ts in cli.turn_server {
+        let credentials = TurnCredentials::new(&ts.user, &ts.pass);
+        let tls_config = ts.tls.and_then(|tls| match tls {
+            TlsConfig::Openssl => Some(TurnTlsConfig::new_openssl(ts.client_transport)),
+            TlsConfig::Rustls(server_name) => {
+                if ts.client_transport != TransportType::Tcp {
+                    eprintln!(
+                        "rustls only supports TCP connections, {} was requested",
+                        ts.client_transport
+                    );
+                    None
+                } else if let Some(server_name) = server_name {
+                    Some(TurnTlsConfig::new_rustls_with_dns(&server_name))
+                } else {
+                    Some(TurnTlsConfig::new_rustls_with_ip(&ts.addr.into()))
                 }
-            });
-            let turn_cfg = TurnConfig::new(
-                ts.client_transport,
-                ts.addr.into(),
-                credentials.clone(),
-                &[AddressFamily::IPV4, AddressFamily::IPV6],
-                tls_config,
-            );
-            agent.add_turn_server(turn_cfg);
-        }
-        let stream = agent.add_stream();
-        let _comp = stream.add_component();
-
-        stream.gather_candidates().await.unwrap();
-        let mut messages = agent.messages();
-        while let Some(msg) = messages.next().await {
-            match msg {
-                AgentMessage::GatheredCandidate(_stream, candidate) => {
-                    println! {"{}", candidate.candidate().to_sdp_string()}
-                }
-                AgentMessage::GatheringComplete(_component) => break,
-                _ => (),
             }
+        });
+        let turn_cfg = TurnConfig::new(
+            ts.client_transport,
+            ts.addr.into(),
+            credentials.clone(),
+            &[AddressFamily::IPV4, AddressFamily::IPV6],
+            tls_config,
+        );
+        agent.add_turn_server(turn_cfg);
+    }
+    let stream = agent.add_stream();
+    let _comp = stream.add_component();
+
+    stream.gather_candidates().await.unwrap();
+    let mut messages = agent.messages();
+    while let Some(msg) = messages.next().await {
+        match msg {
+            AgentMessage::GatheredCandidate(_stream, candidate) => {
+                println! {"{}", candidate.candidate().to_sdp_string()}
+            }
+            AgentMessage::GatheringComplete(_component) => break,
+            _ => (),
         }
-        Ok(())
-    })
+    }
+    Ok(())
+}
+
+#[allow(unreachable_code)]
+fn main() -> io::Result<()> {
+    #[cfg(feature = "runtime-smol")]
+    return smol::block_on(run());
+
+    #[cfg(feature = "runtime-tokio")]
+    return tokio_runtime().block_on(run());
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "No async runtime available",
+    ))
 }

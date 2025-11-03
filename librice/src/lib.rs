@@ -56,6 +56,7 @@
 pub mod agent;
 pub mod component;
 mod gathering;
+pub mod runtime;
 pub mod socket;
 pub mod stream;
 mod utils;
@@ -90,5 +91,13 @@ pub(crate) mod tests {
             );
             tracing::subscriber::set_global_default(registry).unwrap();
         });
+    }
+
+    #[cfg(feature = "runtime-tokio")]
+    pub fn tokio_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
     }
 }

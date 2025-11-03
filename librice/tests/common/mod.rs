@@ -6,7 +6,10 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use futures::{AsyncReadExt, AsyncWriteExt};
+use librice::runtime::{
+    AsyncTcpListener, AsyncTcpListenerExt, AsyncTcpStreamReadExt, AsyncTcpStreamWriteExt,
+    AsyncUdpSocket, AsyncUdpSocketExt, Runtime,
+};
 use rice_c::Instant;
 use stun_proto::agent::HandleStunReply;
 use stun_proto::agent::StunAgent;
@@ -15,11 +18,8 @@ use stun_proto::types::message::*;
 
 use std::fmt::Display;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::sync::Once;
-
-use smol::net::{TcpListener, UdpSocket};
-
-use futures::StreamExt;
 
 use librice::agent::*;
 
@@ -113,7 +113,7 @@ fn handle_incoming_data(
 }
 
 #[allow(dead_code)]
-pub async fn stund_udp(udp_socket: UdpSocket) -> std::io::Result<()> {
+pub async fn stund_udp(udp_socket: Arc<dyn AsyncUdpSocket>) -> std::io::Result<()> {
     let local_addr = udp_socket.local_addr()?;
     let mut udp_stun_agent =
         StunAgent::builder(stun_proto::types::TransportType::Udp, local_addr).build();
@@ -129,20 +129,23 @@ pub async fn stund_udp(udp_socket: UdpSocket) -> std::io::Result<()> {
 }
 
 #[allow(dead_code)]
-pub async fn stund_tcp(listener: TcpListener) -> std::io::Result<()> {
-    let mut incoming = listener.incoming();
+pub async fn stund_tcp(
+    runtime: Arc<dyn Runtime>,
+    listener: Arc<dyn AsyncTcpListener>,
+) -> std::io::Result<()> {
     let local_addr = listener.local_addr()?;
     let base_instant = std::time::Instant::now();
-    while let Some(Ok(mut stream)) = incoming.next().await {
+    while let Ok(stream) = listener.accept().await {
         debug!("stund incoming tcp connection");
-        smol::spawn(async move {
-            let remote_addr = stream.peer_addr().unwrap();
+        runtime.spawn(Box::pin(async move {
+            let remote_addr = stream.remote_addr().unwrap();
             let mut tcp_stun_agent =
                 StunAgent::builder(stun_proto::types::TransportType::Tcp, local_addr)
                     .remote_addr(remote_addr)
                     .build();
             let mut data = vec![0; 1500];
-            let size = warn_on_err(stream.read(&mut data).await, 0);
+            let (mut read, mut write) = stream.split();
+            let size = warn_on_err(read.read(&mut data).await, 0);
             if size == 0 {
                 debug!("TCP connection with {remote_addr} closed");
                 return;
@@ -154,13 +157,20 @@ pub async fn stund_tcp(listener: TcpListener) -> std::io::Result<()> {
                 if let Ok(transmit) =
                     tcp_stun_agent.send(response.finish(), to, Instant::from_std(base_instant))
                 {
-                    warn_on_err(stream.write_all(&transmit.data).await, ());
+                    warn_on_err(write.write_all(&transmit.data).await, ());
                 }
             }
             // XXX: Assumes that the stun packet arrives in a single packet
-            stream.shutdown(std::net::Shutdown::Read).unwrap();
-        })
-        .detach();
+            write.shutdown(std::net::Shutdown::Read).await.unwrap();
+        }))
     }
     Ok(())
+}
+
+#[cfg(feature = "runtime-tokio")]
+pub fn tokio_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
 }

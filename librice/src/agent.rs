@@ -20,6 +20,7 @@ use rice_c::Instant;
 use tracing::warn;
 
 use crate::component::{Component, SelectedPair};
+use crate::runtime::Runtime;
 use crate::stream::Stream;
 use rice_c::candidate::{CandidatePair, TransportType};
 pub use rice_c::turn::{TurnConfig, TurnCredentials};
@@ -57,6 +58,7 @@ pub struct Agent {
     agent: Arc<Mutex<rice_c::agent::Agent>>,
     base_instant: std::time::Instant,
     inner: Arc<Mutex<AgentInner>>,
+    runtime: Arc<dyn Runtime>,
 }
 
 /// A builder for an [`Agent`]
@@ -64,6 +66,7 @@ pub struct Agent {
 pub struct AgentBuilder {
     trickle_ice: bool,
     controlling: bool,
+    runtime: Option<Arc<dyn Runtime>>,
 }
 
 impl AgentBuilder {
@@ -93,6 +96,10 @@ impl AgentBuilder {
             agent,
             base_instant,
             inner: Arc::new(Mutex::new(AgentInner::default())),
+            runtime: self
+                .runtime
+                .or_else(crate::runtime::default_runtime)
+                .expect("No runtime configurable"),
         }
     }
 }
@@ -122,6 +129,7 @@ impl Agent {
             base_instant: self.base_instant,
             pending_transmit: None,
             inner: self.inner.clone(),
+            runtime: self.runtime.clone(),
         }
     }
 
@@ -133,6 +141,13 @@ impl Agent {
     ///
     /// ```
     /// # use librice::agent::Agent;
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let runtime = tokio::runtime::Builder::new_current_thread()
+    /// #     .enable_all()
+    /// #     .build()
+    /// #     .unwrap();
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let _runtime = runtime.enter();
     /// let agent = Agent::default();
     /// let s = agent.add_stream();
     /// ```
@@ -149,6 +164,7 @@ impl Agent {
         let weak_inner = Arc::downgrade(&self.inner);
         let mut inner = self.inner.lock().unwrap();
         let ret = crate::stream::Stream::new(
+            self.runtime.clone(),
             weak_proto_agent,
             weak_inner,
             proto_stream,
@@ -219,8 +235,9 @@ struct AgentStream {
     agent: Arc<Mutex<rice_c::agent::Agent>>,
     base_instant: std::time::Instant,
     inner: Arc<Mutex<AgentInner>>,
-    timer: Option<Pin<Box<async_io::Timer>>>,
+    timer: Option<Pin<Box<dyn crate::runtime::AsyncTimer>>>,
     pending_transmit: Option<AgentTransmit>,
+    runtime: Arc<dyn Runtime>,
 }
 
 impl futures::stream::Stream for AgentStream {
@@ -230,7 +247,7 @@ impl futures::stream::Stream for AgentStream {
         if let Some(transmit) = self.pending_transmit.take() {
             let mut inner = self.inner.lock().unwrap();
             inner.waker = Some(cx.waker().clone());
-            if let Some(stream) = inner.streams.get(transmit.stream_id) {
+            if let Some(stream) = inner.streams.get_mut(transmit.stream_id) {
                 if let Some(retry) = stream.handle_transmit(transmit) {
                     drop(inner);
                     self.as_mut().pending_transmit = Some(retry);
@@ -266,6 +283,7 @@ impl futures::stream::Stream for AgentStream {
                             allocate.from.clone(),
                             allocate.to.clone(),
                             self.base_instant,
+                            self.runtime.clone(),
                         );
                     }
                     cx.waker().wake_by_ref();
@@ -278,6 +296,7 @@ impl futures::stream::Stream for AgentStream {
                         let weak_stream = Arc::downgrade(&stream.inner);
                         drop(inner);
                         Stream::handle_remove_socket(
+                            self.runtime.clone(),
                             weak_stream,
                             remove.transport,
                             remove.from.clone(),
@@ -356,8 +375,8 @@ impl futures::stream::Stream for AgentStream {
 
             if let Some(transmit) = agent.poll_transmit(now_nanos) {
                 drop(agent);
-                let inner = self.inner.lock().unwrap();
-                if let Some(stream) = inner.streams.get(transmit.stream_id) {
+                let mut inner = self.inner.lock().unwrap();
+                if let Some(stream) = inner.streams.get_mut(transmit.stream_id) {
                     if let Some(retry) = stream.handle_transmit(transmit) {
                         drop(inner);
                         self.as_mut().pending_transmit = Some(retry);
@@ -374,10 +393,16 @@ impl futures::stream::Stream for AgentStream {
         if let Some(wait) = wait {
             let wait_instant = wait.to_std(self.base_instant);
             match self.as_mut().timer.as_mut() {
-                Some(timer) => timer.set_at(wait_instant),
-                None => self.as_mut().timer = Some(Box::pin(async_io::Timer::at(wait_instant))),
+                Some(timer) => timer.as_mut().reset(wait_instant),
+                None => self.as_mut().timer = Some(self.runtime.new_timer(wait_instant)),
             }
-            if core::future::Future::poll(self.as_mut().timer.as_mut().unwrap().as_mut(), cx)
+            if self
+                .as_mut()
+                .timer
+                .as_mut()
+                .unwrap()
+                .as_mut()
+                .poll(cx)
                 .is_pending()
             {
                 return Poll::Pending;
@@ -401,6 +426,8 @@ mod tests {
     #[test]
     fn controlling() {
         init();
+        #[cfg(feature = "runtime-tokio")]
+        let _runtime = crate::tests::tokio_runtime().enter();
         let agent = Agent::builder().controlling(true).build();
         assert!(agent.controlling());
         let agent = Agent::builder().controlling(false).build();
