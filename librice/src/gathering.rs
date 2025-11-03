@@ -8,26 +8,24 @@
 
 //! Utilities for gathering potential sockets to send/receive data to/from.
 
-use smol::net::{SocketAddr, TcpListener, UdpSocket};
+use std::net::{SocketAddr, UdpSocket};
 use tracing::info;
 
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use futures::prelude::*;
-use futures::StreamExt;
-
 use get_if_addrs::get_if_addrs;
 
 use crate::agent::AgentError;
 use crate::candidate::TransportType;
+use crate::runtime::{AsyncTcpListener, Runtime};
 use crate::socket::UdpSocketChannel;
 
 /// A gathered socket
 #[derive(Debug, Clone)]
 pub enum GatherSocket {
     Udp(UdpSocketChannel),
-    Tcp(Arc<TcpListener>),
+    Tcp(Arc<dyn AsyncTcpListener>),
 }
 
 impl GatherSocket {
@@ -60,8 +58,9 @@ fn address_is_ignorable(ip: IpAddr) -> bool {
 }
 
 /// Returns a stream of sockets corresponding to the available network interfaces
-pub fn iface_sockets(
-) -> Result<impl Stream<Item = Result<GatherSocket, std::io::Error>>, AgentError> {
+pub async fn iface_sockets(
+    runtime: Arc<dyn Runtime>,
+) -> Result<Vec<Result<GatherSocket, std::io::Error>>, AgentError> {
     let mut ifaces = get_if_addrs()?;
     // We only care about non-loopback interfaces for now
     // TODO: remove 'Deprecated IPv4-compatible IPv6 addresses [RFC4291]'
@@ -74,15 +73,21 @@ pub fn iface_sockets(
         info!("Found interface {} address {:?}", iface.name, iface.ip());
     }) {}
 
-    Ok(futures::stream::iter(ifaces.clone())
-        .then(|iface| async move {
-            Ok(GatherSocket::Udp(UdpSocketChannel::new(
-                UdpSocket::bind(SocketAddr::new(iface.clone().ip(), 0)).await?,
-            )))
-        })
-        .chain(futures::stream::iter(ifaces).then(|iface| async move {
-            Ok(GatherSocket::Tcp(Arc::new(
-                TcpListener::bind(SocketAddr::new(iface.clone().ip(), 0)).await?,
-            )))
-        })))
+    let mut ret = vec![];
+    for iface in ifaces {
+        ret.push(
+            UdpSocket::bind(SocketAddr::new(iface.clone().ip(), 0)).and_then(|udp| {
+                runtime
+                    .wrap_udp_socket(udp)
+                    .map(|udp| GatherSocket::Udp(UdpSocketChannel::new(udp)))
+            }),
+        );
+        ret.push(
+            runtime
+                .new_tcp_listener(SocketAddr::new(iface.clone().ip(), 0))
+                .await
+                .map(GatherSocket::Tcp),
+        );
+    }
+    Ok(ret)
 }

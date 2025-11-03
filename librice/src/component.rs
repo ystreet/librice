@@ -72,6 +72,13 @@ impl Component {
     /// # use librice::component::{Component, ComponentConnectionState};
     /// # use librice::agent::Agent;
     /// # use librice::stream::Stream;
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let runtime = tokio::runtime::Builder::new_current_thread()
+    /// #     .enable_all()
+    /// #     .build()
+    /// #     .unwrap();
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let _runtime = runtime.enter();
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
     /// let component = stream.add_component().unwrap();
@@ -85,7 +92,7 @@ impl Component {
     /// until the component is in the [`Connected`](ComponentConnectionState::Connected) state.
     pub async fn send(&self, data: &[u8]) -> Result<(), AgentError> {
         let transmit;
-        let (channel, to) = {
+        let (mut channel, to) = {
             let inner = self.inner.lock().unwrap();
             let selected_pair = inner.selected_pair.as_ref().ok_or(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -235,7 +242,6 @@ impl SelectedPair {
 #[cfg(test)]
 mod tests {
     use rice_c::candidate::{Candidate, CandidateType, TransportType};
-    use smol::net::UdpSocket;
 
     use super::*;
     use crate::{agent::Agent, socket::UdpSocketChannel};
@@ -246,6 +252,8 @@ mod tests {
 
     #[test]
     fn initial_state_new() {
+        #[cfg(feature = "runtime-tokio")]
+        let _runtime = crate::tests::tokio_runtime().enter();
         init();
         let agent = Agent::builder().build();
         let s = agent.add_stream();
@@ -253,48 +261,60 @@ mod tests {
         assert_eq!(c.state(), ComponentConnectionState::New);
     }
 
+    #[cfg(feature = "runtime-smol")]
     #[test]
-    fn send_recv() {
+    fn smol_send_recv() {
+        smol::block_on(send_recv());
+    }
+
+    #[cfg(feature = "runtime-tokio")]
+    #[test]
+    fn tokio_send_recv() {
+        crate::tests::tokio_runtime().block_on(send_recv());
+    }
+
+    async fn send_recv() {
         init();
-        smol::block_on(async move {
-            let agent = Agent::builder().controlling(false).build();
-            let stream = agent.add_stream();
-            let send = stream.add_component().unwrap();
-            let local_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-            let remote_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-            let local_addr = local_socket.local_addr().unwrap();
-            let remote_addr = remote_socket.local_addr().unwrap();
-            let local_channel = StunChannel::Udp(UdpSocketChannel::new(local_socket));
+        let runtime = crate::runtime::default_runtime().unwrap();
+        let agent = Agent::builder().controlling(false).build();
+        let stream = agent.add_stream();
+        let send = stream.add_component().unwrap();
+        let local_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let remote_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let local_addr = local_socket.local_addr().unwrap();
+        let remote_addr = remote_socket.local_addr().unwrap();
+        let local_channel = StunChannel::Udp(UdpSocketChannel::new(
+            runtime.wrap_udp_socket(local_socket).unwrap(),
+        ));
 
-            let local_cand = Candidate::builder(
-                1,
-                CandidateType::Host,
-                TransportType::Udp,
-                "0",
-                local_addr.into(),
-            )
-            .build();
-            let remote_cand = Candidate::builder(
-                1,
-                CandidateType::Host,
-                TransportType::Udp,
-                "0",
-                remote_addr.into(),
-            )
-            .build();
-            let candidate_pair = CandidatePair::new(local_cand.to_owned(), remote_cand.to_owned());
-            let selected_pair = SelectedPair::new(candidate_pair, local_channel);
+        let local_cand = Candidate::builder(
+            1,
+            CandidateType::Host,
+            TransportType::Udp,
+            "0",
+            local_addr.into(),
+        )
+        .build();
+        let remote_cand = Candidate::builder(
+            1,
+            CandidateType::Host,
+            TransportType::Udp,
+            "0",
+            remote_addr.into(),
+        )
+        .build();
+        let candidate_pair = CandidatePair::new(local_cand.to_owned(), remote_cand.to_owned());
+        let selected_pair = SelectedPair::new(candidate_pair, local_channel);
 
-            send.set_selected_pair(selected_pair.clone()).unwrap();
-            assert_eq!(selected_pair.pair, send.selected_pair().unwrap());
+        send.set_selected_pair(selected_pair.clone()).unwrap();
+        assert_eq!(selected_pair.pair, send.selected_pair().unwrap());
 
-            let data = vec![3; 4];
-            send.send(&data).await.unwrap();
-            let mut recved = vec![0; 16];
-            let (len, from) = remote_socket.recv_from(&mut recved).await.unwrap();
-            let recved = &recved[..len];
-            assert_eq!(from, local_addr);
-            assert_eq!(recved, data);
-        });
+        let data = vec![3; 4];
+        send.send(&data).await.unwrap();
+        let mut recved = vec![0; 16];
+        let (len, from) = remote_socket.recv_from(&mut recved).unwrap();
+        let recved = &recved[..len];
+        assert_eq!(from, local_addr);
+        assert_eq!(recved, data);
     }
 }

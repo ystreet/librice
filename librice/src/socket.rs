@@ -11,13 +11,15 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use smol::net::{TcpStream, UdpSocket};
-
 use futures::prelude::*;
 
 use tracing::{debug_span, info, trace, warn};
 use tracing_futures::Instrument;
 
+use crate::runtime::{
+    AsyncTcpStream, AsyncTcpStreamRead, AsyncTcpStreamReadExt, AsyncTcpStreamWriteExt,
+    AsyncUdpSocket, AsyncUdpSocketExt, Runtime,
+};
 use crate::utils::DebugWrapper;
 
 use rice_c::candidate::TransportType;
@@ -68,7 +70,7 @@ impl DataAddress {
 
 impl StunChannel {
     /// Close the socket
-    pub async fn close(&self) -> Result<(), std::io::Error> {
+    pub async fn close(&mut self) -> Result<(), std::io::Error> {
         match self {
             StunChannel::Udp(c) => c.close(),
             StunChannel::Tcp(c) => c.close().await,
@@ -84,7 +86,7 @@ impl StunChannel {
     }
 
     /// Send data to a specified address
-    pub async fn send_to(&self, data: &[u8], to: SocketAddr) -> Result<(), std::io::Error> {
+    pub async fn send_to(&mut self, data: &[u8], to: SocketAddr) -> Result<(), std::io::Error> {
         match self {
             StunChannel::Udp(udp) => udp.send_to(data, to).await,
             StunChannel::Tcp(tcp) => tcp.send_to(data, to).await,
@@ -94,7 +96,7 @@ impl StunChannel {
     /// Return a stream of received data.
     ///
     /// WARNING: Any data received will only be dispatched to a single returned stream
-    pub fn recv(&self) -> impl Stream<Item = (Vec<u8>, SocketAddr)> + '_ {
+    pub fn recv(&mut self) -> impl Stream<Item = (Vec<u8>, SocketAddr)> + '_ {
         match self {
             StunChannel::Udp(udp) => udp.recv().left_stream(),
             StunChannel::Tcp(tcp) => tcp.recv().right_stream(),
@@ -124,7 +126,7 @@ impl StunChannel {
 /// A UDP socket
 #[derive(Debug, Clone)]
 pub struct UdpSocketChannel {
-    socket: DebugWrapper<Arc<UdpSocket>>,
+    socket: Arc<dyn AsyncUdpSocket>,
     inner: DebugWrapper<Arc<Mutex<UdpSocketChannelInner>>>,
 }
 
@@ -135,9 +137,9 @@ struct UdpSocketChannelInner {
 
 impl UdpSocketChannel {
     /// Create a new UDP socket
-    pub fn new(socket: UdpSocket) -> Self {
+    pub fn new(socket: Arc<dyn AsyncUdpSocket>) -> Self {
         Self {
-            socket: DebugWrapper::wrap(Arc::new(socket), "..."),
+            socket,
             inner: DebugWrapper::wrap(
                 Arc::new(Mutex::new(UdpSocketChannelInner { closed: false })),
                 "...",
@@ -197,38 +199,60 @@ impl UdpSocketChannel {
 /// A TCP socket
 #[derive(Debug, Clone)]
 pub struct TcpChannel {
-    stream: DebugWrapper<TcpStream>,
-    sender_channel: smol::channel::Sender<Vec<u8>>,
-    sender_task: Arc<smol::lock::Mutex<Option<smol::Task<()>>>>,
+    read_channel: Arc<Mutex<Option<futures::channel::mpsc::Receiver<DataAddress>>>>,
+    local_addr: SocketAddr,
+    remote_addr: SocketAddr,
+    sender_channel: futures::channel::mpsc::Sender<TcpData>,
+}
+
+#[derive(Debug)]
+enum TcpData {
+    Data(Vec<u8>),
+    Shutdown,
 }
 
 impl TcpChannel {
     /// Create a TCP socket from an existing TcpStream
-    pub fn new(stream: TcpStream) -> Self {
-        let (tx, rx) = smol::channel::bounded::<Vec<u8>>(1);
-        let sender_task = smol::spawn({
-            let mut stream = stream.clone();
+    pub fn new(runtime: Arc<dyn Runtime>, stream: Box<dyn AsyncTcpStream>) -> Self {
+        let local_addr = stream.local_addr().unwrap();
+        let remote_addr = stream.remote_addr().unwrap();
+        let (send_tx, send_rx) = futures::channel::mpsc::channel::<TcpData>(1);
+        let (mut read, mut write) = stream.split();
+        runtime.spawn(Box::pin({
             async move {
-                smol::pin!(rx);
-                while let Some(data) = rx.next().await {
-                    /*
-                    let mut header_len = [0, 0];
-                    BigEndian::write_u16(&mut header_len, data.len() as u16);
-                    if let Err(e) = stream.write_all(&header_len).await {
-                        warn!("tcp write produced error {:?}", e);
-                        break;
-                    }*/
-                    if let Err(e) = stream.write_all(&data).await {
-                        warn!("tcp write produced error {:?}", e);
-                        break;
+                let mut send_rx = core::pin::pin!(send_rx);
+                //let mut write = core::pin::pin!(write);
+                while let Some(data) = send_rx.next().await {
+                    match data {
+                        TcpData::Data(data) => {
+                            if let Err(e) = write.write_all(&data).await {
+                                warn!("tcp write produced error {e:?}");
+                                break;
+                            }
+                        }
+                        TcpData::Shutdown => {
+                            if let Err(e) = write.shutdown(std::net::Shutdown::Both).await {
+                                warn!("tcp shutdown produced error {e:?}");
+                            }
+                            break;
+                        }
                     }
                 }
             }
-        });
+        }));
+        let (mut recv_tx, recv_rx) = futures::channel::mpsc::channel::<DataAddress>(1);
+        runtime.spawn(Box::pin(async move {
+            while let Ok(data_addr) = Self::inner_recv(&mut read).await {
+                if recv_tx.send(data_addr).await.is_err() {
+                    break;
+                }
+            }
+        }));
         Self {
-            stream: DebugWrapper::wrap(stream, "..."),
-            sender_channel: tx,
-            sender_task: Arc::new(smol::lock::Mutex::new(Some(sender_task))),
+            local_addr,
+            remote_addr,
+            read_channel: Arc::new(Mutex::new(Some(recv_rx))),
+            sender_channel: send_tx,
         }
     }
 
@@ -236,11 +260,13 @@ impl TcpChannel {
         name = "tcp_single_recv",
         skip(stream),
         fields(
-            remote.addr = ?stream.peer_addr()
+            remote.addr = ?stream.remote_addr()
         )
     )]
-    async fn inner_recv(stream: &mut TcpStream) -> Result<DataAddress, std::io::Error> {
-        let from = stream.peer_addr()?;
+    async fn inner_recv(
+        stream: &mut Box<dyn AsyncTcpStreamRead>,
+    ) -> Result<DataAddress, std::io::Error> {
+        let from = stream.remote_addr()?;
 
         let mut data = vec![0; MAX_STUN_MESSAGE_SIZE];
 
@@ -262,15 +288,21 @@ impl TcpChannel {
     }
 
     /// Close the socket
-    pub async fn close(&self) -> Result<(), std::io::Error> {
-        if let Some(task_handle) = self.sender_task.lock().await.take() {
-            task_handle.cancel().await;
-        }
-        self.stream.shutdown(std::net::Shutdown::Both)
+    pub async fn close(&mut self) -> Result<(), std::io::Error> {
+        self.sender_channel
+            .send(TcpData::Shutdown)
+            .await
+            .map_err(|e| {
+                if e.is_disconnected() {
+                    std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Disconnected")
+                } else {
+                    unreachable!();
+                }
+            })
     }
 
     /// Send data to the specified address
-    pub async fn send_to(&self, data: &[u8], to: SocketAddr) -> Result<(), std::io::Error> {
+    pub async fn send_to(&mut self, data: &[u8], to: SocketAddr) -> Result<(), std::io::Error> {
         if to != self.remote_addr()? {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -286,32 +318,39 @@ impl TcpChannel {
         }
 
         self.sender_channel
-            .send(data.to_vec())
+            .send(TcpData::Data(data.to_vec()))
             .await
             .map_err(|_| std::io::Error::from(std::io::ErrorKind::ConnectionAborted))
     }
 
     /// Return a stream of received data blocks
-    pub fn recv(&self) -> impl Stream<Item = (Vec<u8>, SocketAddr)> {
-        let stream = self.stream.clone();
-        // TODO: replace self.running_buffer when done? drop handler?
+    pub fn recv(&mut self) -> impl Stream<Item = (Vec<u8>, SocketAddr)> + '_ {
         let span = debug_span!("tcp_recv");
-        stream::unfold(stream, |mut stream| async move {
+        let chan = self
+            .read_channel
+            .lock()
+            .unwrap()
+            .take()
+            .expect("Receiver already taken!");
+        chan.map(|v| (v.data, v.address))
+            .instrument(span.or_current())
+        // TODO: replace self.running_buffer when done? drop handler?
+        /*stream::unfold(&mut self.read_stream, |mut stream| async move {
             TcpChannel::inner_recv(&mut stream)
                 .await
                 .ok()
                 .map(|v| ((v.data, v.address), stream))
         })
-        .instrument(span.or_current())
+        .instrument(span.or_current())*/
     }
 
     /// The local address of the socket
     pub fn local_addr(&self) -> Result<SocketAddr, std::io::Error> {
-        self.stream.local_addr()
+        Ok(self.local_addr)
     }
 
     /// The remoted address of the connected socket
     pub fn remote_addr(&self) -> Result<SocketAddr, std::io::Error> {
-        self.stream.peer_addr()
+        Ok(self.remote_addr)
     }
 }

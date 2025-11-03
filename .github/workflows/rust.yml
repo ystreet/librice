@@ -34,8 +34,10 @@ jobs:
         tool: cargo-c
     - name: Run tests
       run: cargo test --verbose
-    - name: Run tests (No default features)
-      run: cargo test --verbose --no-default-features
+    - name: Run tests (No default features + Tokio)
+      run: cargo test --verbose --no-default-features --features runtime-tokio
+    - name: Run tests (No default features + Smol)
+      run: cargo test --verbose --no-default-features --features runtime-smol
   clippy:
     runs-on: ubuntu-latest
     steps:

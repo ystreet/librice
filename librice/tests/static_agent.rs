@@ -8,15 +8,16 @@
 
 use core::net::SocketAddr;
 
+use std::net::UdpSocket;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
+use librice::runtime::default_runtime;
 use rice_c::candidate::CandidateType;
 use rice_c::stream::GatheredCandidate;
 use rice_c::turn::TurnConfig;
-use smol::net::{TcpListener, UdpSocket};
 
-use futures::future::{AbortHandle, Abortable, Aborted};
+use futures::future::{AbortHandle, Abortable};
 use futures::{SinkExt, StreamExt};
 
 use rice_c::{prelude::*, AddressFamily};
@@ -30,9 +31,8 @@ use librice::stream::Credentials;
 extern crate tracing;
 
 mod common;
+#[cfg(feature = "runtime-smol")]
 mod turn_server;
-
-use turn_server::TurnServer;
 
 struct DebugWrapper<T> {
     inner: T,
@@ -118,17 +118,29 @@ struct AgentStaticTestConfig {
 
 #[tracing::instrument(name = "agent_static_connection")]
 async fn agent_static_connection_test(config: AgentStaticTestConfig) {
-    let udp_stun_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let runtime = default_runtime().expect("No runtime");
+    let udp_stun_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     let udp_stun_addr = udp_stun_socket.local_addr().unwrap();
     let (udp_abort_handle, abort_registration) = AbortHandle::new_pair();
+    let udp_stun_socket = runtime.wrap_udp_socket(udp_stun_socket).unwrap();
     let udp_stun_server = Abortable::new(common::stund_udp(udp_stun_socket), abort_registration);
-    let udp_stun_server = smol::spawn(udp_stun_server);
+    runtime.spawn(Box::pin(async move {
+        let _ = udp_stun_server.await;
+    }));
 
-    let tcp_stun_socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let tcp_stun_socket = runtime
+        .new_tcp_listener("127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
     let tcp_stun_addr = tcp_stun_socket.local_addr().unwrap();
     let (tcp_abort_handle, abort_registration) = AbortHandle::new_pair();
-    let tcp_stun_server = Abortable::new(common::stund_tcp(tcp_stun_socket), abort_registration);
-    let tcp_stun_server = smol::spawn(tcp_stun_server);
+    let tcp_stun_server = Abortable::new(
+        common::stund_tcp(runtime.clone(), tcp_stun_socket),
+        abort_registration,
+    );
+    runtime.spawn(Box::pin(async move {
+        let _ = tcp_stun_server.await;
+    }));
 
     let lagent = Arc::new(
         Agent::builder()
@@ -185,13 +197,14 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     let mut lmessages = lagent.messages();
     let mut rmessages = ragent.messages();
     let (lgath_send, mut lgathered) = futures::channel::mpsc::channel(1);
-    let lloop = smol::spawn({
+    let (mut lexit_send, mut lexit) = futures::channel::mpsc::channel(1);
+    runtime.spawn({
         let n_completed = n_completed.clone();
         let complete_send = complete_send.clone();
         let lgath_send = lgath_send.clone();
         let lstream = lstream.clone();
         let rstream = rstream.clone();
-        async move {
+        Box::pin(async move {
             while let Some(msg) = lmessages.next().await {
                 match msg {
                     AgentMessage::GatheredCandidate(_stream, gathered) => {
@@ -214,14 +227,16 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
                     }
                 }
             }
-        }
+            lexit_send.send(()).await.unwrap();
+        })
     });
 
     let (rgath_send, mut rgathered) = futures::channel::mpsc::channel(1);
-    let rloop = smol::spawn({
+    let (mut rexit_send, mut rexit) = futures::channel::mpsc::channel(1);
+    runtime.spawn({
         let rgath_send = rgath_send.clone();
         let n_completed = n_completed.clone();
-        async move {
+        Box::pin(async move {
             while let Some(msg) = rmessages.next().await {
                 match msg {
                     AgentMessage::GatheredCandidate(_stream, gathered) => {
@@ -244,7 +259,8 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
                     }
                 }
             }
-        }
+            rexit_send.send(()).await.unwrap();
+        })
     });
 
     if !config.local.trickle_ice {
@@ -289,11 +305,9 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     udp_abort_handle.abort();
     tcp_abort_handle.abort();
     trace!("agents aborted");
-    assert!(matches!(udp_stun_server.await, Err(Aborted)));
-    assert!(matches!(tcp_stun_server.await, Err(Aborted)));
 
-    let _ = lloop.await;
-    let _ = rloop.await;
+    lexit.next().await.unwrap();
+    rexit.next().await.unwrap();
     trace!("done");
 }
 
@@ -308,10 +322,21 @@ fn candidate_filter_accept_transport(
     transports.contains(&gathered.candidate().transport())
 }
 
+#[cfg(feature = "runtime-smol")]
 #[test]
-fn agent_static_connection_none_controlling_udp() {
+fn smol_agent_static_connection_none_controlling_udp() {
+    smol::block_on(agent_static_connection_none_controlling_udp());
+}
+
+#[cfg(feature = "runtime-tokio")]
+#[test]
+fn tokio_agent_static_connection_none_controlling_udp() {
+    crate::common::tokio_runtime().block_on(agent_static_connection_none_controlling_udp());
+}
+
+async fn agent_static_connection_none_controlling_udp() {
     common::debug_init();
-    smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
+    agent_static_connection_test(AgentStaticTestConfig {
         local: AgentConfig::default()
             .transports(&[TransportType::Udp])
             .candidate_filter(Box::new(move |candidate| {
@@ -322,13 +347,25 @@ fn agent_static_connection_none_controlling_udp() {
             .candidate_filter(Box::new(move |candidate| {
                 candidate_filter_accept_transport(candidate, &[TransportType::Udp])
             })),
-    }));
+    })
+    .await;
 }
 
+#[cfg(feature = "runtime-smol")]
 #[test]
-fn agent_static_connection_both_controlling_udp() {
+fn smol_agent_static_connection_both_controlling_udp() {
+    smol::block_on(agent_static_connection_both_controlling_udp());
+}
+
+#[cfg(feature = "runtime-tokio")]
+#[test]
+fn tokio_agent_static_connection_both_controlling_udp() {
+    crate::common::tokio_runtime().block_on(agent_static_connection_both_controlling_udp());
+}
+
+async fn agent_static_connection_both_controlling_udp() {
     common::debug_init();
-    smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
+    agent_static_connection_test(AgentStaticTestConfig {
         local: AgentConfig::default()
             .controlling(true)
             .transports(&[TransportType::Udp])
@@ -341,13 +378,25 @@ fn agent_static_connection_both_controlling_udp() {
             .candidate_filter(Box::new(move |candidate| {
                 candidate_filter_accept_transport(candidate, &[TransportType::Udp])
             })),
-    }));
+    })
+    .await;
 }
 
+#[cfg(feature = "runtime-smol")]
 #[test]
-fn agent_static_connection_remote_controlling_udp() {
+fn smol_agent_static_connection_remote_controlling_udp() {
+    smol::block_on(agent_static_connection_remote_controlling_udp());
+}
+
+#[cfg(feature = "runtime-tokio")]
+#[test]
+fn tokio_agent_static_connection_remote_controlling_udp() {
+    crate::common::tokio_runtime().block_on(agent_static_connection_remote_controlling_udp());
+}
+
+async fn agent_static_connection_remote_controlling_udp() {
     common::debug_init();
-    smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
+    agent_static_connection_test(AgentStaticTestConfig {
         local: AgentConfig::default()
             .transports(&[TransportType::Udp])
             .candidate_filter(Box::new(move |candidate| {
@@ -359,13 +408,25 @@ fn agent_static_connection_remote_controlling_udp() {
             .candidate_filter(Box::new(move |candidate| {
                 candidate_filter_accept_transport(candidate, &[TransportType::Udp])
             })),
-    }));
+    })
+    .await;
 }
 
+#[cfg(feature = "runtime-smol")]
 #[test]
-fn agent_static_connection_local_controlling_udp() {
+fn smol_agent_static_connection_local_controlling_udp() {
+    smol::block_on(agent_static_connection_local_controlling_udp());
+}
+
+#[cfg(feature = "runtime-tokio")]
+#[test]
+fn tokio_agent_static_connection_local_controlling_udp() {
+    crate::common::tokio_runtime().block_on(agent_static_connection_local_controlling_udp());
+}
+
+async fn agent_static_connection_local_controlling_udp() {
     common::debug_init();
-    smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
+    agent_static_connection_test(AgentStaticTestConfig {
         local: AgentConfig::default()
             .controlling(true)
             .transports(&[TransportType::Udp])
@@ -377,13 +438,26 @@ fn agent_static_connection_local_controlling_udp() {
             .candidate_filter(Box::new(move |candidate| {
                 candidate_filter_accept_transport(candidate, &[TransportType::Udp])
             })),
-    }));
+    })
+    .await;
 }
 
+#[cfg(feature = "runtime-smol")]
 #[test]
-fn agent_static_connection_local_controlling_udp_both_trickle() {
+fn smol_agent_static_connection_local_controlling_udp_both_trickle() {
+    smol::block_on(agent_static_connection_local_controlling_udp_both_trickle());
+}
+
+#[cfg(feature = "runtime-tokio")]
+#[test]
+fn tokio_agent_static_connection_local_controlling_udp_both_trickle() {
+    crate::common::tokio_runtime()
+        .block_on(agent_static_connection_local_controlling_udp_both_trickle());
+}
+
+async fn agent_static_connection_local_controlling_udp_both_trickle() {
     common::debug_init();
-    smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
+    agent_static_connection_test(AgentStaticTestConfig {
         local: AgentConfig::default()
             .controlling(true)
             .trickle_ice(true)
@@ -397,13 +471,26 @@ fn agent_static_connection_local_controlling_udp_both_trickle() {
             .candidate_filter(Box::new(move |candidate| {
                 candidate_filter_accept_transport(candidate, &[TransportType::Udp])
             })),
-    }));
+    })
+    .await;
 }
 
+#[cfg(feature = "runtime-smol")]
 #[test]
-fn agent_static_connection_local_controlling_udp_local_trickle() {
+fn smol_agent_static_connection_local_controlling_udp_local_trickle() {
+    smol::block_on(agent_static_connection_local_controlling_udp_local_trickle());
+}
+
+#[cfg(feature = "runtime-tokio")]
+#[test]
+fn tokio_agent_static_connection_local_controlling_udp_local_trickle() {
+    crate::common::tokio_runtime()
+        .block_on(agent_static_connection_local_controlling_udp_local_trickle());
+}
+
+async fn agent_static_connection_local_controlling_udp_local_trickle() {
     common::debug_init();
-    smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
+    agent_static_connection_test(AgentStaticTestConfig {
         local: AgentConfig::default()
             .controlling(true)
             .trickle_ice(true)
@@ -416,13 +503,25 @@ fn agent_static_connection_local_controlling_udp_local_trickle() {
             .candidate_filter(Box::new(move |candidate| {
                 candidate_filter_accept_transport(candidate, &[TransportType::Udp])
             })),
-    }));
+    })
+    .await;
 }
 
+#[cfg(feature = "runtime-smol")]
 #[test]
-fn agent_static_connection_local_controlling_tcp() {
+fn smol_agent_static_connection_local_controlling_tcp() {
+    smol::block_on(agent_static_connection_local_controlling_tcp());
+}
+
+#[cfg(feature = "runtime-tokio")]
+#[test]
+fn tokio_agent_static_connection_local_controlling_tcp() {
+    crate::common::tokio_runtime().block_on(agent_static_connection_local_controlling_tcp());
+}
+
+async fn agent_static_connection_local_controlling_tcp() {
     common::debug_init();
-    smol::block_on(agent_static_connection_test(AgentStaticTestConfig {
+    agent_static_connection_test(AgentStaticTestConfig {
         local: AgentConfig::default()
             .controlling(true)
             .transports(&[TransportType::Tcp])
@@ -434,21 +533,26 @@ fn agent_static_connection_local_controlling_tcp() {
             .candidate_filter(Box::new(move |candidate| {
                 candidate_filter_accept_transport(candidate, &[TransportType::Tcp])
             })),
-    }));
+    })
+    .await;
 }
 
+#[cfg(feature = "runtime-smol")]
 fn candidate_filter_relay_only(gathered: &GatheredCandidate) -> bool {
     gathered.candidate().candidate_type() == CandidateType::Relayed
 }
 
+#[cfg(feature = "runtime-smol")]
 fn turn_credentials() -> Credentials {
     Credentials::new("tuser", "tpass")
 }
 
-async fn udp_turn_server_localhost_ipv4() -> (TurnServer, TurnConfig) {
+#[cfg(feature = "runtime-smol")]
+async fn udp_turn_server_localhost_ipv4() -> (turn_server::TurnServer, TurnConfig) {
     let listen_addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
     let relay_addr = listen_addr.ip();
-    let server = TurnServer::new_udp(listen_addr, "realm".to_string(), relay_addr).await;
+    let server =
+        turn_server::TurnServer::new_udp(listen_addr, "realm".to_string(), relay_addr).await;
     server.add_user("tuser", "tpass");
     let listen_addr = server.listen_address();
     (
@@ -463,6 +567,7 @@ async fn udp_turn_server_localhost_ipv4() -> (TurnServer, TurnConfig) {
     )
 }
 
+#[cfg(feature = "runtime-smol")]
 #[test]
 fn agent_static_connection_local_controlling_udp_client_turn_server() {
     common::debug_init();
@@ -481,10 +586,12 @@ fn agent_static_connection_local_controlling_udp_client_turn_server() {
     });
 }
 
-async fn tcp_turn_server_localhost_ipv4() -> (TurnServer, TurnConfig) {
+#[cfg(feature = "runtime-smol")]
+async fn tcp_turn_server_localhost_ipv4() -> (turn_server::TurnServer, TurnConfig) {
     let listen_addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
     let relay_addr = listen_addr.ip();
-    let server = TurnServer::new_tcp(listen_addr, "realm".to_string(), relay_addr).await;
+    let server =
+        turn_server::TurnServer::new_tcp(listen_addr, "realm".to_string(), relay_addr).await;
     server.add_user("tuser", "tpass");
     let listen_addr = server.listen_address();
     (
@@ -499,6 +606,7 @@ async fn tcp_turn_server_localhost_ipv4() -> (TurnServer, TurnConfig) {
     )
 }
 
+#[cfg(feature = "runtime-smol")]
 #[test]
 fn agent_static_connection_local_controlling_tcp_client_turn_server() {
     common::debug_init();

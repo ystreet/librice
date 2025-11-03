@@ -14,12 +14,12 @@ use std::sync::{Arc, Mutex, Weak};
 use futures::StreamExt;
 use rice_c::Address;
 use rice_c::{prelude::*, Instant};
-use smol::net::TcpStream;
 use tracing::{debug, info, trace, warn};
 
 use crate::agent::{AgentError, AgentInner};
 use crate::component::{Component, ComponentInner};
 use crate::gathering::{iface_sockets, GatherSocket};
+use crate::runtime::{AsyncTcpListenerExt, Runtime};
 use crate::socket::{StunChannel, TcpChannel, Transmit};
 
 use rice_c::agent::{AgentError as ProtoAgentError, AgentTransmit, SelectedTurn};
@@ -31,12 +31,13 @@ pub use rice_c::stream::Credentials;
 /// An ICE [`Stream`]
 #[derive(Debug, Clone)]
 pub struct Stream {
+    runtime: Arc<dyn Runtime>,
     weak_proto_agent: Weak<Mutex<rice_c::agent::Agent>>,
     proto_stream: rice_c::stream::Stream,
     base_instant: std::time::Instant,
     pub(crate) id: usize,
     weak_agent_inner: Weak<Mutex<AgentInner>>,
-    transmit_send: smol::channel::Sender<AgentTransmit>,
+    transmit_send: futures::channel::mpsc::Sender<AgentTransmit>,
     pub(crate) inner: Arc<Mutex<StreamInner>>,
 }
 
@@ -109,6 +110,7 @@ fn socket_matches(
 
 impl Stream {
     pub(crate) fn new(
+        runtime: Arc<dyn Runtime>,
         weak_proto_agent: Weak<Mutex<rice_c::agent::Agent>>,
         weak_agent_inner: Weak<Mutex<AgentInner>>,
         proto_stream: rice_c::stream::Stream,
@@ -116,10 +118,10 @@ impl Stream {
         base_instant: std::time::Instant,
     ) -> Self {
         let inner = Arc::new(Mutex::new(StreamInner::default()));
-        let (transmit_send, transmit_recv) = smol::channel::bounded::<AgentTransmit>(16);
+        let (transmit_send, mut transmit_recv) =
+            futures::channel::mpsc::channel::<AgentTransmit>(16);
         let weak_inner = Arc::downgrade(&inner);
-        smol::spawn(async move {
-            smol::pin!(transmit_recv);
+        runtime.spawn(Box::pin(async move {
             while let Some(transmit) = transmit_recv.next().await {
                 let Some(inner) = weak_inner.upgrade() else {
                     break;
@@ -132,7 +134,7 @@ impl Stream {
                         .socket_for_5tuple(transmit.transport, from, to)
                         .cloned()
                 };
-                if let Some(socket) = socket {
+                if let Some(mut socket) = socket {
                     if let Err(e) = socket.send_to(transmit.data, to).await {
                         warn!("failed to send: {e:?}");
                     }
@@ -143,9 +145,9 @@ impl Stream {
                     );
                 }
             }
-        })
-        .detach();
+        }));
         Self {
+            runtime,
             weak_proto_agent,
             proto_stream,
             id,
@@ -171,6 +173,13 @@ impl Stream {
     /// # use librice::agent::Agent;
     /// # use librice::component;
     /// # use librice::component::Component;
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let runtime = tokio::runtime::Builder::new_current_thread()
+    /// #     .enable_all()
+    /// #     .build()
+    /// #     .unwrap();
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let _runtime = runtime.enter();
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
     /// let component = stream.add_component().unwrap();
@@ -196,6 +205,13 @@ impl Stream {
     /// # use librice::agent::Agent;
     /// # use librice::component;
     /// # use librice::component::Component;
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let runtime = tokio::runtime::Builder::new_current_thread()
+    /// #     .enable_all()
+    /// #     .build()
+    /// #     .unwrap();
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let _runtime = runtime.enter();
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
     /// let component = stream.add_component().unwrap();
@@ -209,6 +225,13 @@ impl Stream {
     /// # use librice::agent::Agent;
     /// # use librice::component;
     /// # use librice::component::Component;
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let runtime = tokio::runtime::Builder::new_current_thread()
+    /// #     .enable_all()
+    /// #     .build()
+    /// #     .unwrap();
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let _runtime = runtime.enter();
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
     /// assert!(stream.component(component::RTP).is_none());
@@ -229,6 +252,13 @@ impl Stream {
     /// # use librice::agent::Agent;
     /// # use librice::stream::Credentials;
     /// # use std::sync::Arc;
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let runtime = tokio::runtime::Builder::new_current_thread()
+    /// #     .enable_all()
+    /// #     .build()
+    /// #     .unwrap();
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let _runtime = runtime.enter();
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
     /// let credentials = Credentials::new("user", "pass");
@@ -245,6 +275,13 @@ impl Stream {
     /// ```
     /// # use librice::agent::Agent;
     /// # use librice::stream::Credentials;
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let runtime = tokio::runtime::Builder::new_current_thread()
+    /// #     .enable_all()
+    /// #     .build()
+    /// #     .unwrap();
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let _runtime = runtime.enter();
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
     /// let credentials = Credentials::new("user", "pass");
@@ -263,6 +300,13 @@ impl Stream {
     /// # use librice::agent::Agent;
     /// # use librice::stream::Credentials;
     /// # use std::sync::Arc;
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let runtime = tokio::runtime::Builder::new_current_thread()
+    /// #     .enable_all()
+    /// #     .build()
+    /// #     .unwrap();
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let _runtime = runtime.enter();
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
     /// let credentials = Credentials::new("user", "pass");
@@ -279,6 +323,13 @@ impl Stream {
     /// ```
     /// # use librice::agent::Agent;
     /// # use librice::stream::Credentials;
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let runtime = tokio::runtime::Builder::new_current_thread()
+    /// #     .enable_all()
+    /// #     .build()
+    /// #     .unwrap();
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let _runtime = runtime.enter();
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
     /// let credentials = Credentials::new("user", "pass");
@@ -296,6 +347,13 @@ impl Stream {
     /// ```
     /// # use librice::agent::Agent;
     /// # use librice::candidate::{Candidate, CandidateType, TransportType};
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let runtime = tokio::runtime::Builder::new_current_thread()
+    /// #     .enable_all()
+    /// #     .build()
+    /// #     .unwrap();
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let _runtime = runtime.enter();
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
     /// let component = stream.add_component().unwrap();
@@ -392,6 +450,13 @@ impl Stream {
     /// ```
     /// # use librice::agent::Agent;
     /// # use librice::stream::Credentials;
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let runtime = tokio::runtime::Builder::new_current_thread()
+    /// #     .enable_all()
+    /// #     .build()
+    /// #     .unwrap();
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let _runtime = runtime.enter();
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
     /// let local_credentials = Credentials::new("luser", "lpass");
@@ -399,9 +464,14 @@ impl Stream {
     /// let remote_credentials = Credentials::new("ruser", "rpass");
     /// stream.set_remote_credentials(&remote_credentials);
     /// let component = stream.add_component().unwrap();
+    /// # #[cfg(feature = "runtime-smol")]
     /// smol::block_on(async move {
     ///     stream.gather_candidates().await.unwrap();
     /// });
+    /// # #[cfg(all(not(feature = "runtime-smol"), feature = "runtime-tokio"))]
+    /// # runtime.block_on(async move {
+    /// #     stream.gather_candidates().await.unwrap();
+    /// # });
     /// ```
     pub async fn gather_candidates(&self) -> Result<(), AgentError> {
         let proto_agent = self
@@ -419,11 +489,12 @@ impl Stream {
 
         for component_id in component_ids {
             let weak_component = Arc::downgrade(&self.component(component_id).unwrap().inner);
-            let mut sockets = iface_sockets()
+            let mut sockets = iface_sockets(self.runtime.clone())
+                .await
                 .unwrap()
-                .filter_map(|s| async move { s.ok() })
-                .collect::<Vec<_>>()
-                .await;
+                .into_iter()
+                .filter_map(|s| s.ok())
+                .collect::<Vec<_>>();
             let proto_stun_sockets = sockets
                 .iter()
                 .map(|s| (s.transport(), s.local_addr().into()))
@@ -431,20 +502,19 @@ impl Stream {
 
             let mut proto_turn_configs = vec![];
             for turn_config in turn_configs.iter() {
-                let turn_sockets = iface_sockets()
+                let turn_sockets = iface_sockets(self.runtime.clone())
+                    .await
                     .unwrap()
+                    .into_iter()
                     .filter_map(|s| {
                         let turn_config = turn_config.clone();
-                        async move {
-                            s.ok().filter(|s| {
-                                s.transport() == turn_config.client_transport()
-                                    && s.local_addr().is_ipv4()
-                                        == turn_config.addr().as_socket().is_ipv4()
-                            })
-                        }
+                        s.ok().filter(|s| {
+                            s.transport() == turn_config.client_transport()
+                                && s.local_addr().is_ipv4()
+                                    == turn_config.addr().as_socket().is_ipv4()
+                        })
                     })
-                    .collect::<Vec<_>>()
-                    .await;
+                    .collect::<Vec<_>>();
                 for s in turn_sockets.iter() {
                     proto_turn_configs.push((s.local_addr().into(), turn_config.clone()));
                 }
@@ -463,7 +533,7 @@ impl Stream {
                     GatherSocket::Udp(udp) => {
                         let mut inner = self.inner.lock().unwrap();
                         inner.sockets.push(StunChannel::Udp(udp.clone()));
-                        smol::spawn(async move {
+                        self.runtime.spawn(Box::pin(async move {
                             let recv = udp.recv();
                             let mut recv = core::pin::pin!(recv);
                             while let Some((data, from)) = recv.next().await {
@@ -483,27 +553,28 @@ impl Stream {
                                 )
                             }
                             debug!("receive task closed for udp socket {:?}", udp.local_addr());
-                        })
-                        .detach();
+                        }));
                     }
                     GatherSocket::Tcp(tcp) => {
                         let weak_inner = weak_inner.clone();
-                        smol::spawn(async move {
-                            while let Some(stream) = tcp.incoming().next().await {
-                                let Ok(stream) = stream else {
+                        let runtime = self.runtime.clone();
+                        self.runtime.spawn(Box::pin(async move {
+                            loop {
+                                let Ok(stream) = tcp.accept().await else {
                                     continue;
                                 };
                                 let weak_proto_agent = weak_proto_agent.clone();
                                 let weak_agent_inner = weak_agent_inner.clone();
                                 let weak_component = weak_component.clone();
                                 let weak_inner = weak_inner.clone();
-                                smol::spawn(async move {
+                                let rt = runtime.clone();
+                                runtime.spawn(Box::pin(async move {
                                     let Some(inner) = weak_inner.upgrade() else {
                                         return;
                                     };
-                                    let channel = {
+                                    let mut channel = {
                                         let mut inner = inner.lock().unwrap();
-                                        let channel = TcpChannel::new(stream);
+                                        let channel = TcpChannel::new(rt, stream);
                                         inner.sockets.push(StunChannel::Tcp(channel.clone()));
                                         channel
                                     };
@@ -526,11 +597,9 @@ impl Stream {
                                             base_instant,
                                         )
                                     }
-                                })
-                                .detach();
+                                }));
                             }
-                        })
-                        .detach();
+                        }));
                     }
                 }
             }
@@ -652,11 +721,11 @@ impl Stream {
         self.proto_stream.end_of_remote_candidates()
     }
 
-    pub(crate) fn handle_transmit(&self, transmit: AgentTransmit) -> Option<AgentTransmit> {
-        if let Err(smol::channel::TrySendError::Full(transmit)) =
-            self.transmit_send.try_send(transmit)
-        {
-            return Some(transmit);
+    pub(crate) fn handle_transmit(&mut self, transmit: AgentTransmit) -> Option<AgentTransmit> {
+        if let Err(e) = self.transmit_send.try_send(transmit) {
+            if e.is_full() {
+                return Some(e.into_inner());
+            }
         }
         None
     }
@@ -672,13 +741,15 @@ impl Stream {
         from: Address,
         to: Address,
         base_instant: std::time::Instant,
+        runtime: Arc<dyn Runtime>,
     ) {
         if transport != TransportType::Tcp {
             unreachable!();
         }
 
-        smol::spawn(async move {
-            let stream = TcpStream::connect(to.as_socket()).await;
+        let rt = runtime.clone();
+        runtime.spawn(Box::pin(async move {
+            let stream = rt.tcp_connect(to.as_socket()).await;
             let mut weak_component = None;
             let channel = match stream {
                 Ok(stream) => {
@@ -686,7 +757,7 @@ impl Stream {
                         return;
                     };
                     let mut inner = inner.lock().unwrap();
-                    let channel = StunChannel::Tcp(TcpChannel::new(stream.clone()));
+                    let channel = StunChannel::Tcp(TcpChannel::new(rt.clone(), stream));
                     inner.sockets.push(channel.clone());
                     weak_component = Some(Arc::downgrade(
                         &inner.component(component_id).unwrap().inner,
@@ -721,10 +792,10 @@ impl Stream {
                 }
             }
 
-            if let Some(channel) = channel {
+            if let Some(mut channel) = channel {
+                let local_addr = channel.local_addr().unwrap();
                 let recv = channel.recv();
                 let mut recv = core::pin::pin!(recv);
-                let local_addr = channel.local_addr().unwrap();
                 while let Some((data, from)) = recv.next().await {
                     Self::handle_incoming_data(
                         weak_proto_agent.clone(),
@@ -742,12 +813,12 @@ impl Stream {
                     )
                 }
             }
-        })
-        .detach();
+        }));
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn handle_remove_socket(
+        runtime: Arc<dyn Runtime>,
         weak_inner: Weak<Mutex<StreamInner>>,
         transport: TransportType,
         from: Address,
@@ -760,17 +831,16 @@ impl Stream {
         let from = from.as_socket();
         let to = to.as_socket();
         let mut inner = inner.lock().unwrap();
-        let Some(channel) = inner.remove_socket_for_5tuple(transport, from, to) else {
+        let Some(mut channel) = inner.remove_socket_for_5tuple(transport, from, to) else {
             warn!("no {transport} socket for {from} -> {to}");
             return;
         };
         info!("removing {transport} socket for {from} -> {to}");
-        smol::spawn(async move {
+        runtime.spawn(Box::pin(async move {
             if let Err(e) = channel.close().await {
                 warn!("error on close() for {transport} socket for {from} -> {to}: {e:?}");
             }
-        })
-        .detach();
+        }));
     }
 
     pub(crate) fn socket_for_pair(
@@ -817,39 +887,51 @@ mod tests {
         crate::tests::test_init_log();
     }
 
+    #[cfg(feature = "runtime-smol")]
     #[test]
-    fn gather_candidates() {
+    fn smol_gather_candidates() {
+        smol::block_on(gather_candidates());
+    }
+
+    #[cfg(feature = "runtime-tokio")]
+    #[test]
+    fn tokio_send_recv() {
+        crate::tests::tokio_runtime().block_on(gather_candidates());
+    }
+
+    async fn gather_candidates() {
         init();
         let agent = Arc::new(Agent::default());
         let s = agent.add_stream();
         s.set_local_credentials(&Credentials::new("luser", "lpass"));
         s.set_remote_credentials(&Credentials::new("ruser", "rpass"));
         let _c = s.add_component().unwrap();
-        smol::block_on(async move {
-            s.gather_candidates().await.unwrap();
-            let mut messages = agent.messages();
-            loop {
-                if matches!(
-                    messages.next().await,
-                    Some(AgentMessage::GatheringComplete(_))
-                ) {
-                    break;
-                }
+
+        s.gather_candidates().await.unwrap();
+        let mut messages = agent.messages();
+        loop {
+            if matches!(
+                messages.next().await,
+                Some(AgentMessage::GatheringComplete(_))
+            ) {
+                break;
             }
-            //let local_cands = s.local_candidates();
-            //info!("gathered local candidates {:?}", local_cands);
-            //assert!(!local_cands.is_empty());
-            let ret = s.gather_candidates().await;
-            error!("ret: {ret:?}");
-            assert!(matches!(
-                ret,
-                Err(AgentError::Proto(ProtoAgentError::AlreadyInProgress))
-            ));
-        });
+        }
+        //let local_cands = s.local_candidates();
+        //info!("gathered local candidates {:?}", local_cands);
+        //assert!(!local_cands.is_empty());
+        let ret = s.gather_candidates().await;
+        error!("ret: {ret:?}");
+        assert!(matches!(
+            ret,
+            Err(AgentError::Proto(ProtoAgentError::AlreadyInProgress))
+        ));
     }
 
     #[test]
     fn getters_setters() {
+        #[cfg(feature = "runtime-tokio")]
+        let _runtime = crate::tests::tokio_runtime().enter();
         init();
         let lcreds = Credentials::new("luser", "lpass");
         let rcreds = Credentials::new("ruser", "rpass");
