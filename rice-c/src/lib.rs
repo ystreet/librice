@@ -194,6 +194,20 @@ fn const_override<T>(val: *mut T) -> *const T {
     val as *const T
 }
 
+/// Generate a random sequence of characters suitable for username fragments and passwords.
+pub fn random_string(len: usize) -> String {
+    if len == 0 {
+        return String::new();
+    }
+    unsafe {
+        let ptr = crate::ffi::rice_random_string(len);
+        let s = core::ffi::CStr::from_ptr(ptr).to_str().unwrap();
+        let ret = s.to_string();
+        crate::ffi::rice_string_free(ptr);
+        ret
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use tracing::subscriber::DefaultGuard;
@@ -218,5 +232,12 @@ pub(crate) mod tests {
                 .with_filter(level_filter),
         );
         tracing::subscriber::set_default(registry)
+    }
+
+    #[test]
+    fn random_string() {
+        assert!(crate::random_string(0).is_empty());
+        assert_eq!(crate::random_string(4).len(), 4);
+        println!("{}", crate::random_string(128));
     }
 }
