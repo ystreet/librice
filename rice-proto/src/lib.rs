@@ -105,6 +105,16 @@ pub mod capi;
 
 pub use stun_proto::types::AddressFamily;
 
+use crate::rand::generate_random_ice_string;
+
+/// Allowed characters within username fragment and password values.
+static ALPHABET: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/";
+
+/// Generate a random sequence of characters suitable for username fragments and passwords.
+pub fn random_string(len: usize) -> alloc::string::String {
+    generate_random_ice_string(ALPHABET.as_bytes(), len)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use tracing::subscriber::DefaultGuard;

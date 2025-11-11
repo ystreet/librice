@@ -24,6 +24,7 @@ use crate::component::ComponentConnectionState;
 use crate::gathering::GatheredCandidate;
 use crate::rand::generate_random_ice_string;
 use crate::tcp::TcpBuffer;
+use crate::ALPHABET;
 use byteorder::{BigEndian, ByteOrder};
 use rice_stun_types::attribute::{IceControlled, IceControlling, Priority, UseCandidate};
 use stun_proto::agent::{HandleStunReply, StunAgent, StunAgentPollRet, StunError, Transmit};
@@ -545,9 +546,8 @@ impl PartialEq<bool> for Nominate {
 }
 
 fn generate_random_credentials() -> Credentials {
-    let alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/".as_bytes();
-    let user = generate_random_ice_string(alphabet, 4);
-    let pass = generate_random_ice_string(alphabet, 22);
+    let user = generate_random_ice_string(ALPHABET.as_bytes(), 4);
+    let pass = generate_random_ice_string(ALPHABET.as_bytes(), 22);
     Credentials::new(user, pass)
 }
 

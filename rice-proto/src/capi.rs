@@ -2459,6 +2459,17 @@ pub unsafe extern "C" fn rice_address_free(addr: *mut RiceAddress) {
     rice_ctypes::rice_address_free(addr)
 }
 
+/// Generate a random sequence of characters suitable for username fragments and passwords.
+#[no_mangle]
+pub unsafe extern "C" fn rice_random_string(length: usize) -> *mut c_char {
+    if length == 0 {
+        return core::ptr::null_mut();
+    }
+    CString::new(crate::random_string(length))
+        .unwrap()
+        .into_raw()
+}
+
 fn mut_override<T>(val: *const T) -> *mut T {
     val as *mut T
 }

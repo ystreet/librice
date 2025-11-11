@@ -1056,3 +1056,7 @@ unsafe extern "C" {
     #[doc = " Free a `RiceAddress`."]
     pub fn rice_address_free(addr: *mut RiceAddress);
 }
+unsafe extern "C" {
+    #[doc = " Generate a random sequence of characters suitable for username fragments and passwords."]
+    pub fn rice_random_string(length: usize) -> *mut ::core::ffi::c_char;
+}
