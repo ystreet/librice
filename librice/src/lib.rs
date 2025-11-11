@@ -62,6 +62,7 @@ pub mod stream;
 mod utils;
 
 pub use rice_c::candidate;
+pub use rice_c::random_string;
 
 #[cfg(test)]
 pub(crate) mod tests {
