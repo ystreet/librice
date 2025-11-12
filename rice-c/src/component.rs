@@ -53,6 +53,13 @@ impl Component {
         unsafe { crate::ffi::rice_component_get_id(self.ffi) }
     }
 
+    /// Retrieve the [`Stream`](crate::stream::Stream) for this component.
+    pub fn stream(&self) -> crate::stream::Stream {
+        unsafe {
+            crate::stream::Stream::from_c_full(crate::ffi::rice_component_get_stream(self.ffi))
+        }
+    }
+
     /// Retrieve the current state of a `Component`
     pub fn state(&self) -> ComponentConnectionState {
         unsafe { crate::ffi::rice_component_get_state(self.ffi).into() }

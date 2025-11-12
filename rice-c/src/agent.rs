@@ -42,6 +42,10 @@ impl Default for Agent {
 }
 
 impl Agent {
+    pub(crate) fn from_c_full(ffi: *mut crate::ffi::RiceAgent) -> Self {
+        Self { ffi }
+    }
+
     /// Create a new [`AgentBuilder`]
     pub fn builder() -> AgentBuilder {
         AgentBuilder::default()

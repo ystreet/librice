@@ -751,6 +751,10 @@ unsafe extern "C" {
     pub fn rice_stream_get_id(stream: *const RiceStream) -> usize;
 }
 unsafe extern "C" {
+    #[doc = " Retrieve the `RiceAgent` of the `RiceStream`."]
+    pub fn rice_stream_get_agent(stream: *const RiceStream) -> *mut RiceAgent;
+}
+unsafe extern "C" {
     #[doc = " Notify success or failure to create a socket to the `RiceStream`.\n\n `socket_addr` can be `NULL` to indicate failure."]
     pub fn rice_stream_handle_allocated_socket(
         stream: *mut RiceStream,
@@ -965,6 +969,10 @@ unsafe extern "C" {
 unsafe extern "C" {
     #[doc = " Retrieve the component id of the `RiceComponent`."]
     pub fn rice_component_get_id(component: *const RiceComponent) -> usize;
+}
+unsafe extern "C" {
+    #[doc = " Retrieve the component id of the `RiceComponent`."]
+    pub fn rice_component_get_stream(component: *const RiceComponent) -> *mut RiceStream;
 }
 unsafe extern "C" {
     #[doc = " Retrieve the component connection state of the `RiceComponent`."]

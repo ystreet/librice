@@ -1013,7 +1013,7 @@ pub unsafe extern "C" fn rice_tls_config_new_rustls_with_ip(
 #[derive(Debug)]
 pub struct RiceStream {
     proto_agent: Arc<Mutex<Agent>>,
-    weak_agent: Weak<Mutex<RiceAgentInner>>,
+    weak_agent: Weak<RiceAgent>,
     inner: Arc<Mutex<RiceStreamInner>>,
     stream_id: usize,
 }
@@ -1031,7 +1031,7 @@ pub unsafe extern "C" fn rice_agent_add_stream(agent: *mut RiceAgent) -> *mut Ri
     let stream_id = proto_agent.add_stream();
     let stream = Arc::new(RiceStream {
         proto_agent: agent.proto_agent.clone(),
-        weak_agent: Arc::downgrade(&agent.inner),
+        weak_agent: Arc::downgrade(&agent),
         inner: Arc::new(Mutex::new(RiceStreamInner { components: vec![] })),
         stream_id,
     });
@@ -1093,6 +1093,18 @@ pub unsafe extern "C" fn rice_stream_get_id(stream: *const RiceStream) -> usize 
     let ret = stream.stream_id;
     core::mem::forget(stream);
     ret
+}
+
+/// Retrieve the `RiceAgent` of the `RiceStream`.
+#[no_mangle]
+pub unsafe extern "C" fn rice_stream_get_agent(stream: *const RiceStream) -> *mut RiceAgent {
+    let stream = Arc::from_raw(stream);
+    let Some(ret) = stream.weak_agent.upgrade() else {
+        core::mem::forget(stream);
+        return core::ptr::null_mut();
+    };
+    core::mem::forget(stream);
+    mut_override(Arc::into_raw(ret))
 }
 
 /// Notify success or failure to create a socket to the `RiceStream`.
@@ -2058,7 +2070,7 @@ pub unsafe extern "C" fn rice_stream_component_ids(
 #[derive(Debug)]
 pub struct RiceComponent {
     proto_agent: Arc<Mutex<Agent>>,
-    weak_agent: Weak<Mutex<RiceAgentInner>>,
+    weak_agent: Weak<RiceAgent>,
     stream_id: usize,
     component_id: usize,
 }
@@ -2113,6 +2125,31 @@ pub unsafe extern "C" fn rice_component_get_id(component: *const RiceComponent) 
     let ret = component.component_id;
     core::mem::forget(component);
     ret
+}
+
+/// Retrieve the component id of the `RiceComponent`.
+#[no_mangle]
+pub unsafe extern "C" fn rice_component_get_stream(
+    component: *const RiceComponent,
+) -> *mut RiceStream {
+    let component = Arc::from_raw(mut_override(component));
+    let Some(agent) = component.weak_agent.upgrade() else {
+        core::mem::forget(component);
+        return core::ptr::null_mut();
+    };
+    let inner = agent.inner.lock().unwrap();
+    let Some(stream) = inner
+        .streams
+        .iter()
+        .find(|stream| component.stream_id == stream.stream_id)
+        .cloned()
+    else {
+        core::mem::forget(component);
+        return core::ptr::null_mut();
+    };
+    drop(inner);
+    core::mem::forget(component);
+    mut_override(Arc::into_raw(stream))
 }
 
 /// Retrieve the component connection state of the `RiceComponent`.
@@ -2190,9 +2227,10 @@ pub unsafe extern "C" fn rice_component_gather_candidates(
     let component = Arc::from_raw(component);
     let stun_servers = {
         let Some(agent) = component.weak_agent.upgrade() else {
+            core::mem::forget(component);
             return RiceError::ResourceNotFound;
         };
-        let agent = agent.lock().unwrap();
+        let agent = agent.inner.lock().unwrap();
         agent.stun_servers.clone()
     };
     debug!("stun_servers: {stun_servers:?}");

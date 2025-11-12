@@ -41,6 +41,27 @@ impl<'a> Stream<'a> {
         Self { agent, id }
     }
 
+    /// The [`Agent`] that handles this [`Stream`].
+    pub fn agent(&self) -> &'a crate::agent::Agent {
+        self.agent
+    }
+
+    /// The stream identifier within a particular ICE [`Agent`]
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rice_proto::agent::Agent;
+    /// # use rice_proto::stream::Stream;
+    /// let mut agent = Agent::default();
+    /// let stream_id = agent.add_stream();
+    /// let stream = agent.stream(stream_id).unwrap();
+    /// assert_eq!(stream.id(), stream_id);
+    /// ```
+    pub fn id(&self) -> usize {
+        self.id
+    }
+
     /// Retrieve a `Component` from this stream.  If the index doesn't exist or a component is not
     /// available at that index, `None` is returned
     ///
@@ -196,6 +217,11 @@ impl<'a> core::ops::Deref for StreamMut<'a> {
 impl<'a> StreamMut<'a> {
     pub(crate) fn from_agent(agent: &'a mut Agent, id: usize) -> Self {
         Self { agent, id }
+    }
+
+    /// The [`Agent`] that handles this [`Stream`].
+    pub fn mut_agent(&'a mut self) -> &'a mut crate::agent::Agent {
+        self.agent
     }
 
     /// Add a `Component` to this stream.
