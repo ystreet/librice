@@ -31,14 +31,19 @@ pub use rice_c::stream::Credentials;
 /// An ICE [`Stream`]
 #[derive(Debug, Clone)]
 pub struct Stream {
+    pub(crate) state: Arc<StreamState>,
+}
+
+#[derive(Debug)]
+pub(crate) struct StreamState {
     runtime: Arc<dyn Runtime>,
-    weak_proto_agent: Weak<Mutex<rice_c::agent::Agent>>,
+    proto_agent: rice_c::agent::Agent,
     proto_stream: rice_c::stream::Stream,
     base_instant: std::time::Instant,
-    pub(crate) id: usize,
+    id: usize,
     weak_agent_inner: Weak<Mutex<AgentInner>>,
     transmit_send: futures::channel::mpsc::Sender<AgentTransmit>,
-    pub(crate) inner: Arc<Mutex<StreamInner>>,
+    inner: Mutex<StreamInner>,
 }
 
 #[derive(Debug, Default)]
@@ -111,25 +116,35 @@ fn socket_matches(
 impl Stream {
     pub(crate) fn new(
         runtime: Arc<dyn Runtime>,
-        weak_proto_agent: Weak<Mutex<rice_c::agent::Agent>>,
+        proto_agent: rice_c::agent::Agent,
         weak_agent_inner: Weak<Mutex<AgentInner>>,
         proto_stream: rice_c::stream::Stream,
         id: usize,
         base_instant: std::time::Instant,
     ) -> Self {
-        let inner = Arc::new(Mutex::new(StreamInner::default()));
+        let inner = Mutex::new(StreamInner::default());
         let (transmit_send, mut transmit_recv) =
             futures::channel::mpsc::channel::<AgentTransmit>(16);
-        let weak_inner = Arc::downgrade(&inner);
+        let state = Arc::new(StreamState {
+            runtime: runtime.clone(),
+            proto_agent,
+            proto_stream,
+            id,
+            weak_agent_inner,
+            transmit_send,
+            inner,
+            base_instant,
+        });
+        let weak_state = Arc::downgrade(&state);
         runtime.spawn(Box::pin(async move {
             while let Some(transmit) = transmit_recv.next().await {
-                let Some(inner) = weak_inner.upgrade() else {
+                let Some(state) = weak_state.upgrade() else {
                     break;
                 };
                 let from = transmit.from.as_socket();
                 let to = transmit.to.as_socket();
                 let socket = {
-                    let inner = inner.lock().unwrap();
+                    let inner = state.inner.lock().unwrap();
                     inner
                         .socket_for_5tuple(transmit.transport, from, to)
                         .cloned()
@@ -146,21 +161,26 @@ impl Stream {
                 }
             }
         }));
-        Self {
-            runtime,
-            weak_proto_agent,
-            proto_stream,
-            id,
-            weak_agent_inner,
-            transmit_send,
-            inner,
-            base_instant,
-        }
+        Self { state }
     }
 
     /// The id of the [`Stream`]
     pub fn id(&self) -> usize {
-        self.id
+        self.state.id
+    }
+
+    pub(crate) fn from_state(state: Arc<StreamState>) -> Self {
+        Self { state }
+    }
+
+    /// The [`Agent`](crate::agent::Agent) that handles this [`Stream`].
+    pub fn agent(&self) -> crate::agent::Agent {
+        crate::agent::Agent::from_parts(
+            self.state.proto_agent.clone(),
+            self.state.base_instant,
+            self.state.weak_agent_inner.upgrade().unwrap(),
+            self.state.runtime.clone(),
+        )
     }
 
     /// Add a `Component` to this stream.
@@ -186,10 +206,15 @@ impl Stream {
     /// assert_eq!(component.id(), component::RTP);
     /// ```
     pub fn add_component(&self) -> Result<Component, AgentError> {
-        let component = self.proto_stream.add_component();
+        let component = self.state.proto_stream.add_component();
 
-        let component = Component::new(self.id, component, self.base_instant);
-        let mut inner = self.inner.lock().unwrap();
+        let component = Component::new(
+            self.state.id,
+            component,
+            self.state.base_instant,
+            Arc::downgrade(&self.state),
+        );
+        let mut inner = self.state.inner.lock().unwrap();
         inner.components.push(component.clone());
         Ok(component)
     }
@@ -240,7 +265,7 @@ impl Stream {
         if index < 1 {
             return None;
         }
-        let inner = self.inner.lock().unwrap();
+        let inner = self.state.inner.lock().unwrap();
         inner.components.get(index - 1).cloned()
     }
 
@@ -265,7 +290,7 @@ impl Stream {
     /// stream.set_local_credentials(&credentials);
     /// ```
     pub fn set_local_credentials(&self, credentials: &Credentials) {
-        self.proto_stream.set_local_credentials(credentials)
+        self.state.proto_stream.set_local_credentials(credentials)
     }
 
     /// Retreive the previouly set local ICE credentials for this `Stream`.
@@ -289,7 +314,7 @@ impl Stream {
     /// assert_eq!(stream.local_credentials(), Some(credentials));
     /// ```
     pub fn local_credentials(&self) -> Option<Credentials> {
-        self.proto_stream.local_credentials()
+        self.state.proto_stream.local_credentials()
     }
 
     /// Set remote ICE credentials for this `Stream`.
@@ -313,7 +338,7 @@ impl Stream {
     /// stream.set_remote_credentials(&credentials);
     /// ```
     pub fn set_remote_credentials(&self, credentials: &Credentials) {
-        self.proto_stream.set_remote_credentials(credentials)
+        self.state.proto_stream.set_remote_credentials(credentials)
     }
 
     /// Retreive the previouly set remote ICE credentials for this `Stream`.
@@ -337,7 +362,7 @@ impl Stream {
     /// assert_eq!(stream.remote_credentials(), Some(credentials));
     /// ```
     pub fn remote_credentials(&self) -> Option<Credentials> {
-        self.proto_stream.remote_credentials()
+        self.state.proto_stream.remote_credentials()
     }
 
     /// Add a remote candidate for connection checks for use with this stream
@@ -369,9 +394,9 @@ impl Stream {
     /// stream.add_remote_candidate(&candidate);
     /// ```
     pub fn add_remote_candidate(&self, cand: &Candidate) {
-        self.proto_stream.add_remote_candidate(cand);
+        self.state.proto_stream.add_remote_candidate(cand);
 
-        if let Some(agent) = self.weak_agent_inner.upgrade() {
+        if let Some(agent) = self.state.weak_agent_inner.upgrade() {
             let mut agent = agent.lock().unwrap();
             if let Some(waker) = agent.waker.take() {
                 waker.wake();
@@ -382,14 +407,14 @@ impl Stream {
     #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(
         name = "stream_handle_incoming_data",
-        skip(weak_proto_agent, weak_agent_inner, weak_component, stream_id, component_id, transmit),
+        skip(proto_agent, weak_agent_inner, weak_component, stream_id, component_id, transmit),
         fields(
             stream.id = stream_id,
             component.id = component_id,
         )
     )]
     fn handle_incoming_data<T: AsRef<[u8]> + std::fmt::Debug>(
-        weak_proto_agent: Weak<Mutex<rice_c::agent::Agent>>,
+        proto_agent: rice_c::agent::Agent,
         weak_agent_inner: Weak<Mutex<AgentInner>>,
         weak_component: Weak<Mutex<ComponentInner>>,
         stream_id: usize,
@@ -404,10 +429,6 @@ impl Stream {
             transmit.to,
             transmit.transport
         );
-        let Some(proto_agent) = weak_proto_agent.upgrade() else {
-            return;
-        };
-        let proto_agent = proto_agent.lock().unwrap();
         let proto_stream = proto_agent.stream(stream_id).unwrap();
 
         let reply = proto_stream.handle_incoming_data(
@@ -474,22 +495,19 @@ impl Stream {
     /// # });
     /// ```
     pub async fn gather_candidates(&self) -> Result<(), AgentError> {
-        let proto_agent = self
-            .weak_proto_agent
-            .upgrade()
-            .ok_or(AgentError::Proto(ProtoAgentError::ResourceNotFound))?;
         let agent_inner = self
+            .state
             .weak_agent_inner
             .upgrade()
             .ok_or(AgentError::Proto(ProtoAgentError::ResourceNotFound))?;
-        let component_ids = self.proto_stream.component_ids();
-        let weak_inner = Arc::downgrade(&self.inner);
-        let base_instant = self.base_instant;
+        let component_ids = self.state.proto_stream.component_ids();
+        let weak_state = Arc::downgrade(&self.state);
+        let base_instant = self.state.base_instant;
         let turn_configs = agent_inner.lock().unwrap().turn_servers.clone();
 
         for component_id in component_ids {
             let weak_component = Arc::downgrade(&self.component(component_id).unwrap().inner);
-            let mut sockets = iface_sockets(self.runtime.clone())
+            let mut sockets = iface_sockets(self.state.runtime.clone())
                 .await
                 .unwrap()
                 .into_iter()
@@ -502,7 +520,7 @@ impl Stream {
 
             let mut proto_turn_configs = vec![];
             for turn_config in turn_configs.iter() {
-                let turn_sockets = iface_sockets(self.runtime.clone())
+                let turn_sockets = iface_sockets(self.state.runtime.clone())
                     .await
                     .unwrap()
                     .into_iter()
@@ -522,23 +540,23 @@ impl Stream {
             }
 
             for socket in sockets {
-                let weak_inner = weak_inner.clone();
-                let weak_agent_inner = self.weak_agent_inner.clone();
-                let weak_proto_agent = self.weak_proto_agent.clone();
+                let weak_state = weak_state.clone();
+                let weak_agent_inner = self.state.weak_agent_inner.clone();
+                let proto_agent = self.state.proto_agent.clone();
                 let weak_component = weak_component.clone();
                 let local_addr = socket.local_addr();
                 let transport = socket.transport();
-                let stream_id = self.id;
+                let stream_id = self.state.id;
                 match socket {
                     GatherSocket::Udp(udp) => {
-                        let mut inner = self.inner.lock().unwrap();
+                        let mut inner = self.state.inner.lock().unwrap();
                         inner.sockets.push(StunChannel::Udp(udp.clone()));
-                        self.runtime.spawn(Box::pin(async move {
+                        self.state.runtime.spawn(Box::pin(async move {
                             let recv = udp.recv();
                             let mut recv = core::pin::pin!(recv);
                             while let Some((data, from)) = recv.next().await {
                                 Self::handle_incoming_data(
-                                    weak_proto_agent.clone(),
+                                    proto_agent.clone(),
                                     weak_agent_inner.clone(),
                                     weak_component.clone(),
                                     stream_id,
@@ -556,24 +574,24 @@ impl Stream {
                         }));
                     }
                     GatherSocket::Tcp(tcp) => {
-                        let weak_inner = weak_inner.clone();
-                        let runtime = self.runtime.clone();
-                        self.runtime.spawn(Box::pin(async move {
+                        let weak_state = weak_state.clone();
+                        let runtime = self.state.runtime.clone();
+                        self.state.runtime.spawn(Box::pin(async move {
                             loop {
                                 let Ok(stream) = tcp.accept().await else {
                                     continue;
                                 };
-                                let weak_proto_agent = weak_proto_agent.clone();
+                                let proto_agent = proto_agent.clone();
                                 let weak_agent_inner = weak_agent_inner.clone();
                                 let weak_component = weak_component.clone();
-                                let weak_inner = weak_inner.clone();
+                                let weak_state = weak_state.clone();
                                 let rt = runtime.clone();
                                 runtime.spawn(Box::pin(async move {
-                                    let Some(inner) = weak_inner.upgrade() else {
+                                    let Some(state) = weak_state.upgrade() else {
                                         return;
                                     };
                                     let mut channel = {
-                                        let mut inner = inner.lock().unwrap();
+                                        let mut inner = state.inner.lock().unwrap();
                                         let channel = TcpChannel::new(rt, stream);
                                         inner.sockets.push(StunChannel::Tcp(channel.clone()));
                                         channel
@@ -583,7 +601,7 @@ impl Stream {
                                     let mut recv = core::pin::pin!(recv);
                                     while let Some((data, from)) = recv.next().await {
                                         Self::handle_incoming_data(
-                                            weak_proto_agent.clone(),
+                                            proto_agent.clone(),
                                             weak_agent_inner.clone(),
                                             weak_component.clone(),
                                             stream_id,
@@ -604,8 +622,7 @@ impl Stream {
                 }
             }
             {
-                let proto_agent = proto_agent.lock().unwrap();
-                let proto_stream = proto_agent.stream(self.id).unwrap();
+                let proto_stream = self.state.proto_agent.stream(self.state.id).unwrap();
                 let component = proto_stream.component(component_id).unwrap();
                 component.gather_candidates(
                     proto_stun_sockets
@@ -714,15 +731,15 @@ impl Stream {
     #[tracing::instrument(
         skip(self),
         fields(
-            component.id = self.id,
+            component.id = self.state.id,
         )
     )]
     pub fn end_of_remote_candidates(&self) {
-        self.proto_stream.end_of_remote_candidates()
+        self.state.proto_stream.end_of_remote_candidates()
     }
 
-    pub(crate) fn handle_transmit(&mut self, transmit: AgentTransmit) -> Option<AgentTransmit> {
-        if let Err(e) = self.transmit_send.try_send(transmit) {
+    pub(crate) fn handle_transmit(&self, transmit: AgentTransmit) -> Option<AgentTransmit> {
+        if let Err(e) = self.state.transmit_send.clone().try_send(transmit) {
             if e.is_full() {
                 return Some(e.into_inner());
             }
@@ -732,8 +749,8 @@ impl Stream {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn handle_allocate_socket(
-        weak_inner: Weak<Mutex<StreamInner>>,
-        weak_proto_agent: Weak<Mutex<rice_c::agent::Agent>>,
+        weak_state: Weak<StreamState>,
+        proto_agent: rice_c::agent::Agent,
         weak_agent_inner: Weak<Mutex<AgentInner>>,
         stream_id: usize,
         component_id: usize,
@@ -753,10 +770,10 @@ impl Stream {
             let mut weak_component = None;
             let channel = match stream {
                 Ok(stream) => {
-                    let Some(inner) = weak_inner.upgrade() else {
+                    let Some(state) = weak_state.upgrade() else {
                         return;
                     };
-                    let mut inner = inner.lock().unwrap();
+                    let mut inner = state.inner.lock().unwrap();
                     let channel = StunChannel::Tcp(TcpChannel::new(rt.clone(), stream));
                     inner.sockets.push(channel.clone());
                     weak_component = Some(Arc::downgrade(
@@ -766,12 +783,8 @@ impl Stream {
                 }
                 Err(_e) => Err(rice_c::agent::AgentError::ResourceNotFound),
             };
-            let Some(proto_agent) = weak_proto_agent.upgrade() else {
-                return;
-            };
 
             let channel = {
-                let proto_agent = proto_agent.lock().unwrap();
                 let (local_addr, channel) = match channel {
                     Ok(channel) => {
                         let local_addr = channel.local_addr().unwrap();
@@ -798,7 +811,7 @@ impl Stream {
                 let mut recv = core::pin::pin!(recv);
                 while let Some((data, from)) = recv.next().await {
                     Self::handle_incoming_data(
-                        weak_proto_agent.clone(),
+                        proto_agent.clone(),
                         weak_agent_inner.clone(),
                         weak_component.clone().unwrap(),
                         stream_id,
@@ -819,18 +832,18 @@ impl Stream {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn handle_remove_socket(
         runtime: Arc<dyn Runtime>,
-        weak_inner: Weak<Mutex<StreamInner>>,
+        weak_state: Weak<StreamState>,
         transport: TransportType,
         from: Address,
         to: Address,
     ) {
-        let Some(inner) = weak_inner.upgrade() else {
+        let Some(state) = weak_state.upgrade() else {
             return;
         };
 
         let from = from.as_socket();
         let to = to.as_socket();
-        let mut inner = inner.lock().unwrap();
+        let mut inner = state.inner.lock().unwrap();
         let Some(mut channel) = inner.remove_socket_for_5tuple(transport, from, to) else {
             warn!("no {transport} socket for {from} -> {to}");
             return;
@@ -849,7 +862,7 @@ impl Stream {
         remote: &Candidate,
         local_turn: &Option<SelectedTurn>,
     ) -> Option<StunChannel> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self.state.inner.lock().unwrap();
         let (transport, local_addr, remote_addr) = if let Some(turn) = local_turn {
             (
                 turn.transport,
@@ -872,7 +885,9 @@ impl Stream {
     ///
     /// Returns whether the candidate was added internally.
     pub fn add_local_gathered_candidates(&self, gathered: GatheredCandidate) -> bool {
-        self.proto_stream.add_local_gathered_candidate(gathered)
+        self.state
+            .proto_stream
+            .add_local_gathered_candidate(gathered)
     }
 }
 

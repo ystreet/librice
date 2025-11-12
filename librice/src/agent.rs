@@ -53,9 +53,9 @@ impl std::fmt::Display for AgentError {
 }
 
 /// An ICE agent as specified in RFC 8445
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Agent {
-    agent: Arc<Mutex<rice_c::agent::Agent>>,
+    agent: rice_c::agent::Agent,
     base_instant: std::time::Instant,
     inner: Arc<Mutex<AgentInner>>,
     runtime: Arc<dyn Runtime>,
@@ -91,7 +91,6 @@ impl AgentBuilder {
             .build();
         let base_instant = std::time::Instant::now();
 
-        let agent = Arc::new(Mutex::new(agent));
         Agent {
             agent,
             base_instant,
@@ -117,7 +116,21 @@ impl Agent {
     }
 
     fn id(&self) -> u64 {
-        self.agent.lock().unwrap().id()
+        self.agent.id()
+    }
+
+    pub(crate) fn from_parts(
+        agent: rice_c::agent::Agent,
+        base_instant: std::time::Instant,
+        inner: Arc<Mutex<AgentInner>>,
+        runtime: Arc<dyn Runtime>,
+    ) -> Self {
+        Self {
+            agent,
+            base_instant,
+            inner,
+            runtime,
+        }
     }
 
     /// A (futures) Stream for any application messages.  This is also the future that drives the
@@ -159,13 +172,13 @@ impl Agent {
         )
     )]
     pub fn add_stream(&self) -> Stream {
-        let proto_stream = self.agent.lock().unwrap().add_stream();
-        let weak_proto_agent = Arc::downgrade(&self.agent);
+        let proto_stream = self.agent.add_stream();
+        let proto_agent = self.agent.clone();
         let weak_inner = Arc::downgrade(&self.inner);
         let mut inner = self.inner.lock().unwrap();
         let ret = crate::stream::Stream::new(
             self.runtime.clone(),
-            weak_proto_agent,
+            proto_agent,
             weak_inner,
             proto_stream,
             inner.streams.len(),
@@ -184,7 +197,7 @@ impl Agent {
     /// Close the agent loop
     pub fn close(&self) {
         let now_nanos = Instant::from_std(self.base_instant);
-        self.agent.lock().unwrap().close(now_nanos);
+        self.agent.close(now_nanos);
         let mut inner = self.inner.lock().unwrap();
         if let Some(waker) = inner.waker.take() {
             waker.wake();
@@ -194,15 +207,12 @@ impl Agent {
     /// The controlling state of this ICE agent.  This value may change throughout the ICE
     /// negotiation process.
     pub fn controlling(&self) -> bool {
-        self.agent.lock().unwrap().controlling()
+        self.agent.controlling()
     }
 
     /// Add a STUN server by address and transport to use for gathering potential candidates
     pub fn add_stun_server(&self, transport: TransportType, addr: SocketAddr) {
-        self.agent
-            .lock()
-            .unwrap()
-            .add_stun_server(transport, addr.into())
+        self.agent.add_stun_server(transport, addr.into())
     }
 
     /// Add a TURN server by address and transport to use for gathering potential candidates
@@ -232,7 +242,7 @@ pub enum AgentMessage {
 
 #[derive(Debug)]
 struct AgentStream {
-    agent: Arc<Mutex<rice_c::agent::Agent>>,
+    agent: rice_c::agent::Agent,
     base_instant: std::time::Instant,
     inner: Arc<Mutex<AgentInner>>,
     timer: Option<Pin<Box<dyn crate::runtime::AsyncTimer>>>,
@@ -247,7 +257,7 @@ impl futures::stream::Stream for AgentStream {
         if let Some(transmit) = self.pending_transmit.take() {
             let mut inner = self.inner.lock().unwrap();
             inner.waker = Some(cx.waker().clone());
-            if let Some(stream) = inner.streams.get_mut(transmit.stream_id) {
+            if let Some(stream) = inner.streams.get(transmit.stream_id) {
                 if let Some(retry) = stream.handle_transmit(transmit) {
                     drop(inner);
                     self.as_mut().pending_transmit = Some(retry);
@@ -259,23 +269,20 @@ impl futures::stream::Stream for AgentStream {
             inner.waker = Some(cx.waker().clone());
         }
 
-        let weak_proto_agent = Arc::downgrade(&self.agent);
         let weak_agent_inner = Arc::downgrade(&self.inner);
-        let agent = self.agent.lock().unwrap();
         let now_nanos = Instant::from_std(self.base_instant);
 
         let wait = {
-            let wait = match agent.poll(now_nanos) {
+            let wait = match self.agent.poll(now_nanos) {
                 AgentPoll::Closed => return Poll::Ready(None),
                 AgentPoll::AllocateSocket(ref allocate) => {
-                    drop(agent);
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(allocate.stream_id) {
-                        let weak_stream = Arc::downgrade(&stream.inner);
+                        let weak_stream = Arc::downgrade(&stream.state);
                         drop(inner);
                         Stream::handle_allocate_socket(
                             weak_stream,
-                            weak_proto_agent,
+                            self.agent.clone(),
                             weak_agent_inner,
                             allocate.stream_id,
                             allocate.component_id,
@@ -290,10 +297,9 @@ impl futures::stream::Stream for AgentStream {
                     return Poll::Pending;
                 }
                 AgentPoll::RemoveSocket(ref remove) => {
-                    drop(agent);
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(remove.stream_id) {
-                        let weak_stream = Arc::downgrade(&stream.inner);
+                        let weak_stream = Arc::downgrade(&stream.state);
                         drop(inner);
                         Stream::handle_remove_socket(
                             self.runtime.clone(),
@@ -308,7 +314,6 @@ impl futures::stream::Stream for AgentStream {
                 }
                 AgentPoll::WaitUntilNanos(time) => Some(Instant::from_nanos(time)),
                 AgentPoll::SelectedPair(ref pair) => {
-                    drop(agent);
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(pair.stream_id) {
                         if let Some(component) = stream.component(pair.component_id) {
@@ -333,7 +338,6 @@ impl futures::stream::Stream for AgentStream {
                     return Poll::Pending;
                 }
                 AgentPoll::ComponentStateChange(ref state) => {
-                    drop(agent);
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(state.stream_id) {
                         if let Some(component) = stream.component(state.component_id) {
@@ -347,7 +351,6 @@ impl futures::stream::Stream for AgentStream {
                     return Poll::Pending;
                 }
                 AgentPoll::GatheredCandidate(ref mut gathered) => {
-                    drop(agent);
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(gathered.stream_id) {
                         return Poll::Ready(Some(AgentMessage::GatheredCandidate(
@@ -359,7 +362,6 @@ impl futures::stream::Stream for AgentStream {
                     return Poll::Pending;
                 }
                 AgentPoll::GatheringComplete(ref complete) => {
-                    drop(agent);
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(complete.stream_id) {
                         if let Some(component) = stream.component(complete.component_id) {
@@ -373,10 +375,9 @@ impl futures::stream::Stream for AgentStream {
                 }
             };
 
-            if let Some(transmit) = agent.poll_transmit(now_nanos) {
-                drop(agent);
-                let mut inner = self.inner.lock().unwrap();
-                if let Some(stream) = inner.streams.get_mut(transmit.stream_id) {
+            if let Some(transmit) = self.agent.poll_transmit(now_nanos) {
+                let inner = self.inner.lock().unwrap();
+                if let Some(stream) = inner.streams.get(transmit.stream_id) {
                     if let Some(retry) = stream.handle_transmit(transmit) {
                         drop(inner);
                         self.as_mut().pending_transmit = Some(retry);
@@ -388,7 +389,6 @@ impl futures::stream::Stream for AgentStream {
             }
             wait
         };
-        drop(agent);
 
         if let Some(wait) = wait {
             let wait_instant = wait.to_std(self.base_instant);

@@ -9,7 +9,7 @@
 //! A [`Component`] in an ICE [`Stream`](crate::stream::Stream)
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use std::task::{Poll, Waker};
 
@@ -40,6 +40,7 @@ pub struct Component {
     stream_id: usize,
     pub(crate) id: usize,
     pub(crate) inner: Arc<Mutex<ComponentInner>>,
+    weak_stream: Weak<crate::stream::StreamState>,
 }
 
 impl Component {
@@ -47,6 +48,7 @@ impl Component {
         stream_id: usize,
         proto: rice_c::component::Component,
         base_instant: std::time::Instant,
+        weak_stream: Weak<crate::stream::StreamState>,
     ) -> Self {
         Self {
             stream_id,
@@ -54,12 +56,18 @@ impl Component {
             proto,
             inner: Arc::new(Mutex::new(ComponentInner::new())),
             base_instant,
+            weak_stream,
         }
     }
 
     /// The component identifier within a particular ICE [`Stream`]
     pub fn id(&self) -> usize {
         self.id
+    }
+
+    /// Retrieve the [`Stream`](crate::stream::Stream) for this component.
+    pub fn stream(&self) -> crate::stream::Stream {
+        crate::stream::Stream::from_state(self.weak_stream.upgrade().unwrap())
     }
 
     /// Retrieve the current state of a `Component`

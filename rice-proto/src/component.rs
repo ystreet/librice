@@ -6,7 +6,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! A [`Component`] in an ICE [`Stream`](crate::stream::Stream)
+//! A [`Component`] in an ICE [`Stream`]
 
 use alloc::boxed::Box;
 use core::net::SocketAddr;
@@ -24,6 +24,7 @@ use crate::agent::{Agent, AgentError};
 use crate::conncheck::transmit_send;
 pub use crate::conncheck::SelectedPair;
 use crate::gathering::StunGatherer;
+use crate::stream::Stream;
 use crate::turn::TurnConfig;
 
 use tracing::{debug, trace};
@@ -33,7 +34,7 @@ pub const RTP: usize = 1;
 /// The component id for RTCP streaming (if rtcp-mux is not in use).
 pub const RTCP: usize = 2;
 
-/// A [`Component`] in an ICE [`Stream`](crate::stream::Stream)
+/// A [`Component`] in an ICE [`Stream`]
 #[derive(Debug)]
 #[repr(C)]
 pub struct Component<'a> {
@@ -51,9 +52,28 @@ impl<'a> Component<'a> {
         }
     }
 
-    /// The component identifier within a particular ICE [`Stream`](crate::stream::Stream)
+    /// The component identifier within a particular ICE [`Stream`]
     pub fn id(&self) -> usize {
         self.component_id
+    }
+
+    /// Retrieve the [`Stream`] for this component.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rice_proto::component::Component;
+    /// # use rice_proto::agent::Agent;
+    /// # use rice_proto::stream::Stream;
+    /// let mut agent = Agent::default();
+    /// let stream_id = agent.add_stream();
+    /// let mut stream = agent.mut_stream(stream_id).unwrap();
+    /// let component_id = stream.add_component().unwrap();
+    /// let component = stream.component(component_id).unwrap();
+    /// assert_eq!(component.stream().id(), stream_id);
+    /// ```
+    pub fn stream(&self) -> Stream<'a> {
+        self.agent.stream(self.stream_id).unwrap()
     }
 
     /// Retrieve the current state of a `Component`
@@ -91,7 +111,7 @@ impl<'a> Component<'a> {
     }
 }
 
-/// A mutable component in an ICE [`Stream`](crate::stream::Stream)
+/// A mutable component in an ICE [`Stream`]
 #[derive(Debug)]
 #[repr(C)]
 pub struct ComponentMut<'a> {

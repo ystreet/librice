@@ -45,6 +45,11 @@ impl Stream {
         unsafe { crate::ffi::rice_stream_get_id(self.ffi) }
     }
 
+    /// The [`Agent`](crate::agent::Agent) that handles this [`Stream`].
+    pub fn agent(&self) -> crate::agent::Agent {
+        unsafe { crate::agent::Agent::from_c_full(crate::ffi::rice_stream_get_agent(self.ffi)) }
+    }
+
     /// Add a `Component` to this stream.
     pub fn add_component(&self) -> crate::component::Component {
         unsafe {
