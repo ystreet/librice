@@ -151,6 +151,8 @@ impl PartialEq<CandidateOwned> for Candidate {
     }
 }
 
+impl Eq for Candidate {}
+
 impl Clone for Candidate {
     fn clone(&self) -> Self {
         unsafe {
