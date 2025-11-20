@@ -1336,7 +1336,7 @@ impl ConnCheckList {
 
         for local in self.local_candidates.iter() {
             let turn_client_id = {
-                error!("turn clients: {:?}", self.turn_clients);
+                trace!("turn clients: {:?}", self.turn_clients);
                 let turn_client_id = self
                     .turn_client_by_allocated_address(
                         local.candidate.transport_type,
@@ -1500,14 +1500,14 @@ impl ConnCheckList {
             let best = best_index.get_or_insert(idx);
             if *best != idx {
                 let best_check = &self.pairs[*best];
-                error!("comparing current best {best_check:?} with {potential:?}");
+                trace!("comparing current best {best_check:?} with {potential:?}");
                 if potential.nominate && !best_check.nominate {
                     error!("better because of nomination");
                     *best = idx;
                     continue;
                 }
                 if potential.state.cmp_progression(&best_check.state).is_gt() {
-                    error!("better because of state");
+                    trace!("better because of state");
                     *best = idx;
                     continue;
                 }
