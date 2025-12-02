@@ -1502,7 +1502,7 @@ impl ConnCheckList {
                 let best_check = &self.pairs[*best];
                 trace!("comparing current best {best_check:?} with {potential:?}");
                 if potential.nominate && !best_check.nominate {
-                    error!("better because of nomination");
+                    trace!("better because of nomination");
                     *best = idx;
                     continue;
                 }
@@ -1787,7 +1787,7 @@ impl ConnCheckList {
                                         remote_addr: client.remote_addr(),
                                     });
                                 if check.pair.local.candidate_type == CandidateType::Relayed {
-                                    error!("turn clients: {:?}", self.turn_clients);
+                                    trace!("turn clients: {:?}", self.turn_clients);
                                     debug_assert!(ret.is_some());
                                 }
                                 ret
@@ -4406,7 +4406,7 @@ mod tests {
             TransportType::Udp => 0,
             TransportType::Tcp => 2,
         };
-        error!("data: {:x?}", transmit.data.as_ref());
+        trace!("data: {:x?}", transmit.data.as_ref());
         match Message::from_bytes(&transmit.data.as_ref()[offset..]) {
             Err(e) => error!("error parsing STUN message {e:?}"),
             Ok(msg) => {
