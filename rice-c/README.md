@@ -68,5 +68,5 @@ pkg-config --modversion rice-proto
 If you need to build `rice-proto` with the C API, have a look at [rice-proto's
 README](https://github.com/ystreet/librice/tree/main/rice-proto).
 
-Once the the prerequisite is handled, you can build `rice-c` using a
+Once this prerequisite is handled, you can build `rice-c` using a
 regular `cargo build` invocation.

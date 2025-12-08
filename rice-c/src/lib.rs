@@ -32,6 +32,11 @@
 //! pkg-config --modversion rice-proto
 //! ```
 //!
+//! ## Interface
+//!
+//! `rice-c` provides a very similar interface as [rice-proto] in order to ease switching between
+//! the two implementations (`rice-c` and [rice-proto]) as may be required.
+//!
 //! [rice-proto]: https://docs.rs/rice-proto
 //! [system-deps]: https://docs.rs/system-deps
 
