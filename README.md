@@ -90,15 +90,17 @@ whatsover.
 
 ### [rice-c](https://github.com/ystreet/librice/tree/main/rice-c)
 
-A library fo accessing `rice-proto` using the provided C API interface.
+A library for accessing `rice-proto` using a C API interface.
 Typically useful when exposing the ICE agent across library/application
 boundaries for accessing the same ICE agent. If your application does not have
 such a requirement (e.g. entirely in Rust), then `rice-c` is not needed.
 
 ### [librice](https://github.com/ystreet/librice/tree/main/librice)
 
-An async implementation of ICE (RFC8445) built using `rice-proto`. Currently
-uses async-std however a tokio (and/or mio) implementation is planned.
+An async implementation of ICE (RFC8445) built using `rice-proto` using the C
+API through the `rice-c` crate. The async runtime used can be provided by the
+application for `librice` to use or the provided `tokio` and `smol`
+implementations can be used.
 
 ### [rice-io](https://github.com/ystreet/librice/tree/main/rice-io)
 
@@ -110,3 +112,11 @@ handling IO wakeups. It is not required for implementation.
 
 - RFC6062
 - RFC7675
+
+## Building
+
+All crates in the workspace can be built using a standard `cargo build`
+invocation. However in order to successfully build the `rice-c` crate (and any
+dependant crates, like `librice`), `cargo-c` must be installed and in the
+environment.  The [rice-c README](https://github.com/ystreet/librice/tree/main/rice-c#building)
+contains more details.
