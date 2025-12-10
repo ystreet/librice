@@ -4,7 +4,7 @@ default-members = ["librice", "rice-proto", "rice-c", "rice-stun-types", "rice-c
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 repository = "https://github.com/ystreet/librice"
 edition = "2021"
 rust-version = "1.68.2"
@@ -22,10 +22,10 @@ get_if_addrs = "0.5"
 rand = { version = "0.9", default-features = false, features = ["os_rng"] }
 tracing = { version = "0.1", default-features = false, features = ["attributes"] }
 tracing-subscriber = "0.3"
-rice-proto = { version = "0.1.1", path = "rice-proto" }
-rice-c = { version = "0.1.1", path = "rice-c" }
-rice-stun-types = { version = "0.1.1", path = "rice-stun-types", default-features = false }
-rice-ctypes = { version = "0.1.1", path = "rice-ctypes" }
+rice-proto = { version = "0.2.0", path = "rice-proto" }
+rice-c = { version = "0.2.0", path = "rice-c" }
+rice-stun-types = { version = "0.2.0", path = "rice-stun-types", default-features = false }
+rice-ctypes = { version = "0.2.0", path = "rice-ctypes" }
 criterion = "0.6"
 
 [profile.bench]
