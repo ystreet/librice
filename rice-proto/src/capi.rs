@@ -983,9 +983,16 @@ pub unsafe extern "C" fn rice_tls_config_new_rustls_with_dns(
     let Ok(server_name) = string_from_c(server_name).try_into() else {
         return core::ptr::null_mut();
     };
+    let verifier = match rustls::ClientConfig::with_platform_verifier() {
+        Ok(verifier) => verifier,
+        Err(e) => {
+            warn!("Failed to create Rustls platform verifier: {e:?}");
+            return core::ptr::null_mut();
+        }
+    };
     mut_override(Arc::into_raw(Arc::new(RiceTlsConfig {
         variant: RustlsTurnConfig::new(
-            Arc::new(rustls::ClientConfig::with_platform_verifier()),
+            Arc::new(verifier),
             server_name,
         )
         .into(),
@@ -1000,9 +1007,16 @@ pub unsafe extern "C" fn rice_tls_config_new_rustls_with_ip(
 ) -> *mut RiceTlsConfig {
     use rustls_platform_verifier::ConfigVerifierExt;
     let addr = RiceAddress::into_rice_none(addr);
+    let verifier = match rustls::ClientConfig::with_platform_verifier() {
+        Ok(verifier) => verifier,
+        Err(e) => {
+            warn!("Failed to create Rustls platform verifier: {e:?}");
+            return core::ptr::null_mut();
+        }
+    };
     mut_override(Arc::into_raw(Arc::new(RiceTlsConfig {
         variant: RustlsTurnConfig::new(
-            Arc::new(rustls::ClientConfig::with_platform_verifier()),
+            Arc::new(verifier),
             addr.inner().ip().into(),
         )
         .into(),
