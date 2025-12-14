@@ -7,7 +7,7 @@ resolver = "2"
 version = "0.2.0"
 repository = "https://github.com/ystreet/librice"
 edition = "2021"
-rust-version = "1.68.2"
+rust-version = "1.85.0"
 
 [workspace.dependencies]
 smallvec = "1"

@@ -18,7 +18,7 @@ rustls = []
 openssl = []
 
 [build-dependencies]
-system-deps = "6.0"
+system-deps = "7"
 bindgen = "0.72"
 
 [dependencies]
