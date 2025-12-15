@@ -24,8 +24,8 @@ use std::sync::Once;
 use librice::agent::*;
 
 pub fn debug_init() {
-    use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::SubscriberExt;
 
     static TRACING: Once = Once::new();
     TRACING.call_once(|| {

@@ -62,14 +62,14 @@ use crate::turn::OpensslTurnConfig;
 #[cfg(feature = "rustls")]
 use crate::turn::RustlsTurnConfig;
 use crate::turn::{TurnConfig, TurnCredentials, TurnTlsConfig};
-use stun_proto::agent::{StunError, Transmit};
-use stun_proto::types::data::{Data, DataOwned, DataSlice};
-use stun_proto::types::AddressFamily;
 use stun_proto::Instant;
+use stun_proto::agent::{StunError, Transmit};
+use stun_proto::types::AddressFamily;
+use stun_proto::types::data::{Data, DataOwned, DataSlice};
 use turn_client_proto::client::TurnClient;
 
-use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::Layer;
+use tracing_subscriber::layer::SubscriberExt;
 
 pub use rice_ctypes::{RiceAddress, RiceError, RiceTransportType};
 
@@ -135,16 +135,18 @@ fn init_logs() {
 }
 
 /// Query the built version of `rice-proto`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_version(major: *mut u32, minor: *mut u32, patch: *mut u32) {
-    if !major.is_null() {
-        *major = env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap();
-    }
-    if !minor.is_null() {
-        *minor = env!("CARGO_PKG_VERSION_MINOR").parse().unwrap();
-    }
-    if !patch.is_null() {
-        *patch = env!("CARGO_PKG_VERSION_PATCH").parse().unwrap();
+    unsafe {
+        if !major.is_null() {
+            *major = env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap();
+        }
+        if !minor.is_null() {
+            *minor = env!("CARGO_PKG_VERSION_MINOR").parse().unwrap();
+        }
+        if !patch.is_null() {
+            *patch = env!("CARGO_PKG_VERSION_PATCH").parse().unwrap();
+        }
     }
 }
 
@@ -176,35 +178,39 @@ pub struct RiceAgent {
 }
 
 /// Create a new ICE Agent.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_agent_new(controlling: bool, trickle_ice: bool) -> *mut RiceAgent {
-    init_logs();
+    unsafe {
+        init_logs();
 
-    let proto_agent = Arc::new(Mutex::new(
-        Agent::builder()
-            .trickle_ice(trickle_ice)
-            .controlling(controlling)
-            .build(),
-    ));
+        let proto_agent = Arc::new(Mutex::new(
+            Agent::builder()
+                .trickle_ice(trickle_ice)
+                .controlling(controlling)
+                .build(),
+        ));
 
-    let agent = Arc::new(RiceAgent {
-        proto_agent,
-        inner: Arc::new(Mutex::new(RiceAgentInner {
-            stun_servers: vec![],
-            streams: vec![],
-        })),
-    });
+        let agent = Arc::new(RiceAgent {
+            proto_agent,
+            inner: Arc::new(Mutex::new(RiceAgentInner {
+                stun_servers: vec![],
+                streams: vec![],
+            })),
+        });
 
-    mut_override(Arc::into_raw(agent))
+        mut_override(Arc::into_raw(agent))
+    }
 }
 
 /// Increase the reference count of the `RiceAgent`.
 ///
 /// This function is multi-threading safe.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_agent_ref(agent: *const RiceAgent) -> *mut RiceAgent {
-    Arc::increment_strong_count(agent);
-    mut_override(agent)
+    unsafe {
+        Arc::increment_strong_count(agent);
+        mut_override(agent)
+    }
 }
 
 /// Decrease the reference count of the `RiceAgent`.
@@ -212,9 +218,9 @@ pub unsafe extern "C" fn rice_agent_ref(agent: *const RiceAgent) -> *mut RiceAge
 /// If this is the last reference, then the `RiceAgent` is freed.
 ///
 /// This function is multi-threading safe.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_agent_unref(agent: *mut RiceAgent) {
-    Arc::decrement_strong_count(agent)
+    unsafe { Arc::decrement_strong_count(agent) }
 }
 
 /// Close the `RiceAgent`.
@@ -222,41 +228,47 @@ pub unsafe extern "C" fn rice_agent_unref(agent: *mut RiceAgent) {
 /// Closure does involve closing network resources (signalled through calls to
 /// `rice_agent_poll()`) and will only succesfully complete once `rice_agent_poll`() returns
 /// `Closed`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_agent_close(agent: *const RiceAgent, now_nanos: i64) {
-    let agent = Arc::from_raw(agent);
-    let mut proto_agent = agent.proto_agent.lock().unwrap();
-    proto_agent.close(Instant::from_nanos(now_nanos));
+    unsafe {
+        let agent = Arc::from_raw(agent);
+        let mut proto_agent = agent.proto_agent.lock().unwrap();
+        proto_agent.close(Instant::from_nanos(now_nanos));
 
-    drop(proto_agent);
-    core::mem::forget(agent);
+        drop(proto_agent);
+        core::mem::forget(agent);
+    }
 }
 
 /// Return the process-local unique id for this agent.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_agent_id(agent: *const RiceAgent) -> u64 {
-    let agent = Arc::from_raw(agent);
-    let proto_agent = agent.proto_agent.lock().unwrap();
-    let ret = proto_agent.id();
+    unsafe {
+        let agent = Arc::from_raw(agent);
+        let proto_agent = agent.proto_agent.lock().unwrap();
+        let ret = proto_agent.id();
 
-    drop(proto_agent);
-    core::mem::forget(agent);
-    ret
+        drop(proto_agent);
+        core::mem::forget(agent);
+        ret
+    }
 }
 
 /// Get the controlling state of the `RiceAgent`.
 ///
 /// A return value of `true` indicates the `RiceAgent` is in controlling mode, false the controlled
 /// mode.  This value can change during ICE processing.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_agent_get_controlling(agent: *const RiceAgent) -> bool {
-    let agent = Arc::from_raw(agent);
-    let proto_agent = agent.proto_agent.lock().unwrap();
-    let ret = proto_agent.controlling();
+    unsafe {
+        let agent = Arc::from_raw(agent);
+        let proto_agent = agent.proto_agent.lock().unwrap();
+        let ret = proto_agent.controlling();
 
-    drop(proto_agent);
-    core::mem::forget(agent);
-    ret
+        drop(proto_agent);
+        core::mem::forget(agent);
+        ret
+    }
 }
 
 /// Return value of `rice_agent_poll()`.
@@ -328,7 +340,7 @@ pub struct RiceDataImpl {
 
 impl RiceDataImpl {
     unsafe fn owned_from_c(self) -> Box<[u8]> {
-        Box::from_raw(core::slice::from_raw_parts_mut(self.ptr, self.size))
+        unsafe { Box::from_raw(core::slice::from_raw_parts_mut(self.ptr, self.size)) }
     }
 
     fn owned_to_c(val: Box<[u8]>) -> Self {
@@ -338,7 +350,7 @@ impl RiceDataImpl {
     }
 
     unsafe fn borrowed_from_c<'a>(self) -> &'a [u8] {
-        core::slice::from_raw_parts_mut(self.ptr, self.size)
+        unsafe { core::slice::from_raw_parts_mut(self.ptr, self.size) }
     }
 
     fn borrowed_to_c(val: &[u8]) -> Self {
@@ -379,7 +391,7 @@ impl<'a> From<RiceData> for Data<'a> {
 }
 
 /// The number of bytes in a `RiceData`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_data_len(data: *const RiceData) -> usize {
     match &*data {
         RiceData::Borrowed(imp) => imp.size,
@@ -388,7 +400,7 @@ pub unsafe extern "C" fn rice_data_len(data: *const RiceData) -> usize {
 }
 
 /// The data pointer for a `RiceData`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_data_ptr(data: *const RiceData) -> *mut u8 {
     match &*data {
         RiceData::Borrowed(imp) => imp.ptr,
@@ -441,27 +453,29 @@ impl RiceTransmit {
 /// Free any resources allocated within a `RiceTransmit`.
 ///
 /// The `RiceTransmit` must have been previously initialized with `rice_transmit_init()`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_transmit_clear(transmit: *mut RiceTransmit) {
-    if !(*transmit).from.is_null() {
-        let _from = RiceAddress::into_rice_full((*transmit).from);
-        (*transmit).from = core::ptr::null_mut();
-    }
-    if !(*transmit).to.is_null() {
-        let _to = RiceAddress::into_rice_full((*transmit).to);
-        (*transmit).to = core::ptr::null_mut();
-    }
-    let mut data = RiceDataImpl::default();
-    core::mem::swap(&mut data, &mut (*transmit).data);
-    if !data.ptr.is_null() {
-        let _data = RiceDataImpl::owned_from_c(data);
+    unsafe {
+        if !(*transmit).from.is_null() {
+            let _from = RiceAddress::into_rice_full((*transmit).from);
+            (*transmit).from = core::ptr::null_mut();
+        }
+        if !(*transmit).to.is_null() {
+            let _to = RiceAddress::into_rice_full((*transmit).to);
+            (*transmit).to = core::ptr::null_mut();
+        }
+        let mut data = RiceDataImpl::default();
+        core::mem::swap(&mut data, &mut (*transmit).data);
+        if !data.ptr.is_null() {
+            let _data = RiceDataImpl::owned_from_c(data);
+        }
     }
 }
 
 /// Initialize a `RiceTransmit` with default values.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_transmit_init(transmit: *mut MaybeUninit<RiceTransmit>) {
-    (*transmit).write(RiceTransmit::default());
+    unsafe { (*transmit).write(RiceTransmit::default()) };
 }
 
 /// A socket with the specified network 5-tuple.
@@ -617,60 +631,62 @@ impl From<RiceAgentGatheringComplete> for crate::agent::AgentGatheringComplete {
 }
 
 /// Initialize a `RiceAgentPoll` with a default value.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_agent_poll_init(poll: *mut MaybeUninit<RiceAgentPoll>) {
-    (*poll).write(RiceAgentPoll::Closed);
+    unsafe { (*poll).write(RiceAgentPoll::Closed) };
 }
 
 /// Clear a `RiceAgentPoll` of any allocated values.
 ///
 /// `rice_agent_poll_init()` must have been called previously.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_agent_poll_clear(poll: *mut RiceAgentPoll) {
-    let mut other = RiceAgentPoll::Closed;
-    core::ptr::swap(&mut other, poll);
-    match other {
-        RiceAgentPoll::Closed
-        | RiceAgentPoll::ComponentStateChange(_)
-        | RiceAgentPoll::WaitUntilNanos(_)
-        | RiceAgentPoll::GatheringComplete(_) => (),
-        RiceAgentPoll::AllocateSocket(mut connect) => {
-            let mut from = core::ptr::null();
-            core::mem::swap(&mut from, &mut connect.from);
-            let _from = RiceAddress::into_rice_full(from);
-            let mut to = core::ptr::null();
-            core::mem::swap(&mut to, &mut connect.to);
-            let _to = RiceAddress::into_rice_full(to);
-        }
-        RiceAgentPoll::RemoveSocket(mut connect) => {
-            let mut from = core::ptr::null();
-            core::mem::swap(&mut from, &mut connect.from);
-            let _from = RiceAddress::into_rice_full(from);
-            let mut to = core::ptr::null();
-            core::mem::swap(&mut to, &mut connect.to);
-            let _to = RiceAddress::into_rice_full(to);
-        }
-        RiceAgentPoll::SelectedPair(mut pair) => {
-            rice_candidate_clear(&mut pair.local);
-            rice_candidate_clear(&mut pair.remote);
-            if !pair.local_turn_local_addr.is_null() {
-                rice_address_free(mut_override(pair.local_turn_local_addr));
-                pair.local_turn_local_addr = core::ptr::null();
+    unsafe {
+        let mut other = RiceAgentPoll::Closed;
+        core::ptr::swap(&mut other, poll);
+        match other {
+            RiceAgentPoll::Closed
+            | RiceAgentPoll::ComponentStateChange(_)
+            | RiceAgentPoll::WaitUntilNanos(_)
+            | RiceAgentPoll::GatheringComplete(_) => (),
+            RiceAgentPoll::AllocateSocket(mut connect) => {
+                let mut from = core::ptr::null();
+                core::mem::swap(&mut from, &mut connect.from);
+                let _from = RiceAddress::into_rice_full(from);
+                let mut to = core::ptr::null();
+                core::mem::swap(&mut to, &mut connect.to);
+                let _to = RiceAddress::into_rice_full(to);
             }
-            if !pair.local_turn_remote_addr.is_null() {
-                rice_address_free(mut_override(pair.local_turn_remote_addr));
-                pair.local_turn_remote_addr = core::ptr::null();
+            RiceAgentPoll::RemoveSocket(mut connect) => {
+                let mut from = core::ptr::null();
+                core::mem::swap(&mut from, &mut connect.from);
+                let _from = RiceAddress::into_rice_full(from);
+                let mut to = core::ptr::null();
+                core::mem::swap(&mut to, &mut connect.to);
+                let _to = RiceAddress::into_rice_full(to);
             }
-        }
-        RiceAgentPoll::GatheredCandidate(mut gathered) => {
-            let turn = gathered.gathered.turn_agent;
-            gathered.gathered.turn_agent = core::ptr::null_mut();
-            let _turn_agent = if turn.is_null() {
-                None
-            } else {
-                Some(Box::from_raw(turn as *mut TurnClient))
-            };
-            rice_candidate_clear(&mut gathered.gathered.candidate);
+            RiceAgentPoll::SelectedPair(mut pair) => {
+                rice_candidate_clear(&mut pair.local);
+                rice_candidate_clear(&mut pair.remote);
+                if !pair.local_turn_local_addr.is_null() {
+                    rice_address_free(mut_override(pair.local_turn_local_addr));
+                    pair.local_turn_local_addr = core::ptr::null();
+                }
+                if !pair.local_turn_remote_addr.is_null() {
+                    rice_address_free(mut_override(pair.local_turn_remote_addr));
+                    pair.local_turn_remote_addr = core::ptr::null();
+                }
+            }
+            RiceAgentPoll::GatheredCandidate(mut gathered) => {
+                let turn = gathered.gathered.turn_agent;
+                gathered.gathered.turn_agent = core::ptr::null_mut();
+                let _turn_agent = if turn.is_null() {
+                    None
+                } else {
+                    Some(Box::from_raw(turn as *mut TurnClient))
+                };
+                rice_candidate_clear(&mut gathered.gathered.candidate);
+            }
         }
     }
 }
@@ -678,27 +694,29 @@ pub unsafe extern "C" fn rice_agent_poll_clear(poll: *mut RiceAgentPoll) {
 /// Poll the `RiceAgent` for further progress.
 ///
 /// The returned value indicates what should be done to continue making progress.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_agent_poll(
     agent: *mut RiceAgent,
     now_nanos: i64,
     poll: *mut RiceAgentPoll,
 ) {
-    let agent = Arc::from_raw(agent);
-    let mut proto_agent = agent.proto_agent.lock().unwrap();
-    let now = Instant::from_nanos(now_nanos);
-    let ret = proto_agent.poll(now);
-    if let AgentPoll::SelectedPair(ref pair) = ret {
-        if let Some(mut stream) = proto_agent.mut_stream(pair.stream_id) {
-            if let Some(mut component) = stream.mut_component(pair.component_id) {
-                component.set_selected_pair_with_agent((*pair.selected).clone());
+    unsafe {
+        let agent = Arc::from_raw(agent);
+        let mut proto_agent = agent.proto_agent.lock().unwrap();
+        let now = Instant::from_nanos(now_nanos);
+        let ret = proto_agent.poll(now);
+        if let AgentPoll::SelectedPair(ref pair) = ret {
+            if let Some(mut stream) = proto_agent.mut_stream(pair.stream_id) {
+                if let Some(mut component) = stream.mut_component(pair.component_id) {
+                    component.set_selected_pair_with_agent((*pair.selected).clone());
+                }
             }
         }
-    }
-    *poll = RiceAgentPoll::into_c_full(ret);
+        *poll = RiceAgentPoll::into_c_full(ret);
 
-    drop(proto_agent);
-    core::mem::forget(agent);
+        drop(proto_agent);
+        core::mem::forget(agent);
+    }
 }
 
 /// Poll the `RiceAgent` for a transmission to send.
@@ -706,41 +724,45 @@ pub unsafe extern "C" fn rice_agent_poll(
 /// If there is no transmission, then `transmit` will be filled with empty data.
 ///
 /// `rice_transmit_init()` or `rice_transmit_clear()` must be called before this function.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_agent_poll_transmit(
     agent: *mut RiceAgent,
     now_nanos: i64,
     transmit: *mut RiceTransmit,
 ) {
-    let agent = Arc::from_raw(agent);
-    let mut proto_agent = agent.proto_agent.lock().unwrap();
-    let now = Instant::from_nanos(now_nanos);
-    if let Some(ret) = proto_agent.poll_transmit(now) {
-        *transmit = RiceTransmit::into_c_full(ret);
-    } else {
-        *transmit = RiceTransmit::default();
-    }
+    unsafe {
+        let agent = Arc::from_raw(agent);
+        let mut proto_agent = agent.proto_agent.lock().unwrap();
+        let now = Instant::from_nanos(now_nanos);
+        if let Some(ret) = proto_agent.poll_transmit(now) {
+            *transmit = RiceTransmit::into_c_full(ret);
+        } else {
+            *transmit = RiceTransmit::default();
+        }
 
-    drop(proto_agent);
-    core::mem::forget(agent);
+        drop(proto_agent);
+        core::mem::forget(agent);
+    }
 }
 
 /// Add a STUN server to this `RiceAgent`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_agent_add_stun_server(
     agent: *const RiceAgent,
     transport: RiceTransportType,
     addr: *const RiceAddress,
 ) {
-    let agent = Arc::from_raw(agent);
-    let addr = Box::from_raw(mut_override(addr));
-    let mut inner = agent.inner.lock().unwrap();
-    inner
-        .stun_servers
-        .push((transport_type_from_c(transport), **addr));
-    drop(inner);
-    core::mem::forget(addr);
-    core::mem::forget(agent);
+    unsafe {
+        let agent = Arc::from_raw(agent);
+        let addr = Box::from_raw(mut_override(addr));
+        let mut inner = agent.inner.lock().unwrap();
+        inner
+            .stun_servers
+            .push((transport_type_from_c(transport), **addr));
+        drop(inner);
+        core::mem::forget(addr);
+        core::mem::forget(agent);
+    }
 }
 
 /// Configuration for accessing a TURN server.
@@ -763,15 +785,17 @@ impl RiceTurnConfig {
 
     /// Consume a C representation of a `RiceTurnConfig` into the Rust equivalent.
     pub unsafe fn into_rice_full(value: *mut RiceTurnConfig) -> Arc<Self> {
-        Arc::from_raw(value)
+        unsafe { Arc::from_raw(value) }
     }
 
     /// Copy a C representation of a `RiceTurnConfig` into the Rust equivalent.
     pub unsafe fn into_rice_none(value: *const RiceTurnConfig) -> Self {
-        let boxed = Arc::from_raw(mut_override(value));
-        let ret = (*boxed).clone();
-        core::mem::forget(boxed);
-        ret
+        unsafe {
+            let boxed = Arc::from_raw(mut_override(value));
+            let ret = (*boxed).clone();
+            core::mem::forget(boxed);
+            ret
+        }
     }
 
     /// The inner representation of the [`RiceTurnConfig`].
@@ -781,7 +805,7 @@ impl RiceTurnConfig {
 }
 
 /// Create a new TURN configuration.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_turn_config_new(
     transport: RiceTransportType,
     addr: *const RiceAddress,
@@ -790,38 +814,42 @@ pub unsafe extern "C" fn rice_turn_config_new(
     families: *const RiceAddressFamily,
     tls_config: *mut RiceTlsConfig,
 ) -> *mut RiceTurnConfig {
-    let creds = Box::from_raw(mut_override(credentials));
-    let addr = Box::from_raw(mut_override(addr));
-    let families = core::slice::from_raw_parts(families, n_families);
-    let families = families
-        .iter()
-        .map(|family| family.into_rice())
-        .collect::<Vec<_>>();
+    unsafe {
+        let creds = Box::from_raw(mut_override(credentials));
+        let addr = Box::from_raw(mut_override(addr));
+        let families = core::slice::from_raw_parts(families, n_families);
+        let families = families
+            .iter()
+            .map(|family| family.into_rice())
+            .collect::<Vec<_>>();
 
-    let mut turn_config = TurnConfig::new(
-        transport_type_from_c(transport),
-        **addr,
-        TurnCredentials::new(&creds.credentials.ufrag, &creds.credentials.passwd),
-        &families,
-    );
-    if !tls_config.is_null() {
-        let tls_config = Arc::from_raw(tls_config);
-        turn_config = turn_config.with_tls_config(tls_config.variant.clone());
+        let mut turn_config = TurnConfig::new(
+            transport_type_from_c(transport),
+            **addr,
+            TurnCredentials::new(&creds.credentials.ufrag, &creds.credentials.passwd),
+            &families,
+        );
+        if !tls_config.is_null() {
+            let tls_config = Arc::from_raw(tls_config);
+            turn_config = turn_config.with_tls_config(tls_config.variant.clone());
+        }
+        core::mem::forget(addr);
+        core::mem::forget(creds);
+        mut_override(Arc::into_raw(Arc::new(RiceTurnConfig::new(turn_config))))
     }
-    core::mem::forget(addr);
-    core::mem::forget(creds);
-    mut_override(Arc::into_raw(Arc::new(RiceTurnConfig::new(turn_config))))
 }
 
 /// Increase the reference count of the [`RiceTurnConfig`].
 ///
 /// This function is multi-threading safe.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_turn_config_ref(
     config: *const RiceTurnConfig,
 ) -> *mut RiceTurnConfig {
-    Arc::increment_strong_count(config);
-    mut_override(config)
+    unsafe {
+        Arc::increment_strong_count(config);
+        mut_override(config)
+    }
 }
 
 /// Decrease the reference count of a[`RiceTurnConfig`].
@@ -829,27 +857,31 @@ pub unsafe extern "C" fn rice_turn_config_ref(
 /// If this is the last reference, then the [`RiceTurnConfig`] is freed.
 ///
 /// This function is multi-threading safe.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_turn_config_unref(config: *mut RiceTurnConfig) {
-    Arc::decrement_strong_count(config)
+    unsafe { Arc::decrement_strong_count(config) }
 }
 
 /// The address of the TURN server.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_turn_config_get_addr(
     config: *const RiceTurnConfig,
 ) -> *mut RiceAddress {
-    let config = RiceTurnConfig::into_rice_none(config).inner();
-    mut_override(RiceAddress::new(config.addr()).into_c_full())
+    unsafe {
+        let config = RiceTurnConfig::into_rice_none(config).inner();
+        mut_override(RiceAddress::new(config.addr()).into_c_full())
+    }
 }
 
 /// The transport to connect to the TURN server.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_turn_config_get_client_transport(
     config: *const RiceTurnConfig,
 ) -> RiceTransportType {
-    let config = RiceTurnConfig::into_rice_none(config).inner();
-    transport_type_to_c(config.client_transport())
+    unsafe {
+        let config = RiceTurnConfig::into_rice_none(config).inner();
+        transport_type_to_c(config.client_transport())
+    }
 }
 
 fn turn_credentials_to_c(credentials: &TurnCredentials) -> *mut RiceCredentials {
@@ -862,47 +894,53 @@ fn turn_credentials_to_c(credentials: &TurnCredentials) -> *mut RiceCredentials 
 }
 
 /// The credentials to use for accessing the TURN server.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_turn_config_get_credentials(
     config: *const RiceTurnConfig,
 ) -> *mut RiceCredentials {
-    let config = RiceTurnConfig::into_rice_none(config).inner();
-    turn_credentials_to_c(config.credentials())
+    unsafe {
+        let config = RiceTurnConfig::into_rice_none(config).inner();
+        turn_credentials_to_c(config.credentials())
+    }
 }
 
 /// The transport to connect to the TURN server.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_turn_config_get_families(
     config: *const RiceTurnConfig,
     n_families: *mut usize,
     families: *mut RiceAddressFamily,
 ) {
-    let config = RiceTurnConfig::into_rice_none(config).inner();
-    let output_len = *n_families;
-    *n_families = config.families().len();
-    if families.is_null() {
-        return;
-    }
-    let families = core::slice::from_raw_parts_mut(families, output_len);
-    for (i, family) in config.families().iter().enumerate() {
-        *n_families = i;
-        if i >= output_len {
-            break;
+    unsafe {
+        let config = RiceTurnConfig::into_rice_none(config).inner();
+        let output_len = *n_families;
+        *n_families = config.families().len();
+        if families.is_null() {
+            return;
         }
-        families[i] = RiceAddressFamily::from_rice(*family);
+        let families = core::slice::from_raw_parts_mut(families, output_len);
+        for (i, family) in config.families().iter().enumerate() {
+            *n_families = i;
+            if i >= output_len {
+                break;
+            }
+            families[i] = RiceAddressFamily::from_rice(*family);
+        }
     }
 }
 
 /// The TLS config associated with this TURN configuration.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_turn_config_get_tls_config(
     config: *const RiceTurnConfig,
 ) -> *mut RiceTlsConfig {
-    let config = RiceTurnConfig::into_rice_none(config).inner();
-    if let Some(variant) = config.tls_config().cloned() {
-        mut_override(Arc::into_raw(Arc::new(RiceTlsConfig { variant })))
-    } else {
-        core::ptr::null_mut()
+    unsafe {
+        let config = RiceTurnConfig::into_rice_none(config).inner();
+        if let Some(variant) = config.tls_config().cloned() {
+            mut_override(Arc::into_raw(Arc::new(RiceTlsConfig { variant })))
+        } else {
+            core::ptr::null_mut()
+        }
     }
 }
 
@@ -915,10 +953,12 @@ pub struct RiceTlsConfig {
 /// Increase the reference count of the `RiceTlsConfig`.
 ///
 /// This function is multi-threading safe.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_tls_config_ref(config: *const RiceTlsConfig) -> *mut RiceTlsConfig {
-    Arc::increment_strong_count(config);
-    mut_override(config)
+    unsafe {
+        Arc::increment_strong_count(config);
+        mut_override(config)
+    }
 }
 
 /// Decrease the reference count of the `RiceTlsConfig`.
@@ -926,9 +966,9 @@ pub unsafe extern "C" fn rice_tls_config_ref(config: *const RiceTlsConfig) -> *m
 /// If this is the last reference, then the `RiceTlsConfig` is freed.
 ///
 /// This function is multi-threading safe.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_tls_config_unref(config: *mut RiceTlsConfig) {
-    Arc::decrement_strong_count(config)
+    unsafe { Arc::decrement_strong_count(config) }
 }
 
 /// The TLS variant.
@@ -942,85 +982,85 @@ pub enum RiceTlsVariant {
 }
 
 /// The TLS variant for a [`RiceTlsConfig`]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_tls_config_variant(config: *const RiceTlsConfig) -> RiceTlsVariant {
-    let config = Arc::from_raw(config);
-    let ret = match config.variant {
-        #[cfg(feature = "rustls")]
-        TurnTlsConfig::Rustls(_) => RiceTlsVariant::Rustls,
-        #[cfg(feature = "openssl")]
-        TurnTlsConfig::Openssl(_) => RiceTlsVariant::Openssl,
-    };
-    core::mem::forget(config);
-    ret
+    unsafe {
+        let config = Arc::from_raw(config);
+        let ret = match config.variant {
+            #[cfg(feature = "rustls")]
+            TurnTlsConfig::Rustls(_) => RiceTlsVariant::Rustls,
+            #[cfg(feature = "openssl")]
+            TurnTlsConfig::Openssl(_) => RiceTlsVariant::Openssl,
+        };
+        core::mem::forget(config);
+        ret
+    }
 }
 
 /// Construct a new TLS configuration using Openssl.
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[cfg(feature = "openssl")]
 pub unsafe extern "C" fn rice_tls_config_new_openssl(
     transport: RiceTransportType,
 ) -> *mut RiceTlsConfig {
-    let method = match transport_type_from_c(transport) {
-        TransportType::Udp => openssl::ssl::SslMethod::dtls_client(),
-        TransportType::Tcp => openssl::ssl::SslMethod::tls_client(),
-    };
-    let Ok(ctx) = openssl::ssl::SslConnector::builder(method) else {
-        return core::ptr::null_mut();
-    };
-    mut_override(Arc::into_raw(Arc::new(RiceTlsConfig {
-        variant: OpensslTurnConfig::new(ctx.build().into_context()).into(),
-    })))
+    unsafe {
+        let method = match transport_type_from_c(transport) {
+            TransportType::Udp => openssl::ssl::SslMethod::dtls_client(),
+            TransportType::Tcp => openssl::ssl::SslMethod::tls_client(),
+        };
+        let Ok(ctx) = openssl::ssl::SslConnector::builder(method) else {
+            return core::ptr::null_mut();
+        };
+        mut_override(Arc::into_raw(Arc::new(RiceTlsConfig {
+            variant: OpensslTurnConfig::new(ctx.build().into_context()).into(),
+        })))
+    }
 }
 
 /// Construct a new TLS configuration using Rustls.
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[cfg(feature = "rustls")]
 pub unsafe extern "C" fn rice_tls_config_new_rustls_with_dns(
     server_name: *const c_char,
 ) -> *mut RiceTlsConfig {
-    use rustls_platform_verifier::ConfigVerifierExt;
-    let Ok(server_name) = string_from_c(server_name).try_into() else {
-        return core::ptr::null_mut();
-    };
-    let verifier = match rustls::ClientConfig::with_platform_verifier() {
-        Ok(verifier) => verifier,
-        Err(e) => {
-            warn!("Failed to create Rustls platform verifier: {e:?}");
+    unsafe {
+        use rustls_platform_verifier::ConfigVerifierExt;
+        let Ok(server_name) = string_from_c(server_name).try_into() else {
             return core::ptr::null_mut();
-        }
-    };
-    mut_override(Arc::into_raw(Arc::new(RiceTlsConfig {
-        variant: RustlsTurnConfig::new(
-            Arc::new(verifier),
-            server_name,
-        )
-        .into(),
-    })))
+        };
+        let verifier = match rustls::ClientConfig::with_platform_verifier() {
+            Ok(verifier) => verifier,
+            Err(e) => {
+                warn!("Failed to create Rustls platform verifier: {e:?}");
+                return core::ptr::null_mut();
+            }
+        };
+        mut_override(Arc::into_raw(Arc::new(RiceTlsConfig {
+            variant: RustlsTurnConfig::new(Arc::new(verifier), server_name).into(),
+        })))
+    }
 }
 
 /// Construct a new TLS configuration using Rustls.
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[cfg(feature = "rustls")]
 pub unsafe extern "C" fn rice_tls_config_new_rustls_with_ip(
     addr: *const RiceAddress,
 ) -> *mut RiceTlsConfig {
-    use rustls_platform_verifier::ConfigVerifierExt;
-    let addr = RiceAddress::into_rice_none(addr);
-    let verifier = match rustls::ClientConfig::with_platform_verifier() {
-        Ok(verifier) => verifier,
-        Err(e) => {
-            warn!("Failed to create Rustls platform verifier: {e:?}");
-            return core::ptr::null_mut();
-        }
-    };
-    mut_override(Arc::into_raw(Arc::new(RiceTlsConfig {
-        variant: RustlsTurnConfig::new(
-            Arc::new(verifier),
-            addr.inner().ip().into(),
-        )
-        .into(),
-    })))
+    unsafe {
+        use rustls_platform_verifier::ConfigVerifierExt;
+        let addr = RiceAddress::into_rice_none(addr);
+        let verifier = match rustls::ClientConfig::with_platform_verifier() {
+            Ok(verifier) => verifier,
+            Err(e) => {
+                warn!("Failed to create Rustls platform verifier: {e:?}");
+                return core::ptr::null_mut();
+            }
+        };
+        mut_override(Arc::into_raw(Arc::new(RiceTlsConfig {
+            variant: RustlsTurnConfig::new(Arc::new(verifier), addr.inner().ip().into()).into(),
+        })))
+    }
 }
 
 /// A data stream in a `RiceAgent`.
@@ -1038,55 +1078,61 @@ struct RiceStreamInner {
 }
 
 /// Add an ICE stream to the `RiceAgent`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_agent_add_stream(agent: *mut RiceAgent) -> *mut RiceStream {
-    let agent = Arc::from_raw(agent);
-    let mut proto_agent = agent.proto_agent.lock().unwrap();
-    let stream_id = proto_agent.add_stream();
-    let stream = Arc::new(RiceStream {
-        proto_agent: agent.proto_agent.clone(),
-        weak_agent: Arc::downgrade(&agent),
-        inner: Arc::new(Mutex::new(RiceStreamInner { components: vec![] })),
-        stream_id,
-    });
-    drop(proto_agent);
+    unsafe {
+        let agent = Arc::from_raw(agent);
+        let mut proto_agent = agent.proto_agent.lock().unwrap();
+        let stream_id = proto_agent.add_stream();
+        let stream = Arc::new(RiceStream {
+            proto_agent: agent.proto_agent.clone(),
+            weak_agent: Arc::downgrade(&agent),
+            inner: Arc::new(Mutex::new(RiceStreamInner { components: vec![] })),
+            stream_id,
+        });
+        drop(proto_agent);
 
-    let mut inner = agent.inner.lock().unwrap();
-    inner.streams.push(stream.clone());
+        let mut inner = agent.inner.lock().unwrap();
+        inner.streams.push(stream.clone());
 
-    drop(inner);
-    core::mem::forget(agent);
-    mut_override(Arc::into_raw(stream))
+        drop(inner);
+        core::mem::forget(agent);
+        mut_override(Arc::into_raw(stream))
+    }
 }
 
 /// Retrieve a previously added stream from the `RiceAgent`.
 ///
 /// Will return `NULL` if the stream does not exist.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_agent_get_stream(
     agent: *const RiceAgent,
     stream_id: usize,
 ) -> *mut RiceStream {
-    let agent = Arc::from_raw(agent);
-    let inner = agent.inner.lock().unwrap();
-    let ret = if let Some(stream) = inner.streams.get(stream_id) {
-        mut_override(Arc::into_raw(stream.clone()))
-    } else {
-        mut_override(core::ptr::null::<RiceStream>())
-    };
+    unsafe {
+        let agent = Arc::from_raw(agent);
+        let inner = agent.inner.lock().unwrap();
+        let ret = if let Some(stream) = inner.streams.get(stream_id) {
+            mut_override(Arc::into_raw(stream.clone()))
+        } else {
+            mut_override(core::ptr::null::<RiceStream>())
+        };
 
-    drop(inner);
-    core::mem::forget(agent);
-    ret
+        drop(inner);
+        core::mem::forget(agent);
+        ret
+    }
 }
 
 /// Increase the reference count of the `RiceStream`.
 ///
 /// This function is multi-threading safe.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_stream_ref(stream: *const RiceStream) -> *mut RiceStream {
-    Arc::increment_strong_count(stream);
-    mut_override(stream)
+    unsafe {
+        Arc::increment_strong_count(stream);
+        mut_override(stream)
+    }
 }
 
 /// Decrease the reference count of the `RiceStream`.
@@ -1095,36 +1141,40 @@ pub unsafe extern "C" fn rice_stream_ref(stream: *const RiceStream) -> *mut Rice
 /// the `RiceAgent`).
 ///
 /// This function is multi-threading safe.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_stream_unref(stream: *mut RiceStream) {
-    Arc::decrement_strong_count(stream)
+    unsafe { Arc::decrement_strong_count(stream) }
 }
 
 /// Retrieve the stream id of the `RiceStream`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_stream_get_id(stream: *const RiceStream) -> usize {
-    let stream = Arc::from_raw(stream);
-    let ret = stream.stream_id;
-    core::mem::forget(stream);
-    ret
+    unsafe {
+        let stream = Arc::from_raw(stream);
+        let ret = stream.stream_id;
+        core::mem::forget(stream);
+        ret
+    }
 }
 
 /// Retrieve the `RiceAgent` of the `RiceStream`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_stream_get_agent(stream: *const RiceStream) -> *mut RiceAgent {
-    let stream = Arc::from_raw(stream);
-    let Some(ret) = stream.weak_agent.upgrade() else {
+    unsafe {
+        let stream = Arc::from_raw(stream);
+        let Some(ret) = stream.weak_agent.upgrade() else {
+            core::mem::forget(stream);
+            return core::ptr::null_mut();
+        };
         core::mem::forget(stream);
-        return core::ptr::null_mut();
-    };
-    core::mem::forget(stream);
-    mut_override(Arc::into_raw(ret))
+        mut_override(Arc::into_raw(ret))
+    }
 }
 
 /// Notify success or failure to create a socket to the `RiceStream`.
 ///
 /// `socket_addr` can be `NULL` to indicate failure.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_stream_handle_allocated_socket(
     stream: *mut RiceStream,
     component_id: usize,
@@ -1133,27 +1183,29 @@ pub unsafe extern "C" fn rice_stream_handle_allocated_socket(
     to: *const RiceAddress,
     socket_addr: *mut RiceAddress,
 ) {
-    let stream = Arc::from_raw(stream);
-    let mut proto_agent = stream.proto_agent.lock().unwrap();
-    let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
+    unsafe {
+        let stream = Arc::from_raw(stream);
+        let mut proto_agent = stream.proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
 
-    let from = RiceAddress::into_rice_none(from);
-    let to = RiceAddress::into_rice_none(to);
-    let socket = if socket_addr.is_null() {
-        Err(StunError::ResourceNotFound)
-    } else {
-        Ok(**RiceAddress::into_rice_full(socket_addr))
-    };
-    proto_stream.allocated_socket(
-        component_id,
-        transport_type_from_c(transport),
-        from.inner(),
-        to.inner(),
-        socket,
-    );
+        let from = RiceAddress::into_rice_none(from);
+        let to = RiceAddress::into_rice_none(to);
+        let socket = if socket_addr.is_null() {
+            Err(StunError::ResourceNotFound)
+        } else {
+            Ok(**RiceAddress::into_rice_full(socket_addr))
+        };
+        proto_stream.allocated_socket(
+            component_id,
+            transport_type_from_c(transport),
+            from.inner(),
+            to.inner(),
+            socket,
+        );
 
-    drop(proto_agent);
-    core::mem::forget(stream);
+        drop(proto_agent);
+        core::mem::forget(stream);
+    }
 }
 
 /// ICE/TURN credentials.
@@ -1164,74 +1216,84 @@ pub struct RiceCredentials {
 }
 
 /// Construct a new set of ICE/TURN credentials.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_credentials_new(
     ufrag: *const c_char,
     passwd: *const c_char,
 ) -> *mut RiceCredentials {
-    let ufrag = string_from_c(ufrag);
-    let passwd = string_from_c(passwd);
-    Box::into_raw(Box::new(RiceCredentials {
-        credentials: Credentials::new(ufrag, passwd),
-    }))
+    unsafe {
+        let ufrag = string_from_c(ufrag);
+        let passwd = string_from_c(passwd);
+        Box::into_raw(Box::new(RiceCredentials {
+            credentials: Credentials::new(ufrag, passwd),
+        }))
+    }
 }
 
 /// Construct a new set of ICE/TURN credentials.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_credentials_copy(
     creds: *const RiceCredentials,
 ) -> *mut RiceCredentials {
-    let creds = Box::from_raw(mut_override(creds));
-    let ret = creds.clone();
-    core::mem::forget(creds);
-    Box::into_raw(ret)
+    unsafe {
+        let creds = Box::from_raw(mut_override(creds));
+        let ret = creds.clone();
+        core::mem::forget(creds);
+        Box::into_raw(ret)
+    }
 }
 
 /// Free a set of ICE/TURN credentials.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_credentials_free(credentials: *mut RiceCredentials) {
-    let _ = Box::from_raw(credentials);
+    unsafe {
+        let _ = Box::from_raw(credentials);
+    }
 }
 
 /// Retrieve the `RiceCandidate` ufrag attribute bytes.
 /// The pre-allocated array should be 256 bytes at most.
 ///
 /// Returns the actual length of the ufrag attribute.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_credentials_get_ufrag_bytes(
     credentials: *const RiceCredentials,
     ptr: *mut c_char,
 ) -> usize {
-    let creds = Box::from_raw(mut_override(credentials));
-    let bytes = creds.credentials.ufrag.as_bytes();
-    let len = bytes.len();
-    std::ptr::copy(bytes.as_ptr().cast(), ptr, len);
-    std::ptr::write(ptr.offset(len as isize) as *mut u8, 0u8);
-    core::mem::forget(creds);
-    len
+    unsafe {
+        let creds = Box::from_raw(mut_override(credentials));
+        let bytes = creds.credentials.ufrag.as_bytes();
+        let len = bytes.len();
+        std::ptr::copy(bytes.as_ptr().cast(), ptr, len);
+        std::ptr::write(ptr.offset(len as isize) as *mut u8, 0u8);
+        core::mem::forget(creds);
+        len
+    }
 }
 
 /// Compare two sets of Credentials.
 ///
 /// This function is NULL safe.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_credentials_eq(
     creds1: *const RiceCredentials,
     creds2: *const RiceCredentials,
 ) -> bool {
-    match (creds1.is_null(), creds2.is_null()) {
-        (true, true) => true,
-        (true, false) => false,
-        (false, true) => false,
-        (false, false) => {
-            let creds1 = Box::from_raw(mut_override(creds1));
-            let creds2 = Box::from_raw(mut_override(creds2));
+    unsafe {
+        match (creds1.is_null(), creds2.is_null()) {
+            (true, true) => true,
+            (true, false) => false,
+            (false, true) => false,
+            (false, false) => {
+                let creds1 = Box::from_raw(mut_override(creds1));
+                let creds2 = Box::from_raw(mut_override(creds2));
 
-            let ret = creds1.credentials == creds2.credentials;
+                let ret = creds1.credentials == creds2.credentials;
 
-            core::mem::forget(creds1);
-            core::mem::forget(creds2);
-            ret
+                core::mem::forget(creds1);
+                core::mem::forget(creds2);
+                ret
+            }
         }
     }
 }
@@ -1241,43 +1303,47 @@ fn credentials_to_c(credentials: Credentials) -> *mut RiceCredentials {
 }
 
 /// Retrieve the local ICE credentials currently set on the `RiceStream`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_stream_get_local_credentials(
     stream: *const RiceStream,
 ) -> *mut RiceCredentials {
-    let stream = Arc::from_raw(stream);
-    let proto_agent = stream.proto_agent.lock().unwrap();
-    let proto_stream = proto_agent.stream(stream.stream_id).unwrap();
+    unsafe {
+        let stream = Arc::from_raw(stream);
+        let proto_agent = stream.proto_agent.lock().unwrap();
+        let proto_stream = proto_agent.stream(stream.stream_id).unwrap();
 
-    let ret = if let Some(credentials) = proto_stream.local_credentials() {
-        credentials_to_c(credentials)
-    } else {
-        mut_override(core::ptr::null::<RiceCredentials>())
-    };
+        let ret = if let Some(credentials) = proto_stream.local_credentials() {
+            credentials_to_c(credentials)
+        } else {
+            mut_override(core::ptr::null::<RiceCredentials>())
+        };
 
-    drop(proto_agent);
-    core::mem::forget(stream);
-    ret
+        drop(proto_agent);
+        core::mem::forget(stream);
+        ret
+    }
 }
 
 /// Retrieve the remote ICE credentials currently set on the `RiceStream`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_stream_get_remote_credentials(
     stream: *const RiceStream,
 ) -> *mut RiceCredentials {
-    let stream = Arc::from_raw(stream);
-    let proto_agent = stream.proto_agent.lock().unwrap();
-    let proto_stream = proto_agent.stream(stream.stream_id).unwrap();
+    unsafe {
+        let stream = Arc::from_raw(stream);
+        let proto_agent = stream.proto_agent.lock().unwrap();
+        let proto_stream = proto_agent.stream(stream.stream_id).unwrap();
 
-    let ret = if let Some(credentials) = proto_stream.remote_credentials() {
-        credentials_to_c(credentials)
-    } else {
-        mut_override(core::ptr::null::<RiceCredentials>())
-    };
+        let ret = if let Some(credentials) = proto_stream.remote_credentials() {
+            credentials_to_c(credentials)
+        } else {
+            mut_override(core::ptr::null::<RiceCredentials>())
+        };
 
-    drop(proto_agent);
-    core::mem::forget(stream);
-    ret
+        drop(proto_agent);
+        core::mem::forget(stream);
+        ret
+    }
 }
 
 unsafe fn string_from_c(cstr: *const c_char) -> String {
@@ -1285,41 +1351,45 @@ unsafe fn string_from_c(cstr: *const c_char) -> String {
 }
 
 unsafe fn owned_string_from_c(cstr: *mut c_char) -> CString {
-    CString::from_raw(cstr)
+    unsafe { CString::from_raw(cstr) }
 }
 
 /// Set the local credentials to use for this `RiceStream`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_stream_set_local_credentials(
     stream: *mut RiceStream,
     credentials: *const RiceCredentials,
 ) {
-    let creds = Box::from_raw(mut_override(credentials));
+    unsafe {
+        let creds = Box::from_raw(mut_override(credentials));
 
-    let stream = Arc::from_raw(stream);
-    let mut proto_agent = stream.proto_agent.lock().unwrap();
-    let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
-    proto_stream.set_local_credentials(creds.credentials.clone());
-    drop(proto_agent);
-    core::mem::forget(stream);
-    core::mem::forget(creds);
+        let stream = Arc::from_raw(stream);
+        let mut proto_agent = stream.proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
+        proto_stream.set_local_credentials(creds.credentials.clone());
+        drop(proto_agent);
+        core::mem::forget(stream);
+        core::mem::forget(creds);
+    }
 }
 
 /// Set the remote credentials to use for this `RiceStream`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_stream_set_remote_credentials(
     stream: *mut RiceStream,
     credentials: *const RiceCredentials,
 ) {
-    let creds = Box::from_raw(mut_override(credentials));
+    unsafe {
+        let creds = Box::from_raw(mut_override(credentials));
 
-    let stream = Arc::from_raw(stream);
-    let mut proto_agent = stream.proto_agent.lock().unwrap();
-    let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
-    proto_stream.set_remote_credentials(creds.credentials.clone());
-    drop(proto_agent);
-    core::mem::forget(stream);
-    core::mem::forget(creds);
+        let stream = Arc::from_raw(stream);
+        let mut proto_agent = stream.proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
+        proto_stream.set_remote_credentials(creds.credentials.clone());
+        drop(proto_agent);
+        core::mem::forget(stream);
+        core::mem::forget(creds);
+    }
 }
 
 /// The type of the TCP candidate.
@@ -1565,17 +1635,19 @@ impl From<crate::candidate::ParseCandidateError> for RiceParseCandidateError {
 /// Section 15.1.
 ///
 /// Takes the form 'a=candidate:foundation 1 UDP 12345 127.0.0.1 23456 typ host'.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_candidate_new_from_sdp_string(
     cand_str: *const c_char,
 ) -> *mut RiceCandidate {
-    let candidate = mut_override(Box::into_raw(Box::new(RiceCandidate::zero())));
-    let ret = rice_candidate_init_from_sdp_string(candidate, cand_str);
-    if ret == RiceParseCandidateError::Success {
-        candidate
-    } else {
-        let _candidate = Box::from_raw(candidate);
-        core::ptr::null_mut()
+    unsafe {
+        let candidate = mut_override(Box::into_raw(Box::new(RiceCandidate::zero())));
+        let ret = rice_candidate_init_from_sdp_string(candidate, cand_str);
+        if ret == RiceParseCandidateError::Success {
+            candidate
+        } else {
+            let _candidate = Box::from_raw(candidate);
+            core::ptr::null_mut()
+        }
     }
 }
 
@@ -1583,45 +1655,51 @@ pub unsafe extern "C" fn rice_candidate_new_from_sdp_string(
 /// Section 15.1.
 ///
 /// Takes the form 'a=candidate:foundation 1 UDP 12345 127.0.0.1 23456 typ host'.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_candidate_init_from_sdp_string(
     candidate: *mut RiceCandidate,
     cand_str: *const c_char,
 ) -> RiceParseCandidateError {
-    let Ok(cand_str) = CStr::from_ptr(cand_str).to_str() else {
-        return RiceParseCandidateError::Malformed;
-    };
-    let r_candidate = match Candidate::from_str(cand_str) {
-        Ok(c) => c,
-        Err(e) => return e.into(),
-    };
-    *candidate = RiceCandidate::into_c_full(r_candidate);
-    RiceParseCandidateError::Success
+    unsafe {
+        let Ok(cand_str) = CStr::from_ptr(cand_str).to_str() else {
+            return RiceParseCandidateError::Malformed;
+        };
+        let r_candidate = match Candidate::from_str(cand_str) {
+            Ok(c) => c,
+            Err(e) => return e.into(),
+        };
+        *candidate = RiceCandidate::into_c_full(r_candidate);
+        RiceParseCandidateError::Success
+    }
 }
 
 /// Return a SDP candidate string as specified in RFC5245 Section 15.1.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_candidate_to_sdp_string(
     candidate: *const RiceCandidate,
 ) -> *mut c_char {
-    let candidate = Box::from_raw(mut_override(candidate));
-    let cand = (*candidate).as_rice_none();
-    let ret = CString::new(cand.to_sdp_string()).unwrap();
-    core::mem::forget(candidate);
-    // FIXME: need to provide a way to free this c string
-    ret.into_raw()
+    unsafe {
+        let candidate = Box::from_raw(mut_override(candidate));
+        let cand = (*candidate).as_rice_none();
+        let ret = CString::new(cand.to_sdp_string()).unwrap();
+        core::mem::forget(candidate);
+        // FIXME: need to provide a way to free this c string
+        ret.into_raw()
+    }
 }
 
 /// Free an allocated string.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_string_free(string: *mut c_char) {
-    let _s = CString::from_raw(string);
+    unsafe {
+        let _s = CString::from_raw(string);
+    }
 }
 
 /// Construct a new `RiceCandidate` with the provided values.
 ///
 /// Will return NULL on error.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_candidate_new(
     component_id: usize,
     ctype: RiceCandidateType,
@@ -1629,18 +1707,20 @@ pub unsafe extern "C" fn rice_candidate_new(
     foundation: *const c_char,
     address: *mut RiceAddress,
 ) -> *mut RiceCandidate {
-    let candidate = mut_override(Box::into_raw(Box::new(RiceCandidate::zero())));
-    let ret = rice_candidate_init(candidate, component_id, ctype, ttype, foundation, address);
-    if ret == RiceError::Success {
-        candidate
-    } else {
-        let _candidate = Box::from_raw(candidate);
-        core::ptr::null_mut()
+    unsafe {
+        let candidate = mut_override(Box::into_raw(Box::new(RiceCandidate::zero())));
+        let ret = rice_candidate_init(candidate, component_id, ctype, ttype, foundation, address);
+        if ret == RiceError::Success {
+            candidate
+        } else {
+            let _candidate = Box::from_raw(candidate);
+            core::ptr::null_mut()
+        }
     }
 }
 
 /// Construct a new `RiceCandidate` with the provided values.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_candidate_init(
     candidate: *mut RiceCandidate,
     component_id: usize,
@@ -1649,123 +1729,137 @@ pub unsafe extern "C" fn rice_candidate_init(
     foundation: *const c_char,
     address: *mut RiceAddress,
 ) -> RiceError {
-    if foundation.is_null() || address.is_null() {
-        return RiceError::Failed;
+    unsafe {
+        if foundation.is_null() || address.is_null() {
+            return RiceError::Failed;
+        }
+        let foundation = CStr::from_ptr(foundation);
+        let Ok(foundation) = foundation.to_str() else {
+            return RiceError::Failed;
+        };
+        let Ok(foundation_s) = CString::new(foundation) else {
+            return RiceError::Failed;
+        };
+        let foundation = foundation_s.as_ptr();
+        core::mem::forget(foundation_s);
+        *candidate = RiceCandidate {
+            component_id,
+            candidate_type: ctype,
+            transport_type: ttype,
+            foundation,
+            priority: 0,
+            address: rice_address_copy(address),
+            base_address: address,
+            related_address: core::ptr::null_mut(),
+            tcp_type: RiceTcpType::None,
+            extensions: core::ptr::null_mut(),
+            extensions_len: 0,
+        };
+        RiceError::Success
     }
-    let foundation = CStr::from_ptr(foundation);
-    let Ok(foundation) = foundation.to_str() else {
-        return RiceError::Failed;
-    };
-    let Ok(foundation_s) = CString::new(foundation) else {
-        return RiceError::Failed;
-    };
-    let foundation = foundation_s.as_ptr();
-    core::mem::forget(foundation_s);
-    *candidate = RiceCandidate {
-        component_id,
-        candidate_type: ctype,
-        transport_type: ttype,
-        foundation,
-        priority: 0,
-        address: rice_address_copy(address),
-        base_address: address,
-        related_address: core::ptr::null_mut(),
-        tcp_type: RiceTcpType::None,
-        extensions: core::ptr::null_mut(),
-        extensions_len: 0,
-    };
-    RiceError::Success
 }
 
 /// Set the base address of a `RiceCandidate`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_candidate_set_priority(candidate: *mut RiceCandidate, priority: u32) {
-    let mut candidate = Box::from_raw(candidate);
-    candidate.priority = priority;
-    core::mem::forget(candidate);
+    unsafe {
+        let mut candidate = Box::from_raw(candidate);
+        candidate.priority = priority;
+        core::mem::forget(candidate);
+    }
 }
 
 /// Set the base address of a `RiceCandidate`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_candidate_set_base_address(
     candidate: *mut RiceCandidate,
     base_address: *mut RiceAddress,
 ) {
-    let mut candidate = Box::from_raw(candidate);
-    let old = candidate.base_address;
-    candidate.base_address = base_address;
-    rice_address_free(mut_override(old));
-    core::mem::forget(candidate);
+    unsafe {
+        let mut candidate = Box::from_raw(candidate);
+        let old = candidate.base_address;
+        candidate.base_address = base_address;
+        rice_address_free(mut_override(old));
+        core::mem::forget(candidate);
+    }
 }
 
 /// Set the related address of a `RiceCandidate`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_candidate_set_related_address(
     candidate: *mut RiceCandidate,
     related_address: *mut RiceAddress,
 ) {
-    let mut candidate = Box::from_raw(candidate);
-    let old = candidate.related_address;
-    candidate.related_address = related_address;
-    rice_address_free(mut_override(old));
-    core::mem::forget(candidate);
+    unsafe {
+        let mut candidate = Box::from_raw(candidate);
+        let old = candidate.related_address;
+        candidate.related_address = related_address;
+        rice_address_free(mut_override(old));
+        core::mem::forget(candidate);
+    }
 }
 
 /// Set the tcp type of a `RiceCandidate`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_candidate_set_tcp_type(
     candidate: *mut RiceCandidate,
     tcp_type: RiceTcpType,
 ) {
-    let mut candidate = Box::from_raw(candidate);
-    candidate.tcp_type = tcp_type;
-    core::mem::forget(candidate);
+    unsafe {
+        let mut candidate = Box::from_raw(candidate);
+        candidate.tcp_type = tcp_type;
+        core::mem::forget(candidate);
+    }
 }
 
 /// Perform a deep copy of a `RiceCandidate`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_candidate_copy(
     candidate: *const RiceCandidate,
 ) -> *mut RiceCandidate {
-    if candidate.is_null() {
-        return core::ptr::null_mut();
+    unsafe {
+        if candidate.is_null() {
+            return core::ptr::null_mut();
+        }
+        let ret = mut_override(Box::into_raw(Box::new(RiceCandidate::zero())));
+        rice_candidate_copy_into(candidate, ret);
+        ret
     }
-    let ret = mut_override(Box::into_raw(Box::new(RiceCandidate::zero())));
-    rice_candidate_copy_into(candidate, ret);
-    ret
 }
 
 /// Perform a deep copy of a `RiceCandidate`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_candidate_copy_into(
     candidate: *const RiceCandidate,
     ret: *mut RiceCandidate,
 ) {
-    if candidate.is_null() {
-        return;
+    unsafe {
+        if candidate.is_null() {
+            return;
+        }
+        let candidate = Box::from_raw(mut_override(candidate));
+        let foundation = CString::from_raw(mut_override(candidate.foundation));
+        *ret = RiceCandidate {
+            component_id: candidate.component_id,
+            candidate_type: candidate.candidate_type,
+            transport_type: candidate.transport_type,
+            foundation: foundation.clone().into_raw(),
+            priority: candidate.priority,
+            address: rice_address_copy(candidate.address),
+            base_address: rice_address_copy(candidate.base_address),
+            related_address: if candidate.related_address.is_null() {
+                core::ptr::null()
+            } else {
+                rice_address_copy(candidate.related_address)
+            },
+            tcp_type: candidate.tcp_type,
+            // FIXME: extensions
+            extensions: core::ptr::null_mut(),
+            extensions_len: candidate.extensions_len,
+        };
+        core::mem::forget(candidate);
+        core::mem::forget(foundation);
     }
-    let candidate = Box::from_raw(mut_override(candidate));
-    let foundation = CString::from_raw(mut_override(candidate.foundation));
-    *ret = RiceCandidate {
-        component_id: candidate.component_id,
-        candidate_type: candidate.candidate_type,
-        transport_type: candidate.transport_type,
-        foundation: foundation.clone().into_raw(),
-        priority: candidate.priority,
-        address: rice_address_copy(candidate.address),
-        base_address: rice_address_copy(candidate.base_address),
-        related_address: if candidate.related_address.is_null() {
-            core::ptr::null()
-        } else {
-            rice_address_copy(candidate.related_address)
-        },
-        tcp_type: candidate.tcp_type,
-        // FIXME: extensions
-        extensions: core::ptr::null_mut(),
-        extensions_len: candidate.extensions_len,
-    };
-    core::mem::forget(candidate);
-    core::mem::forget(foundation);
 }
 
 /// Clear any resources allocated within a `RiceCandidate`.
@@ -1773,25 +1867,27 @@ pub unsafe extern "C" fn rice_candidate_copy_into(
 /// Useful for stack-allocated `RiceCandidate`s or when embedded in other structures.
 ///
 /// This function is NULL safe.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_candidate_clear(candidate: *mut RiceCandidate) {
-    if candidate.is_null() {
-        return;
+    unsafe {
+        if candidate.is_null() {
+            return;
+        }
+        if !(*candidate).foundation.is_null() {
+            let _foundation = CString::from_raw(mut_override((*candidate).foundation));
+        }
+        if !(*candidate).address.is_null() {
+            let _address = RiceAddress::into_rice_full((*candidate).address);
+        }
+        if !(*candidate).base_address.is_null() {
+            let _base_address = RiceAddress::into_rice_full((*candidate).base_address);
+        }
+        if !(*candidate).related_address.is_null() {
+            let _related_address = RiceAddress::into_rice_full((*candidate).related_address);
+        }
+        rice_candidate_zero(&mut *candidate);
+        // FIXME extensions
     }
-    if !(*candidate).foundation.is_null() {
-        let _foundation = CString::from_raw(mut_override((*candidate).foundation));
-    }
-    if !(*candidate).address.is_null() {
-        let _address = RiceAddress::into_rice_full((*candidate).address);
-    }
-    if !(*candidate).base_address.is_null() {
-        let _base_address = RiceAddress::into_rice_full((*candidate).base_address);
-    }
-    if !(*candidate).related_address.is_null() {
-        let _related_address = RiceAddress::into_rice_full((*candidate).related_address);
-    }
-    rice_candidate_zero(&mut *candidate);
-    // FIXME extensions
 }
 
 fn rice_candidate_zero(candidate: &mut RiceCandidate) {
@@ -1805,30 +1901,34 @@ fn rice_candidate_zero(candidate: &mut RiceCandidate) {
 /// Free a `RiceCandidate`.
 ///
 /// This function is NULL safe.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_candidate_free(candidate: *mut RiceCandidate) {
-    if candidate.is_null() {
-        return;
+    unsafe {
+        if candidate.is_null() {
+            return;
+        }
+        rice_candidate_clear(candidate);
+        let _cand = Box::from_raw(candidate);
     }
-    rice_candidate_clear(candidate);
-    let _cand = Box::from_raw(candidate);
 }
 
 /// Free a `RiceCandidate`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_candidate_eq(
     candidate: *const RiceCandidate,
     other: *const RiceCandidate,
 ) -> bool {
-    let cand = Box::from_raw(mut_override(candidate));
-    let other = Box::from_raw(mut_override(other));
+    unsafe {
+        let cand = Box::from_raw(mut_override(candidate));
+        let other = Box::from_raw(mut_override(other));
 
-    let ret = *candidate == *other;
+        let ret = *candidate == *other;
 
-    core::mem::forget(cand);
-    core::mem::forget(other);
+        core::mem::forget(cand);
+        core::mem::forget(other);
 
-    ret
+        ret
+    }
 }
 
 /// A local candidate that has been gathered.
@@ -1877,67 +1977,75 @@ impl RiceGatheredCandidate {
 }
 
 /// Add a local `RiceGatheredCandidate` to a `RiceStream`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_stream_add_local_gathered_candidate(
     stream: *mut RiceStream,
     candidate: *const RiceGatheredCandidate,
 ) -> bool {
-    let stream = Arc::from_raw(stream);
-    let mut proto_agent = stream.proto_agent.lock().unwrap();
-    let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
-    let candidate = mut_override(candidate);
-    let mut swapped = RiceGatheredCandidate::zero();
-    core::ptr::swap(&mut swapped, candidate);
+    unsafe {
+        let stream = Arc::from_raw(stream);
+        let mut proto_agent = stream.proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
+        let candidate = mut_override(candidate);
+        let mut swapped = RiceGatheredCandidate::zero();
+        core::ptr::swap(&mut swapped, candidate);
 
-    let ret = proto_stream.add_local_gathered_candidate(swapped.into_rice_full());
-    drop(proto_agent);
-    core::mem::forget(stream);
-    ret
+        let ret = proto_stream.add_local_gathered_candidate(swapped.into_rice_full());
+        drop(proto_agent);
+        core::mem::forget(stream);
+        ret
+    }
 }
 
 /// Add a remote candidate to the `RiceStream`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_stream_add_remote_candidate(
     stream: *mut RiceStream,
     candidate: *const RiceCandidate,
 ) {
-    let stream = Arc::from_raw(stream);
-    let mut proto_agent = stream.proto_agent.lock().unwrap();
-    let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
-    let candidate = Box::from_raw(mut_override(candidate));
+    unsafe {
+        let stream = Arc::from_raw(stream);
+        let mut proto_agent = stream.proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
+        let candidate = Box::from_raw(mut_override(candidate));
 
-    proto_stream.add_remote_candidate((*candidate).as_rice_none());
-    drop(proto_agent);
-    core::mem::forget(stream);
-    core::mem::forget(candidate);
+        proto_stream.add_remote_candidate((*candidate).as_rice_none());
+        drop(proto_agent);
+        core::mem::forget(stream);
+        core::mem::forget(candidate);
+    }
 }
 
 /// Signal the end of a set of local candidates.
 ///
 /// Any local candidates provided after calling this function will result in an error.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_stream_end_of_local_candidates(stream: *mut RiceStream) {
-    let stream = Arc::from_raw(stream);
-    let mut proto_agent = stream.proto_agent.lock().unwrap();
-    let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
+    unsafe {
+        let stream = Arc::from_raw(stream);
+        let mut proto_agent = stream.proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
 
-    proto_stream.end_of_local_candidates();
-    drop(proto_agent);
-    core::mem::forget(stream);
+        proto_stream.end_of_local_candidates();
+        drop(proto_agent);
+        core::mem::forget(stream);
+    }
 }
 
 /// Signal the end of a set of remote candidates.
 ///
 /// Any remote candidates provided after calling this function will result in an error.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_stream_end_of_remote_candidates(stream: *mut RiceStream) {
-    let stream = Arc::from_raw(stream);
-    let mut proto_agent = stream.proto_agent.lock().unwrap();
-    let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
+    unsafe {
+        let stream = Arc::from_raw(stream);
+        let mut proto_agent = stream.proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
 
-    proto_stream.end_of_remote_candidates();
-    drop(proto_agent);
-    core::mem::forget(stream);
+        proto_stream.end_of_remote_candidates();
+        drop(proto_agent);
+        core::mem::forget(stream);
+    }
 }
 
 /// Return value for `rice_stream_handle_incoming_data()`.
@@ -1959,7 +2067,7 @@ pub struct RiceStreamIncomingData {
 ///
 /// The returned value contains what processing was completed on the provided data and any
 /// application data that needs to be handled.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_stream_handle_incoming_data(
     stream: *mut RiceStream,
     component_id: usize,
@@ -1971,110 +2079,118 @@ pub unsafe extern "C" fn rice_stream_handle_incoming_data(
     now_nanos: i64,
     ret: *mut MaybeUninit<RiceStreamIncomingData>,
 ) {
-    let stream = Arc::from_raw(stream);
-    let now = Instant::from_nanos(now_nanos);
-    let mut proto_agent = stream.proto_agent.lock().unwrap();
-    let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
-    let from = Box::from_raw(mut_override(from));
-    let to = Box::from_raw(mut_override(to));
+    unsafe {
+        let stream = Arc::from_raw(stream);
+        let now = Instant::from_nanos(now_nanos);
+        let mut proto_agent = stream.proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
+        let from = Box::from_raw(mut_override(from));
+        let to = Box::from_raw(mut_override(to));
 
-    let transmit = Transmit {
-        transport: transport_type_from_c(transport),
-        from: **from,
-        to: **to,
-        data: Data::Borrowed(DataSlice::from(core::slice::from_raw_parts(data, data_len))),
-    };
-    core::mem::forget(from);
-    core::mem::forget(to);
+        let transmit = Transmit {
+            transport: transport_type_from_c(transport),
+            from: **from,
+            to: **to,
+            data: Data::Borrowed(DataSlice::from(core::slice::from_raw_parts(data, data_len))),
+        };
+        core::mem::forget(from);
+        core::mem::forget(to);
 
-    let stream_ret = proto_stream.handle_incoming_data(component_id, transmit, now);
-    let data = if let Some(_data_and_range) = stream_ret.data {
-        RiceDataImpl {
-            ptr: mut_override(data),
-            size: data_len,
-        }
-    } else {
-        RiceDataImpl {
-            ptr: core::ptr::null_mut(),
-            size: 0,
-        }
-    };
+        let stream_ret = proto_stream.handle_incoming_data(component_id, transmit, now);
+        let data = if let Some(_data_and_range) = stream_ret.data {
+            RiceDataImpl {
+                ptr: mut_override(data),
+                size: data_len,
+            }
+        } else {
+            RiceDataImpl {
+                ptr: core::ptr::null_mut(),
+                size: 0,
+            }
+        };
 
-    (*ret).write(RiceStreamIncomingData {
-        handled: stream_ret.handled,
-        have_more_data: stream_ret.have_more_data,
-        data,
-    });
+        (*ret).write(RiceStreamIncomingData {
+            handled: stream_ret.handled,
+            have_more_data: stream_ret.have_more_data,
+            data,
+        });
 
-    drop(proto_agent);
-    core::mem::forget(stream);
+        drop(proto_agent);
+        core::mem::forget(stream);
+    }
 }
 
 /// Poll for further application data that has been received.
 ///
 /// Free the returned data with `rice_free_data()`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_stream_poll_recv(
     stream: *mut RiceStream,
     component_id: *mut usize,
     data_len: *mut usize,
 ) -> *mut u8 {
-    let stream = Arc::from_raw(stream);
-    let mut proto_agent = stream.proto_agent.lock().unwrap();
-    let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
+    unsafe {
+        let stream = Arc::from_raw(stream);
+        let mut proto_agent = stream.proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
 
-    let ret = if let Some(data) = proto_stream.poll_recv() {
-        *data_len = data.data.len();
-        *component_id = data.component_id;
-        Box::into_raw(data.data.into_boxed_slice()) as *mut _
-    } else {
-        *data_len = 0;
-        *component_id = 0;
-        core::ptr::null_mut::<u8>()
-    };
+        let ret = if let Some(data) = proto_stream.poll_recv() {
+            *data_len = data.data.len();
+            *component_id = data.component_id;
+            Box::into_raw(data.data.into_boxed_slice()) as *mut _
+        } else {
+            *data_len = 0;
+            *component_id = 0;
+            core::ptr::null_mut::<u8>()
+        };
 
-    drop(proto_agent);
-    core::mem::forget(stream);
+        drop(proto_agent);
+        core::mem::forget(stream);
 
-    ret
+        ret
+    }
 }
 
 /// Free allocated data.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_free_data(data: *mut u8) {
-    let _ = Box::from_raw(data);
+    unsafe {
+        let _ = Box::from_raw(data);
+    }
 }
 
 /// Return the component ids currently in use by a `RiceStream`.
 ///
 /// `ret` can be NULL to discover the length of the data that would be provided.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_stream_component_ids(
     stream: *mut RiceStream,
     len: *mut usize,
     ret: *mut usize,
 ) {
-    let stream = Arc::from_raw(stream);
+    unsafe {
+        let stream = Arc::from_raw(stream);
 
-    let proto_agent = stream.proto_agent.lock().unwrap();
-    let proto_stream = proto_agent.stream(stream.stream_id).unwrap();
+        let proto_agent = stream.proto_agent.lock().unwrap();
+        let proto_stream = proto_agent.stream(stream.stream_id).unwrap();
 
-    if ret.is_null() {
-        *len = proto_stream.component_ids_iter().count()
-    } else if *len > 0 {
-        let output = core::slice::from_raw_parts_mut(ret, *len);
-        *len = 0;
-        for component in proto_stream.component_ids_iter() {
-            output[*len] = component;
-            if *len + 1 > output.len() {
-                break;
+        if ret.is_null() {
+            *len = proto_stream.component_ids_iter().count()
+        } else if *len > 0 {
+            let output = core::slice::from_raw_parts_mut(ret, *len);
+            *len = 0;
+            for component in proto_stream.component_ids_iter() {
+                output[*len] = component;
+                if *len + 1 > output.len() {
+                    break;
+                }
+                *len += 1;
             }
-            *len += 1;
         }
-    }
 
-    drop(proto_agent);
-    core::mem::forget(stream);
+        drop(proto_agent);
+        core::mem::forget(stream);
+    }
 }
 
 // TODO:
@@ -2090,35 +2206,39 @@ pub struct RiceComponent {
 }
 
 /// Add an ICE component to a `RiceStream`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_stream_add_component(stream: *mut RiceStream) -> *mut RiceComponent {
-    let stream = Arc::from_raw(stream);
-    let mut proto_agent = stream.proto_agent.lock().unwrap();
-    let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
-    let component_id = proto_stream.add_component().unwrap();
-    let component = Arc::new(RiceComponent {
-        proto_agent: stream.proto_agent.clone(),
-        weak_agent: stream.weak_agent.clone(),
-        stream_id: stream.stream_id,
-        component_id,
-    });
-    drop(proto_agent);
+    unsafe {
+        let stream = Arc::from_raw(stream);
+        let mut proto_agent = stream.proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
+        let component_id = proto_stream.add_component().unwrap();
+        let component = Arc::new(RiceComponent {
+            proto_agent: stream.proto_agent.clone(),
+            weak_agent: stream.weak_agent.clone(),
+            stream_id: stream.stream_id,
+            component_id,
+        });
+        drop(proto_agent);
 
-    let mut inner = stream.inner.lock().unwrap();
-    inner.components.push(component.clone());
+        let mut inner = stream.inner.lock().unwrap();
+        inner.components.push(component.clone());
 
-    drop(inner);
-    core::mem::forget(stream);
-    mut_override(Arc::into_raw(component))
+        drop(inner);
+        core::mem::forget(stream);
+        mut_override(Arc::into_raw(component))
+    }
 }
 
 /// Increase the reference count of the `RiceComponent`.
 ///
 /// This function is multi-threading safe.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_component_ref(component: *const RiceComponent) -> *mut RiceComponent {
-    Arc::increment_strong_count(component);
-    mut_override(component)
+    unsafe {
+        Arc::increment_strong_count(component);
+        mut_override(component)
+    }
 }
 
 /// Decrease the reference count of the `RiceComponent`.
@@ -2127,108 +2247,118 @@ pub unsafe extern "C" fn rice_component_ref(component: *const RiceComponent) -> 
 /// the `RiceStream`).
 ///
 /// This function is multi-threading safe.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_component_unref(component: *mut RiceComponent) {
-    Arc::decrement_strong_count(component)
+    unsafe { Arc::decrement_strong_count(component) }
 }
 
 /// Retrieve the component id of the `RiceComponent`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_component_get_id(component: *const RiceComponent) -> usize {
-    let component = Arc::from_raw(mut_override(component));
-    let ret = component.component_id;
-    core::mem::forget(component);
-    ret
+    unsafe {
+        let component = Arc::from_raw(mut_override(component));
+        let ret = component.component_id;
+        core::mem::forget(component);
+        ret
+    }
 }
 
 /// Retrieve the component id of the `RiceComponent`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_component_get_stream(
     component: *const RiceComponent,
 ) -> *mut RiceStream {
-    let component = Arc::from_raw(mut_override(component));
-    let Some(agent) = component.weak_agent.upgrade() else {
+    unsafe {
+        let component = Arc::from_raw(mut_override(component));
+        let Some(agent) = component.weak_agent.upgrade() else {
+            core::mem::forget(component);
+            return core::ptr::null_mut();
+        };
+        let inner = agent.inner.lock().unwrap();
+        let Some(stream) = inner
+            .streams
+            .iter()
+            .find(|stream| component.stream_id == stream.stream_id)
+            .cloned()
+        else {
+            core::mem::forget(component);
+            return core::ptr::null_mut();
+        };
+        drop(inner);
         core::mem::forget(component);
-        return core::ptr::null_mut();
-    };
-    let inner = agent.inner.lock().unwrap();
-    let Some(stream) = inner
-        .streams
-        .iter()
-        .find(|stream| component.stream_id == stream.stream_id)
-        .cloned()
-    else {
-        core::mem::forget(component);
-        return core::ptr::null_mut();
-    };
-    drop(inner);
-    core::mem::forget(component);
-    mut_override(Arc::into_raw(stream))
+        mut_override(Arc::into_raw(stream))
+    }
 }
 
 /// Retrieve the component connection state of the `RiceComponent`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_component_get_state(
     component: *const RiceComponent,
 ) -> ComponentConnectionState {
-    let component = Arc::from_raw(mut_override(component));
-    let proto_agent = component.proto_agent.lock().unwrap();
-    let proto_stream = proto_agent.stream(component.stream_id).unwrap();
-    let proto_component = proto_stream.component(component.component_id).unwrap();
-    let ret = proto_component.state();
-    drop(proto_agent);
-    core::mem::forget(component);
-    ret
+    unsafe {
+        let component = Arc::from_raw(mut_override(component));
+        let proto_agent = component.proto_agent.lock().unwrap();
+        let proto_stream = proto_agent.stream(component.stream_id).unwrap();
+        let proto_component = proto_stream.component(component.component_id).unwrap();
+        let ret = proto_component.state();
+        drop(proto_agent);
+        core::mem::forget(component);
+        ret
+    }
 }
 
 /// Retrieve the ICE candidates selected pair of the `RiceComponent`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_component_selected_pair(
     component: *const RiceComponent,
     local: *mut RiceCandidate,
     remote: *mut RiceCandidate,
 ) {
-    let component = Arc::from_raw(mut_override(component));
-    let proto_agent = component.proto_agent.lock().unwrap();
-    let proto_stream = proto_agent.stream(component.stream_id).unwrap();
-    let proto_component = proto_stream.component(component.component_id).unwrap();
-    if let Some(pair) = proto_component.selected_pair().cloned() {
-        *local = RiceCandidate::into_c_full(pair.local);
-        *remote = RiceCandidate::into_c_full(pair.remote);
-    } else {
-        *local = RiceCandidate::zero();
-        *remote = RiceCandidate::zero();
-    };
-    drop(proto_agent);
-    core::mem::forget(component);
+    unsafe {
+        let component = Arc::from_raw(mut_override(component));
+        let proto_agent = component.proto_agent.lock().unwrap();
+        let proto_stream = proto_agent.stream(component.stream_id).unwrap();
+        let proto_component = proto_stream.component(component.component_id).unwrap();
+        if let Some(pair) = proto_component.selected_pair().cloned() {
+            *local = RiceCandidate::into_c_full(pair.local);
+            *remote = RiceCandidate::into_c_full(pair.remote);
+        } else {
+            *local = RiceCandidate::zero();
+            *remote = RiceCandidate::zero();
+        };
+        drop(proto_agent);
+        core::mem::forget(component);
+    }
 }
 
 /// Retrieve a previously added `RiceComponent`.
 ///
 /// If the `RiceComponent` does not exist, `NULL` is returned.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_stream_get_component(
     stream: *const RiceStream,
     component_id: usize,
 ) -> *mut RiceComponent {
-    if component_id < 1 {
-        return mut_override(core::ptr::null::<RiceComponent>());
-    }
-    let stream = Arc::from_raw(stream);
-    let inner = stream.inner.lock().unwrap();
-    let ret = if let Some(component) = inner.components.get(component_id - 1) {
-        mut_override(Arc::into_raw(component.clone()))
-    } else {
-        return mut_override(core::ptr::null::<RiceComponent>());
-    };
+    unsafe {
+        if component_id < 1 {
+            return mut_override(core::ptr::null::<RiceComponent>());
+        }
+        let stream = Arc::from_raw(stream);
+        let inner = stream.inner.lock().unwrap();
+        let ret = if let Some(component) = inner.components.get(component_id - 1) {
+            mut_override(Arc::into_raw(component.clone()))
+        } else {
+            return mut_override(core::ptr::null::<RiceComponent>());
+        };
 
-    drop(inner);
-    core::mem::forget(stream);
-    ret
+        drop(inner);
+        core::mem::forget(stream);
+        ret
+    }
 }
 
 /// Start gathering candidates for a component with the provided local socket addresses.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_component_gather_candidates(
     component: *mut RiceComponent,
     sockets_len: usize,
@@ -2238,73 +2368,76 @@ pub unsafe extern "C" fn rice_component_gather_candidates(
     turn_sockets: *const *const RiceAddress,
     turn_config: *const *mut RiceTurnConfig,
 ) -> RiceError {
-    let component = Arc::from_raw(component);
-    let stun_servers = {
-        let Some(agent) = component.weak_agent.upgrade() else {
-            core::mem::forget(component);
-            return RiceError::ResourceNotFound;
+    unsafe {
+        let component = Arc::from_raw(component);
+        let stun_servers = {
+            let Some(agent) = component.weak_agent.upgrade() else {
+                core::mem::forget(component);
+                return RiceError::ResourceNotFound;
+            };
+            let agent = agent.inner.lock().unwrap();
+            agent.stun_servers.clone()
         };
-        let agent = agent.inner.lock().unwrap();
-        agent.stun_servers.clone()
-    };
-    debug!("stun_servers: {stun_servers:?}");
-    let mut proto_agent = component.proto_agent.lock().unwrap();
-    let mut proto_stream = proto_agent.mut_stream(component.stream_id).unwrap();
-    let mut proto_component = proto_stream.mut_component(component.component_id).unwrap();
+        debug!("stun_servers: {stun_servers:?}");
+        let mut proto_agent = component.proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(component.stream_id).unwrap();
+        let mut proto_component = proto_stream.mut_component(component.component_id).unwrap();
 
-    let sockets_addr = core::slice::from_raw_parts(sockets_addr, sockets_len);
-    let sockets_transport = core::slice::from_raw_parts(sockets_transports, sockets_len);
+        let sockets_addr = core::slice::from_raw_parts(sockets_addr, sockets_len);
+        let sockets_transport = core::slice::from_raw_parts(sockets_transports, sockets_len);
 
-    let sockets = sockets_transport
-        .iter()
-        .zip(sockets_addr.iter())
-        .map(|(&transport, addr)| {
-            let socket_addr = RiceAddress::into_rice_none(*addr).inner();
-            (transport_type_from_c(transport), socket_addr)
-        })
-        .collect::<Vec<_>>();
-
-    debug!("sockets: {sockets:?}");
-
-    let turn_sockets = if turn_len > 0 {
-        core::slice::from_raw_parts(turn_sockets, turn_len)
-    } else {
-        &[]
-    };
-    let turn_configs = if turn_len > 0 {
-        core::slice::from_raw_parts(turn_config, turn_len)
+        let sockets = sockets_transport
             .iter()
-            .map(|config| RiceTurnConfig::into_rice_full(*config))
-            .collect::<Vec<_>>()
-    } else {
-        vec![]
-    };
-    let turn_servers = turn_sockets
-        .iter()
-        .zip(turn_configs.iter())
-        .map(|(socket, config)| {
-            let turn_addr = RiceAddress::into_rice_none(*socket);
-            (turn_addr.inner(), &config.0)
-        })
-        .collect::<Vec<_>>();
-    debug!("turn_servers: {turn_servers:?}");
+            .zip(sockets_addr.iter())
+            .map(|(&transport, addr)| {
+                let socket_addr = RiceAddress::into_rice_none(*addr).inner();
+                (transport_type_from_c(transport), socket_addr)
+            })
+            .collect::<Vec<_>>();
 
-    let ret = proto_component.gather_candidates(&sockets, &stun_servers, turn_servers.as_slice());
-    drop(proto_agent);
-    core::mem::forget(component);
+        debug!("sockets: {sockets:?}");
 
-    match ret {
-        Ok(()) => RiceError::Success,
-        Err(AgentError::AlreadyInProgress) => RiceError::AlreadyInProgress,
-        Err(AgentError::ResourceNotFound) => RiceError::ResourceNotFound,
-        Err(_) => RiceError::Failed,
+        let turn_sockets = if turn_len > 0 {
+            core::slice::from_raw_parts(turn_sockets, turn_len)
+        } else {
+            &[]
+        };
+        let turn_configs = if turn_len > 0 {
+            core::slice::from_raw_parts(turn_config, turn_len)
+                .iter()
+                .map(|config| RiceTurnConfig::into_rice_full(*config))
+                .collect::<Vec<_>>()
+        } else {
+            vec![]
+        };
+        let turn_servers = turn_sockets
+            .iter()
+            .zip(turn_configs.iter())
+            .map(|(socket, config)| {
+                let turn_addr = RiceAddress::into_rice_none(*socket);
+                (turn_addr.inner(), &config.0)
+            })
+            .collect::<Vec<_>>();
+        debug!("turn_servers: {turn_servers:?}");
+
+        let ret =
+            proto_component.gather_candidates(&sockets, &stun_servers, turn_servers.as_slice());
+        drop(proto_agent);
+        core::mem::forget(component);
+
+        match ret {
+            Ok(()) => RiceError::Success,
+            Err(AgentError::AlreadyInProgress) => RiceError::AlreadyInProgress,
+            Err(AgentError::ResourceNotFound) => RiceError::ResourceNotFound,
+            Err(_) => RiceError::Failed,
+        }
     }
 }
 
 /// Send data to the connected peer.
 ///
 /// This will fail before a connection is successfully completed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_component_send(
     component: *mut RiceComponent,
     data: *mut u8,
@@ -2312,67 +2445,71 @@ pub unsafe extern "C" fn rice_component_send(
     now_nanos: i64,
     transmit: *mut RiceTransmit,
 ) -> RiceError {
-    let component = Arc::from_raw(component);
-    let now = Instant::from_nanos(now_nanos);
+    unsafe {
+        let component = Arc::from_raw(component);
+        let now = Instant::from_nanos(now_nanos);
 
-    let mut proto_agent = component.proto_agent.lock().unwrap();
-    let mut proto_stream = proto_agent.mut_stream(component.stream_id).unwrap();
-    let mut proto_component = proto_stream.mut_component(component.component_id).unwrap();
+        let mut proto_agent = component.proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(component.stream_id).unwrap();
+        let mut proto_component = proto_stream.mut_component(component.component_id).unwrap();
 
-    let bytes = Data::from(core::slice::from_raw_parts(data, len));
-    let ret = match proto_component.send(bytes, now) {
-        Ok(stun_transmit) => {
-            *transmit = RiceTransmit {
-                stream_id: component.stream_id,
-                transport: transport_type_to_c(stun_transmit.transport),
-                from: Box::into_raw(Box::new(RiceAddress::new(stun_transmit.from))),
-                to: Box::into_raw(Box::new(RiceAddress::new(stun_transmit.to))),
-                data: RiceDataImpl::owned_to_c(stun_transmit.data),
-            };
-            RiceError::Success
-        }
-        Err(e) => {
-            warn!("Failed to send data: {e:?}");
-            RiceError::Failed
-        }
-    };
+        let bytes = Data::from(core::slice::from_raw_parts(data, len));
+        let ret = match proto_component.send(bytes, now) {
+            Ok(stun_transmit) => {
+                *transmit = RiceTransmit {
+                    stream_id: component.stream_id,
+                    transport: transport_type_to_c(stun_transmit.transport),
+                    from: Box::into_raw(Box::new(RiceAddress::new(stun_transmit.from))),
+                    to: Box::into_raw(Box::new(RiceAddress::new(stun_transmit.to))),
+                    data: RiceDataImpl::owned_to_c(stun_transmit.data),
+                };
+                RiceError::Success
+            }
+            Err(e) => {
+                warn!("Failed to send data: {e:?}");
+                RiceError::Failed
+            }
+        };
 
-    drop(proto_agent);
-    core::mem::forget(component);
+        drop(proto_agent);
+        core::mem::forget(component);
 
-    ret
+        ret
+    }
 }
 
 /// Start gathering candidates for a component with the provided local socket addresses.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_component_set_selected_pair(
     component: *mut RiceComponent,
     local: *const RiceCandidate,
     remote: *const RiceCandidate,
 ) -> RiceError {
-    let component = Arc::from_raw(component);
+    unsafe {
+        let component = Arc::from_raw(component);
 
-    let local = Box::from_raw(mut_override(local));
-    let remote = Box::from_raw(mut_override(remote));
+        let local = Box::from_raw(mut_override(local));
+        let remote = Box::from_raw(mut_override(remote));
 
-    let mut proto_agent = component.proto_agent.lock().unwrap();
-    let mut proto_stream = proto_agent.mut_stream(component.stream_id).unwrap();
-    let mut proto_component = proto_stream.mut_component(component.component_id).unwrap();
+        let mut proto_agent = component.proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(component.stream_id).unwrap();
+        let mut proto_component = proto_stream.mut_component(component.component_id).unwrap();
 
-    let ret = proto_component.set_selected_pair(CandidatePair::new(
-        (*local).as_rice_none(),
-        (*remote).as_rice_none(),
-    ));
+        let ret = proto_component.set_selected_pair(CandidatePair::new(
+            (*local).as_rice_none(),
+            (*remote).as_rice_none(),
+        ));
 
-    drop(proto_agent);
-    core::mem::forget(component);
-    core::mem::forget(local);
-    core::mem::forget(remote);
+        drop(proto_agent);
+        core::mem::forget(component);
+        core::mem::forget(local);
+        core::mem::forget(remote);
 
-    if ret.is_err() {
-        RiceError::Failed
-    } else {
-        RiceError::Success
+        if ret.is_err() {
+            RiceError::Failed
+        } else {
+            RiceError::Success
+        }
     }
 }
 
@@ -2380,9 +2517,9 @@ pub unsafe extern "C" fn rice_component_set_selected_pair(
 // - selected_pair
 
 /// Create a `RiceAddress` from a string representation of the socket address.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_address_new_from_string(string: *const c_char) -> *mut RiceAddress {
-    rice_ctypes::rice_address_new_from_string(string)
+    unsafe { rice_ctypes::rice_address_new_from_string(string) }
 }
 
 /// The address family.
@@ -2416,36 +2553,40 @@ impl RiceAddressFamily {
 /// The number of bytes required depends on the address family being constructed:
 /// - IPv4 -> 4.
 /// - IPv6 -> 16.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_address_new_from_bytes(
     family: RiceAddressFamily,
     bytes: *const u8,
     port: u16,
 ) -> *mut RiceAddress {
-    let ip_addr = match family {
-        RiceAddressFamily::Ipv4 => {
-            let bytes = core::slice::from_raw_parts(bytes, 4);
-            IpAddr::V4(Ipv4Addr::from([bytes[0], bytes[1], bytes[2], bytes[3]]))
-        }
-        RiceAddressFamily::Ipv6 => {
-            let bytes = core::slice::from_raw_parts(bytes, 16);
-            IpAddr::V6(Ipv6Addr::from([
-                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
-                bytes[15],
-            ]))
-        }
-    };
-    Box::into_raw(Box::new(RiceAddress::new(SocketAddr::new(ip_addr, port))))
+    unsafe {
+        let ip_addr = match family {
+            RiceAddressFamily::Ipv4 => {
+                let bytes = core::slice::from_raw_parts(bytes, 4);
+                IpAddr::V4(Ipv4Addr::from([bytes[0], bytes[1], bytes[2], bytes[3]]))
+            }
+            RiceAddressFamily::Ipv6 => {
+                let bytes = core::slice::from_raw_parts(bytes, 16);
+                IpAddr::V6(Ipv6Addr::from([
+                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                    bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
+                    bytes[15],
+                ]))
+            }
+        };
+        Box::into_raw(Box::new(RiceAddress::new(SocketAddr::new(ip_addr, port))))
+    }
 }
 
 /// The address family of the `RiceAddress`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_address_get_family(addr: *const RiceAddress) -> RiceAddressFamily {
-    let addr = RiceAddress::into_rice_none(addr);
-    match addr.inner() {
-        SocketAddr::V4(_) => RiceAddressFamily::Ipv4,
-        SocketAddr::V6(_) => RiceAddressFamily::Ipv6,
+    unsafe {
+        let addr = RiceAddress::into_rice_none(addr);
+        match addr.inner() {
+            SocketAddr::V4(_) => RiceAddressFamily::Ipv4,
+            SocketAddr::V6(_) => RiceAddressFamily::Ipv6,
+        }
     }
 }
 
@@ -2454,72 +2595,80 @@ pub unsafe extern "C" fn rice_address_get_family(addr: *const RiceAddress) -> Ri
 /// The number of bytes required depends on the address family being constructed:
 /// - IPv4 -> 4.
 /// - IPv6 -> 16.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_address_get_address_bytes(
     addr: *const RiceAddress,
     bytes: *mut u8,
 ) -> usize {
-    let addr = RiceAddress::into_rice_none(addr);
-    let ret = match addr.inner().ip() {
-        IpAddr::V4(ip) => {
-            let bytes = core::slice::from_raw_parts_mut(bytes, 4);
-            for (i, octet) in ip.octets().into_iter().enumerate() {
-                bytes[i] = octet;
+    unsafe {
+        let addr = RiceAddress::into_rice_none(addr);
+        let ret = match addr.inner().ip() {
+            IpAddr::V4(ip) => {
+                let bytes = core::slice::from_raw_parts_mut(bytes, 4);
+                for (i, octet) in ip.octets().into_iter().enumerate() {
+                    bytes[i] = octet;
+                }
+                4
             }
-            4
-        }
-        IpAddr::V6(ip) => {
-            let bytes = core::slice::from_raw_parts_mut(bytes, 16);
-            for (i, octet) in ip.octets().into_iter().enumerate() {
-                bytes[i] = octet;
+            IpAddr::V6(ip) => {
+                let bytes = core::slice::from_raw_parts_mut(bytes, 16);
+                for (i, octet) in ip.octets().into_iter().enumerate() {
+                    bytes[i] = octet;
+                }
+                16
             }
-            16
-        }
-    };
-    ret
+        };
+        ret
+    }
 }
 
 /// Retrieve the port of a `RiceAddress`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_address_get_port(addr: *const RiceAddress) -> u16 {
-    let addr = RiceAddress::into_rice_none(addr);
-    addr.inner().port()
+    unsafe {
+        let addr = RiceAddress::into_rice_none(addr);
+        addr.inner().port()
+    }
 }
 
 /// Compare whether two `RiceAddress`es are equal.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_address_cmp(
     addr: *const RiceAddress,
     other: *const RiceAddress,
 ) -> c_int {
-    rice_ctypes::rice_address_cmp(addr, other)
+    unsafe { rice_ctypes::rice_address_cmp(addr, other) }
 }
 
 /// Copy a `RiceAddress`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_address_copy(addr: *const RiceAddress) -> *mut RiceAddress {
-    if addr.is_null() {
-        return core::ptr::null_mut();
+    unsafe {
+        if addr.is_null() {
+            return core::ptr::null_mut();
+        }
+        let addr = RiceAddress::into_rice_none(mut_override(addr));
+        mut_override(RiceAddress::new(addr.inner()).into_c_full())
     }
-    let addr = RiceAddress::into_rice_none(mut_override(addr));
-    mut_override(RiceAddress::new(addr.inner()).into_c_full())
 }
 
 /// Free a `RiceAddress`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_address_free(addr: *mut RiceAddress) {
-    rice_ctypes::rice_address_free(addr)
+    unsafe { rice_ctypes::rice_address_free(addr) }
 }
 
 /// Generate a random sequence of characters suitable for username fragments and passwords.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_random_string(length: usize) -> *mut c_char {
-    if length == 0 {
-        return core::ptr::null_mut();
+    unsafe {
+        if length == 0 {
+            return core::ptr::null_mut();
+        }
+        CString::new(crate::random_string(length))
+            .unwrap()
+            .into_raw()
     }
-    CString::new(crate::random_string(length))
-        .unwrap()
-        .into_raw()
 }
 
 fn mut_override<T>(val: *const T) -> *mut T {

@@ -13,7 +13,7 @@ use sans_io_time::Instant;
 use crate::agent::{AgentError, AgentTransmit};
 use crate::candidate::{CandidatePair, TransportType};
 use crate::turn::TurnConfig;
-use crate::{const_override, mut_override, Address};
+use crate::{Address, const_override, mut_override};
 
 /// A [`Component`] in an ICE [`Stream`](crate::stream::Stream)
 #[derive(Debug)]

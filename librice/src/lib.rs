@@ -67,8 +67,8 @@ pub use rice_c::random_string;
 #[cfg(test)]
 pub(crate) mod tests {
     use std::sync::Once;
-    use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::SubscriberExt;
 
     static TRACING: Once = Once::new();
 

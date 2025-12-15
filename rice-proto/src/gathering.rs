@@ -19,14 +19,14 @@ use crate::candidate::{Candidate, TcpType, TransportType};
 use crate::turn::TurnConfig;
 #[cfg(any(feature = "openssl", feature = "rustls"))]
 use crate::turn::TurnTlsConfig;
+use stun_proto::Instant;
 use stun_proto::agent::{HandleStunReply, StunAgent, StunAgentPollRet, StunError, Transmit};
 use stun_proto::types::attribute::XorMappedAddress;
 use stun_proto::types::data::Data;
 use stun_proto::types::message::{
-    Message, MessageHeader, MessageWriteVec, StunParseError, TransactionId, BINDING,
+    BINDING, Message, MessageHeader, MessageWriteVec, StunParseError, TransactionId,
 };
 use stun_proto::types::prelude::{MessageWrite, MessageWriteExt};
-use stun_proto::Instant;
 use turn_client_proto::api::{TurnEvent, TurnPollRet, TurnRecvRet};
 use turn_client_proto::client::TurnClient;
 use turn_client_proto::prelude::*;
@@ -852,8 +852,7 @@ impl StunGatherer {
                             Ok(msg) => {
                                 trace!(
                                     "parsed STUN message {msg} from {} to {}",
-                                    transmit.from,
-                                    transmit.to
+                                    transmit.from, transmit.to
                                 );
                                 if let HandleStunReply::ValidatedStunResponse(response) =
                                     agent.handle_stun(msg, transmit.from)
@@ -901,7 +900,9 @@ impl StunGatherer {
                             icmp_code,
                             icmp_data: _,
                         } => {
-                            debug!("gathering received ICMP(type:{icmp_type:x}, code:{icmp_code:x}) over TURN from {transport}:{peer}");
+                            debug!(
+                                "gathering received ICMP(type:{icmp_type:x}, code:{icmp_code:x}) over TURN from {transport}:{peer}"
+                            );
                             return true;
                         }
                     }
@@ -982,9 +983,9 @@ mod tests {
 
     use crate::candidate::{CandidateType, TcpType};
     use stun_proto::types::{
+        AddressFamily,
         message::{MessageClass, MessageWriteVec},
         prelude::{MessageWrite, MessageWriteExt},
-        AddressFamily,
     };
     use turn_server_proto::api::{TurnServerApi, TurnServerPollRet};
 

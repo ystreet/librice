@@ -53,15 +53,17 @@ impl RiceAddress {
 
     /// Consume a C representation of a `RiceAddress` into the Rust equivalent.
     pub unsafe fn into_rice_full(value: *const RiceAddress) -> Box<Self> {
-        Box::from_raw(mut_override(value))
+        unsafe { Box::from_raw(mut_override(value)) }
     }
 
     /// Copy a C representation of a `RiceAddress` into the Rust equivalent.
     pub unsafe fn into_rice_none(value: *const RiceAddress) -> Self {
-        let boxed = Box::from_raw(mut_override(value));
-        let ret = *boxed;
-        core::mem::forget(boxed);
-        ret
+        unsafe {
+            let boxed = Box::from_raw(mut_override(value));
+            let ret = *boxed;
+            core::mem::forget(boxed);
+            ret
+        }
     }
 
     /// The inner representation of the [`RiceAddress`].
@@ -79,34 +81,40 @@ impl core::ops::Deref for RiceAddress {
 
 /// Create a `RiceAddress` from a string representation of the socket address.
 pub unsafe fn rice_address_new_from_string(string: *const c_char) -> *mut RiceAddress {
-    let Ok(string) = CStr::from_ptr(string).to_str() else {
-        return core::ptr::null_mut();
-    };
-    let Ok(saddr) = SocketAddr::from_str(string) else {
-        return core::ptr::null_mut();
-    };
+    unsafe {
+        let Ok(string) = CStr::from_ptr(string).to_str() else {
+            return core::ptr::null_mut();
+        };
+        let Ok(saddr) = SocketAddr::from_str(string) else {
+            return core::ptr::null_mut();
+        };
 
-    mut_override(RiceAddress::into_c_full(RiceAddress::new(saddr)))
+        mut_override(RiceAddress::into_c_full(RiceAddress::new(saddr)))
+    }
 }
 
 /// Compare whether two `RiceAddress`es are equal.
 pub unsafe fn rice_address_cmp(addr: *const RiceAddress, other: *const RiceAddress) -> c_int {
-    match (addr.is_null(), other.is_null()) {
-        (true, true) => 0,
-        (true, false) => -1,
-        (false, true) => 1,
-        (false, false) => {
-            let addr = RiceAddress::into_rice_none(addr);
-            let other = RiceAddress::into_rice_none(other);
-            addr.cmp(&other) as c_int
+    unsafe {
+        match (addr.is_null(), other.is_null()) {
+            (true, true) => 0,
+            (true, false) => -1,
+            (false, true) => 1,
+            (false, false) => {
+                let addr = RiceAddress::into_rice_none(addr);
+                let other = RiceAddress::into_rice_none(other);
+                addr.cmp(&other) as c_int
+            }
         }
     }
 }
 
 /// Free a `RiceAddress`.
 pub unsafe fn rice_address_free(addr: *mut RiceAddress) {
-    if !addr.is_null() {
-        let _addr = Box::from_raw(addr);
+    unsafe {
+        if !addr.is_null() {
+            let _addr = Box::from_raw(addr);
+        }
     }
 }
 

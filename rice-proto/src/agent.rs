@@ -17,8 +17,8 @@ use core::net::SocketAddr;
 use core::sync::atomic::AtomicU64;
 use core::time::Duration;
 
-use stun_proto::types::data::Data;
 use stun_proto::Instant;
+use stun_proto::types::data::Data;
 
 use crate::candidate::{ParseCandidateError, TransportType};
 use crate::component::ComponentConnectionState;
@@ -304,7 +304,7 @@ impl Agent {
                         transport,
                         from: local_addr,
                         to: remote_addr,
-                    })
+                    });
                 }
                 GatherPoll::WaitUntil(earliest_wait) => {
                     if let Some(check_wait) = lowest_wait {
@@ -319,13 +319,13 @@ impl Agent {
                     return AgentPoll::GatheredCandidate(AgentGatheredCandidate {
                         stream_id,
                         gathered: candidate,
-                    })
+                    });
                 }
                 GatherPoll::Complete(component_id) => {
                     return AgentPoll::GatheringComplete(AgentGatheringComplete {
                         stream_id,
                         component_id,
-                    })
+                    });
                 }
                 GatherPoll::Finished => (),
             }

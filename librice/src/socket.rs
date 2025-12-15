@@ -152,10 +152,7 @@ impl UdpSocketChannel {
         {
             let inner = self.inner.lock().unwrap();
             if inner.closed {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Connection closed",
-                ));
+                return Err(std::io::Error::other("Connection closed"));
             }
         }
         trace!(

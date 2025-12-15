@@ -9,7 +9,7 @@
 use clap::Parser;
 
 use librice::agent::{Agent, AgentMessage, TurnConfig, TurnCredentials};
-use rice_c::{turn::TurnTlsConfig, AddressFamily};
+use rice_c::{AddressFamily, turn::TurnTlsConfig};
 
 use std::{io, net::SocketAddr, str::FromStr};
 
@@ -18,8 +18,8 @@ use futures::prelude::*;
 use librice::candidate::TransportType;
 
 fn init_logs() {
-    use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::SubscriberExt;
 
     let level_filter = std::env::var("RICE_LOG")
         .ok()

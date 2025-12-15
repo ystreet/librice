@@ -10,7 +10,7 @@ use std::future::Future;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{ready, Poll};
+use std::task::{Poll, ready};
 
 use futures::FutureExt;
 use smol::{Async, Timer};

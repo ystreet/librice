@@ -216,8 +216,8 @@ pub fn random_string(len: usize) -> String {
 #[cfg(test)]
 pub(crate) mod tests {
     use tracing::subscriber::DefaultGuard;
-    use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::SubscriberExt;
 
     pub fn test_init_log() -> DefaultGuard {
         let level_filter = std::env::var("RICE_LOG")

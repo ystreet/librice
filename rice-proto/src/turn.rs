@@ -108,7 +108,7 @@ pub enum TurnTlsConfig {
 #[cfg(feature = "rustls")]
 use alloc::sync::Arc;
 #[cfg(feature = "rustls")]
-use rustls::{pki_types::ServerName, ClientConfig};
+use rustls::{ClientConfig, pki_types::ServerName};
 
 /// Configuration parameters for TURN use over TLS with Rustls.
 #[cfg(feature = "rustls")]

@@ -13,12 +13,12 @@ use std::sync::{Arc, Mutex, Weak};
 
 use futures::StreamExt;
 use rice_c::Address;
-use rice_c::{prelude::*, Instant};
+use rice_c::{Instant, prelude::*};
 use tracing::{debug, info, trace, warn};
 
 use crate::agent::{AgentError, AgentInner};
 use crate::component::{Component, ComponentInner};
-use crate::gathering::{iface_sockets, GatherSocket};
+use crate::gathering::{GatherSocket, iface_sockets};
 use crate::runtime::{AsyncTcpListenerExt, Runtime};
 use crate::socket::{StunChannel, TcpChannel, Transmit};
 
