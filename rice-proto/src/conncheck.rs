@@ -19,19 +19,19 @@ use core::ops::Range;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 
+use crate::ALPHABET;
 use crate::candidate::{Candidate, CandidatePair, CandidateType, TcpType, TransportType};
 use crate::component::ComponentConnectionState;
 use crate::gathering::GatheredCandidate;
 use crate::rand::generate_random_ice_string;
 use crate::tcp::TcpBuffer;
-use crate::ALPHABET;
 use byteorder::{BigEndian, ByteOrder};
 use rice_stun_types::attribute::{IceControlled, IceControlling, Priority, UseCandidate};
+use stun_proto::Instant;
 use stun_proto::agent::{HandleStunReply, StunAgent, StunAgentPollRet, StunError, Transmit};
 use stun_proto::types::attribute::*;
 use stun_proto::types::data::Data;
 use stun_proto::types::message::*;
-use stun_proto::Instant;
 use turn_client_proto::api::{TransmitBuild, TurnEvent, TurnPollRet, TurnRecvRet};
 use turn_client_proto::client::TurnClient;
 use turn_client_proto::prelude::*;
@@ -1119,7 +1119,7 @@ impl ConnCheckList {
         trace!("triggered {:?}", self.triggered);
         self.triggered.iter().any(|&check_id| {
             self.check_by_id(check_id)
-                .map_or(false, |check| needle == &check.pair)
+                .is_some_and(|check| needle == &check.pair)
         })
     }
 
@@ -1263,7 +1263,7 @@ impl ConnCheckList {
     )]
     fn add_triggered(&mut self, check: &ConnCheck) {
         if let Some(idx) = self.triggered.iter().position(|&existing| {
-            self.check_by_id(existing).map_or(false, |existing| {
+            self.check_by_id(existing).is_some_and(|existing| {
                 candidate_pair_is_same_connection(&existing.pair, &check.pair)
             })
         }) {
@@ -1689,7 +1689,7 @@ impl ConnCheckList {
         }
         self.dump_check_state();
         if let Some(idx) = self.valid.iter().position(|&check_id| {
-            self.check_by_id(check_id).map_or(false, |check| {
+            self.check_by_id(check_id).is_some_and(|check| {
                 check.nominate && candidate_pair_is_same_connection(&check.pair, pair)
             })
         }) {
@@ -1889,7 +1889,8 @@ impl ConnCheckList {
         let mut s = alloc::format!("checklist {}", self.checklist_id);
         for pair in self.pairs.iter() {
             use core::fmt::Write as _;
-            let _ = write!(&mut s,
+            let _ = write!(
+                &mut s,
                 "\nID:{id} foundation:{foundation} state:{state} nom:{nominate} con:{controlling} priority:{local_pri},{remote_pri} trans:{transport} local:{local_cand_type} {local_addr} remote:{remote_cand_type} {remote_addr}",
                 id = format_args!("{:<3}", pair.conncheck_id),
                 foundation = format_args!("{:10}", pair.pair.foundation()),
@@ -2448,7 +2449,9 @@ impl ConnCheckListSet {
                     icmp_code,
                     icmp_data: _,
                 } => {
-                    debug!("conncheck received ICMP(type:{icmp_type:x}, code:{icmp_code:x}) over TURN from {transport}:{peer}");
+                    debug!(
+                        "conncheck received ICMP(type:{icmp_type:x}, code:{icmp_code:x}) over TURN from {transport}:{peer}"
+                    );
                     return HandleRecvReply {
                         handled: true,
                         have_more_data: false,
@@ -3442,7 +3445,10 @@ impl ConnCheckListSet {
                 Some(c) => c,
                 None => {
                     if start_idx == self.checklist_i {
-                        debug!("nothing to do yet any-running:{any_running} completed:{} all-failed:{all_failed} turn-closed:{all_turn_closed}", self.completed);
+                        debug!(
+                            "nothing to do yet any-running:{any_running} completed:{} all-failed:{all_failed} turn-closed:{all_turn_closed}",
+                            self.completed
+                        );
                         // we looked at them all and none of the checklist could find anything to
                         // do
                         if !any_running && !self.completed {
@@ -3598,7 +3604,7 @@ impl ConnCheckListSet {
 
         if self
             .last_send_time
-            .map_or(false, |last_send| last_send + Self::MINIMUM_SET_TICK > now)
+            .is_some_and(|last_send| last_send + Self::MINIMUM_SET_TICK > now)
         {
             return None;
         }
@@ -4020,8 +4026,8 @@ mod tests {
     use turn_client_proto::{
         tcp::TurnClientTcp,
         types::{
-            message::{ALLOCATE, CREATE_PERMISSION},
             TurnCredentials,
+            message::{ALLOCATE, CREATE_PERMISSION},
         },
         udp::TurnClientUdp,
     };
@@ -4058,85 +4064,135 @@ mod tests {
 
     #[test]
     fn candidate_pair_ordering() {
-        assert!(CandidatePairState::Failed
-            .cmp_progression(&CandidatePairState::Failed)
-            .is_eq());
-        assert!(CandidatePairState::Failed
-            .cmp_progression(&CandidatePairState::Frozen)
-            .is_lt());
-        assert!(CandidatePairState::Failed
-            .cmp_progression(&CandidatePairState::Waiting)
-            .is_lt());
-        assert!(CandidatePairState::Failed
-            .cmp_progression(&CandidatePairState::InProgress)
-            .is_lt());
-        assert!(CandidatePairState::Failed
-            .cmp_progression(&CandidatePairState::Succeeded)
-            .is_lt());
+        assert!(
+            CandidatePairState::Failed
+                .cmp_progression(&CandidatePairState::Failed)
+                .is_eq()
+        );
+        assert!(
+            CandidatePairState::Failed
+                .cmp_progression(&CandidatePairState::Frozen)
+                .is_lt()
+        );
+        assert!(
+            CandidatePairState::Failed
+                .cmp_progression(&CandidatePairState::Waiting)
+                .is_lt()
+        );
+        assert!(
+            CandidatePairState::Failed
+                .cmp_progression(&CandidatePairState::InProgress)
+                .is_lt()
+        );
+        assert!(
+            CandidatePairState::Failed
+                .cmp_progression(&CandidatePairState::Succeeded)
+                .is_lt()
+        );
 
-        assert!(CandidatePairState::Frozen
-            .cmp_progression(&CandidatePairState::Failed)
-            .is_gt());
-        assert!(CandidatePairState::Frozen
-            .cmp_progression(&CandidatePairState::Frozen)
-            .is_eq());
-        assert!(CandidatePairState::Frozen
-            .cmp_progression(&CandidatePairState::Waiting)
-            .is_lt());
-        assert!(CandidatePairState::Frozen
-            .cmp_progression(&CandidatePairState::InProgress)
-            .is_lt());
-        assert!(CandidatePairState::Frozen
-            .cmp_progression(&CandidatePairState::Succeeded)
-            .is_lt());
+        assert!(
+            CandidatePairState::Frozen
+                .cmp_progression(&CandidatePairState::Failed)
+                .is_gt()
+        );
+        assert!(
+            CandidatePairState::Frozen
+                .cmp_progression(&CandidatePairState::Frozen)
+                .is_eq()
+        );
+        assert!(
+            CandidatePairState::Frozen
+                .cmp_progression(&CandidatePairState::Waiting)
+                .is_lt()
+        );
+        assert!(
+            CandidatePairState::Frozen
+                .cmp_progression(&CandidatePairState::InProgress)
+                .is_lt()
+        );
+        assert!(
+            CandidatePairState::Frozen
+                .cmp_progression(&CandidatePairState::Succeeded)
+                .is_lt()
+        );
 
-        assert!(CandidatePairState::Waiting
-            .cmp_progression(&CandidatePairState::Failed)
-            .is_gt());
-        assert!(CandidatePairState::Waiting
-            .cmp_progression(&CandidatePairState::Frozen)
-            .is_gt());
-        assert!(CandidatePairState::Waiting
-            .cmp_progression(&CandidatePairState::Waiting)
-            .is_eq());
-        assert!(CandidatePairState::Waiting
-            .cmp_progression(&CandidatePairState::InProgress)
-            .is_lt());
-        assert!(CandidatePairState::Waiting
-            .cmp_progression(&CandidatePairState::Succeeded)
-            .is_lt());
+        assert!(
+            CandidatePairState::Waiting
+                .cmp_progression(&CandidatePairState::Failed)
+                .is_gt()
+        );
+        assert!(
+            CandidatePairState::Waiting
+                .cmp_progression(&CandidatePairState::Frozen)
+                .is_gt()
+        );
+        assert!(
+            CandidatePairState::Waiting
+                .cmp_progression(&CandidatePairState::Waiting)
+                .is_eq()
+        );
+        assert!(
+            CandidatePairState::Waiting
+                .cmp_progression(&CandidatePairState::InProgress)
+                .is_lt()
+        );
+        assert!(
+            CandidatePairState::Waiting
+                .cmp_progression(&CandidatePairState::Succeeded)
+                .is_lt()
+        );
 
-        assert!(CandidatePairState::InProgress
-            .cmp_progression(&CandidatePairState::Failed)
-            .is_gt());
-        assert!(CandidatePairState::InProgress
-            .cmp_progression(&CandidatePairState::Frozen)
-            .is_gt());
-        assert!(CandidatePairState::InProgress
-            .cmp_progression(&CandidatePairState::Waiting)
-            .is_gt());
-        assert!(CandidatePairState::InProgress
-            .cmp_progression(&CandidatePairState::InProgress)
-            .is_eq());
-        assert!(CandidatePairState::InProgress
-            .cmp_progression(&CandidatePairState::Succeeded)
-            .is_lt());
+        assert!(
+            CandidatePairState::InProgress
+                .cmp_progression(&CandidatePairState::Failed)
+                .is_gt()
+        );
+        assert!(
+            CandidatePairState::InProgress
+                .cmp_progression(&CandidatePairState::Frozen)
+                .is_gt()
+        );
+        assert!(
+            CandidatePairState::InProgress
+                .cmp_progression(&CandidatePairState::Waiting)
+                .is_gt()
+        );
+        assert!(
+            CandidatePairState::InProgress
+                .cmp_progression(&CandidatePairState::InProgress)
+                .is_eq()
+        );
+        assert!(
+            CandidatePairState::InProgress
+                .cmp_progression(&CandidatePairState::Succeeded)
+                .is_lt()
+        );
 
-        assert!(CandidatePairState::Succeeded
-            .cmp_progression(&CandidatePairState::Failed)
-            .is_gt());
-        assert!(CandidatePairState::Succeeded
-            .cmp_progression(&CandidatePairState::Frozen)
-            .is_gt());
-        assert!(CandidatePairState::Succeeded
-            .cmp_progression(&CandidatePairState::Waiting)
-            .is_gt());
-        assert!(CandidatePairState::Succeeded
-            .cmp_progression(&CandidatePairState::InProgress)
-            .is_gt());
-        assert!(CandidatePairState::Succeeded
-            .cmp_progression(&CandidatePairState::Succeeded)
-            .is_eq());
+        assert!(
+            CandidatePairState::Succeeded
+                .cmp_progression(&CandidatePairState::Failed)
+                .is_gt()
+        );
+        assert!(
+            CandidatePairState::Succeeded
+                .cmp_progression(&CandidatePairState::Frozen)
+                .is_gt()
+        );
+        assert!(
+            CandidatePairState::Succeeded
+                .cmp_progression(&CandidatePairState::Waiting)
+                .is_gt()
+        );
+        assert!(
+            CandidatePairState::Succeeded
+                .cmp_progression(&CandidatePairState::InProgress)
+                .is_gt()
+        );
+        assert!(
+            CandidatePairState::Succeeded
+                .cmp_progression(&CandidatePairState::Succeeded)
+                .is_eq()
+        );
     }
 
     struct Peer {

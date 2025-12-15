@@ -205,7 +205,7 @@ pub enum AgentPoll {
 impl AgentPoll {
     fn from_c_full(mut ffi: crate::ffi::RiceAgentPoll) -> Self {
         unsafe {
-            let ret = match ffi.tag {
+            match ffi.tag {
                 crate::ffi::RICE_AGENT_POLL_CLOSED => Self::Closed,
                 crate::ffi::RICE_AGENT_POLL_WAIT_UNTIL_NANOS => Self::WaitUntilNanos(
                     core::mem::ManuallyDrop::into_inner(ffi.field1.field1).wait_until_nanos,
@@ -291,8 +291,7 @@ impl AgentPoll {
                     })
                 }
                 tag => panic!("Unkown AgentPoll value {tag:x?}"),
-            };
-            ret
+            }
         }
     }
 }

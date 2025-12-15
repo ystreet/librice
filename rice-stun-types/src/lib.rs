@@ -45,8 +45,8 @@ pub fn debug_init() {
 #[cfg(test)]
 pub(crate) mod tests {
     use tracing::subscriber::DefaultGuard;
-    use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::SubscriberExt;
 
     use super::*;
 

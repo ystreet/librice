@@ -6,12 +6,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rice_proto::agent::Agent;
 use rice_proto::candidate::{Candidate, CandidatePair};
+use stun_proto::Instant;
 use stun_proto::agent::Transmit;
 use stun_proto::types::TransportType;
-use stun_proto::Instant;
 
 fn bench_sendrecv_udp(c: &mut Criterion) {
     let local_addr = "192.168.1.1:1000".parse().unwrap();

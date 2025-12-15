@@ -9,7 +9,7 @@
 //! TURN module.
 
 use crate::candidate::TransportType;
-use crate::{const_override, AddressFamily};
+use crate::{AddressFamily, const_override};
 
 pub use crate::stream::Credentials as TurnCredentials;
 

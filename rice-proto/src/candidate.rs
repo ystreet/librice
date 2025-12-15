@@ -413,7 +413,7 @@ impl Candidate {
 mod parse {
     use core::{net::SocketAddr, str::FromStr};
 
-    use nom::bytes::complete::{tag, take_while1, take_while_m_n};
+    use nom::bytes::complete::{tag, take_while_m_n, take_while1};
     use nom::combinator::map_res;
 
     use super::{Candidate, CandidateType, ParseCandidateTypeError};
@@ -646,10 +646,16 @@ impl CandidatePair {
     /// ```
     pub fn new(local: Candidate, remote: Candidate) -> Self {
         if local.component_id != remote.component_id {
-            panic!("attempt made to create a local candidate that has a different component id {} than remote component id {}", local.component_id, remote.component_id);
+            panic!(
+                "attempt made to create a local candidate that has a different component id {} than remote component id {}",
+                local.component_id, remote.component_id
+            );
         }
         if local.transport_type != remote.transport_type {
-            panic!("attempt made to create a local candidate that has a different transport {} than the remote transport type {}", local.transport_type, remote.transport_type);
+            panic!(
+                "attempt made to create a local candidate that has a different transport {} than the remote transport type {}",
+                local.transport_type, remote.transport_type
+            );
         }
 
         Self { local, remote }
@@ -923,8 +929,7 @@ mod tests {
             .priority(1234)
             .related_address(related_addr)
             .build();
-            let cand_str =
-                "a=candidate:foundation 1 UDP 1234 127.0.0.1 2345 typ host raddr 192.168.0.1 rport 9876";
+            let cand_str = "a=candidate:foundation 1 UDP 1234 127.0.0.1 2345 typ host raddr 192.168.0.1 rport 9876";
             let parsed_cand = Candidate::from_str(cand_str).unwrap();
             assert_eq!(cand, parsed_cand);
             assert_eq!(cand_str, cand.to_sdp_string());
@@ -975,7 +980,9 @@ mod tests {
         fn raddr_without_rport_attribute() {
             let _log = crate::tests::test_init_log();
             assert!(matches!(
-                Candidate::from_str("a=candidate:foundation 1 TCP 1234 127.0.0.1 2345 typ host raddr 123.123.123.123 foo bar"),
+                Candidate::from_str(
+                    "a=candidate:foundation 1 TCP 1234 127.0.0.1 2345 typ host raddr 123.123.123.123 foo bar"
+                ),
                 Err(ParseCandidateError::BadExtension)
             ));
         }

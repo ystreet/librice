@@ -55,9 +55,11 @@ impl RiceData {
 
 impl RiceGatheredCandidate {
     pub(crate) unsafe fn zeroed() -> Self {
-        RiceGatheredCandidate {
-            candidate: RiceCandidate::zeroed(),
-            turn_agent: core::ptr::null_mut(),
+        unsafe {
+            RiceGatheredCandidate {
+                candidate: RiceCandidate::zeroed(),
+                turn_agent: core::ptr::null_mut(),
+            }
         }
     }
 }

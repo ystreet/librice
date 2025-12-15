@@ -232,11 +232,13 @@ impl Candidate {
     }
 
     pub(crate) unsafe fn from_c_none(candidate: *const crate::ffi::RiceCandidate) -> Self {
-        let mut ret = Self {
-            ffi: crate::ffi::RiceCandidate::zeroed(),
-        };
-        crate::ffi::rice_candidate_copy_into(candidate, &mut ret.ffi);
-        ret
+        unsafe {
+            let mut ret = Self {
+                ffi: crate::ffi::RiceCandidate::zeroed(),
+            };
+            crate::ffi::rice_candidate_copy_into(candidate, &mut ret.ffi);
+            ret
+        }
     }
 
     pub(crate) fn from_c_full(candidate: crate::ffi::RiceCandidate) -> Self {

@@ -13,9 +13,9 @@ use std::sync::{Arc, Mutex, Weak};
 
 use std::task::{Poll, Waker};
 
+use rice_c::Instant;
 use rice_c::candidate::CandidatePair;
 use rice_c::prelude::*;
-use rice_c::Instant;
 
 pub use rice_c::component::ComponentConnectionState;
 use rice_c::stream::RecvData as CRecvData;
@@ -123,7 +123,7 @@ impl Component {
     }
 
     /// A stream that provides the data that has been sent from the peer to this component.
-    pub fn recv(&self) -> impl Stream<Item = RecvData> {
+    pub fn recv(&self) -> impl Stream<Item = RecvData> + '_ {
         ComponentRecv {
             inner: self.inner.clone(),
         }

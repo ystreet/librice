@@ -31,8 +31,8 @@ static TRACING: Once = Once::new();
 
 fn init_logs() {
     TRACING.call_once(|| {
-        use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::Layer;
+        use tracing_subscriber::layer::SubscriberExt;
 
         let level_filter = std::env::var("RICE_LOG")
             .ok()
@@ -84,29 +84,33 @@ pub struct RiceUdpSocket {
 }
 
 /// Construct a UDP socket with the specified local address.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_udp_socket_new(local_addr: *const RiceAddress) -> *mut RiceUdpSocket {
-    init_logs();
+    unsafe {
+        init_logs();
 
-    let local_addr = Box::from_raw(mut_override(local_addr));
+        let local_addr = Box::from_raw(mut_override(local_addr));
 
-    let ret = if let Ok(socket) = Async::<UdpSocket>::bind(**local_addr) {
-        mut_override(Arc::into_raw(Arc::new(RiceUdpSocket { socket })))
-    } else {
-        core::ptr::null_mut::<RiceUdpSocket>()
-    };
+        let ret = if let Ok(socket) = Async::<UdpSocket>::bind(**local_addr) {
+            mut_override(Arc::into_raw(Arc::new(RiceUdpSocket { socket })))
+        } else {
+            core::ptr::null_mut::<RiceUdpSocket>()
+        };
 
-    core::mem::forget(local_addr);
-    ret
+        core::mem::forget(local_addr);
+        ret
+    }
 }
 
 /// Increase the reference count of the `RiceUdpSocket`.
 ///
 /// This function is multi-threading safe.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_udp_socket_ref(udp: *mut RiceUdpSocket) -> *mut RiceUdpSocket {
-    Arc::increment_strong_count(udp);
-    udp
+    unsafe {
+        Arc::increment_strong_count(udp);
+        udp
+    }
 }
 
 /// Decrease the reference count of the `RiceUdpSocket`.
@@ -114,21 +118,25 @@ pub unsafe extern "C" fn rice_udp_socket_ref(udp: *mut RiceUdpSocket) -> *mut Ri
 /// If this is the last reference, then the `RiceUdpSocket` is freed.
 ///
 /// This function is multi-threading safe.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_udp_socket_unref(udp: *mut RiceUdpSocket) {
-    Arc::decrement_strong_count(udp);
+    unsafe {
+        Arc::decrement_strong_count(udp);
+    }
 }
 
 /// Retreive the local bound address of the `RiceUdpSocket`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_udp_socket_local_addr(udp: *const RiceUdpSocket) -> *mut RiceAddress {
-    let udp = Arc::from_raw(udp);
-    let ret = match udp.socket.get_ref().local_addr() {
-        Ok(addr) => mut_override(RiceAddress::new(addr).into_c_full()),
-        Err(_) => core::ptr::null_mut(),
-    };
-    core::mem::forget(udp);
-    ret
+    unsafe {
+        let udp = Arc::from_raw(udp);
+        let ret = match udp.socket.get_ref().local_addr() {
+            Ok(addr) => mut_override(RiceAddress::new(addr).into_c_full()),
+            Err(_) => core::ptr::null_mut(),
+        };
+        core::mem::forget(udp);
+        ret
+    }
 }
 
 /// A connected TCP socket.
@@ -138,27 +146,31 @@ pub struct RiceTcpSocket {
 }
 
 /// Retrieve the local address of a connected TCP socket.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_tcp_socket_local_addr(tcp: *mut RiceTcpSocket) -> *mut RiceAddress {
-    let tcp = Arc::from_raw(tcp);
-    let addr = match tcp.socket.get_ref().local_addr() {
-        Ok(addr) => mut_override(RiceAddress::new(addr).into_c_full()),
-        Err(_e) => core::ptr::null_mut(),
-    };
-    core::mem::forget(tcp);
-    addr
+    unsafe {
+        let tcp = Arc::from_raw(tcp);
+        let addr = match tcp.socket.get_ref().local_addr() {
+            Ok(addr) => mut_override(RiceAddress::new(addr).into_c_full()),
+            Err(_e) => core::ptr::null_mut(),
+        };
+        core::mem::forget(tcp);
+        addr
+    }
 }
 
 /// Retrieve the remote address of a connected TCP socket.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_tcp_socket_remote_addr(tcp: *mut RiceTcpSocket) -> *mut RiceAddress {
-    let tcp = Arc::from_raw(tcp);
-    let addr = match tcp.socket.get_ref().peer_addr() {
-        Ok(addr) => mut_override(RiceAddress::new(addr).into_c_full()),
-        Err(_e) => core::ptr::null_mut(),
-    };
-    core::mem::forget(tcp);
-    addr
+    unsafe {
+        let tcp = Arc::from_raw(tcp);
+        let addr = match tcp.socket.get_ref().peer_addr() {
+            Ok(addr) => mut_override(RiceAddress::new(addr).into_c_full()),
+            Err(_e) => core::ptr::null_mut(),
+        };
+        core::mem::forget(tcp);
+        addr
+    }
 }
 
 /// A cancellation object for a particular task.
@@ -168,19 +180,21 @@ pub struct RiceIoCancel {
 }
 
 /// Construct a new cancellation object.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_io_cancel_new() -> *mut RiceIoCancel {
     Box::into_raw(Box::new(RiceIoCancel { task: None }))
 }
 
 /// Free a `RiceIoCancel`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_io_cancel_free(cancel: *mut RiceIoCancel) {
-    let _ = Box::from_raw(cancel);
+    unsafe {
+        let _ = Box::from_raw(cancel);
+    }
 }
 
 /// Cancel a task referenced by a `RiceIoCancel`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_io_cancel_cancel(cancel: *mut RiceIoCancel) {
     let cancel = unsafe { &mut *cancel };
     if let Some(task) = cancel.task.take() {
@@ -194,51 +208,53 @@ pub unsafe extern "C" fn rice_io_cancel_cancel(cancel: *mut RiceIoCancel) {
 pub type RiceIoOnTcpConnect = Option<extern "C" fn(*mut RiceTcpSocket, data: *mut c_void)>;
 
 /// Connect over TCP to a remote address.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_tcp_connect(
     remote_addr: *const RiceAddress,
     on_connect: RiceIoOnTcpConnect,
     data: *mut c_void,
     cancel: *mut RiceIoCancel,
 ) {
-    init_logs();
-    if on_connect.is_none() {
-        return;
+    unsafe {
+        init_logs();
+        if on_connect.is_none() {
+            return;
+        }
+
+        let remote_addr = Box::from_raw(mut_override(remote_addr));
+        let addr = **remote_addr;
+        core::mem::forget(remote_addr);
+        let ptr = SendPtr::new(data);
+
+        let (runnable, task) = async_task::spawn(
+            async move {
+                let ptr = ptr;
+                debug!("connecting to {addr:?}");
+                let stream = match Async::<TcpStream>::connect(addr).await {
+                    Ok(socket) => {
+                        debug!("connected to {addr:?}");
+                        mut_override(Arc::into_raw(Arc::new(RiceTcpSocket { socket })))
+                    }
+                    Err(e) => {
+                        warn!("tcp connect to {addr:?} failed: {e:?}");
+                        core::ptr::null_mut::<RiceTcpSocket>()
+                    }
+                };
+                let on_connect = on_connect.unwrap();
+                on_connect(stream, ptr.ptr);
+            },
+            schedule,
+        );
+
+        if !cancel.is_null() {
+            let cancel = &mut *cancel;
+            cancel.task = Some(task);
+        } else {
+            task.detach();
+        }
+
+        runnable.run();
     }
-
-    let remote_addr = Box::from_raw(mut_override(remote_addr));
-    let addr = **remote_addr;
-    core::mem::forget(remote_addr);
-    let ptr = SendPtr::new(data);
-
-    let (runnable, task) = async_task::spawn(
-        async move {
-            let ptr = ptr;
-            debug!("connecting to {addr:?}");
-            let stream = match Async::<TcpStream>::connect(addr).await {
-                Ok(socket) => {
-                    debug!("connected to {addr:?}");
-                    mut_override(Arc::into_raw(Arc::new(RiceTcpSocket { socket })))
-                }
-                Err(e) => {
-                    warn!("tcp connect to {addr:?} failed: {e:?}");
-                    core::ptr::null_mut::<RiceTcpSocket>()
-                }
-            };
-            let on_connect = on_connect.unwrap();
-            on_connect(stream, ptr.ptr);
-        },
-        schedule,
-    );
-
-    if !cancel.is_null() {
-        let cancel = unsafe { &mut *cancel };
-        cancel.task = Some(task);
-    } else {
-        task.detach();
-    }
-
-    runnable.run();
 }
 
 /// Callback for when an incoming TCP connection is received.
@@ -267,75 +283,81 @@ pub struct RiceTcpListener {
 /// Listen for TCP connections on the provided local address.
 ///
 /// `NULL` is returned on failure.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_tcp_listen(
     local_addr: *const RiceAddress,
     on_listen: RiceIoOnTcpListen,
     data: *mut c_void,
     destroy: RiceIoDestroy,
 ) -> *mut RiceTcpListener {
-    init_logs();
+    unsafe {
+        init_logs();
 
-    if on_listen.is_none() {
-        return core::ptr::null_mut();
-    }
-    let local_addr = Box::from_raw(mut_override(local_addr));
-    let addr = **local_addr;
-    core::mem::forget(local_addr);
-    let Ok(listener) = Async::<TcpListener>::bind(addr) else {
-        warn!("tcp bind failed for {addr:?}");
-        return core::ptr::null_mut();
-    };
-    let listener = Arc::new(listener);
+        if on_listen.is_none() {
+            return core::ptr::null_mut();
+        }
+        let local_addr = Box::from_raw(mut_override(local_addr));
+        let addr = **local_addr;
+        core::mem::forget(local_addr);
+        let Ok(listener) = Async::<TcpListener>::bind(addr) else {
+            warn!("tcp bind failed for {addr:?}");
+            return core::ptr::null_mut();
+        };
+        let listener = Arc::new(listener);
 
-    let ptr = SendPtr::new(data);
+        let ptr = SendPtr::new(data);
 
-    let (runnable, task) = async_task::spawn(
-        {
-            let listener = listener.clone();
-            async move {
-                let _drop_destroy = DestroyOnDrop {
-                    on_destroy: destroy,
-                    ptr,
-                };
-                let incoming = listener.incoming();
-                futures_lite::pin!(incoming);
-                let on_listen = on_listen.unwrap();
-                while let Some(stream) = incoming.next().await {
-                    trace!("tcp incoming stream {stream:?}");
-                    match stream {
-                        Ok(stream) => {
-                            let socket = mut_override(Arc::into_raw(Arc::new(RiceTcpSocket {
-                                socket: stream,
-                            })));
-                            on_listen(socket, ptr.ptr);
-                        }
-                        Err(e) => {
-                            warn!("Failed to accept incoming stream for listener {addr:?}: {e:?}");
+        let (runnable, task) = async_task::spawn(
+            {
+                let listener = listener.clone();
+                async move {
+                    let _drop_destroy = DestroyOnDrop {
+                        on_destroy: destroy,
+                        ptr,
+                    };
+                    let incoming = listener.incoming();
+                    futures_lite::pin!(incoming);
+                    let on_listen = on_listen.unwrap();
+                    while let Some(stream) = incoming.next().await {
+                        trace!("tcp incoming stream {stream:?}");
+                        match stream {
+                            Ok(stream) => {
+                                let socket = mut_override(Arc::into_raw(Arc::new(RiceTcpSocket {
+                                    socket: stream,
+                                })));
+                                on_listen(socket, ptr.ptr);
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to accept incoming stream for listener {addr:?}: {e:?}"
+                                );
+                            }
                         }
                     }
                 }
-            }
-        },
-        schedule,
-    );
-    runnable.run();
+            },
+            schedule,
+        );
+        runnable.run();
 
-    mut_override(Arc::into_raw(Arc::new(RiceTcpListener {
-        listener,
-        cancel: RiceIoCancel { task: Some(task) },
-    })))
+        mut_override(Arc::into_raw(Arc::new(RiceTcpListener {
+            listener,
+            cancel: RiceIoCancel { task: Some(task) },
+        })))
+    }
 }
 
 /// Increase the reference count of the `RiceTcpListener`.
 ///
 /// This function is multi-threading safe.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_tcp_listener_ref(
     listener: *mut RiceTcpListener,
 ) -> *mut RiceTcpListener {
-    Arc::increment_strong_count(listener);
-    listener
+    unsafe {
+        Arc::increment_strong_count(listener);
+        listener
+    }
 }
 
 /// Decrease the reference count of the `RiceTcpListener`.
@@ -343,23 +365,27 @@ pub unsafe extern "C" fn rice_tcp_listener_ref(
 /// If this is the last reference, then the `RiceListener` is freed.
 ///
 /// This function is multi-threading safe.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_tcp_listener_unref(listener: *mut RiceTcpListener) {
-    Arc::decrement_strong_count(listener);
+    unsafe {
+        Arc::decrement_strong_count(listener);
+    }
 }
 
 /// Retrieve the local address of the `RiceTcpListener`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_tcp_listener_local_addr(
     listener: *mut RiceTcpListener,
 ) -> *mut RiceAddress {
-    let listener = Arc::from_raw(listener);
-    let ret = match listener.listener.get_ref().local_addr() {
-        Ok(addr) => mut_override(RiceAddress::new(addr).into_c_full()),
-        Err(_e) => core::ptr::null_mut(),
-    };
-    core::mem::forget(listener);
-    ret
+    unsafe {
+        let listener = Arc::from_raw(listener);
+        let ret = match listener.listener.get_ref().local_addr() {
+            Ok(addr) => mut_override(RiceAddress::new(addr).into_c_full()),
+            Err(_e) => core::ptr::null_mut(),
+        };
+        core::mem::forget(listener);
+        ret
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -460,7 +486,7 @@ impl SendPtr {
 }
 
 /// Construct a new `RiceSockets` object with the specified notification functions.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_sockets_new_with_notify(
     io_notify: RiceIoNotify,
     io_data: *mut c_void,
@@ -484,18 +510,20 @@ pub unsafe extern "C" fn rice_sockets_new_with_notify(
 }
 
 /// Construct a new `RiceSockets` object.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_sockets_new() -> *mut RiceSockets {
-    rice_sockets_new_with_notify(None, core::ptr::null_mut(), None)
+    unsafe { rice_sockets_new_with_notify(None, core::ptr::null_mut(), None) }
 }
 
 /// Increase the reference count of the `RiceSocket`.
 ///
 /// This function is multi-threading safe.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_sockets_ref(sockets: *mut RiceSockets) -> *mut RiceSockets {
-    Arc::increment_strong_count(sockets);
-    sockets
+    unsafe {
+        Arc::increment_strong_count(sockets);
+        sockets
+    }
 }
 
 /// Decrease the reference count of the `RiceSockets`.
@@ -503,237 +531,247 @@ pub unsafe extern "C" fn rice_sockets_ref(sockets: *mut RiceSockets) -> *mut Ric
 /// If this is the last reference, then the `RiceSockets` is freed.
 ///
 /// This function is multi-threading safe.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_sockets_unref(sockets: *mut RiceSockets) {
-    Arc::decrement_strong_count(sockets)
+    unsafe { Arc::decrement_strong_count(sockets) }
 }
 
 /// Set the notification callbacks for this `RiceSockets`.
 ///
 /// This function is multi-threading safe.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_sockets_set_notify(
     sockets: *mut RiceSockets,
     io_notify: RiceIoNotify,
     io_data: *mut c_void,
     io_destroy: RiceIoDestroy,
 ) {
-    let sockets = Arc::from_raw(sockets);
-    let notify_data = io_notify.map(|io_notify| IoNotifyData {
-        io_notify: Some(io_notify),
-        io_notify_data: SendPtr::new(io_data),
-        io_destroy,
-    });
+    unsafe {
+        let sockets = Arc::from_raw(sockets);
+        let notify_data = io_notify.map(|io_notify| IoNotifyData {
+            io_notify: Some(io_notify),
+            io_notify_data: SendPtr::new(io_data),
+            io_destroy,
+        });
 
-    sockets.set_notify(notify_data);
+        sockets.set_notify(notify_data);
 
-    core::mem::forget(sockets);
+        core::mem::forget(sockets);
+    }
 }
 
 /// Add a `RiceUdpSocket` to this `RiceSockets`.
 ///
 /// This will cause the UDP socket to produce notifications when it is readable and has data.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_sockets_add_udp(
     sockets: *mut RiceSockets,
     udp: *mut RiceUdpSocket,
 ) -> bool {
-    let sockets = Arc::from_raw(sockets);
-    let udp = Arc::from_raw(udp);
-    let notify_data = sockets.notify_data.clone();
-    let mut inner = sockets.inner.lock().unwrap();
+    unsafe {
+        let sockets = Arc::from_raw(sockets);
+        let udp = Arc::from_raw(udp);
+        let notify_data = sockets.notify_data.clone();
+        let mut inner = sockets.inner.lock().unwrap();
 
-    let local_addr = udp.socket.get_ref().local_addr().unwrap();
-    let entry = inner.udp_sockets.entry(local_addr);
-    let ret = match entry {
-        std::collections::hash_map::Entry::Occupied(_) => false,
-        std::collections::hash_map::Entry::Vacant(vacant) => {
-            let udp_clone = udp.clone();
-            let semaphore = Arc::new(async_lock::Semaphore::new(1));
-            let poll_guard = Arc::new(Mutex::new(None));
-            let io_notify_data = notify_data
-                .lock()
-                .unwrap()
-                .map(|notify| Arc::new(Mutex::new(notify)));
-            let (runnable, task) = async_task::spawn(
-                {
-                    let poll_guard = poll_guard.clone();
-                    let semaphore = semaphore.clone();
-                    let io_notify_data = io_notify_data.clone();
-                    async move {
-                        loop {
-                            // Some poll implementations will return readable whenever there is any
-                            // data to read on the socket.  However if `rice_sockets_recv()` occurs on
-                            // a different thread, then the notification to the application may take a
-                            // while for the read to be processed and thus cause the IO thread to busy
-                            // loop.  This Semaphore is designed to mitigate this by only allowing a
-                            // single poll() and recv() combination for a particular socket to occur
-                            // in lockstep.
-                            let guard = semaphore.acquire_arc().await;
-                            *poll_guard.lock().unwrap() = Some(guard);
-                            if let Err(e) = futures_lite::future::poll_fn(|cx| {
-                                udp_clone.socket.poll_readable(cx)
-                            })
-                            .await
-                            {
-                                warn!("Failed to poll udp socket: {e}");
-                                break;
-                            }
-                            if let Some(ref notify_data) = io_notify_data {
-                                let notify_data = notify_data.lock().unwrap();
-                                if let Some(notify) = notify_data.io_notify.as_ref() {
-                                    notify(notify_data.io_notify_data.ptr);
+        let local_addr = udp.socket.get_ref().local_addr().unwrap();
+        let entry = inner.udp_sockets.entry(local_addr);
+        let ret = match entry {
+            std::collections::hash_map::Entry::Occupied(_) => false,
+            std::collections::hash_map::Entry::Vacant(vacant) => {
+                let udp_clone = udp.clone();
+                let semaphore = Arc::new(async_lock::Semaphore::new(1));
+                let poll_guard = Arc::new(Mutex::new(None));
+                let io_notify_data = notify_data
+                    .lock()
+                    .unwrap()
+                    .map(|notify| Arc::new(Mutex::new(notify)));
+                let (runnable, task) = async_task::spawn(
+                    {
+                        let poll_guard = poll_guard.clone();
+                        let semaphore = semaphore.clone();
+                        let io_notify_data = io_notify_data.clone();
+                        async move {
+                            loop {
+                                // Some poll implementations will return readable whenever there is any
+                                // data to read on the socket.  However if `rice_sockets_recv()` occurs on
+                                // a different thread, then the notification to the application may take a
+                                // while for the read to be processed and thus cause the IO thread to busy
+                                // loop.  This Semaphore is designed to mitigate this by only allowing a
+                                // single poll() and recv() combination for a particular socket to occur
+                                // in lockstep.
+                                let guard = semaphore.acquire_arc().await;
+                                *poll_guard.lock().unwrap() = Some(guard);
+                                if let Err(e) = futures_lite::future::poll_fn(|cx| {
+                                    udp_clone.socket.poll_readable(cx)
+                                })
+                                .await
+                                {
+                                    warn!("Failed to poll udp socket: {e}");
+                                    break;
+                                }
+                                if let Some(ref notify_data) = io_notify_data {
+                                    let notify_data = notify_data.lock().unwrap();
+                                    if let Some(notify) = notify_data.io_notify.as_ref() {
+                                        notify(notify_data.io_notify_data.ptr);
+                                    }
                                 }
                             }
                         }
-                    }
-                },
-                schedule,
-            );
-            runnable.run();
-            vacant.insert(UdpSocketTask {
-                inner: udp,
-                readable: PollReadableTask {
-                    poll_task: task,
-                    semaphore_guard: poll_guard,
-                    io_notify_data,
-                },
-            });
-            true
-        }
-    };
-    drop(inner);
+                    },
+                    schedule,
+                );
+                runnable.run();
+                vacant.insert(UdpSocketTask {
+                    inner: udp,
+                    readable: PollReadableTask {
+                        poll_task: task,
+                        semaphore_guard: poll_guard,
+                        io_notify_data,
+                    },
+                });
+                true
+            }
+        };
+        drop(inner);
 
-    core::mem::forget(sockets);
-    ret
+        core::mem::forget(sockets);
+        ret
+    }
 }
 
 /// Add a `RiceTcpSocket` to this `RiceSockets.
 ///
 /// This will cause the TCP socket to produce notifications when it is readable and has data.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_sockets_add_tcp(
     sockets: *mut RiceSockets,
     tcp: *mut RiceTcpSocket,
 ) -> bool {
-    let sockets = Arc::from_raw(sockets);
-    let tcp = Arc::from_raw(tcp);
-    let notify_data = sockets.notify_data.clone();
-    let mut inner = sockets.inner.lock().unwrap();
+    unsafe {
+        let sockets = Arc::from_raw(sockets);
+        let tcp = Arc::from_raw(tcp);
+        let notify_data = sockets.notify_data.clone();
+        let mut inner = sockets.inner.lock().unwrap();
 
-    let local_addr = tcp.socket.get_ref().local_addr().unwrap();
-    let remote_addr = tcp.socket.get_ref().peer_addr().unwrap();
-    let entry = inner.tcp_sockets.entry((local_addr, remote_addr));
-    let ret = match entry {
-        std::collections::hash_map::Entry::Occupied(_) => false,
-        std::collections::hash_map::Entry::Vacant(vacant) => {
-            let tcp_clone = tcp.clone();
-            let semaphore = Arc::new(async_lock::Semaphore::new(1));
-            let poll_guard = Arc::new(Mutex::new(None));
-            let io_notify_data = notify_data
-                .lock()
-                .unwrap()
-                .map(|notify| Arc::new(Mutex::new(notify)));
-            let (runnable, task) = async_task::spawn(
-                {
-                    debug!("staring tcp recv task for {local_addr:?} -> {remote_addr:?}");
-                    let poll_guard = poll_guard.clone();
-                    let semaphore = semaphore.clone();
-                    let io_notify_data = io_notify_data.clone();
-                    async move {
-                        loop {
-                            // Some poll implementations will return readable whenever there is any
-                            // data to read on the socket.  However if `rice_sockets_recv()` occurs on
-                            // a different thread, then the notification to the application may take a
-                            // while for the read to be processed and thus cause the IO thread to busy
-                            // loop.  This Semaphore is designed to mitigate this by only allowing a
-                            // single poll() and recv() combination for a particular socket to occur
-                            // in lockstep.
-                            let guard = semaphore.acquire_arc().await;
-                            *poll_guard.lock().unwrap() = Some(guard);
-                            if let Err(e) = futures_lite::future::poll_fn(|cx| {
-                                tcp_clone.socket.poll_readable(cx)
-                            })
-                            .await
-                            {
-                                warn!("Failed to poll udp socket: {e}");
-                                break;
-                            }
-                            if let Some(ref notify_data) = io_notify_data {
-                                let notify_data = notify_data.lock().unwrap();
-                                if let Some(notify) = notify_data.io_notify.as_ref() {
-                                    notify(notify_data.io_notify_data.ptr);
+        let local_addr = tcp.socket.get_ref().local_addr().unwrap();
+        let remote_addr = tcp.socket.get_ref().peer_addr().unwrap();
+        let entry = inner.tcp_sockets.entry((local_addr, remote_addr));
+        let ret = match entry {
+            std::collections::hash_map::Entry::Occupied(_) => false,
+            std::collections::hash_map::Entry::Vacant(vacant) => {
+                let tcp_clone = tcp.clone();
+                let semaphore = Arc::new(async_lock::Semaphore::new(1));
+                let poll_guard = Arc::new(Mutex::new(None));
+                let io_notify_data = notify_data
+                    .lock()
+                    .unwrap()
+                    .map(|notify| Arc::new(Mutex::new(notify)));
+                let (runnable, task) = async_task::spawn(
+                    {
+                        debug!("staring tcp recv task for {local_addr:?} -> {remote_addr:?}");
+                        let poll_guard = poll_guard.clone();
+                        let semaphore = semaphore.clone();
+                        let io_notify_data = io_notify_data.clone();
+                        async move {
+                            loop {
+                                // Some poll implementations will return readable whenever there is any
+                                // data to read on the socket.  However if `rice_sockets_recv()` occurs on
+                                // a different thread, then the notification to the application may take a
+                                // while for the read to be processed and thus cause the IO thread to busy
+                                // loop.  This Semaphore is designed to mitigate this by only allowing a
+                                // single poll() and recv() combination for a particular socket to occur
+                                // in lockstep.
+                                let guard = semaphore.acquire_arc().await;
+                                *poll_guard.lock().unwrap() = Some(guard);
+                                if let Err(e) = futures_lite::future::poll_fn(|cx| {
+                                    tcp_clone.socket.poll_readable(cx)
+                                })
+                                .await
+                                {
+                                    warn!("Failed to poll udp socket: {e}");
+                                    break;
+                                }
+                                if let Some(ref notify_data) = io_notify_data {
+                                    let notify_data = notify_data.lock().unwrap();
+                                    if let Some(notify) = notify_data.io_notify.as_ref() {
+                                        notify(notify_data.io_notify_data.ptr);
+                                    }
                                 }
                             }
                         }
-                    }
-                },
-                schedule,
-            );
-            vacant.insert(TcpSocketTask {
-                inner: tcp,
-                readable: PollReadableTask {
-                    poll_task: task,
-                    semaphore_guard: poll_guard,
-                    io_notify_data,
-                },
-            });
-            runnable.run();
-            true
-        }
-    };
-    drop(inner);
+                    },
+                    schedule,
+                );
+                vacant.insert(TcpSocketTask {
+                    inner: tcp,
+                    readable: PollReadableTask {
+                        poll_task: task,
+                        semaphore_guard: poll_guard,
+                        io_notify_data,
+                    },
+                });
+                runnable.run();
+                true
+            }
+        };
+        drop(inner);
 
-    core::mem::forget(sockets);
-    ret
+        core::mem::forget(sockets);
+        ret
+    }
 }
 
 /// Remove a TCP socket from this `RiceSockets.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_sockets_remove_tcp(
     sockets: *mut RiceSockets,
     local_addr: *const RiceAddress,
     remote_addr: *const RiceAddress,
 ) -> *mut RiceTcpSocket {
-    let sockets = Arc::from_raw(sockets);
-    let local_addr = RiceAddress::into_rice_none(local_addr);
-    let remote_addr = RiceAddress::into_rice_none(remote_addr);
-    let mut inner = sockets.inner.lock().unwrap();
+    unsafe {
+        let sockets = Arc::from_raw(sockets);
+        let local_addr = RiceAddress::into_rice_none(local_addr);
+        let remote_addr = RiceAddress::into_rice_none(remote_addr);
+        let mut inner = sockets.inner.lock().unwrap();
 
-    let ret = if let Some(tcp_task) = inner.tcp_sockets.remove(&(*local_addr, *remote_addr)) {
-        drop(tcp_task.readable);
-        mut_override(Arc::into_raw(tcp_task.inner))
-    } else {
-        core::ptr::null_mut()
-    };
+        let ret = if let Some(tcp_task) = inner.tcp_sockets.remove(&(*local_addr, *remote_addr)) {
+            drop(tcp_task.readable);
+            mut_override(Arc::into_raw(tcp_task.inner))
+        } else {
+            core::ptr::null_mut()
+        };
 
-    drop(inner);
-    core::mem::forget(sockets);
+        drop(inner);
+        core::mem::forget(sockets);
 
-    ret
+        ret
+    }
 }
 
 /// Remove a UDP socket from this `RiceSockets.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_sockets_remove_udp(
     sockets: *mut RiceSockets,
     local_addr: *const RiceAddress,
 ) -> *mut RiceUdpSocket {
-    let sockets = Arc::from_raw(sockets);
-    let local_addr = RiceAddress::into_rice_none(local_addr);
-    let mut inner = sockets.inner.lock().unwrap();
+    unsafe {
+        let sockets = Arc::from_raw(sockets);
+        let local_addr = RiceAddress::into_rice_none(local_addr);
+        let mut inner = sockets.inner.lock().unwrap();
 
-    let ret = if let Some(udp_task) = inner.udp_sockets.remove(&*local_addr) {
-        drop(udp_task.readable);
-        mut_override(Arc::into_raw(udp_task.inner))
-    } else {
-        core::ptr::null_mut()
-    };
+        let ret = if let Some(udp_task) = inner.udp_sockets.remove(&*local_addr) {
+            drop(udp_task.readable);
+            mut_override(Arc::into_raw(udp_task.inner))
+        } else {
+            core::ptr::null_mut()
+        };
 
-    drop(inner);
-    core::mem::forget(sockets);
+        drop(inner);
+        core::mem::forget(sockets);
 
-    ret
+        ret
+    }
 }
 
 fn address_is_ignorable(ip: IpAddr) -> bool {
@@ -748,42 +786,46 @@ fn address_is_ignorable(ip: IpAddr) -> bool {
 }
 
 /// Retrieve a list of local addresses interfaces.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_interfaces(ret_len: *mut usize) -> *mut *mut RiceAddress {
-    init_logs();
+    unsafe {
+        init_logs();
 
-    let Ok(mut ifaces) = get_if_addrs() else {
-        return mut_override(std::ptr::null());
-    };
-    // We only care about non-loopback interfaces for now
-    // TODO: remove 'Deprecated IPv4-compatible IPv6 addresses [RFC4291]'
-    // TODO: remove 'IPv6 site-local unicast addresses [RFC3879]'
-    // TODO: remove 'IPv4-mapped IPv6 addresses unless ipv6 only'
-    // TODO: location tracking Ipv6 address mismatches
-    ifaces.retain(|e| !address_is_ignorable(e.ip()));
+        let Ok(mut ifaces) = get_if_addrs() else {
+            return mut_override(std::ptr::null());
+        };
+        // We only care about non-loopback interfaces for now
+        // TODO: remove 'Deprecated IPv4-compatible IPv6 addresses [RFC4291]'
+        // TODO: remove 'IPv6 site-local unicast addresses [RFC3879]'
+        // TODO: remove 'IPv4-mapped IPv6 addresses unless ipv6 only'
+        // TODO: location tracking Ipv6 address mismatches
+        ifaces.retain(|e| !address_is_ignorable(e.ip()));
 
-    let ret = ifaces
-        .iter()
-        .map(|iface| RiceAddress::into_c_full(RiceAddress::new(SocketAddr::new(iface.ip(), 0))))
-        .collect::<Vec<_>>()
-        .into_boxed_slice();
-    *ret_len = ret.len();
-    Box::into_raw(ret) as *mut _
+        let ret = ifaces
+            .iter()
+            .map(|iface| RiceAddress::into_c_full(RiceAddress::new(SocketAddr::new(iface.ip(), 0))))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        *ret_len = ret.len();
+        Box::into_raw(ret) as *mut _
+    }
 }
 
 /// Free a list of `RiceAddresses` retrieved from `rice_interfaces()`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_addresses_free(addresses: *mut *mut RiceAddress, len: usize) {
-    let addresses = Box::from_raw(core::slice::from_raw_parts_mut(addresses, len));
-    for i in 0..len {
-        let _addr = RiceAddress::into_rice_full(addresses[i]);
+    unsafe {
+        let addresses = Box::from_raw(core::slice::from_raw_parts_mut(addresses, len));
+        for i in 0..len {
+            let _addr = RiceAddress::into_rice_full(addresses[i]);
+        }
     }
 }
 
 /// Send data using the specified network 5-tuple.
 ///
 /// If the relevant socket has not been added to this `RiceSockets`, an error will be returned.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_sockets_send(
     sockets: *mut RiceSockets,
     transport: RiceTransportType,
@@ -792,40 +834,42 @@ pub unsafe extern "C" fn rice_sockets_send(
     data: *const u8,
     len: usize,
 ) -> RiceError {
-    let sockets = Arc::from_raw(sockets);
-    let from = *RiceAddress::into_rice_none(mut_override(from));
-    let to = *RiceAddress::into_rice_none(mut_override(to));
-    let data = core::slice::from_raw_parts(data, len);
-    let inner = sockets.inner.lock().unwrap();
-    let ret = match transport {
-        RiceTransportType::Udp => {
-            if let Some(udp) = inner.udp_sockets.get(&from) {
-                if udp.inner.socket.get_ref().send_to(data, to).is_err() {
-                    RiceError::Failed
+    unsafe {
+        let sockets = Arc::from_raw(sockets);
+        let from = *RiceAddress::into_rice_none(mut_override(from));
+        let to = *RiceAddress::into_rice_none(mut_override(to));
+        let data = core::slice::from_raw_parts(data, len);
+        let inner = sockets.inner.lock().unwrap();
+        let ret = match transport {
+            RiceTransportType::Udp => {
+                if let Some(udp) = inner.udp_sockets.get(&from) {
+                    if udp.inner.socket.get_ref().send_to(data, to).is_err() {
+                        RiceError::Failed
+                    } else {
+                        RiceError::Success
+                    }
                 } else {
-                    RiceError::Success
+                    RiceError::ResourceNotFound
                 }
-            } else {
-                RiceError::ResourceNotFound
             }
-        }
-        RiceTransportType::Tcp => {
-            use std::io::Write;
-            if let Some(tcp) = inner.tcp_sockets.get(&(from, to)) {
-                if tcp.inner.socket.get_ref().write_all(data).is_err() {
-                    RiceError::Failed
+            RiceTransportType::Tcp => {
+                use std::io::Write;
+                if let Some(tcp) = inner.tcp_sockets.get(&(from, to)) {
+                    if tcp.inner.socket.get_ref().write_all(data).is_err() {
+                        RiceError::Failed
+                    } else {
+                        RiceError::Success
+                    }
                 } else {
-                    RiceError::Success
+                    RiceError::ResourceNotFound
                 }
-            } else {
-                RiceError::ResourceNotFound
             }
-        }
-    };
+        };
 
-    drop(inner);
-    core::mem::forget(sockets);
-    ret
+        drop(inner);
+        core::mem::forget(sockets);
+        ret
+    }
 }
 
 /// A received sequence of bytes from a particular resource.
@@ -838,10 +882,12 @@ pub struct RiceIoData {
 }
 
 unsafe fn rice_io_data_clear(data: &mut RiceIoData) {
-    let _from = RiceAddress::into_rice_full(data.from);
-    data.from = core::ptr::null_mut();
-    let _to = RiceAddress::into_rice_full(data.to);
-    data.to = core::ptr::null_mut();
+    unsafe {
+        let _from = RiceAddress::into_rice_full(data.from);
+        data.from = core::ptr::null_mut();
+        let _to = RiceAddress::into_rice_full(data.to);
+        data.to = core::ptr::null_mut();
+    }
 }
 
 /// A socket has been closed.
@@ -861,83 +907,87 @@ pub enum RiceIoRecv {
 }
 
 /// Clear any allocated resources from the `RiceIoRecv`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_recv_clear(recv: *mut RiceIoRecv) {
-    if recv.is_null() {
-        return;
-    }
-    match &mut *recv {
-        RiceIoRecv::Data(ref mut data) => {
-            rice_io_data_clear(data);
+    unsafe {
+        if recv.is_null() {
+            return;
         }
-        RiceIoRecv::Closed(closed) => {
-            let _from = RiceAddress::into_rice_full(closed.from);
-            let _to = RiceAddress::into_rice_full(closed.to);
+        match &mut *recv {
+            RiceIoRecv::Data(data) => {
+                rice_io_data_clear(data);
+            }
+            RiceIoRecv::Closed(closed) => {
+                let _from = RiceAddress::into_rice_full(closed.from);
+                let _to = RiceAddress::into_rice_full(closed.to);
+            }
+            RiceIoRecv::WouldBlock => (),
         }
-        RiceIoRecv::WouldBlock => (),
+        *recv = RiceIoRecv::WouldBlock
     }
-    *recv = RiceIoRecv::WouldBlock
 }
 
 /// Attempt to receive data into a provided data pointer.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_sockets_recv(
     sockets: *mut RiceSockets,
     data: *mut u8,
     len: usize,
     ret: *mut RiceIoRecv,
 ) {
-    let sockets = Arc::from_raw(sockets);
-    *ret = RiceIoRecv::WouldBlock;
-    let mut inner = sockets.inner.lock().unwrap();
-    let data = core::slice::from_raw_parts_mut(data, len);
-    for (&local_addr, udp) in inner.udp_sockets.iter_mut() {
-        match udp.inner.socket.get_ref().recv_from(data) {
-            Ok((len, from)) => {
-                udp.readable.semaphore_guard.lock().unwrap().take();
-                *ret = RiceIoRecv::Data(RiceIoData {
-                    transport: RiceTransportType::Udp,
-                    from: mut_override(RiceAddress::new(from).into_c_full()),
-                    to: mut_override(RiceAddress::new(local_addr).into_c_full()),
-                    len,
-                });
-                break;
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                continue;
-            }
-            Err(e) => {
-                warn!("Failed to receive data for UDP socket {local_addr:?}: {e}");
-            }
-        }
-    }
-
-    for (&(local_addr, remote_addr), tcp) in inner.tcp_sockets.iter_mut() {
-        use std::io::Read;
-        match tcp.inner.socket.get_ref().read(data) {
-            Ok(len) => {
-                tcp.readable.semaphore_guard.lock().unwrap().take();
-                *ret = RiceIoRecv::Data(RiceIoData {
-                    transport: RiceTransportType::Tcp,
-                    from: mut_override(RiceAddress::new(remote_addr).into_c_full()),
-                    to: mut_override(RiceAddress::new(local_addr).into_c_full()),
-                    len,
-                });
-                break;
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                continue;
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to receive data for TCP socket {local_addr:?} -> {remote_addr:?}: {e}"
-                );
+    unsafe {
+        let sockets = Arc::from_raw(sockets);
+        *ret = RiceIoRecv::WouldBlock;
+        let mut inner = sockets.inner.lock().unwrap();
+        let data = core::slice::from_raw_parts_mut(data, len);
+        for (&local_addr, udp) in inner.udp_sockets.iter_mut() {
+            match udp.inner.socket.get_ref().recv_from(data) {
+                Ok((len, from)) => {
+                    udp.readable.semaphore_guard.lock().unwrap().take();
+                    *ret = RiceIoRecv::Data(RiceIoData {
+                        transport: RiceTransportType::Udp,
+                        from: mut_override(RiceAddress::new(from).into_c_full()),
+                        to: mut_override(RiceAddress::new(local_addr).into_c_full()),
+                        len,
+                    });
+                    break;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    continue;
+                }
+                Err(e) => {
+                    warn!("Failed to receive data for UDP socket {local_addr:?}: {e}");
+                }
             }
         }
-    }
 
-    drop(inner);
-    core::mem::forget(sockets);
+        for (&(local_addr, remote_addr), tcp) in inner.tcp_sockets.iter_mut() {
+            use std::io::Read;
+            match tcp.inner.socket.get_ref().read(data) {
+                Ok(len) => {
+                    tcp.readable.semaphore_guard.lock().unwrap().take();
+                    *ret = RiceIoRecv::Data(RiceIoData {
+                        transport: RiceTransportType::Tcp,
+                        from: mut_override(RiceAddress::new(remote_addr).into_c_full()),
+                        to: mut_override(RiceAddress::new(local_addr).into_c_full()),
+                        len,
+                    });
+                    break;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    continue;
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to receive data for TCP socket {local_addr:?} -> {remote_addr:?}: {e}"
+                    );
+                }
+            }
+        }
+
+        drop(inner);
+        core::mem::forget(sockets);
+    }
 }
 
 fn mut_override<T>(val: *const T) -> *mut T {

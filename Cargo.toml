@@ -6,7 +6,7 @@ resolver = "2"
 [workspace.package]
 version = "0.2.0"
 repository = "https://github.com/ystreet/librice"
-edition = "2021"
+edition = "2024"
 rust-version = "1.85.0"
 
 [workspace.dependencies]

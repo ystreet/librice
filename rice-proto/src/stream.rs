@@ -12,9 +12,9 @@ use alloc::vec::Vec;
 use core::net::SocketAddr;
 
 use crate::gathering::GatherPoll;
+use stun_proto::Instant;
 use stun_proto::agent::{StunError, Transmit};
 use stun_proto::types::data::Data;
-use stun_proto::Instant;
 
 use crate::agent::{Agent, AgentError};
 use crate::component::{Component, ComponentMut, ComponentState, GatherProgress};

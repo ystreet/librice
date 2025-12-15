@@ -13,10 +13,10 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
+use rice_c::Instant;
 use rice_c::agent::{AgentError as ProtoAgentError, AgentPoll, AgentTransmit};
 use rice_c::component::ComponentConnectionState;
 use rice_c::stream::GatheredCandidate;
-use rice_c::Instant;
 use tracing::warn;
 
 use crate::component::{Component, SelectedPair};
@@ -135,7 +135,7 @@ impl Agent {
 
     /// A (futures) Stream for any application messages.  This is also the future that drives the
     /// ICE state machine and it must be driven until it completes.
-    pub fn messages(&self) -> impl futures::Stream<Item = AgentMessage> {
+    pub fn messages(&self) -> impl futures::Stream<Item = AgentMessage> + use<> {
         AgentStream {
             agent: self.agent.clone(),
             timer: None,
@@ -254,19 +254,22 @@ impl futures::stream::Stream for AgentStream {
     type Item = AgentMessage;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if let Some(transmit) = self.pending_transmit.take() {
-            let mut inner = self.inner.lock().unwrap();
-            inner.waker = Some(cx.waker().clone());
-            if let Some(stream) = inner.streams.get(transmit.stream_id) {
-                if let Some(retry) = stream.handle_transmit(transmit) {
-                    drop(inner);
-                    self.as_mut().pending_transmit = Some(retry);
-                    return Poll::Pending;
+        match self.pending_transmit.take() {
+            Some(transmit) => {
+                let mut inner = self.inner.lock().unwrap();
+                inner.waker = Some(cx.waker().clone());
+                if let Some(stream) = inner.streams.get(transmit.stream_id) {
+                    if let Some(retry) = stream.handle_transmit(transmit) {
+                        drop(inner);
+                        self.as_mut().pending_transmit = Some(retry);
+                        return Poll::Pending;
+                    }
                 }
             }
-        } else {
-            let mut inner = self.inner.lock().unwrap();
-            inner.waker = Some(cx.waker().clone());
+            _ => {
+                let mut inner = self.inner.lock().unwrap();
+                inner.waker = Some(cx.waker().clone());
+            }
         }
 
         let weak_agent_inner = Arc::downgrade(&self.inner);
@@ -317,20 +320,24 @@ impl futures::stream::Stream for AgentStream {
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(pair.stream_id) {
                         if let Some(component) = stream.component(pair.component_id) {
-                            if let Some(socket) =
-                                stream.socket_for_pair(&pair.local, &pair.remote, &pair.turn)
-                            {
-                                if let Err(e) = component.set_selected_pair(SelectedPair::new(
-                                    CandidatePair::new(
-                                        pair.local.to_owned(),
-                                        pair.remote.to_owned(),
-                                    ),
-                                    socket,
-                                )) {
-                                    warn!("Failed setting the selected pair: {e:?}");
+                            match stream.socket_for_pair(&pair.local, &pair.remote, &pair.turn) {
+                                Some(socket) => {
+                                    if let Err(e) = component.set_selected_pair(SelectedPair::new(
+                                        CandidatePair::new(
+                                            pair.local.to_owned(),
+                                            pair.remote.to_owned(),
+                                        ),
+                                        socket,
+                                    )) {
+                                        warn!("Failed setting the selected pair: {e:?}");
+                                    }
                                 }
-                            } else {
-                                warn!("Could not find existing socket for pair (local: {:?}, remote: {:?}, turn: {:?})", pair.local, pair.remote, pair.turn);
+                                _ => {
+                                    warn!(
+                                        "Could not find existing socket for pair (local: {:?}, remote: {:?}, turn: {:?})",
+                                        pair.local, pair.remote, pair.turn
+                                    );
+                                }
                             }
                         }
                     }

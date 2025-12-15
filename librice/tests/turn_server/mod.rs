@@ -238,9 +238,7 @@ impl TurnServer {
                 };
                 trace!(
                     "tcp listen {remote_addr} server reply to incoming data over {}: {} -> {}",
-                    reply.transport,
-                    reply.from,
-                    reply.to
+                    reply.transport, reply.from, reply.to
                 );
                 let _ = socket.send_to(reply.data, reply.to).await;
                 {
@@ -305,7 +303,7 @@ impl TurnServerInner {
                 if transport == TransportType::Udp
                     && socket.local_addr().unwrap() == local_addr =>
             {
-                return Some(SocketOrChannel::Socket(socket.clone()))
+                return Some(SocketOrChannel::Socket(socket.clone()));
             }
             ListenSocket::Tcp(tcp)
                 if transport == TransportType::Tcp

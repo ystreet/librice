@@ -11,18 +11,18 @@
 use alloc::boxed::Box;
 use core::net::SocketAddr;
 
-use stun_proto::agent::Transmit;
-use stun_proto::types::message::{Message, MessageWriteVec, BINDING};
-use stun_proto::types::prelude::MessageWrite;
 use stun_proto::Instant;
+use stun_proto::agent::Transmit;
+use stun_proto::types::message::{BINDING, Message, MessageWriteVec};
+use stun_proto::types::prelude::MessageWrite;
 use turn_client_proto::api::TurnClientApi;
 use turn_client_proto::types::prelude::DelayedTransmitBuild;
 
 use crate::candidate::{CandidatePair, CandidateType, TransportType};
 
 use crate::agent::{Agent, AgentError};
-use crate::conncheck::transmit_send;
 pub use crate::conncheck::SelectedPair;
+use crate::conncheck::transmit_send;
 use crate::gathering::StunGatherer;
 use crate::stream::Stream;
 use crate::turn::TurnConfig;

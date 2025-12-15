@@ -9,8 +9,8 @@
 use core::net::SocketAddr;
 
 use std::net::UdpSocket;
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 use librice::runtime::default_runtime;
 use rice_c::candidate::CandidateType;
@@ -20,7 +20,7 @@ use rice_c::turn::TurnConfig;
 use futures::future::{AbortHandle, Abortable};
 use futures::{SinkExt, StreamExt};
 
-use rice_c::{prelude::*, AddressFamily};
+use rice_c::{AddressFamily, prelude::*};
 
 use librice::agent::{Agent, AgentMessage};
 use librice::candidate::TransportType;
