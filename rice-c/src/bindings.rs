@@ -2,7 +2,7 @@
 
 pub const RICE_PROTO_MAJOR: u32 = 0;
 pub const RICE_PROTO_MINOR: u32 = 2;
-pub const RICE_PROTO_PATCH: u32 = 0;
+pub const RICE_PROTO_PATCH: u32 = 1;
 #[doc = " Component is in initial state and no connectivity checks are in progress."]
 pub const RICE_COMPONENT_CONNECTION_STATE_NEW: RiceComponentConnectionState = 0;
 #[doc = " Connectivity checks are in progress for this candidate"]
