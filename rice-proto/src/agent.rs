@@ -20,7 +20,7 @@ use core::time::Duration;
 use stun_proto::Instant;
 use stun_proto::types::data::Data;
 
-use crate::candidate::{ParseCandidateError, TransportType};
+use crate::candidate::{CandidateType, ParseCandidateError, TransportType};
 use crate::component::ComponentConnectionState;
 use crate::conncheck::{CheckListSetPollRet, ConnCheckEvent, ConnCheckListSet, SelectedPair};
 use crate::gathering::{GatherPoll, GatheredCandidate};
@@ -109,6 +109,7 @@ pub struct Agent {
 pub struct AgentBuilder {
     trickle_ice: bool,
     controlling: bool,
+    force_relay: bool,
 }
 
 impl AgentBuilder {
@@ -125,6 +126,13 @@ impl AgentBuilder {
         self
     }
 
+    /// Instruct the ICE agent to exclusively use relay candidates. This is
+    /// useful for applications that want to conceal their public IP address.
+    pub fn force_relay(mut self, force_relay: bool) -> Self {
+        self.force_relay = force_relay;
+        self
+    }
+
     /// Construct a new [`Agent`]
     pub fn build(self) -> Agent {
         turn_client_proto::types::debug_init();
@@ -137,6 +145,7 @@ impl AgentBuilder {
             id,
             checklistset: ConnCheckListSet::builder(tie_breaker, controlling)
                 .trickle_ice(self.trickle_ice)
+                .force_relay(self.force_relay)
                 .build(),
             stun_servers: Vec::new(),
             turn_servers: Vec::new(),
@@ -208,6 +217,27 @@ impl Agent {
     /// negotiation process.
     pub fn controlling(&self) -> bool {
         self.checklistset.controlling()
+    }
+
+    /// Instruct the ICE agent to exclusively use relay candidates. This is
+    /// useful for applications that want to conceal their public IP address.
+    #[tracing::instrument(
+        name = "set_force_relay",
+        skip(self)
+        fields(ice.id = self.id)
+    )]
+    pub fn set_force_relay(&mut self, force_relay: bool) {
+        if force_relay {
+            info!("Enabling exclusive use of relay candidates");
+        } else {
+            info!("Disabling exclusive use of relay candidates");
+        }
+        self.checklistset.set_force_relay(force_relay);
+    }
+
+    /// Whether exclusive use of relay candidates is enabled.
+    pub fn force_relay(&self) -> bool {
+        self.checklistset.force_relay()
     }
 
     /// Add a STUN server by address and transport to use for gathering potential candidates
@@ -316,6 +346,12 @@ impl Agent {
                     }
                 }
                 GatherPoll::NewCandidate(candidate) => {
+                    if self.checklistset.force_relay()
+                        && candidate.candidate.candidate_type != CandidateType::Relayed
+                    {
+                        info!("Ignoring non-relay candidate");
+                        continue;
+                    }
                     return AgentPoll::GatheredCandidate(AgentGatheredCandidate {
                         stream_id,
                         gathered: candidate,
@@ -577,5 +613,14 @@ mod tests {
         assert!(agent.controlling());
         let agent = Agent::builder().controlling(false).build();
         assert!(!agent.controlling());
+    }
+
+    #[test]
+    fn force_relay() {
+        let _log = crate::tests::test_init_log();
+        let agent = Agent::builder().force_relay(true).build();
+        assert!(agent.force_relay());
+        let agent = Agent::builder().force_relay(false).build();
+        assert!(!agent.force_relay());
     }
 }

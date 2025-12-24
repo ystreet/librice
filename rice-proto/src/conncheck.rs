@@ -448,6 +448,7 @@ pub struct ConnCheckList {
     nominated: Vec<ConnCheckId>,
     controlling: bool,
     trickle_ice: bool,
+    force_relay: bool,
     local_end_of_candidates: bool,
     remote_end_of_candidates: bool,
     events: VecDeque<ConnCheckEvent>,
@@ -552,7 +553,7 @@ fn generate_random_credentials() -> Credentials {
 }
 
 impl ConnCheckList {
-    fn new(checklist_id: usize, controlling: bool, trickle_ice: bool) -> Self {
+    fn new(checklist_id: usize, controlling: bool, trickle_ice: bool, force_relay: bool) -> Self {
         Self {
             checklist_id,
             state: CheckListState::Running,
@@ -567,6 +568,7 @@ impl ConnCheckList {
             nominated: Vec::new(),
             controlling,
             trickle_ice,
+            force_relay,
             local_end_of_candidates: false,
             remote_end_of_candidates: false,
             events: VecDeque::new(),
@@ -923,6 +925,9 @@ impl ConnCheckList {
     )]
     pub fn add_local_gathered_candidate(&mut self, gathered: GatheredCandidate) -> bool {
         let candidate_type = gathered.candidate.candidate_type;
+        if self.force_relay && candidate_type != CandidateType::Relayed {
+            return false;
+        }
         let turn_id = if candidate_type == CandidateType::Relayed {
             Some(StunAgentId::generate())
         } else {
@@ -2039,6 +2044,7 @@ pub struct ConnCheckListSetBuilder {
     tie_breaker: u64,
     controlling: bool,
     trickle_ice: bool,
+    force_relay: bool,
 }
 
 impl ConnCheckListSetBuilder {
@@ -2047,12 +2053,19 @@ impl ConnCheckListSetBuilder {
             tie_breaker,
             controlling,
             trickle_ice: false,
+            force_relay: false,
         }
     }
 
     /// Whether ICE candidate will be trickled
     pub fn trickle_ice(mut self, trickle_ice: bool) -> Self {
         self.trickle_ice = trickle_ice;
+        self
+    }
+
+    /// Whether use of TURN candidates will be forced
+    pub fn force_relay(mut self, force_relay: bool) -> Self {
+        self.force_relay = force_relay;
         self
     }
 
@@ -2063,6 +2076,7 @@ impl ConnCheckListSetBuilder {
             tie_breaker: self.tie_breaker,
             controlling: self.controlling,
             trickle_ice: self.trickle_ice,
+            force_relay: self.force_relay,
             checklist_i: 0,
             last_send_time: None,
             pending_messages: Default::default(),
@@ -2088,6 +2102,7 @@ pub struct ConnCheckListSet {
     pending_remove_sockets: VecDeque<CheckListSetSocket>,
     completed: bool,
     closed: bool,
+    force_relay: bool,
 }
 
 impl ConnCheckListSet {
@@ -2101,7 +2116,12 @@ impl ConnCheckListSet {
     /// Construct a new [`ConnCheckList`] and return its ID.
     pub fn new_list(&mut self) -> usize {
         let checklist_id = CONN_CHECK_LIST_COUNT.fetch_add(1, Ordering::SeqCst);
-        let ret = ConnCheckList::new(checklist_id, self.controlling(), self.trickle_ice);
+        let ret = ConnCheckList::new(
+            checklist_id,
+            self.controlling(),
+            self.trickle_ice,
+            self.force_relay,
+        );
         self.checklists.push(ret);
         checklist_id
     }
@@ -2122,6 +2142,14 @@ impl ConnCheckListSet {
         self.controlling
     }
 
+    pub fn set_force_relay(&mut self, force_relay: bool) {
+        self.force_relay = force_relay;
+    }
+
+    pub fn force_relay(&self) -> bool {
+        self.force_relay
+    }
+
     fn handle_stun<T: AsRef<[u8]>>(
         &mut self,
         checklist_i: usize,
@@ -2130,6 +2158,10 @@ impl ConnCheckListSet {
         agent_id: StunAgentId,
         turn_id: Option<(StunAgentId, SocketAddr)>,
     ) -> bool {
+        if self.force_relay {
+            debug!("Ignoring STUN message {msg}");
+            return true;
+        }
         debug!("received STUN message {msg}");
         let Some(agent) = self.checklists[checklist_i].mut_agent_by_id(agent_id) else {
             return false;
@@ -4745,6 +4777,7 @@ mod tests {
     struct FineControlBuilder {
         trickle_ice: bool,
         controlling: bool,
+        force_relay: bool,
         local_peer_builder: PeerBuilder,
         remote_peer_builder: PeerBuilder,
     }
@@ -4756,6 +4789,7 @@ mod tests {
             Self {
                 trickle_ice: false,
                 controlling: true,
+                force_relay: false,
                 local_peer_builder: Peer::builder()
                     .foundation("0")
                     .local_credentials(local_credentials.clone())
@@ -4781,6 +4815,11 @@ mod tests {
             self
         }
 
+        fn force_relay(mut self, force_relay: bool) -> Self {
+            self.force_relay = force_relay;
+            self
+        }
+
         fn local_candidate(mut self, candidate: Candidate) -> Self {
             self.local_peer_builder.candidate = Some(candidate);
             self
@@ -4789,6 +4828,7 @@ mod tests {
         fn build(self) -> FineControl {
             let mut local_set = ConnCheckListSet::builder(0, self.controlling)
                 .trickle_ice(self.trickle_ice)
+                .force_relay(self.force_relay)
                 .build();
             let local_list = local_set.new_list();
             let local_list = local_set.mut_list(local_list).unwrap();
@@ -6667,5 +6707,15 @@ mod tests {
             state.local.checklist_set.poll(now),
             CheckListSetPollRet::Completed
         ));
+    }
+
+    #[test]
+    fn force_relay() {
+        let _log = crate::tests::test_init_log();
+        let mut state = FineControl::builder()
+            .controlling(true)
+            .trickle_ice(true)
+            .force_relay(true)
+            .build();
     }
 }

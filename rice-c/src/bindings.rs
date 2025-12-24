@@ -616,6 +616,10 @@ unsafe extern "C" {
     pub fn rice_agent_get_controlling(agent: *const RiceAgent) -> bool;
 }
 unsafe extern "C" {
+    #[doc = " Enable or disable exclusive use of relay candidates on the `RiceAgent`.\n\n This is useful for applications wishing to conceal their public IP address."]
+    pub fn rice_agent_set_force_relay(agent: *mut RiceAgent, force_relay: bool);
+}
+unsafe extern "C" {
     #[doc = " The number of bytes in a `RiceData`."]
     pub fn rice_data_len(data: *const RiceData) -> usize;
 }

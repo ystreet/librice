@@ -271,6 +271,21 @@ pub unsafe extern "C" fn rice_agent_get_controlling(agent: *const RiceAgent) -> 
     }
 }
 
+/// Enable or disable exclusive use of relay candidates on the `RiceAgent`.
+///
+/// This is useful for applications wishing to conceal their public IP address.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_agent_set_force_relay(agent: *mut RiceAgent, force_relay: bool) {
+    unsafe {
+        let agent = Arc::from_raw(agent);
+        let mut proto_agent = agent.proto_agent.lock().unwrap();
+        proto_agent.set_force_relay(force_relay);
+
+        drop(proto_agent);
+        core::mem::forget(agent);
+    }
+}
+
 /// Return value of `rice_agent_poll()`.
 #[derive(Debug)]
 #[repr(C)]
