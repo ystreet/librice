@@ -12,8 +12,10 @@
 
 use core::ffi::c_void;
 
+use libc;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::os::fd::{AsFd, AsRawFd};
 use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::{panic, thread};
 
@@ -452,6 +454,39 @@ impl RiceSockets {
             }
         }
     }
+
+    #[cfg(not(windows))]
+    fn set_tos_on_socket(&self, fd: i32, tos: i32) {
+        unsafe {
+            libc::setsockopt(
+                fd,
+                libc::IPPROTO_IP,
+                libc::IP_TOS,
+                &tos as *const _ as *const libc::c_void,
+                std::mem::size_of_val(&tos) as libc::socklen_t,
+            );
+            libc::setsockopt(
+                fd,
+                libc::IPPROTO_IPV6,
+                libc::IPV6_TCLASS,
+                &tos as *const _ as *const libc::c_void,
+                std::mem::size_of_val(&tos) as libc::socklen_t,
+            );
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn set_tos(&self, tos: i32) {
+        let inner = self.inner.lock().unwrap();
+        for udp in inner.udp_sockets.values() {
+            let fd = udp.inner.socket.as_fd().as_raw_fd();
+            self.set_tos_on_socket(fd, tos);
+        }
+        for tcp in inner.tcp_sockets.values() {
+            let fd = tcp.inner.socket.as_fd().as_raw_fd();
+            self.set_tos_on_socket(fd, tos);
+        }
+    }
 }
 
 impl Drop for RiceSockets {
@@ -556,6 +591,19 @@ pub unsafe extern "C" fn rice_sockets_set_notify(
 
         sockets.set_notify(notify_data);
 
+        core::mem::forget(sockets);
+    }
+}
+
+/// Set the Type-Of-Service (TOS) field on the `RiceSockets`.
+///
+/// This function is multi-threading safe.
+#[cfg(not(windows))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_sockets_set_tos(sockets: *const RiceSockets, tos: i32) {
+    unsafe {
+        let sockets = Arc::from_raw(sockets);
+        sockets.set_tos(tos);
         core::mem::forget(sockets);
     }
 }
