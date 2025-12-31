@@ -427,6 +427,37 @@ pub struct RiceSockets {
 }
 
 impl RiceSockets {
+    fn set_buffer_sizes_on_socket(&self, fd: i32, send_buf_size: u32, recv_buf_size: u32) {
+        unsafe {
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_SNDBUF,
+                &send_buf_size as *const _ as *const libc::c_void,
+                std::mem::size_of_val(&send_buf_size) as libc::socklen_t,
+            );
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_RCVBUF,
+                &recv_buf_size as *const _ as *const libc::c_void,
+                std::mem::size_of_val(&recv_buf_size) as libc::socklen_t,
+            );
+        }
+    }
+
+    fn set_buffer_sizes(&self, send_buf_size: u32, recv_buf_size: u32) {
+        let inner = self.inner.lock().unwrap();
+        for udp in inner.udp_sockets.values() {
+            let fd = udp.inner.socket.as_fd().as_raw_fd();
+            self.set_buffer_sizes_on_socket(fd, send_buf_size, recv_buf_size);
+        }
+        for tcp in inner.tcp_sockets.values() {
+            let fd = tcp.inner.socket.as_fd().as_raw_fd();
+            self.set_buffer_sizes_on_socket(fd, send_buf_size, recv_buf_size);
+        }
+    }
+
     fn set_notify(&self, notify_data: Option<IoNotifyData>) {
         let removed_notify = {
             let mut our_notify_data = self.notify_data.lock().unwrap();
@@ -604,6 +635,23 @@ pub unsafe extern "C" fn rice_sockets_set_tos(sockets: *const RiceSockets, tos: 
     unsafe {
         let sockets = Arc::from_raw(sockets);
         sockets.set_tos(tos);
+        core::mem::forget(sockets);
+    }
+}
+
+/// Set the send and receive buffer sizes, expressed in bytes, on the
+/// `RiceSockets`.
+///
+/// This function is multi-threading safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_sockets_set_buffer_sizes(
+    sockets: *const RiceSockets,
+    send_buffer_size: u32,
+    recv_buffer_size: u32,
+) {
+    unsafe {
+        let sockets = Arc::from_raw(sockets);
+        sockets.set_buffer_sizes(send_buffer_size, recv_buffer_size);
         core::mem::forget(sockets);
     }
 }
