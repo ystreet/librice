@@ -119,3 +119,44 @@ invocation. However in order to successfully build the `rice-c` crate (and any
 dependant crates, like `librice`), `cargo-c` must be installed and in the
 environment.  The [rice-c README](https://github.com/ystreet/librice/tree/main/rice-c#building)
 contains more details.
+
+## Use Cases
+
+Both client and server side use cases are supported.
+
+## Examples and Getting Started
+
+[icegather](https://github.com/ystreet/librice/blob/main/librice/examples/icegather.rs)
+is a self-contained client example of how to use the API to gather ICE
+candidates using tokio as a runtime.
+
+For a server side example, check out the [TURN server written for unit testing purposes][turn-server-example].
+
+[turn-server-example]: https://github.com/ystreet/librice/blob/main/librice/tests/turn_server/mod.rs
+
+## Talks and Presentations
+
+- [librice: the TURNing point][librice-gst-conf-2025] by Matthew Waters,
+  GStreamer Conference 2025
+
+- [librice: a sans-IO ICE networking library][librice-gst-conf-2024] by
+  Matthew Waters, GStreamer Conference 2024
+
+- [ICE: How to find your way through the internet][ice-gst-conf-2023] by
+  Matthew Waters, GStreamer Conference 2023
+
+[librice-gst-conf-2025]: https://gstconf.ubicast.tv/videos/librice-the-turning-point/
+[librice-gst-conf-2024]: https://gstconf.ubicast.tv/videos/librice-a-sans-io-ice-networking-library/
+[ice-gst-conf-2023]: https://gstconf.ubicast.tv/videos/ice-how-to-find-your-way-through-the-internet_22161/
+
+## Users
+
+- The [WebKit](https://github.com/WebKit/WebKit/) browser engine recently added
+  [support][librice-in-webkit] for WebRTC ICE candidate gathering using librice
+  sans-io style.
+
+- [GStreamer][gstreamer] WebRTC support for librice is work-in-progress
+  (see Matthew's talks above)
+
+[librice-in-webkit]: https://gstconf.ubicast.tv/permalink/v126b0f1942324duzet3/iframe/#start=1093
+[gstreamer]: https://gstreamer.freedesktop.org
