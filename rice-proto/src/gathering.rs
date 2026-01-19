@@ -128,6 +128,7 @@ impl PendingRequest {
                             local_addr,
                             self.server_addr,
                             config.credentials().clone(),
+                            TransportType::Udp,
                             config.families(),
                             rustls.server_name(),
                             rustls.client_config(),
@@ -140,6 +141,7 @@ impl PendingRequest {
                             local_addr,
                             self.server_addr,
                             config.credentials().clone(),
+                            TransportType::Udp,
                             config.families(),
                             ossl.ssl_context().clone(),
                         )))
@@ -153,6 +155,7 @@ impl PendingRequest {
                         local_addr,
                         self.server_addr,
                         config.credentials().clone(),
+                        TransportType::Udp,
                         config.families(),
                     )
                     .into()
@@ -421,6 +424,7 @@ impl StunGatherer {
                                         pending_request.local_addr,
                                         pending_request.server_addr,
                                         config.credentials().clone(),
+                                        TransportType::Udp,
                                         config.families(),
                                         ossl.ssl_context().clone(),
                                     )))
@@ -585,6 +589,9 @@ impl StunGatherer {
                                 lowest_wait = Some(new_time);
                             }
                         }
+                        // gathering does not produce an TCP data connections.
+                        TurnPollRet::TcpClose { local_addr: _, remote_addr: _ } => unreachable!(),
+                        TurnPollRet::AllocateTcpSocket { id: _, socket: _, peer_addr: _ } => unreachable!(),
                     }
                 }
             }
@@ -1325,19 +1332,21 @@ mod tests {
         assert_eq!(turn_transmit.from, local_addr);
         assert_eq!(turn_transmit.to, turn_listen_addr);
         assert!(turn_server.recv(turn_transmit, now).is_none());
-        let TurnServerPollRet::AllocateSocketUdp {
+        let TurnServerPollRet::AllocateSocket {
             transport,
-            local_addr,
-            remote_addr,
+            listen_addr,
+            client_addr,
+            allocation_transport,
             family,
         } = turn_server.poll(now)
         else {
             unreachable!();
         };
-        turn_server.allocated_udp_socket(
+        turn_server.allocated_socket(
             transport,
-            local_addr,
-            remote_addr,
+            listen_addr,
+            client_addr,
+            allocation_transport,
             family,
             Ok(turn_alloc_addr),
             now,
@@ -1353,7 +1362,7 @@ mod tests {
             assert_eq!(cand.transport_type, TransportType::Udp);
             assert_eq!(cand.address, turn_alloc_addr);
             assert_eq!(cand.base_address, turn_alloc_addr);
-            assert_eq!(cand.related_address, Some(remote_addr));
+            assert_eq!(cand.related_address, Some(client_addr));
             assert_eq!(cand.tcp_type, None);
             assert_eq!(cand.extensions, vec![]);
         } else {
@@ -1455,19 +1464,21 @@ mod tests {
         assert_eq!(turn_transmit.from, local_addr);
         assert_eq!(turn_transmit.to, turn_listen_addr);
         assert!(turn_server.recv(turn_transmit, now).is_none());
-        let TurnServerPollRet::AllocateSocketUdp {
+        let TurnServerPollRet::AllocateSocket {
             transport,
-            local_addr,
-            remote_addr,
+            listen_addr,
+            client_addr,
+            allocation_transport,
             family,
         } = turn_server.poll(now)
         else {
             unreachable!();
         };
-        turn_server.allocated_udp_socket(
+        turn_server.allocated_socket(
             transport,
-            local_addr,
-            remote_addr,
+            listen_addr,
+            client_addr,
+            allocation_transport,
             family,
             Ok(turn_alloc_addr),
             now,
@@ -1483,7 +1494,7 @@ mod tests {
             assert_eq!(cand.transport_type, TransportType::Udp);
             assert_eq!(cand.address, turn_alloc_addr);
             assert_eq!(cand.base_address, turn_alloc_addr);
-            assert_eq!(cand.related_address, Some(remote_addr));
+            assert_eq!(cand.related_address, Some(client_addr));
             assert_eq!(cand.tcp_type, None);
             assert_eq!(cand.extensions, vec![]);
         } else {

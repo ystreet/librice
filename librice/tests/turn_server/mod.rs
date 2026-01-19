@@ -238,7 +238,9 @@ impl TurnServer {
                 };
                 trace!(
                     "tcp listen {remote_addr} server reply to incoming data over {}: {} -> {}",
-                    reply.transport, reply.from, reply.to
+                    reply.transport,
+                    reply.from,
+                    reply.to
                 );
                 let _ = socket.send_to(reply.data, reply.to).await;
                 {
@@ -397,8 +399,8 @@ impl TurnServerDriver {
     fn udp_allocate(
         &self,
         client_transport: TransportType,
-        local_addr: SocketAddr,
-        remote_addr: SocketAddr,
+        listen_addr: SocketAddr,
+        client_addr: SocketAddr,
         family: AddressFamily,
     ) {
         let weak_inner = Arc::downgrade(&self.inner);
@@ -439,16 +441,17 @@ impl TurnServerDriver {
             let socket_addr = socket.map(|(addr, socket)| {
                 inner.allocations.push(Allocation {
                     client_transport,
-                    client_addr: remote_addr,
-                    turn_listen_addr: local_addr,
+                    client_addr,
+                    turn_listen_addr: listen_addr,
                     relayed_udp: socket,
                 });
                 addr
             });
-            inner.proto.allocated_udp_socket(
+            inner.proto.allocated_socket(
                 client_transport,
-                local_addr,
-                remote_addr,
+                listen_addr,
+                client_addr,
+                TransportType::Udp,
                 family,
                 socket_addr,
                 Instant::from_std(base_instant),
@@ -496,15 +499,36 @@ impl futures::Stream for TurnServerDriver {
         }
         let wait = match inner.proto.poll(Instant::from_std(self.base_instant)) {
             TurnServerPollRet::WaitUntil(wait_until) => wait_until,
-            TurnServerPollRet::AllocateSocketUdp {
+            TurnServerPollRet::AllocateSocket {
                 transport,
-                local_addr,
-                remote_addr,
+                listen_addr,
+                client_addr,
+                allocation_transport: _,
                 family,
             } => {
                 drop(inner);
-                trace!("allocating socket for {transport}, {local_addr} -> {remote_addr} {family}");
-                self.udp_allocate(transport, local_addr, remote_addr, family);
+                trace!(
+                    "allocating socket for {transport}, {listen_addr} -> {client_addr} {family}"
+                );
+                self.udp_allocate(transport, listen_addr, client_addr, family);
+                cx.waker().wake_by_ref();
+                return std::task::Poll::Pending;
+            }
+            TurnServerPollRet::TcpClose {
+                local_addr: _,
+                remote_addr: _,
+            } => unimplemented!(),
+            TurnServerPollRet::TcpConnect {
+                relayed_addr: _,
+                peer_addr: _,
+                listen_addr: _,
+                client_addr: _,
+            } => unimplemented!(),
+            TurnServerPollRet::SocketClose {
+                transport: _,
+                listen_addr: _,
+            } => {
+                warn!("TURN Server socket close unimplemented");
                 cx.waker().wake_by_ref();
                 return std::task::Poll::Pending;
             }

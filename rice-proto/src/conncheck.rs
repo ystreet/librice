@@ -3294,6 +3294,8 @@ impl ConnCheckListSet {
                         }
                         TurnEvent::ChannelCreated(_transport, _peer_addr) => (),
                         TurnEvent::ChannelCreateFailed(_transport, _addr) => (),
+                        TurnEvent::TcpConnected(_peer_addr) => (),
+                        TurnEvent::TcpConnectFailed(_peer_addr) => (),
                     }
                 }
 
@@ -3318,6 +3320,8 @@ impl ConnCheckListSet {
                             );
                         }
                     }
+                    TurnPollRet::TcpClose { local_addr: _, remote_addr: _ } => unimplemented!(),
+                    TurnPollRet::AllocateTcpSocket { id: _, socket: _, peer_addr: _ } => unimplemented!(),
                 }
             }
             let mut idx = 0;
@@ -3365,6 +3369,8 @@ impl ConnCheckListSet {
                             );
                         }
                     }
+                    TurnPollRet::TcpClose { local_addr: _, remote_addr: _ } => unimplemented!(),
+                    TurnPollRet::AllocateTcpSocket { id: _, socket: _, peer_addr: _ } => unimplemented!(),
                 }
                 idx += 1;
             }
@@ -3433,6 +3439,8 @@ impl ConnCheckListSet {
                                     }
                                 }
                                 TurnPollRet::Closed => (),
+                                TurnPollRet::TcpClose { local_addr: _, remote_addr: _ } => unimplemented!(),
+                                TurnPollRet::AllocateTcpSocket { id: _, socket: _, peer_addr: _ } => unimplemented!(),
                             }
                         } else {
                             unreachable!();
@@ -6287,19 +6295,21 @@ mod tests {
         let msg = Message::from_bytes(&transmit.data).unwrap();
         assert!(msg.has_method(ALLOCATE));
         assert!(server.recv(transmit, now).is_none());
-        let TurnServerPollRet::AllocateSocketUdp {
+        let TurnServerPollRet::AllocateSocket {
             transport,
-            local_addr,
-            remote_addr,
+            listen_addr,
+            client_addr,
+            allocation_transport,
             family,
         } = server.poll(now)
         else {
             unreachable!();
         };
-        server.allocated_udp_socket(
+        server.allocated_socket(
             transport,
-            local_addr,
-            remote_addr,
+            listen_addr,
+            client_addr,
+            allocation_transport,
             family,
             Ok(turn_alloc_addr),
             now,
@@ -6381,6 +6391,7 @@ mod tests {
                 local_addr,
                 turn_addr,
                 turn_credentials,
+                TransportType::Udp,
                 &[AddressFamily::IPV4],
             )
             .into(),
