@@ -665,6 +665,7 @@ unsafe extern "C" {
         transport: RiceTransportType,
         addr: *const RiceAddress,
         credentials: *const RiceCredentials,
+        allocation_transport: RiceTransportType,
         n_families: usize,
         families: *const RiceAddressFamily,
         tls_config: *mut RiceTlsConfig,
@@ -763,6 +764,7 @@ unsafe extern "C" {
         from: *const RiceAddress,
         to: *const RiceAddress,
         socket_addr: *mut RiceAddress,
+        now_nanos: i64,
     );
 }
 unsafe extern "C" {

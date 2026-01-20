@@ -810,6 +810,7 @@ pub unsafe extern "C" fn rice_turn_config_new(
     transport: RiceTransportType,
     addr: *const RiceAddress,
     credentials: *const RiceCredentials,
+    allocation_transport: RiceTransportType,
     n_families: usize,
     families: *const RiceAddressFamily,
     tls_config: *mut RiceTlsConfig,
@@ -827,6 +828,7 @@ pub unsafe extern "C" fn rice_turn_config_new(
             transport_type_from_c(transport),
             **addr,
             TurnCredentials::new(&creds.credentials.ufrag, &creds.credentials.passwd),
+            transport_type_from_c(allocation_transport),
             &families,
         );
         if !tls_config.is_null() {
@@ -1182,9 +1184,11 @@ pub unsafe extern "C" fn rice_stream_handle_allocated_socket(
     from: *const RiceAddress,
     to: *const RiceAddress,
     socket_addr: *mut RiceAddress,
+    now_nanos: i64,
 ) {
     unsafe {
         let stream = Arc::from_raw(stream);
+        let now = Instant::from_nanos(now_nanos);
         let mut proto_agent = stream.proto_agent.lock().unwrap();
         let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
 
@@ -1201,6 +1205,7 @@ pub unsafe extern "C" fn rice_stream_handle_allocated_socket(
             from.inner(),
             to.inner(),
             socket,
+            now,
         );
 
         drop(proto_agent);
@@ -2831,6 +2836,7 @@ mod tests {
                 from,
                 to,
                 tcp_from_addr,
+                0,
             );
             rice_address_free(from);
             rice_address_free(to);

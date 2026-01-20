@@ -55,7 +55,7 @@ For other examples of sans-IO implementations, take a look at:
    Traversal Utilities for NAT (STUN)
  - [x] [RFC5769](https://tools.ietf.org/html/rfc5769):
    Test Vectors for Session Traversal Utilities for NAT (STUN)
- - [ ] [RFC6062](https://tools.ietf.org/html/rfc6062):
+ - [x] [RFC6062](https://tools.ietf.org/html/rfc6062):
    Traversal Using Relays around NAT (TURN) Extensions for TCP Allocations
  - [x] [RFC6156](https://tools.ietf.org/html/rfc6156):
    Traversal Using Relays around NAT (TURN) Extension for IPv6
@@ -77,7 +77,6 @@ For other examples of sans-IO implementations, take a look at:
 
 ## TODO
 
-- RFC6062
 - RFC7675
 
 ## Building

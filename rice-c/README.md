@@ -23,7 +23,7 @@ libraries/application and shared access to the same `Agent` is required.
    Traversal Utilities for NAT (STUN)
  - [x] [RFC5769](https://tools.ietf.org/html/rfc5769):
    Test Vectors for Session Traversal Utilities for NAT (STUN)
- - [ ] [RFC6062](https://tools.ietf.org/html/rfc6062):
+ - [x] [RFC6062](https://tools.ietf.org/html/rfc6062):
    Traversal Using Relays around NAT (TURN) Extensions for TCP Allocations
  - [x] [RFC6156](https://tools.ietf.org/html/rfc6156):
    Traversal Using Relays around NAT (TURN) Extension for IPv6
@@ -45,7 +45,6 @@ libraries/application and shared access to the same `Agent` is required.
 
 ## TODO
 
-- RFC6062
 - RFC7675
 
 ## Building

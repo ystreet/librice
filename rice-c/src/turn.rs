@@ -36,6 +36,7 @@ impl TurnConfig {
     ///     TransportType::Udp,
     ///     server_addr.clone(),
     ///     credentials.clone(),
+    ///     TransportType::Udp,
     ///     &[AddressFamily::IPV4],
     ///     None,
     /// );
@@ -48,6 +49,7 @@ impl TurnConfig {
         client_transport: TransportType,
         turn_server: crate::Address,
         credentials: TurnCredentials,
+        allocation_transport: TransportType,
         families: &[AddressFamily],
         tls_config: Option<TurnTlsConfig>,
     ) -> Self {
@@ -65,6 +67,7 @@ impl TurnConfig {
                 client_transport.into(),
                 const_override(turn_server.as_c()),
                 credentials.into_c_none(),
+                allocation_transport.into(),
                 families.len(),
                 families.as_ptr(),
                 tls_config,
@@ -224,6 +227,7 @@ mod tests {
             TransportType::Udp,
             turn_server_address(),
             turn_credentials(),
+            TransportType::Udp,
             &[AddressFamily::IPV4],
             None,
         );
@@ -251,9 +255,10 @@ mod tests {
             let dns = "turn.example.com";
             let tls = TurnTlsConfig::new_rustls_with_dns(dns);
             let cfg = TurnConfig::new(
-                TransportType::Udp,
+                TransportType::Tcp,
                 turn_server_address(),
                 turn_credentials(),
+                TransportType::Udp,
                 &[AddressFamily::IPV4],
                 Some(tls.clone()),
             );
@@ -277,6 +282,7 @@ mod tests {
                 TransportType::Udp,
                 turn_server_address(),
                 turn_credentials(),
+                TransportType::Udp,
                 &[AddressFamily::IPV4],
                 Some(tls),
             );
