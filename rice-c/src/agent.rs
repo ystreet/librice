@@ -203,7 +203,7 @@ pub enum AgentPoll {
 }
 
 impl AgentPoll {
-    fn from_c_full(mut ffi: crate::ffi::RiceAgentPoll) -> Self {
+    fn from_c_full(ffi: crate::ffi::RiceAgentPoll) -> Self {
         unsafe {
             match ffi.tag {
                 crate::ffi::RICE_AGENT_POLL_CLOSED => Self::Closed,
@@ -222,7 +222,6 @@ impl AgentPoll {
                 }
                 crate::ffi::RICE_AGENT_POLL_REMOVE_SOCKET => {
                     let ty = core::mem::ManuallyDrop::into_inner(ffi.field1.field3).remove_socket;
-                    ffi.tag = crate::ffi::RICE_AGENT_POLL_CLOSED;
                     Self::RemoveSocket(AgentSocket {
                         stream_id: ty.stream_id,
                         component_id: ty.component_id,
@@ -238,7 +237,6 @@ impl AgentPoll {
                     let remote = crate::candidate::Candidate::from_c_none(&ty.remote);
                     crate::ffi::rice_candidate_clear(&mut ty.local);
                     crate::ffi::rice_candidate_clear(&mut ty.remote);
-                    ffi.tag = crate::ffi::RICE_AGENT_POLL_CLOSED;
                     let turn = if !ty.local_turn_local_addr.is_null()
                         && !ty.local_turn_remote_addr.is_null()
                     {
@@ -276,7 +274,6 @@ impl AgentPoll {
                         core::mem::ManuallyDrop::into_inner(ffi.field1.field6).gathered_candidate;
                     let stream_id = ty.stream_id;
                     let gathered = crate::stream::GatheredCandidate::from_c_full(ty.gathered);
-                    ffi.tag = crate::ffi::RICE_AGENT_POLL_CLOSED;
                     Self::GatheredCandidate(AgentGatheredCandidate {
                         stream_id,
                         gathered,
