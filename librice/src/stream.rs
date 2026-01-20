@@ -794,7 +794,14 @@ impl Stream {
                 };
 
                 let proto_stream = proto_agent.stream(stream_id).unwrap();
-                proto_stream.allocated_socket(component_id, transport, &from, &to, local_addr);
+                proto_stream.allocated_socket(
+                    component_id,
+                    transport,
+                    &from,
+                    &to,
+                    local_addr,
+                    Instant::from_std(base_instant),
+                );
                 channel
             };
 

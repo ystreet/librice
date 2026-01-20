@@ -163,6 +163,7 @@ impl Stream {
         from: &crate::Address,
         to: &crate::Address,
         socket_addr: Option<crate::Address>,
+        now: Instant,
     ) {
         let socket_addr = if let Some(addr) = socket_addr {
             addr.into_c_full()
@@ -177,6 +178,7 @@ impl Stream {
                 from.as_c(),
                 to.as_c(),
                 socket_addr,
+                now.as_nanos(),
             )
         }
     }
@@ -413,7 +415,7 @@ mod tests {
             unreachable!()
         };
 
-        let AgentPoll::WaitUntilNanos(_now) = agent.poll(Instant::ZERO) else {
+        let AgentPoll::WaitUntilNanos(now) = agent.poll(Instant::ZERO) else {
             unreachable!()
         };
 
@@ -424,6 +426,7 @@ mod tests {
             from,
             to,
             Some(tcp_from_addr),
+            Instant::from_nanos(now),
         );
 
         let _ = agent.poll_transmit(Instant::ZERO).unwrap();

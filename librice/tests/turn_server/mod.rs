@@ -238,9 +238,7 @@ impl TurnServer {
                 };
                 trace!(
                     "tcp listen {remote_addr} server reply to incoming data over {}: {} -> {}",
-                    reply.transport,
-                    reply.from,
-                    reply.to
+                    reply.transport, reply.from, reply.to
                 );
                 let _ = socket.send_to(reply.data, reply.to).await;
                 {

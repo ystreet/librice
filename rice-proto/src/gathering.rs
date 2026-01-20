@@ -128,7 +128,7 @@ impl PendingRequest {
                             local_addr,
                             self.server_addr,
                             config.credentials().clone(),
-                            TransportType::Udp,
+                            config.allocation_transport(),
                             config.families(),
                             rustls.server_name(),
                             rustls.client_config(),
@@ -137,11 +137,11 @@ impl PendingRequest {
                     #[cfg(feature = "openssl")]
                     Some(TurnTlsConfig::Openssl(ossl)) => {
                         Some(TurnClient::from(TurnClientOpensslTls::allocate(
-                            TransportType::Tcp,
+                            config.client_transport(),
                             local_addr,
                             self.server_addr,
                             config.credentials().clone(),
-                            TransportType::Udp,
+                            config.allocation_transport(),
                             config.families(),
                             ossl.ssl_context().clone(),
                         )))
@@ -155,7 +155,7 @@ impl PendingRequest {
                         local_addr,
                         self.server_addr,
                         config.credentials().clone(),
-                        TransportType::Udp,
+                        config.allocation_transport(),
                         config.families(),
                     )
                     .into()
@@ -550,27 +550,56 @@ impl StunGatherer {
                             }
                             TurnEvent::AllocationCreated(transport, relayed_address) => {
                                 request.completed = true;
-                                let foundation = self.produced_i.to_string();
-                                let priority = Candidate::calculate_priority(
-                                    crate::candidate::CandidateType::Relayed,
-                                    transport,
-                                    None,
-                                    request.other_preference,
-                                    self.component_id,
-                                );
-                                let cand = Candidate::builder(
-                                    self.component_id,
-                                    crate::candidate::CandidateType::Relayed,
-                                    transport,
-                                    &foundation,
-                                    relayed_address,
-                                )
-                                .priority(priority)
-                                .related_address(client.local_addr())
-                                .base_address(relayed_address)
-                                .build();
-                                self.produced_i += 1;
-                                turn_ret = Some((idx, cand));
+                                match transport {
+                                    TransportType::Udp => {
+                                        let foundation = self.produced_i.to_string();
+                                        let priority = Candidate::calculate_priority(
+                                            crate::candidate::CandidateType::Relayed,
+                                            transport,
+                                            None,
+                                            request.other_preference,
+                                            self.component_id,
+                                        );
+                                        let cand = Candidate::builder(
+                                            self.component_id,
+                                            crate::candidate::CandidateType::Relayed,
+                                            transport,
+                                            &foundation,
+                                            relayed_address,
+                                        )
+                                        .priority(priority)
+                                        .related_address(client.local_addr())
+                                        .base_address(relayed_address)
+                                        .build();
+                                        self.produced_i += 1;
+                                        turn_ret = Some((idx, cand));
+                                    }
+                                    TransportType::Tcp => {
+                                        // TODO: Active TCP candidates
+                                        let foundation = self.produced_i.to_string();
+                                        let priority = Candidate::calculate_priority(
+                                            crate::candidate::CandidateType::Relayed,
+                                            transport,
+                                            Some(TcpType::Passive),
+                                            request.other_preference,
+                                            self.component_id,
+                                        );
+                                        let cand = Candidate::builder(
+                                            self.component_id,
+                                            crate::candidate::CandidateType::Relayed,
+                                            transport,
+                                            &foundation,
+                                            relayed_address,
+                                        )
+                                        .priority(priority)
+                                        .related_address(client.local_addr())
+                                        .base_address(relayed_address)
+                                        .tcp_type(TcpType::Passive)
+                                        .build();
+                                        self.produced_i += 1;
+                                        turn_ret = Some((idx, cand));
+                                    }
+                                }
                                 break;
                             }
                             _ => (),
@@ -590,8 +619,15 @@ impl StunGatherer {
                             }
                         }
                         // gathering does not produce an TCP data connections.
-                        TurnPollRet::TcpClose { local_addr: _, remote_addr: _ } => unreachable!(),
-                        TurnPollRet::AllocateTcpSocket { id: _, socket: _, peer_addr: _ } => unreachable!(),
+                        TurnPollRet::TcpClose {
+                            local_addr: _,
+                            remote_addr: _,
+                        } => unreachable!(),
+                        TurnPollRet::AllocateTcpSocket {
+                            id: _,
+                            socket: _,
+                            peer_addr: _,
+                        } => unreachable!(),
                     }
                 }
             }
@@ -1290,6 +1326,7 @@ mod tests {
                     TransportType::Udp,
                     turn_listen_addr,
                     turn_credentials,
+                    TransportType::Udp,
                     &[AddressFamily::IPV4],
                 ),
             )],
@@ -1402,6 +1439,7 @@ mod tests {
                     TransportType::Tcp,
                     turn_listen_addr,
                     turn_credentials,
+                    TransportType::Udp,
                     &[AddressFamily::IPV4],
                 ),
             )],
@@ -1496,6 +1534,139 @@ mod tests {
             assert_eq!(cand.base_address, turn_alloc_addr);
             assert_eq!(cand.related_address, Some(client_addr));
             assert_eq!(cand.tcp_type, None);
+            assert_eq!(cand.extensions, vec![]);
+        } else {
+            error!("{ret:?}");
+            unreachable!();
+        }
+
+        assert!(matches!(gather.poll(now), GatherPoll::Complete(_)));
+        assert!(matches!(gather.poll(now), GatherPoll::Finished));
+    }
+
+    #[test]
+    fn turn_tcp_allocate_tcp() {
+        let _log = crate::tests::test_init_log();
+        let local_addr = "192.168.1.1:1000".parse().unwrap();
+        let turn_listen_addr = "192.168.1.2:2000".parse().unwrap();
+        let turn_alloc_addr = "192.168.40.4:4000".parse().unwrap();
+        let public_ip = "192.168.1.3:3000".parse().unwrap();
+        let turn_credentials = TurnCredentials::new("tuser", "tpass");
+
+        let mut turn_server = turn_server_proto::server::TurnServer::new(
+            TransportType::Tcp,
+            turn_listen_addr,
+            "realm".to_string(),
+        );
+        turn_server.add_user(
+            turn_credentials.username().to_string(),
+            turn_credentials.password().to_string(),
+        );
+        let mut gather = StunGatherer::new(
+            1,
+            &[(TransportType::Tcp, local_addr)],
+            &[(TransportType::Tcp, turn_listen_addr)],
+            &[(
+                local_addr,
+                &TurnConfig::new(
+                    TransportType::Tcp,
+                    turn_listen_addr,
+                    turn_credentials,
+                    TransportType::Tcp,
+                    &[AddressFamily::IPV4],
+                ),
+            )],
+        );
+        let now = Instant::ZERO;
+        handle_allocate_socket(&mut gather, local_addr, now);
+        /* host candidate contents checked in `host_tcp()` */
+        assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
+        assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
+
+        let stun_transmit = gather.poll_transmit(now).unwrap();
+        assert_eq!(stun_transmit.from, local_addr);
+        assert_eq!(stun_transmit.to, turn_listen_addr);
+        let response = respond_to_stun_binding(stun_transmit, public_ip);
+        assert!(matches!(gather.poll(now), GatherPoll::WaitUntil(_)));
+        gather.handle_data(&response, now);
+
+        let ret = gather.poll(now);
+        if let GatherPoll::NewCandidate(cand) = ret {
+            let local_addr = SocketAddr::new(local_addr.ip(), 9);
+            let public_ip = SocketAddr::new(public_ip.ip(), 9);
+            assert!(cand.turn_agent.is_none());
+            let cand = cand.candidate;
+            assert_eq!(cand.component_id, 1);
+            assert_eq!(cand.candidate_type, CandidateType::ServerReflexive);
+            assert_eq!(cand.transport_type, TransportType::Tcp);
+            assert_eq!(cand.address, public_ip);
+            assert_eq!(cand.base_address, local_addr);
+            assert_eq!(cand.tcp_type, Some(TcpType::Active));
+            assert_eq!(cand.extensions, vec![]);
+        } else {
+            error!("{ret:?}");
+            unreachable!();
+        }
+        let ret = gather.poll(now);
+        if let GatherPoll::NewCandidate(cand) = ret {
+            assert!(cand.turn_agent.is_none());
+            let cand = cand.candidate;
+            assert_eq!(cand.component_id, 1);
+            assert_eq!(cand.candidate_type, CandidateType::ServerReflexive);
+            assert_eq!(cand.transport_type, TransportType::Tcp);
+            assert_eq!(cand.address, public_ip);
+            assert_eq!(cand.base_address, local_addr);
+            assert_eq!(cand.tcp_type, Some(TcpType::Passive));
+            assert_eq!(cand.extensions, vec![]);
+        } else {
+            error!("{ret:?}");
+            unreachable!();
+        }
+
+        // unauthenticated TURN ALLOCATE
+        let turn_transmit = gather.poll_transmit(now).unwrap();
+        assert_eq!(turn_transmit.from, local_addr);
+        assert_eq!(turn_transmit.to, turn_listen_addr);
+        let reply = turn_server.recv(turn_transmit, now).unwrap().build();
+        assert!(gather.handle_data(&reply, now));
+
+        // authenticated TURN ALLOCATE
+        let turn_transmit = gather.poll_transmit(now).unwrap();
+        assert_eq!(turn_transmit.from, local_addr);
+        assert_eq!(turn_transmit.to, turn_listen_addr);
+        assert!(turn_server.recv(turn_transmit, now).is_none());
+        let TurnServerPollRet::AllocateSocket {
+            transport,
+            listen_addr,
+            client_addr,
+            allocation_transport,
+            family,
+        } = turn_server.poll(now)
+        else {
+            unreachable!();
+        };
+        turn_server.allocated_socket(
+            transport,
+            listen_addr,
+            client_addr,
+            allocation_transport,
+            family,
+            Ok(turn_alloc_addr),
+            now,
+        );
+        let reply = turn_server.poll_transmit(now).unwrap();
+        assert!(gather.handle_data(&reply, now));
+        let ret = gather.poll(now);
+        if let GatherPoll::NewCandidate(cand) = ret {
+            assert!(cand.turn_agent.is_some());
+            let cand = cand.candidate;
+            assert_eq!(cand.component_id, 1);
+            assert_eq!(cand.candidate_type, CandidateType::Relayed);
+            assert_eq!(cand.transport_type, TransportType::Tcp);
+            assert_eq!(cand.address, turn_alloc_addr);
+            assert_eq!(cand.base_address, turn_alloc_addr);
+            assert_eq!(cand.related_address, Some(client_addr));
+            assert_eq!(cand.tcp_type, Some(TcpType::Passive));
             assert_eq!(cand.extensions, vec![]);
         } else {
             error!("{ret:?}");

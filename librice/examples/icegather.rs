@@ -221,6 +221,7 @@ async fn run() -> io::Result<()> {
             ts.client_transport,
             ts.addr.into(),
             credentials.clone(),
+            TransportType::Udp,
             &[AddressFamily::IPV4, AddressFamily::IPV6],
             tls_config,
         );

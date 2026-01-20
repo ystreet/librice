@@ -421,6 +421,7 @@ impl<'a> StreamMut<'a> {
         from: SocketAddr,
         to: SocketAddr,
         local_addr: Result<SocketAddr, StunError>,
+        now: Instant,
     ) {
         let stream_state = self.agent.mut_stream_state(self.id).unwrap();
         let checklist_id = stream_state.checklist_id;
@@ -440,6 +441,7 @@ impl<'a> StreamMut<'a> {
             from,
             to,
             local_addr,
+            now,
         );
     }
 

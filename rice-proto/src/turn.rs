@@ -21,6 +21,7 @@ pub struct TurnConfig {
     client_transport: TransportType,
     turn_server: SocketAddr,
     credentials: TurnCredentials,
+    allocation_transport: TransportType,
     families: smallvec::SmallVec<[AddressFamily; 2]>,
     tls_config: Option<TurnTlsConfig>,
 }
@@ -40,6 +41,7 @@ impl TurnConfig {
     ///     TransportType::Udp,
     ///     server_addr,
     ///     credentials.clone(),
+    ///     TransportType::Udp,
     ///     &families
     /// );
     /// assert_eq!(config.client_transport(), TransportType::Udp);
@@ -51,12 +53,14 @@ impl TurnConfig {
         client_transport: TransportType,
         server_addr: SocketAddr,
         credentials: TurnCredentials,
+        allocation_transport: TransportType,
         families: &[AddressFamily],
     ) -> Self {
         Self {
             client_transport,
             turn_server: server_addr,
             credentials,
+            allocation_transport,
             families: families.into(),
             tls_config: None,
         }
@@ -91,6 +95,11 @@ impl TurnConfig {
     /// The address family to allocate on the TURN server.
     pub fn families(&self) -> &[AddressFamily] {
         &self.families
+    }
+
+    /// The [`TransportType`] of the TURN allocation.
+    pub fn allocation_transport(&self) -> TransportType {
+        self.allocation_transport
     }
 }
 
