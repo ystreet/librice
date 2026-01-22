@@ -160,3 +160,10 @@ For a server side example, check out the [TURN server written for unit testing p
 
 [librice-in-webkit]: https://gstconf.ubicast.tv/permalink/v126b0f1942324duzet3/iframe/#start=1093
 [gstreamer]: https://gstreamer.freedesktop.org
+
+## Funding
+
+[Support for TURN](https://nlnet.nl/project/librice/) has been funded in part through the
+[NGI0 Commons Fund](https://nlnet.nl/commonsfund) a fund established by
+[NLnet](https://nlnet.nl) with financial support from the European Commission's
+[Next Generation Internet](https://ngi.eu) programme.
