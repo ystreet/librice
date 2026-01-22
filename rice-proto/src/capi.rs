@@ -2366,6 +2366,31 @@ pub unsafe extern "C" fn rice_stream_get_component(
 }
 
 /// Start gathering candidates for a component with the provided local socket addresses.
+///
+/// - `component`: The component to start gathering.
+/// - `sockets_len`: The number of entries in both `sockets_addr` and `sockets_transports`.
+/// - `sockets_addr`: An array of addresses for producing host and STUN server-reflexive
+///   candidates.
+/// - `sockets_transports`: An array of transport types for producing host and STUN
+///   server-reflexive candidates.
+/// - `turn_len`: the number of entries in both `turn_sockets` and `turn_config`.
+/// - `turn_sockets`: An array of local addresses for producing TURN candidates.
+/// - `turn_config`: An array of TURN server configurations.
+///
+/// Candidates will be generated as follows (if they succeed):
+///
+/// 1. A host candidate for each `(sockets_transports[i], socket_addr[i])`. If TCP, then both an
+///    active and passive host candidate will be generated.
+/// 2. For each configured STUN server, a reflexive candidate for each
+///    `(sockets_transports[i], socket_addr[i])` if different from any other candidate
+///    produced. The local address for each STUN server connection will be one of the entries
+///    provided in `sockets_addr`.
+/// 3. For each `(turn_sockets[i], turn_config[i])` a TURN allocation will be attempted and a
+///    relayed candidate produced on success.  If you would like multiple options for relayed
+///    candidates, e.g. UDP, TCP, TCP/TLS, then provide each options as different entries in the
+///    provided array. The `turn_sockets[i]` value is the local address to communicate with the
+///    TURN server in `turn_config[i]` and should be different than any value provided through
+///    `sockets_addr`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_component_gather_candidates(
     component: *mut RiceComponent,
