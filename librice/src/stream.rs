@@ -519,7 +519,7 @@ impl Stream {
                 .collect::<Vec<_>>();
 
             let mut proto_turn_configs = vec![];
-            for turn_config in turn_configs.iter() {
+            for turn_config in turn_configs.clone() {
                 let turn_sockets = iface_sockets(self.state.runtime.clone())
                     .await
                     .unwrap()
@@ -912,13 +912,19 @@ mod tests {
     #[cfg(feature = "runtime-smol")]
     #[test]
     fn smol_gather_candidates() {
-        smol::block_on(gather_candidates());
+        // spawn to ensure Send-ness
+        let join = smol::spawn(gather_candidates());
+        smol::block_on(join);
     }
 
     #[cfg(feature = "runtime-tokio")]
     #[test]
-    fn tokio_send_recv() {
-        crate::tests::tokio_runtime().block_on(gather_candidates());
+    fn tokio_gather_candidates() {
+        // spawn to ensure Send-ness
+        let rt = crate::tests::tokio_runtime();
+        let join = rt.spawn(gather_candidates());
+        let ret = rt.block_on(join);
+        assert!(ret.is_ok());
     }
 
     async fn gather_candidates() {

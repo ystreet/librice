@@ -2313,6 +2313,9 @@ pub unsafe extern "C" fn rice_component_get_state(
 }
 
 /// Retrieve the ICE candidates selected pair of the `RiceComponent`.
+///
+/// Before the pair has been selected through ICE, `local` and `remote` will be zeroed to signal
+/// unset.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_component_selected_pair(
     component: *const RiceComponent,
