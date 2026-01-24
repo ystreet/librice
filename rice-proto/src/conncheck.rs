@@ -4216,8 +4216,8 @@ fn pair_construct_valid(pair: &CandidatePair, mapped_address: SocketAddr) -> Can
 
 // can the local candidate pair with 'remote' in any way
 fn candidate_can_pair_with(local: &Candidate, remote: &Candidate) -> bool {
-    error!("local: {local:?}");
-    error!("remote: {remote:?}");
+    debug!("local: {local:?}");
+    debug!("remote: {remote:?}");
     if local.transport_type == TransportType::Tcp
         && remote.transport_type == TransportType::Tcp
         && (local.tcp_type.is_none()
