@@ -86,6 +86,19 @@ impl Component {
     /// Start gathering candidates for this component.  The parent
     /// [`Agent::poll`](crate::agent::Agent::poll) is used to progress
     /// the gathering.
+    ///
+    /// Candidates will be generated as follows (if they succeed):
+    ///
+    /// 1. A host candidate for each `sockets[i]`. If TCP, then both an active and passive host
+    ///    candidate will be generated.
+    /// 2. For each configured STUN server a reflexive candidate if different from any
+    ///    other candidate produced. The local address for each STUN server connection will be one
+    ///    of the entries provided in `sockets`.
+    /// 3. For each `turn_servers[i]` a TURN allocation will be attempted and a relayed candidate
+    ///    produced on success.  If you would like multiple options for relayed candidates,
+    ///    e.g. UDP, TCP, TCP/TLS, then provide each options as different entries in the provided
+    ///    Iterator. The `Address` for each TURN server is the local address to communicate with
+    ///    the TURN server and should be different than any value provided through `sockets`.
     pub fn gather_candidates<'a, 'b>(
         &self,
         sockets: impl IntoIterator<Item = (TransportType, &'a Address)>,

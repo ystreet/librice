@@ -405,11 +405,11 @@ const _: () = {
 };
 #[doc = " The Agent is closed.  No further progress will be made."]
 pub const RICE_AGENT_POLL_CLOSED: RiceAgentPoll_Tag = 0;
-#[doc = " Wait until the specified `Instant` has been reached (or an external event)"]
+#[doc = " Wait until the specified `Instant` has been reached (or an external event)."]
 pub const RICE_AGENT_POLL_WAIT_UNTIL_NANOS: RiceAgentPoll_Tag = 1;
-#[doc = " Connect from the specified interface to the specified address.  Reply (success or failure)\n should be notified using `rice_agent_allocated_socket()` with the same parameters."]
+#[doc = " Connect from the specified interface to the specified address.  Reply (success or failure)\n should be notified using `rice_stream_handle_allocated_socket()`."]
 pub const RICE_AGENT_POLL_ALLOCATE_SOCKET: RiceAgentPoll_Tag = 2;
-#[doc = " It is posible to remove the specified 5-tuple. The socket will not be referenced any\n further."]
+#[doc = " It is possible to remove the specified 5-tuple. The socket will not be referenced any\n further."]
 pub const RICE_AGENT_POLL_REMOVE_SOCKET: RiceAgentPoll_Tag = 3;
 #[doc = " A new pair has been selected for a component."]
 pub const RICE_AGENT_POLL_SELECTED_PAIR: RiceAgentPoll_Tag = 4;
@@ -998,7 +998,7 @@ unsafe extern "C" {
     ) -> *mut RiceComponent;
 }
 unsafe extern "C" {
-    #[doc = " Start gathering candidates for a component with the provided local socket addresses."]
+    #[doc = " Start gathering candidates for a component with the provided local socket addresses.\n\n - `component`: The component to start gathering.\n - `sockets_len`: The number of entries in both `sockets_addr` and `sockets_transports`.\n - `sockets_addr`: An array of addresses for producing host and STUN server-reflexive\n   candidates.\n - `sockets_transports`: An array of transport types for producing host and STUN\n   server-reflexive candidates.\n - `turn_len`: the number of entries in both `turn_sockets` and `turn_config`.\n - `turn_sockets`: An array of local addresses for producing TURN candidates.\n - `turn_config`: An array of TURN server configurations.\n\n Candidates will be generated as follows (if they succeed):\n\n 1. A host candidate for each `(sockets_transports[i], socket_addr[i])`. If TCP, then both an\n    active and passive host candidate will be generated.\n 2. For each configured STUN server, a reflexive candidate for each\n    `(sockets_transports[i], socket_addr[i])` if different from any other candidate\n    produced. The local address for each STUN server connection will be one of the entries\n    provided in `sockets_addr`.\n 3. For each `(turn_sockets[i], turn_config[i])` a TURN allocation will be attempted and a\n    relayed candidate produced on success.  If you would like multiple options for relayed\n    candidates, e.g. UDP, TCP, TCP/TLS, then provide each options as different entries in the\n    provided array. The `turn_sockets[i]` value is the local address to communicate with the\n    TURN server in `turn_config[i]` and should be different than any value provided through\n    `sockets_addr`."]
     pub fn rice_component_gather_candidates(
         component: *mut RiceComponent,
         sockets_len: usize,
