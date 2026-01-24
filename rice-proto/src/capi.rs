@@ -277,12 +277,12 @@ pub unsafe extern "C" fn rice_agent_get_controlling(agent: *const RiceAgent) -> 
 pub enum RiceAgentPoll {
     /// The Agent is closed.  No further progress will be made.
     Closed,
-    /// Wait until the specified `Instant` has been reached (or an external event)
+    /// Wait until the specified `Instant` has been reached (or an external event).
     WaitUntilNanos(i64),
     /// Connect from the specified interface to the specified address.  Reply (success or failure)
-    /// should be notified using `rice_agent_allocated_socket()` with the same parameters.
+    /// should be notified using `rice_stream_handle_allocated_socket()`.
     AllocateSocket(RiceAgentSocket),
-    /// It is posible to remove the specified 5-tuple. The socket will not be referenced any
+    /// It is possible to remove the specified 5-tuple. The socket will not be referenced any
     /// further.
     RemoveSocket(RiceAgentSocket),
     /// A new pair has been selected for a component.
