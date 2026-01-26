@@ -101,4 +101,12 @@ pub(crate) mod tests {
             .build()
             .unwrap()
     }
+
+    #[cfg(feature = "runtime-tokio")]
+    pub fn tokio_multi_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
 }

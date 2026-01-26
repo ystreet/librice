@@ -633,6 +633,12 @@ impl Stream {
                         .map(|(addr, config)| (addr, config.clone())),
                 )?;
             }
+            if let Some(agent) = self.state.weak_agent_inner.upgrade() {
+                let mut agent = agent.lock().unwrap();
+                if let Some(waker) = agent.waker.take() {
+                    waker.wake();
+                }
+            }
         }
         Ok(())
     }
@@ -927,15 +933,7 @@ mod tests {
         assert!(ret.is_ok());
     }
 
-    async fn gather_candidates() {
-        init();
-        let agent = Arc::new(Agent::default());
-        let s = agent.add_stream();
-        s.set_local_credentials(&Credentials::new("luser", "lpass"));
-        s.set_remote_credentials(&Credentials::new("ruser", "rpass"));
-        let _c = s.add_component().unwrap();
-
-        s.gather_candidates().await.unwrap();
+    async fn message_loop_task(agent: Arc<Agent>) {
         let mut messages = agent.messages();
         loop {
             if matches!(
@@ -945,9 +943,66 @@ mod tests {
                 break;
             }
         }
+    }
+
+    async fn gather_candidates() {
+        init();
+        let agent = Arc::new(Agent::default());
+        let s = agent.add_stream();
+        s.set_local_credentials(&Credentials::new("luser", "lpass"));
+        s.set_remote_credentials(&Credentials::new("ruser", "rpass"));
+        let _c = s.add_component().unwrap();
+
+        s.gather_candidates().await.unwrap();
+        message_loop_task(agent.clone()).await;
         //let local_cands = s.local_candidates();
         //info!("gathered local candidates {:?}", local_cands);
         //assert!(!local_cands.is_empty());
+        let ret = s.gather_candidates().await;
+        error!("ret: {ret:?}");
+        assert!(matches!(
+            ret,
+            Err(AgentError::Proto(ProtoAgentError::AlreadyInProgress))
+        ));
+    }
+
+    #[cfg(feature = "runtime-smol")]
+    #[test]
+    fn smol_gather_candidates_separate_message_task() {
+        // spawn to ensure Send-ness
+        let rt = crate::runtime::default_runtime().unwrap();
+        smol::block_on(gather_candidates_separate_task(rt));
+    }
+
+    #[cfg(feature = "runtime-tokio")]
+    #[test]
+    fn tokio_gather_candidates_separate_message_task() {
+        // spawn to ensure Send-ness
+        let tokio_rt = crate::tests::tokio_multi_runtime();
+        let _guard = tokio_rt.enter();
+        let rt = crate::runtime::default_runtime().unwrap();
+        tokio_rt.block_on(gather_candidates_separate_task(rt));
+    }
+
+    async fn gather_candidates_separate_task(runtime: Arc<dyn Runtime>) {
+        init();
+        let agent = Arc::new(Agent::default());
+        let s = agent.add_stream();
+        s.set_local_credentials(&Credentials::new("luser", "lpass"));
+        s.set_remote_credentials(&Credentials::new("ruser", "rpass"));
+        let _c = s.add_component().unwrap();
+        let (send, recv) = futures::channel::oneshot::channel();
+
+        runtime.spawn({
+            let agent = agent.clone();
+            Box::pin(async move {
+                message_loop_task(agent).await;
+                let _ = send.send(());
+            })
+        });
+
+        s.gather_candidates().await.unwrap();
+        recv.await.unwrap();
         let ret = s.gather_candidates().await;
         error!("ret: {ret:?}");
         assert!(matches!(
