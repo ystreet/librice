@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2025 Matthew Waters <matthew@centricular.com>
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 // avoid linking/regenerating when running on docs.rs
 #[cfg(docsrs)]
 fn main() {}
