@@ -13,7 +13,6 @@ use librice::runtime::{
     AsyncUdpSocket, AsyncUdpSocketExt, Runtime,
 };
 use rice_c::Instant;
-use stun_proto::agent::HandleStunReply;
 use stun_proto::agent::StunAgent;
 use stun_proto::types::attribute::*;
 use stun_proto::types::message::*;
@@ -86,32 +85,30 @@ fn handle_incoming_data(
     stun_agent: &mut StunAgent,
 ) -> Option<(MessageWriteVec, SocketAddr)> {
     let msg = Message::from_bytes(data).ok()?;
-    match stun_agent.handle_stun(msg, from) {
-        HandleStunReply::Drop(_) | HandleStunReply::UnvalidatedStunResponse(_) => None,
-        // we don't send any stun request so should never receive any responses
-        HandleStunReply::ValidatedStunResponse(_response) => {
-            error!("Received STUN response from {from}!");
-            None
-        }
-        HandleStunReply::IncomingStun(msg) => {
-            info!("received from {from}: {}", msg);
-            if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
-                match handle_binding_request(&msg, from) {
-                    Ok(response) => {
-                        info!("sending response to {from}: {:?}", response);
-                        return Some((response, from));
-                    }
-                    Err(err) => warn!("error: {}", err),
-                }
-            } else {
-                let mut response = Message::builder_error(&msg, MessageWriteVec::new());
-                let error = ErrorCode::new(400, "Bad Request").unwrap();
-                response.add_attribute(&error).unwrap();
-                return Some((response, from));
-            }
-            None
-        }
+    if !stun_agent.handle_stun_message(&msg, from) {
+        return None;
     }
+    if msg.is_response() {
+        error!("Received STUN response from {from}!");
+        return None;
+    } else if msg.has_class(MessageClass::Request) {
+        info!("received from {from}: {}", msg);
+        if msg.has_method(BINDING) {
+            match handle_binding_request(&msg, from) {
+                Ok(response) => {
+                    info!("sending response to {from}: {:?}", response);
+                    return Some((response, from));
+                }
+                Err(err) => warn!("error: {}", err),
+            }
+        }
+    } else {
+        let mut response = Message::builder_error(&msg, MessageWriteVec::new());
+        let error = ErrorCode::new(400, "Bad Request").unwrap();
+        response.add_attribute(&error).unwrap();
+        return Some((response, from));
+    }
+    None
 }
 
 #[allow(dead_code)]

@@ -22,7 +22,7 @@ use crate::turn::TurnConfig;
 #[cfg(any(feature = "openssl", feature = "rustls"))]
 use crate::turn::TurnTlsConfig;
 use stun_proto::Instant;
-use stun_proto::agent::{HandleStunReply, StunAgent, StunAgentPollRet, StunError, Transmit};
+use stun_proto::agent::{StunAgent, StunAgentPollRet, StunError, Transmit};
 use stun_proto::types::attribute::XorMappedAddress;
 use stun_proto::types::data::Data;
 use stun_proto::types::message::{
@@ -858,14 +858,12 @@ impl StunGatherer {
                             let other_preference = request.other_preference;
                             let component_id = request.component_id;
                             let server = request.server;
-                            if let HandleStunReply::ValidatedStunResponse(response) =
-                                agent.handle_stun(msg, transmit.from)
-                            {
+                            if agent.handle_stun_message(&msg, transmit.from) {
                                 request.completed = true;
-                                let Ok(xor_addr) = response.attribute::<XorMappedAddress>() else {
+                                let Ok(xor_addr) = msg.attribute::<XorMappedAddress>() else {
                                     return true;
                                 };
-                                let stun_addr = xor_addr.addr(response.transaction_id());
+                                let stun_addr = xor_addr.addr(msg.transaction_id());
                                 for tcp_type in [TcpType::Active, TcpType::Passive] {
                                     let foundation = self.produced_i.to_string();
                                     let base_addr = match tcp_type {
@@ -899,16 +897,13 @@ impl StunGatherer {
                                     "parsed STUN message {msg} from {} to {}",
                                     transmit.from, transmit.to
                                 );
-                                if let HandleStunReply::ValidatedStunResponse(response) =
-                                    agent.handle_stun(msg, transmit.from)
-                                {
+                                if agent.handle_stun_message(&msg, transmit.from) {
                                     request.completed = true;
                                     let foundation = self.produced_i.to_string();
-                                    let Ok(xor_addr) = response.attribute::<XorMappedAddress>()
-                                    else {
+                                    let Ok(xor_addr) = msg.attribute::<XorMappedAddress>() else {
                                         return true;
                                     };
-                                    let stun_addr = xor_addr.addr(response.transaction_id());
+                                    let stun_addr = xor_addr.addr(msg.transaction_id());
                                     if let Some(cand) = Self::handle_stun_response_address(
                                         stun_addr,
                                         TransportType::Udp,

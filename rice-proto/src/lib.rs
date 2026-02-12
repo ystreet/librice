@@ -126,6 +126,7 @@ pub(crate) mod tests {
     use super::*;
 
     pub fn test_init_log() -> DefaultGuard {
+        rice_stun_types::debug_init();
         let level_filter = std::env::var("RICE_LOG")
             .or(std::env::var("RUST_LOG"))
             .ok()

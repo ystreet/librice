@@ -189,6 +189,7 @@ impl<'a> ComponentMut<'a> {
                     selected.local.transport_type,
                     selected.local.base_address,
                     selected.remote.address,
+                    None,
                 )
                 .0;
             let agent = checklist.mut_agent_by_id(agent_id).unwrap();
@@ -206,7 +207,7 @@ impl<'a> ComponentMut<'a> {
             let msg = Message::from_bytes(&transmit.data).unwrap();
             let response = Message::builder_success(&msg, MessageWriteVec::new()).finish();
             let response = Message::from_bytes(&response).unwrap();
-            agent.handle_stun(response, selected.remote.address);
+            agent.handle_stun_message(&response, selected.remote.address);
         }
 
         let selected_pair = SelectedPair::new(selected, agent_id, None);
