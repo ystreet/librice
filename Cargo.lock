@@ -1881,11 +1881,12 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "stun-proto"
-version = "1.0.2"
+version = "2.0.0-rc.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb20bcca0364f603ff3ba2158f464452239c89a397f2f4305fac8e64d687b36c"
+checksum = "1a47d83aa9d724cc5aabd2aaa68d71ca0ce1b9c9e961ebcb3012073a775afa71"
 dependencies = [
  "byteorder",
+ "rand",
  "sans-io-time",
  "stun-types",
  "thiserror 2.0.17",
@@ -1894,9 +1895,9 @@ dependencies = [
 
 [[package]]
 name = "stun-types"
-version = "1.0.2"
+version = "2.0.0-rc.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02f29d883cdb94117322c88476936f28bd2744e30833f367049f9f877db26be6"
+checksum = "b0905067b75dffbc60c4ea59d85c487822053f405507fe7c4e88736e80f4c1a2"
 dependencies = [
  "byteorder",
  "crc",
@@ -2132,9 +2133,9 @@ dependencies = [
 
 [[package]]
 name = "turn-client-proto"
-version = "0.5.0"
+version = "0.6.0-rc.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4aa732e756b69a7d8e86aeba9799c7819ed522d4cb8b51c199d90e0324be7c1e"
+checksum = "6f052cc41af72adf1c5911854e1859a80c67a6fe54291bc29f0f8207090492ab"
 dependencies = [
  "byteorder",
  "openssl",
@@ -2148,9 +2149,9 @@ dependencies = [
 
 [[package]]
 name = "turn-server-proto"
-version = "0.5.0"
+version = "0.6.0-rc.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01caa832096307f126513bb42a723e53aad16a098ea7c1561fc88d827ee2803f"
+checksum = "69fc0e4dca632ff4973168ebf5207a261459f8ff1311ecba03f07d7a748e049c"
 dependencies = [
  "byteorder",
  "pnet_packet",
@@ -2164,9 +2165,9 @@ dependencies = [
 
 [[package]]
 name = "turn-types"
-version = "0.5.0"
+version = "0.6.0-rc.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c57a9f60b657787ad1142d963c87ee30dc72b64f2a1d49f8ce0a2ce1f58d6ff"
+checksum = "94d40184a06c59fe42b80c2e505aeb62a3f2b4b1c96b70e8a7aa2bee97acbb2a"
 dependencies = [
  "byteorder",
  "stun-proto",

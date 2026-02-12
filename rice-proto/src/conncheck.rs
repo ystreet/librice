@@ -20,6 +20,7 @@ use core::net::{IpAddr, SocketAddr};
 use core::ops::Range;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
+use stun_proto::auth::ShortTermAuth;
 
 use crate::ALPHABET;
 use crate::candidate::{Candidate, CandidatePair, CandidateType, TcpType, TransportType};
@@ -30,7 +31,7 @@ use crate::tcp::TcpBuffer;
 use byteorder::{BigEndian, ByteOrder};
 use rice_stun_types::attribute::{IceControlled, IceControlling, Priority, UseCandidate};
 use stun_proto::Instant;
-use stun_proto::agent::{HandleStunReply, StunAgent, StunAgentPollRet, StunError, Transmit};
+use stun_proto::agent::{StunAgent, StunAgentPollRet, StunError, Transmit};
 use stun_proto::types::attribute::*;
 use stun_proto::types::data::Data;
 use stun_proto::types::message::*;
@@ -454,6 +455,8 @@ pub struct ConnCheckList {
     remote_end_of_candidates: bool,
     events: VecDeque<ConnCheckEvent>,
     agents: Vec<CheckStunAgent>,
+    stun_auth_local: ShortTermAuth,
+    stun_auth_remote: ShortTermAuth,
     turn_clients: Vec<CheckTurnClient>,
     pending_delete_turn_clients: Vec<CheckTurnClient>,
     tcp_buffers: BTreeMap<(SocketAddr, SocketAddr), TcpBuffer>,
@@ -525,22 +528,22 @@ struct ConnCheckLocalCandidate {
 }
 
 fn response_add_credentials<O, B: MessageWrite<Output = O>>(
-    mut response: B,
-    local_credentials: MessageIntegrityCredentials,
+    response: B,
+    auth: &mut ShortTermAuth,
 ) -> Result<B, StunError> {
-    response.add_message_integrity(&local_credentials, IntegrityAlgorithm::Sha1)?;
+    let mut response = auth.sign_outgoing_message(response).unwrap();
     response.add_fingerprint()?;
     Ok(response)
 }
 fn binding_success_response(
     msg: &Message<'_>,
     from: SocketAddr,
-    local_credentials: MessageIntegrityCredentials,
+    auth: &mut ShortTermAuth,
 ) -> MessageWriteVec {
     let mut response = Message::builder_success(msg, MessageWriteVec::new());
     let xor_addr = XorMappedAddress::new(from, msg.transaction_id());
     response.add_attribute(&xor_addr).unwrap();
-    response_add_credentials(response, local_credentials).unwrap()
+    response_add_credentials(response, auth).unwrap()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -574,12 +577,19 @@ fn generate_random_credentials() -> Credentials {
 
 impl ConnCheckList {
     fn new(checklist_id: usize, controlling: bool, trickle_ice: bool) -> Self {
+        let local_credentials = generate_random_credentials();
+        let remote_credentials = generate_random_credentials();
+        let mut stun_auth_local = ShortTermAuth::new();
+        stun_auth_local.set_credentials(local_credentials.clone().into(), IntegrityAlgorithm::Sha1);
+        let mut stun_auth_remote = ShortTermAuth::new();
+        stun_auth_remote
+            .set_credentials(remote_credentials.clone().into(), IntegrityAlgorithm::Sha1);
         Self {
             checklist_id,
             state: CheckListState::Running,
             component_ids: Vec::new(),
-            local_credentials: generate_random_credentials(),
-            remote_credentials: generate_random_credentials(),
+            local_credentials,
+            remote_credentials,
             local_candidates: Vec::new(),
             remote_candidates: Vec::new(),
             triggered: VecDeque::new(),
@@ -592,6 +602,8 @@ impl ConnCheckList {
             remote_end_of_candidates: false,
             events: VecDeque::new(),
             agents: Vec::new(),
+            stun_auth_local,
+            stun_auth_remote,
             turn_clients: Vec::new(),
             pending_delete_turn_clients: Vec::new(),
             tcp_buffers: BTreeMap::default(),
@@ -611,13 +623,8 @@ impl ConnCheckList {
             "changing local credentials from {:?} to {credentials:?}",
             self.remote_credentials
         );
-        for agent in self.agents.iter_mut() {
-            agent
-                .agent
-                .set_local_credentials(MessageIntegrityCredentials::ShortTerm(
-                    credentials.clone().into(),
-                ));
-        }
+        self.stun_auth_local
+            .set_credentials(credentials.clone().into(), IntegrityAlgorithm::Sha1);
         self.local_credentials = credentials;
     }
 
@@ -627,13 +634,8 @@ impl ConnCheckList {
             "changing remote credentials from {:?} to {credentials:?}",
             self.remote_credentials
         );
-        for agent in self.agents.iter_mut() {
-            agent
-                .agent
-                .set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
-                    credentials.clone().into(),
-                ));
-        }
+        self.stun_auth_remote
+            .set_credentials(credentials.clone().into(), IntegrityAlgorithm::Sha1);
 
         // If we already have checks that are using old or outdated credentials, replace them with
         // new checks that use the new remote credentials
@@ -712,14 +714,10 @@ impl ConnCheckList {
         transport: TransportType,
         local: SocketAddr,
         remote: SocketAddr,
+        turn_id: Option<StunAgentId>,
     ) -> (StunAgentId, usize) {
-        let mut agent = StunAgent::builder(transport, local);
-        if transport == TransportType::Tcp {
-            agent = agent.remote_addr(remote);
-        }
-        let agent = agent.build();
-        // TODO: handle TURN
-        self.add_agent(agent, None)
+        let agent = new_agent(transport, local, remote);
+        self.add_agent(agent, turn_id)
     }
 
     fn add_agent(
@@ -809,8 +807,6 @@ impl ConnCheckList {
     pub(crate) fn find_or_create_udp_agent(
         &mut self,
         candidate: &Candidate,
-        local_credentials: &Credentials,
-        remote_credentials: &Credentials,
         turn_id: Option<StunAgentId>,
     ) -> (StunAgentId, &StunAgent) {
         if let Some(agent_id) = self
@@ -830,14 +826,7 @@ impl ConnCheckList {
         {
             return (agent_id, self.agent_by_id(agent_id).unwrap());
         }
-        let mut agent =
-            StunAgent::builder(candidate.transport_type, candidate.base_address).build();
-        agent.set_local_credentials(MessageIntegrityCredentials::ShortTerm(
-            local_credentials.clone().into(),
-        ));
-        agent.set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
-            remote_credentials.clone().into(),
-        ));
+        let agent = StunAgent::builder(candidate.transport_type, candidate.base_address).build();
         let (agent_id, agent_idx) = self.add_agent(agent, turn_id);
         (agent_id, &self.agents[agent_idx].agent)
     }
@@ -999,25 +988,16 @@ impl ConnCheckList {
         local: Candidate,
         turn_id: Option<StunAgentId>,
     ) -> bool {
-        let (local_credentials, remote_credentials) = {
-            if self.local_end_of_candidates {
-                panic!("Attempt made to add a local candidate after end-of-candidate received");
-            }
-            let existing = self
-                .component_ids
-                .iter()
-                .find(|(id, _state)| id == &local.component_id);
-            if let Some(_existing) = existing {
-                (
-                    self.local_credentials.clone(),
-                    self.remote_credentials.clone(),
-                )
-            } else {
-                panic!(
-                    "Attempt made to add a local candidate without a corresponding add_component()"
-                );
-            }
-        };
+        if self.local_end_of_candidates {
+            panic!("Attempt made to add a local candidate after end-of-candidate received");
+        }
+        let existing = self
+            .component_ids
+            .iter()
+            .find(|(id, _state)| id == &local.component_id);
+        if existing.is_none() {
+            panic!("Attempt made to add a local candidate without a corresponding add_component()");
+        }
 
         if let Some(idx) = self
             .local_candidates
@@ -1045,12 +1025,7 @@ impl ConnCheckList {
 
         match local.transport_type {
             TransportType::Udp => {
-                let (agent_id, _) = self.find_or_create_udp_agent(
-                    &local,
-                    &local_credentials,
-                    &remote_credentials,
-                    turn_id,
-                );
+                let (agent_id, _) = self.find_or_create_udp_agent(&local, turn_id);
                 self.local_candidates.push(ConnCheckLocalCandidate {
                     candidate: local,
                     variant: LocalCandidateVariant::Agent(agent_id),
@@ -2163,56 +2138,94 @@ impl ConnCheckListSet {
         turn_id: Option<(StunAgentId, SocketAddr)>,
     ) -> bool {
         debug!("received STUN message {msg}");
-        let Some(agent) = self.checklists[checklist_i].mut_agent_by_id(agent_id) else {
-            return false;
-        };
-        match agent.handle_stun(msg, transmit.from) {
-            HandleStunReply::Drop(_) => false,
-            HandleStunReply::ValidatedStunResponse(response) => {
-                let Some(remote_credentials) = agent.remote_credentials() else {
-                    return false;
-                };
-                self.handle_stun_response(checklist_i, response, transmit.from, remote_credentials);
-                true
-            }
-            HandleStunReply::UnvalidatedStunResponse(_msg) => false,
-            HandleStunReply::IncomingStun(request) => {
-                if !request.has_method(BINDING) {
-                    return false;
+        if msg.is_response() {
+            match self.checklists[checklist_i]
+                .stun_auth_remote
+                .validate_incoming_message(&msg)
+            {
+                Ok(Some(_algo)) => {
+                    let Some(agent) = self.checklists[checklist_i].mut_agent_by_id(agent_id) else {
+                        return false;
+                    };
+                    if !agent.handle_stun_message(&msg, transmit.from) {
+                        return false;
+                    }
+                    self.handle_stun_response(checklist_i, &msg, transmit.from);
+                    true
                 }
-                let Some(local_credentials) = agent.local_credentials() else {
-                    return false;
-                };
-                let Some(local_cand) = self.checklists[checklist_i]
-                    .find_local_candidate(transmit.transport, transmit.to)
-                else {
-                    warn!("Could not find local candidate for incoming data");
-                    trace!(
-                        "local candidates: {:?}",
-                        self.checklists[checklist_i].local_candidates
-                    );
-                    return false;
-                };
-
-                let checklist_id = self.checklists[checklist_i].checklist_id;
-                let response = self.handle_binding_request(
-                    checklist_i,
-                    &local_cand,
-                    agent_id,
-                    &request,
-                    transmit.from,
-                    local_credentials,
-                );
-                self.pending_messages.push_back(CheckListSetPendingMessage {
-                    checklist_id,
-                    agent_id,
-                    is_request: false,
-                    msg: response.finish(),
-                    to: transmit.from,
-                    turn_id,
-                });
-                true
+                _ => false,
             }
+        } else if msg.has_class(MessageClass::Request) {
+            match self.checklists[checklist_i]
+                .stun_auth_local
+                .validate_incoming_message(&msg)
+            {
+                Ok(Some(_algo)) => {
+                    if !msg.has_method(BINDING) {
+                        return false;
+                    }
+                    let Some(local_cand) = self.checklists[checklist_i]
+                        .find_local_candidate(transmit.transport, transmit.to)
+                    else {
+                        warn!("Could not find local candidate for incoming data");
+                        trace!(
+                            "local candidates: {:?}",
+                            self.checklists[checklist_i].local_candidates
+                        );
+                        return false;
+                    };
+
+                    let checklist_id = self.checklists[checklist_i].checklist_id;
+                    let response = self.handle_binding_request(
+                        checklist_i,
+                        &local_cand,
+                        agent_id,
+                        &msg,
+                        transmit.from,
+                    );
+                    self.pending_messages.push_back(CheckListSetPendingMessage {
+                        checklist_id,
+                        agent_id,
+                        is_request: false,
+                        msg: response.finish(),
+                        to: transmit.from,
+                        turn_id,
+                    });
+                    true
+                }
+                Ok(None) => {
+                    warn!("incoming message failed did not have integrity");
+                    let code = ErrorCode::builder(ErrorCode::UNAUTHORIZED).build().unwrap();
+                    let mut response = Message::builder_error(&msg, MessageWriteVec::new());
+                    response.add_attribute(&code).unwrap();
+                    self.pending_messages.push_back(CheckListSetPendingMessage {
+                        checklist_id: self.checklists[checklist_i].checklist_id,
+                        agent_id,
+                        is_request: false,
+                        msg: response.finish(),
+                        to: transmit.from,
+                        turn_id,
+                    });
+                    true
+                }
+                Err(e) => {
+                    warn!("incoming message failed integrity check: {e:?}");
+                    let code = ErrorCode::builder(ErrorCode::UNAUTHORIZED).build().unwrap();
+                    let mut response = Message::builder_error(&msg, MessageWriteVec::new());
+                    response.add_attribute(&code).unwrap();
+                    self.pending_messages.push_back(CheckListSetPendingMessage {
+                        checklist_id: self.checklists[checklist_i].checklist_id,
+                        agent_id,
+                        is_request: false,
+                        msg: response.finish(),
+                        to: transmit.from,
+                        turn_id,
+                    });
+                    true
+                }
+            }
+        } else {
+            false
         }
     }
 
@@ -2249,23 +2262,13 @@ impl ConnCheckListSet {
                             .map(|agent| (agent.0, checklist.checklist_id))
                     })
                     .unwrap_or_else(|| {
-                        let mut agent = StunAgent::builder(transmit.transport, transmit.to)
-                            .remote_addr(transmit.from)
-                            .build();
-                        agent.set_local_credentials(MessageIntegrityCredentials::ShortTerm(
-                            self.checklists[checklist_i]
-                                .local_credentials
-                                .clone()
-                                .into(),
-                        ));
-                        agent.set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
-                            self.checklists[checklist_i]
-                                .remote_credentials
-                                .clone()
-                                .into(),
-                        ));
                         let (agent_id, _agent_idx) = self.checklists[checklist_i]
-                            .add_agent(agent, turn_client_id.map(|(id, _addr)| id));
+                            .add_agent_for_5tuple(
+                                transmit.transport,
+                                transmit.to,
+                                transmit.from,
+                                None,
+                            );
                         (agent_id, checklist_i)
                     })
             });
@@ -2504,7 +2507,6 @@ impl ConnCheckListSet {
         agent_id: StunAgentId,
         msg: &Message,
         from: SocketAddr,
-        local_credentials: MessageIntegrityCredentials,
     ) -> MessageWriteVec {
         let checklist = &mut self.checklists[checklist_i];
         trace!("have request {}", msg);
@@ -2530,12 +2532,6 @@ impl ConnCheckListSet {
         ) {
             // failure -> send error response
             return error_msg;
-        }
-        if msg.validate_integrity(&local_credentials).is_err() {
-            let code = ErrorCode::builder(ErrorCode::UNAUTHORIZED).build().unwrap();
-            let mut response = Message::builder_error(msg, MessageWriteVec::new());
-            response.add_attribute(&code).unwrap();
-            return response;
         }
         let peer_nominating = if let Some(use_candidate_raw) = msg.raw_attribute(UseCandidate::TYPE)
         {
@@ -2590,7 +2586,11 @@ impl ConnCheckListSet {
                         .build()
                         .unwrap();
                     response.add_attribute(&error).unwrap();
-                    return response_add_credentials(response, local_credentials).unwrap();
+                    return response_add_credentials(
+                        response,
+                        &mut self.checklists[checklist_i].stun_auth_local,
+                    )
+                    .unwrap();
                 } else {
                     debug!("role conflict detected, updating controlling state to false");
                     // *  If the agent's tiebreaker value is less than the contents of
@@ -2627,7 +2627,11 @@ impl ConnCheckListSet {
                         .build()
                         .unwrap();
                     response.add_attribute(&error).unwrap();
-                    return response_add_credentials(response, local_credentials).unwrap();
+                    return response_add_credentials(
+                        response,
+                        &mut self.checklists[checklist_i].stun_auth_local,
+                    )
+                    .unwrap();
                 }
             }
         }
@@ -2775,7 +2779,7 @@ impl ConnCheckListSet {
             checklist.add_check(check);
         }
 
-        binding_success_response(msg, from, local_credentials)
+        binding_success_response(msg, from, &mut self.checklists[checklist_i].stun_auth_local)
     }
 
     fn check_success(
@@ -2896,18 +2900,12 @@ impl ConnCheckListSet {
     }
 
     #[tracing::instrument(
-        skip(self, response, remote_credentials),
+        skip(self, response),
         fields(
             checklist_id = self.checklists[checklist_i].checklist_id,
         ),
     )]
-    fn handle_stun_response(
-        &mut self,
-        checklist_i: usize,
-        response: Message,
-        from: SocketAddr,
-        remote_credentials: MessageIntegrityCredentials,
-    ) {
+    fn handle_stun_response(&mut self, checklist_i: usize, response: &Message, from: SocketAddr) {
         let checklist = &mut self.checklists[checklist_i];
         let checklist_id = checklist.checklist_id;
         // find conncheck
@@ -2921,11 +2919,6 @@ impl ConnCheckListSet {
             }
         };
         let conncheck_id = conncheck.conncheck_id;
-
-        if response.validate_integrity(&remote_credentials).is_err() {
-            debug!("Integrity check failed, ignoring");
-            return;
-        }
 
         // if response success:
         // if mismatched address -> fail
@@ -3381,20 +3374,10 @@ impl ConnCheckListSet {
                                 }) {
                                 local_agent.id
                             } else {
-                                let mut agent =
+                                let agent =
                                     StunAgent::builder(TransportType::Tcp, pending.relayed_addr)
                                         .remote_addr(pending.peer_addr)
                                         .build();
-                                agent.set_local_credentials(
-                                    MessageIntegrityCredentials::ShortTerm(
-                                        local_credentials.clone().into(),
-                                    ),
-                                );
-                                agent.set_remote_credentials(
-                                    MessageIntegrityCredentials::ShortTerm(
-                                        remote_credentials.clone().into(),
-                                    ),
-                                );
                                 let agent_id = StunAgentId::generate();
                                 checklist.agents.push(CheckStunAgent {
                                     id: agent_id,
@@ -4009,7 +3992,7 @@ impl ConnCheckListSet {
             match local_addr {
                 Ok(local_addr) => {
                     let mut new_pair = check.pair.clone();
-                    let mut agent = StunAgent::builder(transport, local_addr)
+                    let agent = StunAgent::builder(transport, local_addr)
                         .remote_addr(check.pair.remote.address)
                         .build();
                     // FIXME: handle TURN TCP connection construction
@@ -4027,12 +4010,6 @@ impl ConnCheckListSet {
                         warn!("failed to generate stun request for new tcp agent");
                         return;
                     };
-                    agent.set_local_credentials(MessageIntegrityCredentials::ShortTerm(
-                        checklist.local_credentials.clone().into(),
-                    ));
-                    agent.set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
-                        checklist.remote_credentials.clone().into(),
-                    ));
                     let transaction_id = stun_request.transaction_id();
 
                     let checklist_id = check.checklist_id;
@@ -4283,6 +4260,14 @@ fn transmit_send_unframed(transmit: Transmit<Data<'_>>) -> Transmit<Box<[u8]>> {
     })
 }
 
+fn new_agent(transport: TransportType, local: SocketAddr, remote: SocketAddr) -> StunAgent {
+    let mut agent = StunAgent::builder(transport, local);
+    if transport == TransportType::Tcp {
+        agent = agent.remote_addr(remote);
+    }
+    agent.build()
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::borrow::ToOwned;
@@ -4477,40 +4462,48 @@ mod tests {
             PeerBuilder::default()
         }
 
-        fn stun_agent_with_remote(&self, remote_addr: SocketAddr) -> StunAgent {
+        fn stun_agent_with_remote(
+            &self,
+            remote_addr: SocketAddr,
+        ) -> (StunAgent, ShortTermAuth, ShortTermAuth) {
             let mut agent =
                 StunAgent::builder(self.candidate.transport_type, self.candidate.base_address);
             if self.candidate.transport_type == TransportType::Tcp {
                 agent = agent.remote_addr(remote_addr)
             }
-            let mut agent = agent.build();
-            self.configure_stun_agent(&mut agent);
-            agent
+            let agent = agent.build();
+            let mut local_auth = ShortTermAuth::new();
+            let mut remote_auth = ShortTermAuth::new();
+            self.configure_stun_auth(&mut local_auth, &mut remote_auth);
+            (agent, local_auth, remote_auth)
         }
 
-        fn stun_agent(&self) -> StunAgent {
+        fn stun_agent(&self) -> (StunAgent, ShortTermAuth, ShortTermAuth) {
             if self.candidate.transport_type == TransportType::Tcp {
                 unreachable!();
             }
             let agent =
                 StunAgent::builder(self.candidate.transport_type, self.candidate.base_address);
-            let mut agent = agent.build();
-            self.configure_stun_agent(&mut agent);
-            agent
+            let agent = agent.build();
+            let mut local_auth = ShortTermAuth::new();
+            let mut remote_auth = ShortTermAuth::new();
+            self.configure_stun_auth(&mut local_auth, &mut remote_auth);
+            (agent, local_auth, remote_auth)
         }
 
-        fn configure_stun_agent(&self, agent: &mut StunAgent) {
+        fn configure_stun_auth(
+            &self,
+            local_auth: &mut ShortTermAuth,
+            remote_auth: &mut ShortTermAuth,
+        ) {
             let local_credentials = self
                 .local_credentials
                 .clone()
                 .unwrap_or_else(|| Credentials::new(String::from("user"), String::from("pass")));
-            agent.set_local_credentials(MessageIntegrityCredentials::ShortTerm(
-                local_credentials.into(),
-            ));
+            local_auth.set_credentials(local_credentials.into(), IntegrityAlgorithm::Sha1);
             if let Some(remote_credentials) = self.remote_credentials.as_ref() {
-                agent.set_remote_credentials(MessageIntegrityCredentials::ShortTerm(
-                    remote_credentials.clone().into(),
-                ));
+                remote_auth
+                    .set_credentials(remote_credentials.clone().into(), IntegrityAlgorithm::Sha1);
             }
         }
     }
@@ -4652,14 +4645,14 @@ mod tests {
     // update any state like ConnCheckList or even do peer-reflexive candidate
     // things
     fn handle_binding_request(
-        agent: &StunAgent,
+        local_auth: &ShortTermAuth,
         local_credentials: &Credentials,
         msg: &Message,
         from: SocketAddr,
         error_response: Option<u16>,
         response_address: Option<SocketAddr>,
     ) -> Result<Vec<u8>, StunError> {
-        let local_stun_credentials = agent.local_credentials().unwrap();
+        let local_stun_credentials = local_auth.credentials().unwrap().0.clone();
 
         if let Some(error_msg) = Message::check_attribute_types(
             msg,
@@ -4684,7 +4677,10 @@ mod tests {
             return Ok(error_msg.finish());
         }
 
-        if msg.validate_integrity(&local_stun_credentials).is_err() {
+        if msg
+            .validate_integrity(&local_stun_credentials.clone().into())
+            .is_err()
+        {
             let code = ErrorCode::builder(ErrorCode::UNAUTHORIZED).build().unwrap();
             let mut response = Message::builder_error(msg, MessageWriteVec::new());
             response.add_attribute(&code).unwrap();
@@ -4722,13 +4718,14 @@ mod tests {
             response.add_attribute(&xor_addr).unwrap();
             response
         };
-        response.add_message_integrity(&local_stun_credentials, IntegrityAlgorithm::Sha1)?;
+        response.add_message_integrity(&local_stun_credentials.into(), IntegrityAlgorithm::Sha1)?;
         response.add_fingerprint()?;
         Ok(response.finish())
     }
 
     fn reply_to_conncheck<T: AsRef<[u8]>>(
         agent: &mut StunAgent,
+        auth: &ShortTermAuth,
         credentials: &Credentials,
         transmit: Transmit<T>,
         error_response: Option<u16>,
@@ -4748,7 +4745,7 @@ mod tests {
                     let transmit = agent
                         .send(
                             handle_binding_request(
-                                agent,
+                                auth,
                                 credentials,
                                 &msg,
                                 transmit.from,
@@ -5211,11 +5208,12 @@ mod tests {
                     .build()
                     .reinterpret_data(|data| data.into_boxed_slice());
             }
-            let mut remote_agent = self
+            let (mut remote_agent, remote_auth, _local_auth) = self
                 .remote_peer
                 .stun_agent_with_remote(self.local_peer.candidate.address);
             let mut reply = reply_to_conncheck(
                 &mut remote_agent,
+                &remote_auth,
                 &self.remote_peer.local_credentials.clone().unwrap(),
                 transmit,
                 self.error_response,
@@ -5450,16 +5448,20 @@ mod tests {
             state.local.peer.candidate.clone(),
             state.remote.candidate.clone(),
         );
-        let mut local_agent =
+        let local_agent =
             StunAgent::builder(TransportType::Tcp, state.local.peer.candidate.base_address)
                 .remote_addr(state.remote.candidate.address)
                 .build();
-        state.local.peer.configure_stun_agent(&mut local_agent);
+        let mut local_auth = ShortTermAuth::new();
+        let mut remote_auth = ShortTermAuth::new();
+        state
+            .local
+            .peer
+            .configure_stun_auth(&mut local_auth, &mut remote_auth);
         let mut remote_agent =
             StunAgent::builder(TransportType::Tcp, state.remote.candidate.address)
                 .remote_addr(state.local.peer.candidate.base_address)
                 .build();
-        state.remote.configure_stun_agent(&mut remote_agent);
         let now = Instant::ZERO;
 
         let CheckListSetPollRet::AllocateSocket {
@@ -5511,6 +5513,7 @@ mod tests {
 
         let Some(response) = reply_to_conncheck(
             &mut remote_agent,
+            &remote_auth,
             state.local.peer.remote_credentials.as_ref().unwrap(),
             transmit.transmit,
             None,
@@ -5543,6 +5546,7 @@ mod tests {
 
         let Some(response) = reply_to_conncheck(
             &mut remote_agent,
+            &remote_auth,
             state.local.peer.remote_credentials.as_ref().unwrap(),
             transmit.transmit,
             None,
@@ -5619,16 +5623,15 @@ mod tests {
         remote_cand.base_address = remote_addr;
 
         let pair = CandidatePair::new(state.local.peer.candidate.clone(), remote_cand.clone());
-
-        let mut local_agent =
-            StunAgent::builder(TransportType::Tcp, state.local.peer.candidate.base_address)
-                .remote_addr(remote_addr)
-                .build();
-        state.local.peer.configure_stun_agent(&mut local_agent);
+        let mut local_auth = ShortTermAuth::new();
+        let mut remote_auth = ShortTermAuth::new();
+        state
+            .local
+            .peer
+            .configure_stun_auth(&mut local_auth, &mut remote_auth);
         let mut remote_agent = StunAgent::builder(TransportType::Tcp, remote_addr)
             .remote_addr(state.local.peer.candidate.base_address)
             .build();
-        state.remote.configure_stun_agent(&mut remote_agent);
 
         let request = ConnCheck::generate_stun_request(
             &pair,
@@ -5709,6 +5712,7 @@ mod tests {
 
         let Some(response) = reply_to_conncheck(
             &mut remote_agent,
+            &remote_auth,
             state.local.peer.remote_credentials.as_ref().unwrap(),
             transmit.transmit,
             None,
@@ -5742,6 +5746,7 @@ mod tests {
 
         let Some(response) = reply_to_conncheck(
             &mut remote_agent,
+            &remote_auth,
             state.local.peer.remote_credentials.as_ref().unwrap(),
             transmit.transmit,
             None,
@@ -5856,7 +5861,7 @@ mod tests {
             .local_credentials(state.remote.local_credentials.clone().unwrap())
             .remote_credentials(state.local.peer.local_credentials.clone().unwrap())
             .build();
-        let mut remote_agent = unknown_remote_peer.stun_agent();
+        let (mut remote_agent, _remote_auth, mut local_auth) = unknown_remote_peer.stun_agent();
 
         let local_addr = state.local.peer.candidate.base_address;
         let transmit =
@@ -5875,11 +5880,11 @@ mod tests {
         };
 
         let response = Message::from_bytes(&transmit.transmit.data).unwrap();
-        let HandleStunReply::ValidatedStunResponse(response) =
-            remote_agent.handle_stun(response, transmit.transmit.from)
-        else {
-            unreachable!();
-        };
+        assert!(matches!(
+            local_auth.validate_incoming_message(&response).unwrap(),
+            Some(IntegrityAlgorithm::Sha1)
+        ));
+        assert!(remote_agent.handle_stun_message(&response, transmit.transmit.from));
         assert_eq!(transmit.transmit.from, local_addr);
         assert!(response.has_class(MessageClass::Success));
         info!("have prflx response");
@@ -5989,7 +5994,7 @@ mod tests {
             .local_credentials(state.remote.local_credentials.clone().unwrap())
             .remote_credentials(state.local.peer.local_credentials.clone().unwrap())
             .build();
-        let remote_agent = unknown_remote_peer.stun_agent();
+        let (remote_agent, _remote_auth, _local_auth) = unknown_remote_peer.stun_agent();
 
         let CheckListSetPollRet::Event {
             checklist_id: _,
@@ -6253,8 +6258,8 @@ mod tests {
         let set_ret = state.local.checklist_set.poll(now);
         assert!(matches!(set_ret, CheckListSetPollRet::WaitUntil(_)));
 
-        let mut remote_agent = state.remote.stun_agent();
-        let local_addr = state.local.peer.stun_agent().local_addr();
+        let (mut remote_agent, _remote_auth, _local_auth) = state.remote.stun_agent();
+        let local_addr = state.local.peer.stun_agent().0.local_addr();
         let transmit = remote_generate_check(&state.remote, &mut remote_agent, local_addr, now);
 
         info!("sending request");
@@ -6366,8 +6371,8 @@ mod tests {
 
         // receive a normal request as if the remote is doing its own possibly triggered check.
         // The handling of this will add another triggered check entry.
-        let mut remote_agent = state.remote.stun_agent();
-        let local_addr = state.local.peer.stun_agent().local_addr();
+        let (mut remote_agent, _remote_auth, _local_auth) = state.remote.stun_agent();
+        let local_addr = state.local.peer.stun_agent().0.local_addr();
         let transmit = remote_generate_check(&state.remote, &mut remote_agent, local_addr, now);
 
         info!("sending request");
@@ -6451,7 +6456,7 @@ mod tests {
             .local_credentials(remote_credentials.clone())
             .remote_credentials(state.local.peer.local_credentials.clone().unwrap())
             .build();
-        let mut remote_agent = state.remote.stun_agent();
+        let (mut remote_agent, _remote_auth, _local_auth) = state.remote.stun_agent();
         let mut now = Instant::ZERO;
         let to = state.local.peer.candidate.base_address;
         let transmit = remote_generate_check(&remote_peer, &mut remote_agent, to, now);
@@ -7062,11 +7067,11 @@ mod tests {
             .tcp_type(TcpType::Passive);
         let mut state = builder.build();
 
-        let mut remote_agent =
-            StunAgent::builder(TransportType::Tcp, state.remote.candidate.base_address)
-                .remote_addr(state.local.peer.candidate.address)
-                .build();
-        state.remote.configure_stun_agent(&mut remote_agent);
+        let mut local_auth = ShortTermAuth::new();
+        let mut remote_auth = ShortTermAuth::new();
+        state
+            .remote
+            .configure_stun_auth(&mut remote_auth, &mut local_auth);
 
         let now = Instant::ZERO;
         let mut turn_server = TurnServer::new(TransportType::Tcp, turn_addr, "realm".to_owned());
