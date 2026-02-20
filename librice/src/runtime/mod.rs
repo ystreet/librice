@@ -208,8 +208,8 @@ impl<T: AsyncTcpStreamWrite + ?Sized> AsyncTcpStreamWriteExt for T {
 #[allow(clippy::needless_return)]
 pub fn default_runtime() -> Option<Arc<dyn Runtime>> {
     #[cfg(feature = "runtime-tokio")]
-    if ::tokio::runtime::Handle::try_current().is_ok() {
-        return Some(Arc::new(TokioRuntime));
+    if let Ok(handle) = ::tokio::runtime::Handle::try_current() {
+        return Some(Arc::new(TokioRuntime::new(handle)));
     }
 
     #[cfg(feature = "runtime-smol")]

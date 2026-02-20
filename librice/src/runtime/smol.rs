@@ -194,3 +194,67 @@ impl AsyncTimer for Timer {
         Future::poll(self, cx).map(|_| ())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn smol_spawn() {
+        let runtime = SmolRuntime;
+        let (send, recv) = std::sync::mpsc::sync_channel(1);
+        runtime.spawn(Box::pin(async move {
+            send.send(42).unwrap();
+        }));
+        assert_eq!(recv.recv().unwrap(), 42);
+    }
+
+    #[test]
+    fn smol_spawn_from_non_smol_thread() {
+        let runtime = SmolRuntime;
+        std::thread::scope(move |scope| {
+            scope
+                .spawn(move || {
+                    let (send, recv) = std::sync::mpsc::sync_channel(1);
+                    runtime.spawn(Box::pin(async move {
+                        send.send(42).unwrap();
+                    }));
+                    assert_eq!(recv.recv().unwrap(), 42);
+                })
+                .join()
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn smol_sleep() {
+        let runtime = SmolRuntime;
+        smol::block_on(async move {
+            let now = std::time::Instant::now();
+            let duration = core::time::Duration::from_secs(1);
+            let mut timer = runtime.new_timer(now + duration);
+            core::future::poll_fn(|cx| timer.as_mut().poll(cx)).await;
+            assert!(std::time::Instant::now() >= now + duration);
+        });
+    }
+
+    #[test]
+    fn smol_sleep_from_non_smol_thread() {
+        let runtime = SmolRuntime;
+        std::thread::scope(move |scope| {
+            scope
+                .spawn(move || {
+                    let now = std::time::Instant::now();
+                    let duration = core::time::Duration::from_secs(1);
+                    let mut timer = runtime.new_timer(now + duration);
+                    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+                    assert!(matches!(
+                        timer.as_mut().poll(&mut cx),
+                        std::task::Poll::Pending
+                    ));
+                })
+                .join()
+        })
+        .unwrap();
+    }
+}

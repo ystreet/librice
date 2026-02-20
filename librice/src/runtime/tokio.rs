@@ -19,19 +19,30 @@ use crate::runtime::{AsyncTcpStream, AsyncTcpStreamRead, AsyncTcpStreamWrite, Ru
 
 /// An async implementation for use with Tokio.
 #[derive(Debug)]
-pub struct TokioRuntime;
+pub struct TokioRuntime {
+    handle: tokio::runtime::Handle,
+}
+
+impl TokioRuntime {
+    /// Construct a new Tokio runtime with the provide tokio runtime `Handle`.
+    pub fn new(handle: tokio::runtime::Handle) -> Self {
+        Self { handle }
+    }
+}
 
 impl Runtime for TokioRuntime {
     fn spawn(&self, future: Pin<Box<dyn Future<Output = ()> + Send>>) {
-        tokio::spawn(future);
+        self.handle.spawn(future);
     }
     fn new_timer(&self, i: std::time::Instant) -> std::pin::Pin<Box<dyn super::AsyncTimer>> {
+        let _guard = self.handle.enter();
         Box::pin(sleep_until(i.into()))
     }
     fn wrap_udp_socket(
         &self,
         socket: std::net::UdpSocket,
     ) -> std::io::Result<std::sync::Arc<dyn super::AsyncUdpSocket>> {
+        let _guard = self.handle.enter();
         socket.set_nonblocking(true)?;
         Ok(Arc::new(TokioUdpSocket {
             io: tokio::net::UdpSocket::from_std(socket)?,
@@ -175,5 +186,88 @@ impl super::AsyncTimer for tokio::time::Sleep {
     }
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context) -> std::task::Poll<()> {
         Future::poll(self, cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tokio_spawn() {
+        let runtime = crate::tests::tokio_multi_runtime();
+        let runtime = TokioRuntime::new(runtime.handle().clone());
+        let (send, recv) = std::sync::mpsc::sync_channel(1);
+        runtime.spawn(Box::pin(async move {
+            send.send(42).unwrap();
+        }));
+        assert_eq!(recv.recv().unwrap(), 42);
+    }
+
+    #[test]
+    fn tokio_spawn_from_non_tokio_thread() {
+        let runtime = crate::tests::tokio_multi_runtime();
+        let runtime = TokioRuntime::new(runtime.handle().clone());
+        std::thread::scope(move |scope| {
+            scope
+                .spawn(move || {
+                    let (send, recv) = std::sync::mpsc::sync_channel(1);
+                    runtime.spawn(Box::pin(async move {
+                        send.send(42).unwrap();
+                    }));
+                    assert_eq!(recv.recv().unwrap(), 42);
+                })
+                .join()
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn tokio_sleep() {
+        let tokio_runtime = crate::tests::tokio_multi_runtime();
+        let runtime = TokioRuntime::new(tokio_runtime.handle().clone());
+        tokio_runtime.block_on(async move {
+            let now = std::time::Instant::now();
+            let duration = core::time::Duration::from_secs(1);
+            let mut timer = runtime.new_timer(now + duration);
+            core::future::poll_fn(|cx| timer.as_mut().poll(cx)).await;
+            assert!(std::time::Instant::now() >= now + duration);
+        });
+    }
+
+    #[test]
+    fn tokio_sleep_from_non_tokio_thread() {
+        let tokio_runtime = crate::tests::tokio_multi_runtime();
+        let runtime = TokioRuntime::new(tokio_runtime.handle().clone());
+        std::thread::scope(move |scope| {
+            scope
+                .spawn(move || {
+                    let now = std::time::Instant::now();
+                    let duration = core::time::Duration::from_secs(1);
+                    let mut timer = runtime.new_timer(now + duration);
+                    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+                    assert!(matches!(
+                        timer.as_mut().poll(&mut cx),
+                        std::task::Poll::Pending
+                    ));
+                })
+                .join()
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn tokio_udp_from_non_tokio_thread() {
+        let tokio_runtime = crate::tests::tokio_multi_runtime();
+        let runtime = TokioRuntime::new(tokio_runtime.handle().clone());
+        std::thread::scope(move |scope| {
+            scope
+                .spawn(move || {
+                    let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+                    let _udp = runtime.wrap_udp_socket(udp).unwrap();
+                })
+                .join()
+        })
+        .unwrap();
     }
 }
