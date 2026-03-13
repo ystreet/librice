@@ -182,7 +182,7 @@ impl UdpSocketChannel {
     /// received a piece of data.
     pub fn recv(&self) -> impl Stream<Item = (Vec<u8>, SocketAddr)> + '_ {
         stream::unfold(self.clone(), |this| async move {
-            let mut buf = vec![0; 1024];
+            let mut buf = vec![0; 2048];
             let (size, from) = this.socket.recv_from(&mut buf).await.unwrap();
             let ret = buf.split_at(size).0.to_vec();
             Some(((ret, from), this))
