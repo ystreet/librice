@@ -3308,6 +3308,24 @@ impl ConnCheckListSet {
             }
 
             let checklist = &mut self.checklists[self.checklist_i];
+            while let Some((turn_id, transport, remote_ip)) =
+                checklist.pending_turn_permissions.pop_back()
+            {
+                trace!(
+                    "have pending turn permission for id {turn_id:?}, {transport:?}, {remote_ip}"
+                );
+                let Some(client) = checklist.mut_turn_client_by_id(turn_id) else {
+                    continue;
+                };
+
+                if let Err(e) = client.create_permission(transport, remote_ip, now) {
+                    warn!(
+                        "received error trying to create a permission to {:?}: {e}",
+                        remote_ip
+                    );
+                }
+            }
+
             let checklist_id = checklist.checklist_id;
             for idx in 0..checklist.turn_clients.len() {
                 let client = &mut checklist.turn_clients[idx];
@@ -3694,25 +3712,6 @@ impl ConnCheckListSet {
 
     #[tracing::instrument(name = "check_set_poll_transmit", level = "trace", skip(self))]
     pub fn poll_transmit(&mut self, now: Instant) -> Option<CheckListSetTransmit> {
-        for checklist in self.checklists.iter_mut() {
-            while let Some((turn_id, transport, remote_ip)) =
-                checklist.pending_turn_permissions.pop_back()
-            {
-                trace!(
-                    "have pending turn permission for id {turn_id:?}, {transport:?}, {remote_ip}"
-                );
-                let Some(client) = checklist.mut_turn_client_by_id(turn_id) else {
-                    continue;
-                };
-
-                if let Err(e) = client.create_permission(transport, remote_ip, now) {
-                    warn!(
-                        "received error trying to create a permission to {:?}: {e}",
-                        remote_ip
-                    );
-                }
-            }
-        }
         if let Some(pending) = self.pending_transmits.pop_back() {
             trace!(
                 "pending {} {} -> {} transmit of {} bytes",
@@ -4273,7 +4272,6 @@ mod tests {
     use alloc::borrow::ToOwned;
     use alloc::vec;
 
-    use stun_proto::types::AddressFamily;
     use turn_client_proto::{
         tcp::TurnClientTcp,
         types::{
@@ -6562,14 +6560,16 @@ mod tests {
         server: &mut TurnServer,
         turn_alloc_addr: SocketAddr,
         now: Instant,
-    ) {
+    ) -> Instant {
         let transmit = client.poll_transmit(now).unwrap();
         let msg = Message::from_bytes(&transmit.data).unwrap();
         assert!(msg.has_method(ALLOCATE));
         let transmit = server.recv(transmit, now).unwrap().build();
         let ret = client.recv(transmit, now);
         assert!(matches!(ret, TurnRecvRet::Handled));
-        client.poll(now);
+        let TurnPollRet::WaitUntil(now) = client.poll(now) else {
+            unreachable!();
+        };
         let transmit = client.poll_transmit(now).unwrap();
         let msg = Message::from_bytes(&transmit.data).unwrap();
         assert!(msg.has_method(ALLOCATE));
@@ -6597,6 +6597,7 @@ mod tests {
         let ret = client.recv(transmit, now);
         assert!(matches!(ret, TurnRecvRet::Handled));
         assert!(client.relayed_addresses().count() > 0);
+        now
     }
 
     fn set_handle_permission(
@@ -6662,20 +6663,17 @@ mod tests {
             TransportType::Udp => TurnClientUdp::allocate(
                 local_addr,
                 turn_addr,
-                turn_credentials,
-                &[AddressFamily::IPV4],
+                turn_client_proto::api::TurnConfig::new(turn_credentials),
             )
             .into(),
             TransportType::Tcp => TurnClientTcp::allocate(
                 local_addr,
                 turn_addr,
-                turn_credentials,
-                TransportType::Udp,
-                &[AddressFamily::IPV4],
+                turn_client_proto::api::TurnConfig::new(turn_credentials),
             )
             .into(),
         };
-        turn_allocate(&mut turn_client, &mut turn_server, turn_alloc_addr, now);
+        let now = turn_allocate(&mut turn_client, &mut turn_server, turn_alloc_addr, now);
 
         let remote_candidate = state.remote.candidate.clone();
         state.local_list().add_remote_candidate(remote_candidate);
@@ -6688,6 +6686,13 @@ mod tests {
             });
         assert_eq!(state.local.component_id, 1);
 
+        let now = match state.local.checklist_set.poll(now) {
+            CheckListSetPollRet::WaitUntil(now) => now,
+            ret => {
+                error!("{ret:?}");
+                unreachable!()
+            }
+        };
         let now = set_handle_permission(&mut state.local.checklist_set, &mut turn_server, now);
 
         let CheckListSetPollRet::Event {
@@ -6847,11 +6852,10 @@ mod tests {
         let mut turn_client = TurnClientUdp::allocate(
             local_addr,
             turn_addr,
-            turn_credentials,
-            &[AddressFamily::IPV4],
+            turn_client_proto::api::TurnConfig::new(turn_credentials),
         )
         .into();
-        turn_allocate(&mut turn_client, &mut turn_server, turn_alloc_addr, now);
+        let now = turn_allocate(&mut turn_client, &mut turn_server, turn_alloc_addr, now);
 
         let remote_candidate = state.remote.candidate.clone();
         state.local_list().add_remote_candidate(remote_candidate);
@@ -6875,6 +6879,13 @@ mod tests {
         assert_eq!(check.state(), CandidatePairState::Frozen);
         let check_id = check.conncheck_id;
 
+        let now = match state.local.checklist_set.poll(now) {
+            CheckListSetPollRet::WaitUntil(now) => now,
+            ret => {
+                error!("{ret:?}");
+                unreachable!()
+            }
+        };
         let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
             unreachable!()
         };
@@ -7079,14 +7090,11 @@ mod tests {
             turn_credentials.username().to_owned(),
             turn_credentials.password().to_owned(),
         );
-        let mut turn_client = TurnClient::from(TurnClientTcp::allocate(
-            local_addr,
-            turn_addr,
-            turn_credentials,
-            TransportType::Tcp,
-            &[AddressFamily::IPV4],
-        ));
-        turn_allocate(&mut turn_client, &mut turn_server, turn_alloc_addr, now);
+        let mut config = turn_client_proto::api::TurnConfig::new(turn_credentials);
+        config.set_allocation_transport(TransportType::Tcp);
+        let mut turn_client =
+            TurnClient::from(TurnClientTcp::allocate(local_addr, turn_addr, config));
+        let now = turn_allocate(&mut turn_client, &mut turn_server, turn_alloc_addr, now);
 
         let remote_candidate = state.remote.candidate.clone();
         state.local_list().add_remote_candidate(remote_candidate);
@@ -7099,6 +7107,13 @@ mod tests {
             });
         assert_eq!(state.local.component_id, 1);
 
+        let now = match state.local.checklist_set.poll(now) {
+            CheckListSetPollRet::WaitUntil(now) => now,
+            ret => {
+                error!("{ret:?}");
+                unreachable!()
+            }
+        };
         let now = set_handle_permission(&mut state.local.checklist_set, &mut turn_server, now);
         error!("{state:?}");
 
