@@ -230,6 +230,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1672,9 +1678,9 @@ dependencies = [
 
 [[package]]
 name = "sans-io-time"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c865a58584341daa7be4791e2477e21c0163ac8e32435a5ee75373350741832b"
+checksum = "6e1c4baf93f2fbecd194191bdb8b911b14f37ae35f0d1e1cbfb4cb6e067e8c52"
 
 [[package]]
 name = "schannel"
@@ -1814,6 +1820,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "siphasher"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2aa850e253778c88a04c3d7323b043aeda9d3e30d5971937c1855769763678e"
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1869,13 +1881,17 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "stun-proto"
-version = "2.0.0-rc.1"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a47d83aa9d724cc5aabd2aaa68d71ca0ce1b9c9e961ebcb3012073a775afa71"
+checksum = "afe3e4132a5b931f267f46989cba5b5c19e50b672b10c429428cca34a32d0d5d"
 dependencies = [
+ "base64",
  "byteorder",
+ "hashbrown",
  "rand",
  "sans-io-time",
+ "siphasher",
+ "smallvec",
  "stun-types",
  "thiserror 2.0.18",
  "tracing",
@@ -1883,9 +1899,9 @@ dependencies = [
 
 [[package]]
 name = "stun-types"
-version = "2.0.0-rc.1"
+version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0905067b75dffbc60c4ea59d85c487822053f405507fe7c4e88736e80f4c1a2"
+checksum = "536c4c55da9926c80f28256da74b6004245c437fd94ac9f63203c1b5d7aa09fb"
 dependencies = [
  "byteorder",
  "crc",
@@ -1895,6 +1911,7 @@ dependencies = [
  "sha1",
  "sha2",
  "smallvec",
+ "subtle",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -2121,9 +2138,9 @@ dependencies = [
 
 [[package]]
 name = "turn-client-proto"
-version = "0.6.0-rc.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f052cc41af72adf1c5911854e1859a80c67a6fe54291bc29f0f8207090492ab"
+checksum = "c8163bd9fa1f619802b028254c1471e75db7d29ac888346ee747552e3f1a0387"
 dependencies = [
  "byteorder",
  "openssl",
@@ -2137,9 +2154,9 @@ dependencies = [
 
 [[package]]
 name = "turn-server-proto"
-version = "0.6.0-rc.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69fc0e4dca632ff4973168ebf5207a261459f8ff1311ecba03f07d7a748e049c"
+checksum = "c639761eda2f1555e8f93332430e80dc3e4f28d81c5771272043b9ed83a87f3b"
 dependencies = [
  "byteorder",
  "pnet_packet",
@@ -2153,9 +2170,9 @@ dependencies = [
 
 [[package]]
 name = "turn-types"
-version = "0.6.0-rc.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94d40184a06c59fe42b80c2e505aeb62a3f2b4b1c96b70e8a7aa2bee97acbb2a"
+checksum = "e735ab50c7e1eca65648d84df32a16fed510018dcd6079ad0b42362f885d2e97"
 dependencies = [
  "byteorder",
  "stun-proto",

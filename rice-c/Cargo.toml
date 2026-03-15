@@ -23,7 +23,7 @@ bindgen = "0.72"
 
 [dependencies]
 tracing.workspace = true
-sans-io-time = "0.1"
+sans-io-time = "0.2"
 thiserror = { workspace = true, features = ["std"] }
 
 [dev-dependencies]

@@ -695,7 +695,7 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[doc = " The transport to connect to the TURN server."]
-    pub fn rice_turn_config_get_families(
+    pub fn rice_turn_config_get_address_families(
         config: *const RiceTurnConfig,
         n_families: *mut usize,
         families: *mut RiceAddressFamily,

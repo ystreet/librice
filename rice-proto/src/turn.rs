@@ -11,7 +11,8 @@
 //! TURN module.
 
 use core::net::SocketAddr;
-use stun_proto::types::AddressFamily;
+pub use stun_proto::auth::Feature;
+use stun_proto::types::{AddressFamily, message::IntegrityAlgorithm};
 
 use crate::candidate::TransportType;
 
@@ -20,11 +21,9 @@ pub use turn_client_proto::types::TurnCredentials;
 /// Configuration for a particular TURN server connection.
 #[derive(Debug, Clone)]
 pub struct TurnConfig {
+    turn_config: turn_client_proto::api::TurnConfig,
     client_transport: TransportType,
     turn_server: SocketAddr,
-    credentials: TurnCredentials,
-    allocation_transport: TransportType,
-    families: smallvec::SmallVec<[AddressFamily; 2]>,
     tls_config: Option<TurnTlsConfig>,
 }
 
@@ -43,27 +42,22 @@ impl TurnConfig {
     ///     TransportType::Udp,
     ///     server_addr,
     ///     credentials.clone(),
-    ///     TransportType::Udp,
-    ///     &families
     /// );
     /// assert_eq!(config.client_transport(), TransportType::Udp);
     /// assert_eq!(config.addr(), server_addr);
     /// assert_eq!(config.credentials().username(), credentials.username());
-    /// assert_eq!(config.families(), families);
+    /// assert_eq!(config.address_families(), &[AddressFamily::IPV4]);
+    /// assert_eq!(config.allocation_transport(), TransportType::Udp);
     /// ```
     pub fn new(
         client_transport: TransportType,
         server_addr: SocketAddr,
         credentials: TurnCredentials,
-        allocation_transport: TransportType,
-        families: &[AddressFamily],
     ) -> Self {
         Self {
+            turn_config: turn_client_proto::api::TurnConfig::new(credentials),
             client_transport,
             turn_server: server_addr,
-            credentials,
-            allocation_transport,
-            families: families.into(),
             tls_config: None,
         }
     }
@@ -89,19 +83,71 @@ impl TurnConfig {
         self.client_transport
     }
 
-    /// The credentials for accessing the TURN server.
-    pub fn credentials(&self) -> &TurnCredentials {
-        &self.credentials
+    /// Set the allocation transport requested.
+    pub fn set_allocation_transport(&mut self, allocation_transport: TransportType) {
+        self.turn_config
+            .set_allocation_transport(allocation_transport);
     }
 
-    /// The address family to allocate on the TURN server.
-    pub fn families(&self) -> &[AddressFamily] {
-        &self.families
-    }
-
-    /// The [`TransportType`] of the TURN allocation.
+    /// Retrieve the allocation transport requested.
     pub fn allocation_transport(&self) -> TransportType {
-        self.allocation_transport
+        self.turn_config.allocation_transport()
+    }
+
+    /// Add an [`AddressFamily`] that will be requested.
+    ///
+    /// Duplicate [`AddressFamily`]s are ignored.
+    pub fn add_address_family(&mut self, family: AddressFamily) {
+        self.turn_config.add_address_family(family);
+    }
+
+    /// Set the [`AddressFamily`] that will be requested.
+    ///
+    pub fn set_address_family(&mut self, family: AddressFamily) {
+        self.turn_config.set_address_family(family);
+    }
+
+    /// Retrieve the [`AddressFamily`]s that are requested.
+    pub fn address_families(&self) -> &[AddressFamily] {
+        self.turn_config.address_families()
+    }
+
+    /// Retrieve the [`TurnCredentials`] used for authenticating with the TURN server.
+    pub fn credentials(&self) -> &TurnCredentials {
+        self.turn_config.credentials()
+    }
+
+    /// Add a supported integrity algorithm that could be used.
+    pub fn add_supported_integrity(&mut self, integrity: IntegrityAlgorithm) {
+        self.turn_config.add_supported_integrity(integrity);
+    }
+
+    /// Set the supported integrity algorithm used.
+    pub fn set_supported_integrity(&mut self, integrity: IntegrityAlgorithm) {
+        self.turn_config.set_supported_integrity(integrity);
+    }
+
+    /// The supported integrity algorithms used.
+    pub fn supported_integrity(&self) -> &[IntegrityAlgorithm] {
+        self.turn_config.supported_integrity()
+    }
+
+    /// Set whether anonymous username usage is required.
+    ///
+    /// A value of `Required` requires the server to support RFC 8489 and the `Userhash` attribute.
+    pub fn set_anonymous_username(&mut self, anon: Feature) {
+        self.turn_config.set_anonymous_username(anon);
+    }
+
+    /// Whether anonymous username usage is required.
+    ///
+    /// A value of `Required` requires the server to support RFC 8489 and the `Userhash` attribute.
+    pub fn anonymous_username(&self) -> Feature {
+        self.turn_config.anonymous_username()
+    }
+
+    pub(crate) fn turn_config(&self) -> &turn_client_proto::api::TurnConfig {
+        &self.turn_config
     }
 }
 

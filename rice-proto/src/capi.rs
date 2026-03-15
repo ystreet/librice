@@ -182,26 +182,24 @@ pub struct RiceAgent {
 /// Create a new ICE Agent.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_agent_new(controlling: bool, trickle_ice: bool) -> *mut RiceAgent {
-    unsafe {
-        init_logs();
+    init_logs();
 
-        let proto_agent = Arc::new(Mutex::new(
-            Agent::builder()
-                .trickle_ice(trickle_ice)
-                .controlling(controlling)
-                .build(),
-        ));
+    let proto_agent = Arc::new(Mutex::new(
+        Agent::builder()
+            .trickle_ice(trickle_ice)
+            .controlling(controlling)
+            .build(),
+    ));
 
-        let agent = Arc::new(RiceAgent {
-            proto_agent,
-            inner: Arc::new(Mutex::new(RiceAgentInner {
-                stun_servers: vec![],
-                streams: vec![],
-            })),
-        });
+    let agent = Arc::new(RiceAgent {
+        proto_agent,
+        inner: Arc::new(Mutex::new(RiceAgentInner {
+            stun_servers: vec![],
+            streams: vec![],
+        })),
+    });
 
-        mut_override(Arc::into_raw(agent))
-    }
+    mut_override(Arc::into_raw(agent))
 }
 
 /// Increase the reference count of the `RiceAgent`.
@@ -395,18 +393,22 @@ impl<'a> From<RiceData> for Data<'a> {
 /// The number of bytes in a `RiceData`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_data_len(data: *const RiceData) -> usize {
-    match &*data {
-        RiceData::Borrowed(imp) => imp.size,
-        RiceData::Owned(imp) => imp.size,
+    unsafe {
+        match &*data {
+            RiceData::Borrowed(imp) => imp.size,
+            RiceData::Owned(imp) => imp.size,
+        }
     }
 }
 
 /// The data pointer for a `RiceData`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_data_ptr(data: *const RiceData) -> *mut u8 {
-    match &*data {
-        RiceData::Borrowed(imp) => imp.ptr,
-        RiceData::Owned(imp) => imp.ptr,
+    unsafe {
+        match &*data {
+            RiceData::Borrowed(imp) => imp.ptr,
+            RiceData::Owned(imp) => imp.ptr,
+        }
     }
 }
 
@@ -817,6 +819,9 @@ pub unsafe extern "C" fn rice_turn_config_new(
     families: *const RiceAddressFamily,
     tls_config: *mut RiceTlsConfig,
 ) -> *mut RiceTurnConfig {
+    if n_families == 0 {
+        return core::ptr::null_mut();
+    }
     unsafe {
         let creds = Box::from_raw(mut_override(credentials));
         let addr = Box::from_raw(mut_override(addr));
@@ -830,9 +835,12 @@ pub unsafe extern "C" fn rice_turn_config_new(
             transport_type_from_c(transport),
             **addr,
             TurnCredentials::new(&creds.credentials.ufrag, &creds.credentials.passwd),
-            transport_type_from_c(allocation_transport),
-            &families,
         );
+        turn_config.set_allocation_transport(transport_type_from_c(allocation_transport));
+        turn_config.set_address_family(families[0]);
+        for family in &families[1..] {
+            turn_config.add_address_family(*family);
+        }
         if !tls_config.is_null() {
             let tls_config = Arc::from_raw(tls_config);
             turn_config = turn_config.with_tls_config(tls_config.variant.clone());
@@ -910,7 +918,7 @@ pub unsafe extern "C" fn rice_turn_config_get_credentials(
 
 /// The transport to connect to the TURN server.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rice_turn_config_get_families(
+pub unsafe extern "C" fn rice_turn_config_get_address_families(
     config: *const RiceTurnConfig,
     n_families: *mut usize,
     families: *mut RiceAddressFamily,
@@ -918,12 +926,12 @@ pub unsafe extern "C" fn rice_turn_config_get_families(
     unsafe {
         let config = RiceTurnConfig::into_rice_none(config).inner();
         let output_len = *n_families;
-        *n_families = config.families().len();
+        *n_families = config.address_families().len();
         if families.is_null() {
             return;
         }
         let families = core::slice::from_raw_parts_mut(families, output_len);
-        for (i, family) in config.families().iter().enumerate() {
+        for (i, family) in config.address_families().iter().enumerate() {
             *n_families = i;
             if i >= output_len {
                 break;
@@ -1007,18 +1015,16 @@ pub unsafe extern "C" fn rice_tls_config_variant(config: *const RiceTlsConfig) -
 pub unsafe extern "C" fn rice_tls_config_new_openssl(
     transport: RiceTransportType,
 ) -> *mut RiceTlsConfig {
-    unsafe {
-        let method = match transport_type_from_c(transport) {
-            TransportType::Udp => openssl::ssl::SslMethod::dtls_client(),
-            TransportType::Tcp => openssl::ssl::SslMethod::tls_client(),
-        };
-        let Ok(ctx) = openssl::ssl::SslConnector::builder(method) else {
-            return core::ptr::null_mut();
-        };
-        mut_override(Arc::into_raw(Arc::new(RiceTlsConfig {
-            variant: OpensslTurnConfig::new(ctx.build().into_context()).into(),
-        })))
-    }
+    let method = match transport_type_from_c(transport) {
+        TransportType::Udp => openssl::ssl::SslMethod::dtls_client(),
+        TransportType::Tcp => openssl::ssl::SslMethod::tls_client(),
+    };
+    let Ok(ctx) = openssl::ssl::SslConnector::builder(method) else {
+        return core::ptr::null_mut();
+    };
+    mut_override(Arc::into_raw(Arc::new(RiceTlsConfig {
+        variant: OpensslTurnConfig::new(ctx.build().into_context()).into(),
+    })))
 }
 
 /// Construct a new TLS configuration using Rustls.
@@ -1354,7 +1360,7 @@ pub unsafe extern "C" fn rice_stream_get_remote_credentials(
 }
 
 unsafe fn string_from_c(cstr: *const c_char) -> String {
-    CStr::from_ptr(cstr).to_str().unwrap().to_owned()
+    unsafe { CStr::from_ptr(cstr).to_str().unwrap().to_owned() }
 }
 
 unsafe fn owned_string_from_c(cstr: *mut c_char) -> CString {
@@ -2696,14 +2702,12 @@ pub unsafe extern "C" fn rice_address_free(addr: *mut RiceAddress) {
 /// Generate a random sequence of characters suitable for username fragments and passwords.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_random_string(length: usize) -> *mut c_char {
-    unsafe {
-        if length == 0 {
-            return core::ptr::null_mut();
-        }
-        CString::new(crate::random_string(length))
-            .unwrap()
-            .into_raw()
+    if length == 0 {
+        return core::ptr::null_mut();
     }
+    CString::new(crate::random_string(length))
+        .unwrap()
+        .into_raw()
 }
 
 fn mut_override<T>(val: *const T) -> *mut T {

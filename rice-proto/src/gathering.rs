@@ -129,9 +129,7 @@ impl PendingRequest {
                         Some(TurnClient::from(TurnClientRustls::allocate(
                             local_addr,
                             self.server_addr,
-                            config.credentials().clone(),
-                            config.allocation_transport(),
-                            config.families(),
+                            config.turn_config().clone(),
                             rustls.server_name(),
                             rustls.client_config(),
                         )))
@@ -142,9 +140,7 @@ impl PendingRequest {
                             config.client_transport(),
                             local_addr,
                             self.server_addr,
-                            config.credentials().clone(),
-                            config.allocation_transport(),
-                            config.families(),
+                            config.turn_config().clone(),
                             ossl.ssl_context().clone(),
                         )))
                     }
@@ -156,9 +152,7 @@ impl PendingRequest {
                     TurnClientTcp::allocate(
                         local_addr,
                         self.server_addr,
-                        config.credentials().clone(),
-                        config.allocation_transport(),
-                        config.families(),
+                        config.turn_config().clone(),
                     )
                     .into()
                 });
@@ -425,9 +419,7 @@ impl StunGatherer {
                                         TransportType::Udp,
                                         pending_request.local_addr,
                                         pending_request.server_addr,
-                                        config.credentials().clone(),
-                                        TransportType::Udp,
-                                        config.families(),
+                                        config.turn_config().clone(),
                                         ossl.ssl_context().clone(),
                                     )))
                                 }
@@ -439,8 +431,7 @@ impl StunGatherer {
                                 TurnClientUdp::allocate(
                                     pending_request.local_addr,
                                     pending_request.server_addr,
-                                    config.credentials().clone(),
-                                    config.families(),
+                                    config.turn_config().clone(),
                                 )
                                 .into()
                             });
@@ -1023,7 +1014,6 @@ mod tests {
 
     use crate::candidate::{CandidateType, TcpType};
     use stun_proto::types::{
-        AddressFamily,
         message::{MessageClass, MessageWriteVec},
         prelude::{MessageWrite, MessageWriteExt},
     };
@@ -1319,13 +1309,7 @@ mod tests {
             &[(TransportType::Udp, turn_listen_addr)],
             &[(
                 local_addr,
-                &TurnConfig::new(
-                    TransportType::Udp,
-                    turn_listen_addr,
-                    turn_credentials,
-                    TransportType::Udp,
-                    &[AddressFamily::IPV4],
-                ),
+                &TurnConfig::new(TransportType::Udp, turn_listen_addr, turn_credentials),
             )],
         );
         let now = Instant::ZERO;
@@ -1360,6 +1344,10 @@ mod tests {
         assert_eq!(turn_transmit.to, turn_listen_addr);
         let reply = turn_server.recv(turn_transmit, now).unwrap().build();
         assert!(gather.handle_data(&reply, now));
+
+        let GatherPoll::WaitUntil(now) = gather.poll(now) else {
+            unreachable!();
+        };
 
         // authenticated TURN ALLOCATE
         let turn_transmit = gather.poll_transmit(now).unwrap();
@@ -1432,13 +1420,7 @@ mod tests {
             &[(TransportType::Tcp, turn_listen_addr)],
             &[(
                 local_addr,
-                &TurnConfig::new(
-                    TransportType::Tcp,
-                    turn_listen_addr,
-                    turn_credentials,
-                    TransportType::Udp,
-                    &[AddressFamily::IPV4],
-                ),
+                &TurnConfig::new(TransportType::Tcp, turn_listen_addr, turn_credentials),
             )],
         );
         let now = Instant::ZERO;
@@ -1493,6 +1475,10 @@ mod tests {
         assert_eq!(turn_transmit.to, turn_listen_addr);
         let reply = turn_server.recv(turn_transmit, now).unwrap().build();
         assert!(gather.handle_data(&reply, now));
+
+        let GatherPoll::WaitUntil(now) = gather.poll(now) else {
+            unreachable!();
+        };
 
         // authenticated TURN ALLOCATE
         let turn_transmit = gather.poll_transmit(now).unwrap();
@@ -1559,20 +1545,13 @@ mod tests {
             turn_credentials.username().to_string(),
             turn_credentials.password().to_string(),
         );
+        let mut config = TurnConfig::new(TransportType::Tcp, turn_listen_addr, turn_credentials);
+        config.set_allocation_transport(TransportType::Tcp);
         let mut gather = StunGatherer::new(
             1,
             &[(TransportType::Tcp, local_addr)],
             &[(TransportType::Tcp, turn_listen_addr)],
-            &[(
-                local_addr,
-                &TurnConfig::new(
-                    TransportType::Tcp,
-                    turn_listen_addr,
-                    turn_credentials,
-                    TransportType::Tcp,
-                    &[AddressFamily::IPV4],
-                ),
-            )],
+            &[(local_addr, &config)],
         );
         let now = Instant::ZERO;
         handle_allocate_socket(&mut gather, local_addr, now);
@@ -1626,6 +1605,10 @@ mod tests {
         assert_eq!(turn_transmit.to, turn_listen_addr);
         let reply = turn_server.recv(turn_transmit, now).unwrap().build();
         assert!(gather.handle_data(&reply, now));
+
+        let GatherPoll::WaitUntil(now) = gather.poll(now) else {
+            unreachable!();
+        };
 
         // authenticated TURN ALLOCATE
         let turn_transmit = gather.poll_transmit(now).unwrap();

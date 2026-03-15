@@ -11,10 +11,10 @@ rust-version = "1.85.0"
 
 [workspace.dependencies]
 smallvec = "1"
-stun-proto = { version = "2.0.0-rc.1", default-features = false }
-stun-types = { version = "2.0.0-rc.1", default-features = false }
-turn-client-proto = { version = "0.6.0-rc.0", default-features = false }
-turn-server-proto = { version = "0.6.0-rc.0", default-features = false }
+stun-proto = { version = "2.0.0", default-features = false }
+stun-types = { version = "2.0.0", default-features = false }
+turn-client-proto = { version = "0.6.0", default-features = false }
+turn-server-proto = { version = "0.6.0", default-features = false }
 thiserror = { version = "2", default-features = false }
 arbitrary = { version = "1", features = ["derive"] }
 byteorder = { version = "1", default-features = false }
