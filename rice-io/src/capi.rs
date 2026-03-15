@@ -23,8 +23,6 @@ use std::{panic, thread};
 
 use tracing::{debug, trace, warn};
 
-use get_if_addrs::get_if_addrs;
-
 use async_io::Async;
 use async_task::{Runnable, Task};
 use futures_lite::stream::StreamExt;
@@ -889,7 +887,7 @@ pub unsafe extern "C" fn rice_interfaces(ret_len: *mut usize) -> *mut *mut RiceA
     unsafe {
         init_logs();
 
-        let Ok(mut ifaces) = get_if_addrs() else {
+        let Ok(mut ifaces) = if_addrs::get_if_addrs() else {
             return mut_override(std::ptr::null());
         };
         // We only care about non-loopback interfaces for now

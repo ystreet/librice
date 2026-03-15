@@ -16,8 +16,6 @@ use tracing::info;
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use get_if_addrs::get_if_addrs;
-
 use crate::agent::AgentError;
 use crate::candidate::TransportType;
 use crate::runtime::{AsyncTcpListener, Runtime};
@@ -63,7 +61,7 @@ fn address_is_ignorable(ip: IpAddr) -> bool {
 pub async fn iface_sockets(
     runtime: Arc<dyn Runtime>,
 ) -> Result<Vec<Result<GatherSocket, std::io::Error>>, AgentError> {
-    let mut ifaces = get_if_addrs()?;
+    let mut ifaces = if_addrs::get_if_addrs()?;
     // We only care about non-loopback interfaces for now
     // TODO: remove 'Deprecated IPv4-compatible IPv6 addresses [RFC4291]'
     // TODO: remove 'IPv6 site-local unicast addresses [RFC3879]'

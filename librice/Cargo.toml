@@ -20,7 +20,7 @@ runtime-tokio = ["dep:tokio"]
 [dependencies]
 rice-c.workspace = true
 byteorder.workspace = true
-get_if_addrs.workspace = true
+if-addrs.workspace = true
 futures = "0.3"
 futures-timer = "3"
 rand.workspace = true
