@@ -18,7 +18,7 @@ turn-server-proto = { version = "0.6.0", default-features = false }
 thiserror = { version = "2", default-features = false }
 arbitrary = { version = "1", features = ["derive"] }
 byteorder = { version = "1", default-features = false }
-get_if_addrs = "0.5"
+if-addrs = "0.15"
 rand = { version = "0.9", default-features = false, features = ["os_rng"] }
 tracing = { version = "0.1", default-features = false, features = ["attributes"] }
 tracing-subscriber = "0.3"
