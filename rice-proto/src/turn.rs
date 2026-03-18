@@ -63,9 +63,8 @@ impl TurnConfig {
     }
 
     /// Connect to the TURN server over TLS.
-    pub fn with_tls_config(mut self, config: TurnTlsConfig) -> Self {
+    pub fn set_tls_config(&mut self, config: TurnTlsConfig) {
         self.tls_config = Some(config);
-        self
     }
 
     /// The TLS configuration to use for connecting to this TURN server.
@@ -83,7 +82,7 @@ impl TurnConfig {
         self.client_transport
     }
 
-    /// Set the allocation transport requested.
+    /// Set the allocation transport requested from the TURN server.
     pub fn set_allocation_transport(&mut self, allocation_transport: TransportType) {
         self.turn_config
             .set_allocation_transport(allocation_transport);
@@ -103,6 +102,7 @@ impl TurnConfig {
 
     /// Set the [`AddressFamily`] that will be requested.
     ///
+    /// This will override all previously set [`AddressFamily`]s.
     pub fn set_address_family(&mut self, family: AddressFamily) {
         self.turn_config.set_address_family(family);
     }

@@ -219,14 +219,12 @@ async fn run() -> io::Result<()> {
                 }
             }
         });
-        let turn_cfg = TurnConfig::new(
-            ts.client_transport,
-            ts.addr.into(),
-            credentials.clone(),
-            TransportType::Udp,
-            &[AddressFamily::IPV4, AddressFamily::IPV6],
-            tls_config,
-        );
+        let mut turn_cfg =
+            TurnConfig::new(ts.client_transport, ts.addr.into(), credentials.clone());
+        if let Some(tls_config) = tls_config {
+            turn_cfg.set_tls_config(tls_config);
+        }
+        turn_cfg.add_address_family(AddressFamily::IPV6);
         agent.add_turn_server(turn_cfg);
     }
     let stream = agent.add_stream();

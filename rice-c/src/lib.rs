@@ -193,6 +193,87 @@ pub enum AddressFamily {
     IPV6 = crate::ffi::RICE_ADDRESS_FAMILY_IPV6,
 }
 
+impl From<crate::ffi::RiceAddressFamily> for AddressFamily {
+    fn from(value: crate::ffi::RiceAddressFamily) -> Self {
+        match value {
+            crate::ffi::RICE_ADDRESS_FAMILY_IPV4 => Self::IPV4,
+            crate::ffi::RICE_ADDRESS_FAMILY_IPV6 => Self::IPV6,
+            val => panic!("Unknown address family value {val:x?}"),
+        }
+    }
+}
+
+impl From<AddressFamily> for crate::ffi::RiceAddressFamily {
+    fn from(value: AddressFamily) -> Self {
+        match value {
+            AddressFamily::IPV4 => crate::ffi::RICE_ADDRESS_FAMILY_IPV4,
+            AddressFamily::IPV6 => crate::ffi::RICE_ADDRESS_FAMILY_IPV6,
+        }
+    }
+}
+
+/// The supported authentication mechanisms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum IntegrityAlgorithm {
+    /// The SHA-1 HMAC.
+    Sha1 = crate::ffi::RICE_INTEGRITY_ALGORITHM_SHA1,
+    /// The SHA-256 HMAC.
+    Sha256 = crate::ffi::RICE_INTEGRITY_ALGORITHM_SHA256,
+}
+
+impl From<crate::ffi::RiceIntegrityAlgorithm> for IntegrityAlgorithm {
+    fn from(value: crate::ffi::RiceIntegrityAlgorithm) -> Self {
+        match value {
+            crate::ffi::RICE_INTEGRITY_ALGORITHM_SHA1 => Self::Sha1,
+            crate::ffi::RICE_INTEGRITY_ALGORITHM_SHA256 => Self::Sha256,
+            val => panic!("Unknown integrity algorithm value {val:x?}"),
+        }
+    }
+}
+
+impl From<IntegrityAlgorithm> for crate::ffi::RiceIntegrityAlgorithm {
+    fn from(value: IntegrityAlgorithm) -> Self {
+        match value {
+            IntegrityAlgorithm::Sha1 => crate::ffi::RICE_INTEGRITY_ALGORITHM_SHA1,
+            IntegrityAlgorithm::Sha256 => crate::ffi::RICE_INTEGRITY_ALGORITHM_SHA256,
+        }
+    }
+}
+
+/// A feature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum Feature {
+    /// The configuration will automatically be used when supported.
+    Disabled = crate::ffi::RICE_FEATURE_DISABLED,
+    /// The configuration will automatically be used when supported.
+    Auto = crate::ffi::RICE_FEATURE_AUTO,
+    /// The configuration is enabled and required.
+    Required = crate::ffi::RICE_FEATURE_REQUIRED,
+}
+
+impl From<crate::ffi::RiceFeature> for Feature {
+    fn from(value: crate::ffi::RiceFeature) -> Self {
+        match value {
+            crate::ffi::RICE_FEATURE_DISABLED => Self::Disabled,
+            crate::ffi::RICE_FEATURE_AUTO => Self::Auto,
+            crate::ffi::RICE_FEATURE_REQUIRED => Self::Required,
+            val => panic!("Unknown feature value {val:x?}"),
+        }
+    }
+}
+
+impl From<Feature> for crate::ffi::RiceFeature {
+    fn from(value: Feature) -> Self {
+        match value {
+            Feature::Disabled => crate::ffi::RICE_FEATURE_DISABLED,
+            Feature::Auto => crate::ffi::RICE_FEATURE_AUTO,
+            Feature::Required => crate::ffi::RICE_FEATURE_REQUIRED,
+        }
+    }
+}
+
 fn mut_override<T>(val: *const T) -> *mut T {
     val as *mut T
 }
@@ -221,6 +302,8 @@ pub(crate) mod tests {
     use tracing_subscriber::Layer;
     use tracing_subscriber::layer::SubscriberExt;
 
+    use super::*;
+
     pub fn test_init_log() -> DefaultGuard {
         let level_filter = std::env::var("RICE_LOG")
             .or(std::env::var("RUST_LOG"))
@@ -246,5 +329,73 @@ pub(crate) mod tests {
         assert!(crate::random_string(0).is_empty());
         assert_eq!(crate::random_string(4).len(), 4);
         println!("{}", crate::random_string(128));
+    }
+
+    #[test]
+    fn enums() {
+        let _log = test_init_log();
+
+        for (c, r) in [
+            (crate::ffi::RICE_ADDRESS_FAMILY_IPV4, AddressFamily::IPV4),
+            (crate::ffi::RICE_ADDRESS_FAMILY_IPV6, AddressFamily::IPV6),
+        ] {
+            assert_eq!(AddressFamily::from(c), r);
+            assert_eq!(crate::ffi::RiceAddressFamily::from(r), c);
+        }
+
+        for (c, r) in [
+            (
+                crate::ffi::RICE_INTEGRITY_ALGORITHM_SHA1,
+                IntegrityAlgorithm::Sha1,
+            ),
+            (
+                crate::ffi::RICE_INTEGRITY_ALGORITHM_SHA256,
+                IntegrityAlgorithm::Sha256,
+            ),
+        ] {
+            assert_eq!(IntegrityAlgorithm::from(c), r);
+            assert_eq!(crate::ffi::RiceIntegrityAlgorithm::from(r), c);
+        }
+
+        for (c, r) in [
+            (
+                crate::ffi::RICE_INTEGRITY_ALGORITHM_SHA1,
+                IntegrityAlgorithm::Sha1,
+            ),
+            (
+                crate::ffi::RICE_INTEGRITY_ALGORITHM_SHA256,
+                IntegrityAlgorithm::Sha256,
+            ),
+        ] {
+            assert_eq!(IntegrityAlgorithm::from(c), r);
+            assert_eq!(crate::ffi::RiceIntegrityAlgorithm::from(r), c);
+        }
+
+        for (c, r) in [
+            (crate::ffi::RICE_FEATURE_DISABLED, Feature::Disabled),
+            (crate::ffi::RICE_FEATURE_AUTO, Feature::Auto),
+            (crate::ffi::RICE_FEATURE_REQUIRED, Feature::Required),
+        ] {
+            assert_eq!(Feature::from(c), r);
+            assert_eq!(crate::ffi::RiceFeature::from(r), c);
+        }
+    }
+
+    #[test]
+    #[should_panic = "Unknown feature value"]
+    fn feature_out_of_range() {
+        let _ = Feature::from(i32::MAX);
+    }
+
+    #[test]
+    #[should_panic = "Unknown address family value"]
+    fn address_family_out_of_range() {
+        let _ = AddressFamily::from(u32::MAX);
+    }
+
+    #[test]
+    #[should_panic = "Unknown integrity algorithm value"]
+    fn integrity_algorithm_out_of_range() {
+        let _ = IntegrityAlgorithm::from(u32::MAX);
     }
 }
