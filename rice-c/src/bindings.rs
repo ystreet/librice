@@ -36,6 +36,18 @@ pub const RICE_ERROR_RESOURCE_NOT_FOUND: RiceError = -2;
 #[doc = " The operation is already in progress."]
 pub const RICE_ERROR_ALREADY_IN_PROGRESS: RiceError = -3;
 pub type RiceError = i32;
+#[doc = " The configuration will automatically be used when supported."]
+pub const RICE_FEATURE_DISABLED: RiceFeature = -1;
+#[doc = " The configuration will automatically be used when supported."]
+pub const RICE_FEATURE_AUTO: RiceFeature = 0;
+#[doc = " The configuration is enabled and required."]
+pub const RICE_FEATURE_REQUIRED: RiceFeature = 1;
+pub type RiceFeature = i32;
+#[doc = " The SHA-1 HMAC."]
+pub const RICE_INTEGRITY_ALGORITHM_SHA1: RiceIntegrityAlgorithm = 0;
+#[doc = " The SHA-256 HMAC."]
+pub const RICE_INTEGRITY_ALGORITHM_SHA256: RiceIntegrityAlgorithm = 1;
+pub type RiceIntegrityAlgorithm = u32;
 #[doc = " No error."]
 pub const RICE_PARSE_CANDIDATE_ERROR_SUCCESS: RiceParseCandidateError = 0;
 #[doc = " Not a candidate message."]
@@ -665,23 +677,15 @@ unsafe extern "C" {
         transport: RiceTransportType,
         addr: *const RiceAddress,
         credentials: *const RiceCredentials,
-        allocation_transport: RiceTransportType,
-        n_families: usize,
-        families: *const RiceAddressFamily,
-        tls_config: *mut RiceTlsConfig,
     ) -> *mut RiceTurnConfig;
 }
 unsafe extern "C" {
-    #[doc = " Increase the reference count of the [`RiceTurnConfig`].\n\n This function is multi-threading safe."]
-    pub fn rice_turn_config_ref(config: *const RiceTurnConfig) -> *mut RiceTurnConfig;
+    #[doc = " Copy a [`RiceTurnConfig`]."]
+    pub fn rice_turn_config_copy(config: *const RiceTurnConfig) -> *mut RiceTurnConfig;
 }
 unsafe extern "C" {
-    #[doc = " Decrease the reference count of a[`RiceTurnConfig`].\n\n If this is the last reference, then the [`RiceTurnConfig`] is freed.\n\n This function is multi-threading safe."]
-    pub fn rice_turn_config_unref(config: *mut RiceTurnConfig);
-}
-unsafe extern "C" {
-    #[doc = " The address of the TURN server."]
-    pub fn rice_turn_config_get_addr(config: *const RiceTurnConfig) -> *mut RiceAddress;
+    #[doc = " Free a [`RiceTurnConfig`]."]
+    pub fn rice_turn_config_free(config: *mut RiceTurnConfig);
 }
 unsafe extern "C" {
     #[doc = " The transport to connect to the TURN server."]
@@ -690,11 +694,38 @@ unsafe extern "C" {
     ) -> RiceTransportType;
 }
 unsafe extern "C" {
-    #[doc = " The credentials to use for accessing the TURN server."]
-    pub fn rice_turn_config_get_credentials(config: *const RiceTurnConfig) -> *mut RiceCredentials;
+    #[doc = " The address of the TURN server."]
+    pub fn rice_turn_config_get_addr(config: *const RiceTurnConfig) -> *mut RiceAddress;
 }
 unsafe extern "C" {
-    #[doc = " The transport to connect to the TURN server."]
+    #[doc = " Set the allocation transport requested from the TURN server."]
+    pub fn rice_turn_config_set_allocation_transport(
+        config: *const RiceTurnConfig,
+        transport: RiceTransportType,
+    );
+}
+unsafe extern "C" {
+    #[doc = " Retrieve the allocation transport that will be requested from the TURN server."]
+    pub fn rice_turn_config_get_allocation_transport(
+        config: *const RiceTurnConfig,
+    ) -> RiceTransportType;
+}
+unsafe extern "C" {
+    #[doc = " Add an [`RiceAddressFamily`] that will be requested.\n\n Duplicate [`RiceAddressFamily`]s are ignored."]
+    pub fn rice_turn_config_add_address_family(
+        config: *mut RiceTurnConfig,
+        family: RiceAddressFamily,
+    );
+}
+unsafe extern "C" {
+    #[doc = " Set the [`RiceAddressFamily`] that will be requested.\n\n This will override all previously set [`RiceAddressFamily`]s."]
+    pub fn rice_turn_config_set_address_family(
+        config: *mut RiceTurnConfig,
+        family: RiceAddressFamily,
+    );
+}
+unsafe extern "C" {
+    #[doc = " The address family to allocate as a relayed address on the TURN server."]
     pub fn rice_turn_config_get_address_families(
         config: *const RiceTurnConfig,
         n_families: *mut usize,
@@ -702,8 +733,49 @@ unsafe extern "C" {
     );
 }
 unsafe extern "C" {
+    #[doc = " The credentials to use for accessing the TURN server."]
+    pub fn rice_turn_config_get_credentials(config: *const RiceTurnConfig) -> *mut RiceCredentials;
+}
+unsafe extern "C" {
+    #[doc = " Connect to the TURN server over TLS."]
+    pub fn rice_turn_config_set_tls_config(
+        config: *mut RiceTurnConfig,
+        tls_config: *const RiceTlsConfig,
+    );
+}
+unsafe extern "C" {
     #[doc = " The TLS config associated with this TURN configuration."]
     pub fn rice_turn_config_get_tls_config(config: *const RiceTurnConfig) -> *mut RiceTlsConfig;
+}
+unsafe extern "C" {
+    #[doc = " Add a supported integrity algorithm for authentication with the TURN server."]
+    pub fn rice_turn_config_add_supported_integrity(
+        config: *mut RiceTurnConfig,
+        integrity: RiceIntegrityAlgorithm,
+    );
+}
+unsafe extern "C" {
+    #[doc = " Set the supported integrity algorithm for authentication with the TURN server.\n\n This will override all previously set values."]
+    pub fn rice_turn_config_set_supported_integrity(
+        config: *mut RiceTurnConfig,
+        integrity: RiceIntegrityAlgorithm,
+    );
+}
+unsafe extern "C" {
+    #[doc = " The address family to allocate as a relayed address on the TURN server."]
+    pub fn rice_turn_config_get_supported_integrity(
+        config: *const RiceTurnConfig,
+        n_integrities: *mut usize,
+        integrities: *mut RiceIntegrityAlgorithm,
+    );
+}
+unsafe extern "C" {
+    #[doc = " Set whether anonymous username usage is required.\n\n A value of `Required` requires the server to support RFC 8489 and the `Userhash` attribute."]
+    pub fn rice_turn_config_set_anonymous_username(config: *mut RiceTurnConfig, anon: RiceFeature);
+}
+unsafe extern "C" {
+    #[doc = " Whether anonymous username usage is required.\n\n A value of `Required` requires the server to support RFC 8489 and the `Userhash` attribute."]
+    pub fn rice_turn_config_get_anonymous_username(config: *mut RiceTurnConfig) -> RiceFeature;
 }
 unsafe extern "C" {
     #[doc = " Increase the reference count of the `RiceTlsConfig`.\n\n This function is multi-threading safe."]

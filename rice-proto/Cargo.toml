@@ -54,7 +54,6 @@ subdirectory = "rice"
 [package.metadata.capi.library]
 name = "rice-proto"
 version_suffix_components = 1
-rustflags = "-Cpanic=abort"
 
 [package.metadata.capi.pkg_config]
 name = "rice-proto"

@@ -66,8 +66,10 @@ use crate::turn::RustlsTurnConfig;
 use crate::turn::{TurnConfig, TurnCredentials, TurnTlsConfig};
 use stun_proto::Instant;
 use stun_proto::agent::{StunError, Transmit};
+use stun_proto::auth::Feature;
 use stun_proto::types::AddressFamily;
 use stun_proto::types::data::{Data, DataOwned, DataSlice};
+use stun_proto::types::message::IntegrityAlgorithm;
 use turn_client_proto::client::TurnClient;
 
 use tracing_subscriber::Layer;
@@ -788,14 +790,14 @@ impl RiceTurnConfig {
     }
 
     /// Consume a C representation of a `RiceTurnConfig` into the Rust equivalent.
-    pub unsafe fn into_rice_full(value: *mut RiceTurnConfig) -> Arc<Self> {
-        unsafe { Arc::from_raw(value) }
+    pub unsafe fn into_rice_full(value: *mut RiceTurnConfig) -> Box<Self> {
+        unsafe { Box::from_raw(value) }
     }
 
     /// Copy a C representation of a `RiceTurnConfig` into the Rust equivalent.
     pub unsafe fn into_rice_none(value: *const RiceTurnConfig) -> Self {
         unsafe {
-            let boxed = Arc::from_raw(mut_override(value));
+            let boxed = Box::from_raw(mut_override(value));
             let ret = (*boxed).clone();
             core::mem::forget(boxed);
             ret
@@ -803,8 +805,18 @@ impl RiceTurnConfig {
     }
 
     /// The inner representation of the [`RiceTurnConfig`].
-    pub fn inner(self) -> TurnConfig {
+    pub fn into_inner(self) -> TurnConfig {
         self.0
+    }
+
+    /// The inner representation of the [`RiceTurnConfig`].
+    pub fn inner(&self) -> &TurnConfig {
+        &self.0
+    }
+
+    /// The inner representation of the [`RiceTurnConfig`].
+    pub fn inner_mut(&mut self) -> &mut TurnConfig {
+        &mut self.0
     }
 }
 
@@ -814,74 +826,40 @@ pub unsafe extern "C" fn rice_turn_config_new(
     transport: RiceTransportType,
     addr: *const RiceAddress,
     credentials: *const RiceCredentials,
-    allocation_transport: RiceTransportType,
-    n_families: usize,
-    families: *const RiceAddressFamily,
-    tls_config: *mut RiceTlsConfig,
 ) -> *mut RiceTurnConfig {
-    if n_families == 0 {
-        return core::ptr::null_mut();
-    }
     unsafe {
         let creds = Box::from_raw(mut_override(credentials));
         let addr = Box::from_raw(mut_override(addr));
-        let families = core::slice::from_raw_parts(families, n_families);
-        let families = families
-            .iter()
-            .map(|family| family.into_rice())
-            .collect::<Vec<_>>();
 
-        let mut turn_config = TurnConfig::new(
+        let turn_config = TurnConfig::new(
             transport_type_from_c(transport),
             **addr,
             TurnCredentials::new(&creds.credentials.ufrag, &creds.credentials.passwd),
         );
-        turn_config.set_allocation_transport(transport_type_from_c(allocation_transport));
-        turn_config.set_address_family(families[0]);
-        for family in &families[1..] {
-            turn_config.add_address_family(*family);
-        }
-        if !tls_config.is_null() {
-            let tls_config = Arc::from_raw(tls_config);
-            turn_config = turn_config.with_tls_config(tls_config.variant.clone());
-        }
         core::mem::forget(addr);
         core::mem::forget(creds);
-        mut_override(Arc::into_raw(Arc::new(RiceTurnConfig::new(turn_config))))
+        mut_override(Box::into_raw(Box::new(RiceTurnConfig::new(turn_config))))
     }
 }
 
-/// Increase the reference count of the [`RiceTurnConfig`].
-///
-/// This function is multi-threading safe.
+/// Copy a [`RiceTurnConfig`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rice_turn_config_ref(
+pub unsafe extern "C" fn rice_turn_config_copy(
     config: *const RiceTurnConfig,
 ) -> *mut RiceTurnConfig {
     unsafe {
-        Arc::increment_strong_count(config);
-        mut_override(config)
+        let config = Box::from_raw(mut_override(config));
+        let copy = config.clone();
+        core::mem::forget(config);
+        mut_override(Box::into_raw(copy))
     }
 }
 
-/// Decrease the reference count of a[`RiceTurnConfig`].
-///
-/// If this is the last reference, then the [`RiceTurnConfig`] is freed.
-///
-/// This function is multi-threading safe.
+/// Free a [`RiceTurnConfig`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rice_turn_config_unref(config: *mut RiceTurnConfig) {
-    unsafe { Arc::decrement_strong_count(config) }
-}
-
-/// The address of the TURN server.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rice_turn_config_get_addr(
-    config: *const RiceTurnConfig,
-) -> *mut RiceAddress {
+pub unsafe extern "C" fn rice_turn_config_free(config: *mut RiceTurnConfig) {
     unsafe {
-        let config = RiceTurnConfig::into_rice_none(config).inner();
-        mut_override(RiceAddress::new(config.addr()).into_c_full())
+        let _ = Box::from_raw(config);
     }
 }
 
@@ -891,8 +869,107 @@ pub unsafe extern "C" fn rice_turn_config_get_client_transport(
     config: *const RiceTurnConfig,
 ) -> RiceTransportType {
     unsafe {
-        let config = RiceTurnConfig::into_rice_none(config).inner();
-        transport_type_to_c(config.client_transport())
+        let config = RiceTurnConfig::into_rice_full(mut_override(config));
+        let ret = transport_type_to_c(config.inner().client_transport());
+        core::mem::forget(config);
+        ret
+    }
+}
+
+/// The address of the TURN server.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_turn_config_get_addr(
+    config: *const RiceTurnConfig,
+) -> *mut RiceAddress {
+    unsafe {
+        let config = RiceTurnConfig::into_rice_full(mut_override(config));
+        let ret = RiceAddress::new(config.inner().addr()).into_c_full();
+        core::mem::forget(config);
+        mut_override(ret)
+    }
+}
+
+/// Set the allocation transport requested from the TURN server.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_turn_config_set_allocation_transport(
+    config: *const RiceTurnConfig,
+    transport: RiceTransportType,
+) {
+    unsafe {
+        let mut config = RiceTurnConfig::into_rice_full(mut_override(config));
+        config
+            .inner_mut()
+            .set_allocation_transport(transport_type_from_c(transport));
+        core::mem::forget(config);
+    }
+}
+
+/// Retrieve the allocation transport that will be requested from the TURN server.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_turn_config_get_allocation_transport(
+    config: *const RiceTurnConfig,
+) -> RiceTransportType {
+    unsafe {
+        let config = RiceTurnConfig::into_rice_full(mut_override(config));
+        let ret = config.inner().allocation_transport();
+        core::mem::forget(config);
+        transport_type_to_c(ret)
+    }
+}
+
+/// Add an [`RiceAddressFamily`] that will be requested.
+///
+/// Duplicate [`RiceAddressFamily`]s are ignored.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_turn_config_add_address_family(
+    config: *mut RiceTurnConfig,
+    family: RiceAddressFamily,
+) {
+    unsafe {
+        let mut config = RiceTurnConfig::into_rice_full(mut_override(config));
+        config.inner_mut().add_address_family(family.into_rice());
+        core::mem::forget(config);
+    }
+}
+
+/// Set the [`RiceAddressFamily`] that will be requested.
+///
+/// This will override all previously set [`RiceAddressFamily`]s.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_turn_config_set_address_family(
+    config: *mut RiceTurnConfig,
+    family: RiceAddressFamily,
+) {
+    unsafe {
+        let mut config = RiceTurnConfig::into_rice_full(mut_override(config));
+        config.inner_mut().set_address_family(family.into_rice());
+        core::mem::forget(config);
+    }
+}
+
+/// The address family to allocate as a relayed address on the TURN server.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_turn_config_get_address_families(
+    config: *const RiceTurnConfig,
+    n_families: *mut usize,
+    families: *mut RiceAddressFamily,
+) {
+    unsafe {
+        let config = RiceTurnConfig::into_rice_full(mut_override(config));
+        if families.is_null() {
+            *n_families = config.inner().address_families().len();
+        } else if *n_families > 0 {
+            let families = core::slice::from_raw_parts_mut(families, *n_families);
+            *n_families = 0;
+            for family in config.inner().address_families() {
+                families[*n_families] = RiceAddressFamily::from_rice(*family);
+                if *n_families + 1 > families.len() {
+                    break;
+                }
+                *n_families += 1;
+            }
+        }
+        core::mem::forget(config);
     }
 }
 
@@ -911,33 +988,27 @@ pub unsafe extern "C" fn rice_turn_config_get_credentials(
     config: *const RiceTurnConfig,
 ) -> *mut RiceCredentials {
     unsafe {
-        let config = RiceTurnConfig::into_rice_none(config).inner();
-        turn_credentials_to_c(config.credentials())
+        let config = RiceTurnConfig::into_rice_full(mut_override(config));
+        let ret = turn_credentials_to_c(config.inner().credentials());
+        core::mem::forget(config);
+        ret
     }
 }
 
-/// The transport to connect to the TURN server.
+/// Connect to the TURN server over TLS.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rice_turn_config_get_address_families(
-    config: *const RiceTurnConfig,
-    n_families: *mut usize,
-    families: *mut RiceAddressFamily,
+pub unsafe extern "C" fn rice_turn_config_set_tls_config(
+    config: *mut RiceTurnConfig,
+    tls_config: *const RiceTlsConfig,
 ) {
     unsafe {
-        let config = RiceTurnConfig::into_rice_none(config).inner();
-        let output_len = *n_families;
-        *n_families = config.address_families().len();
-        if families.is_null() {
-            return;
-        }
-        let families = core::slice::from_raw_parts_mut(families, output_len);
-        for (i, family) in config.address_families().iter().enumerate() {
-            *n_families = i;
-            if i >= output_len {
-                break;
-            }
-            families[i] = RiceAddressFamily::from_rice(*family);
-        }
+        let mut config = RiceTurnConfig::into_rice_full(mut_override(config));
+        let tls_config = Arc::from_raw(mut_override(tls_config));
+        config
+            .inner_mut()
+            .set_tls_config(tls_config.variant.clone());
+        core::mem::forget(tls_config);
+        core::mem::forget(config);
     }
 }
 
@@ -947,12 +1018,156 @@ pub unsafe extern "C" fn rice_turn_config_get_tls_config(
     config: *const RiceTurnConfig,
 ) -> *mut RiceTlsConfig {
     unsafe {
-        let config = RiceTurnConfig::into_rice_none(config).inner();
-        if let Some(variant) = config.tls_config().cloned() {
+        let config = RiceTurnConfig::into_rice_full(mut_override(config));
+        let ret = if let Some(variant) = config.inner().tls_config().cloned() {
             mut_override(Arc::into_raw(Arc::new(RiceTlsConfig { variant })))
         } else {
             core::ptr::null_mut()
+        };
+        core::mem::forget(config);
+        ret
+    }
+}
+
+/// The supported authentication mechanisms.
+#[derive(Debug, Copy, Clone)]
+#[repr(u32)]
+pub enum RiceIntegrityAlgorithm {
+    /// The SHA-1 HMAC.
+    Sha1,
+    /// The SHA-256 HMAC.
+    Sha256,
+}
+
+impl From<IntegrityAlgorithm> for RiceIntegrityAlgorithm {
+    fn from(value: IntegrityAlgorithm) -> Self {
+        match value {
+            IntegrityAlgorithm::Sha1 => RiceIntegrityAlgorithm::Sha1,
+            IntegrityAlgorithm::Sha256 => RiceIntegrityAlgorithm::Sha256,
         }
+    }
+}
+impl From<RiceIntegrityAlgorithm> for IntegrityAlgorithm {
+    fn from(value: RiceIntegrityAlgorithm) -> Self {
+        match value {
+            RiceIntegrityAlgorithm::Sha1 => IntegrityAlgorithm::Sha1,
+            RiceIntegrityAlgorithm::Sha256 => IntegrityAlgorithm::Sha256,
+        }
+    }
+}
+
+/// Add a supported integrity algorithm for authentication with the TURN server.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_turn_config_add_supported_integrity(
+    config: *mut RiceTurnConfig,
+    integrity: RiceIntegrityAlgorithm,
+) {
+    unsafe {
+        let mut config = RiceTurnConfig::into_rice_full(mut_override(config));
+        config.inner_mut().add_supported_integrity(integrity.into());
+        core::mem::forget(config);
+    }
+}
+
+/// Set the supported integrity algorithm for authentication with the TURN server.
+///
+/// This will override all previously set values.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_turn_config_set_supported_integrity(
+    config: *mut RiceTurnConfig,
+    integrity: RiceIntegrityAlgorithm,
+) {
+    unsafe {
+        let mut config = RiceTurnConfig::into_rice_full(mut_override(config));
+        config.inner_mut().set_supported_integrity(integrity.into());
+        core::mem::forget(config);
+    }
+}
+
+/// The address family to allocate as a relayed address on the TURN server.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_turn_config_get_supported_integrity(
+    config: *const RiceTurnConfig,
+    n_integrities: *mut usize,
+    integrities: *mut RiceIntegrityAlgorithm,
+) {
+    unsafe {
+        let config = RiceTurnConfig::into_rice_full(mut_override(config));
+        if integrities.is_null() {
+            *n_integrities = config.inner().supported_integrity().len();
+        } else if *n_integrities > 0 {
+            let integrities = core::slice::from_raw_parts_mut(integrities, *n_integrities);
+            *n_integrities = 0;
+            for integrity in config.inner().supported_integrity() {
+                integrities[*n_integrities] = RiceIntegrityAlgorithm::from(*integrity);
+                if *n_integrities + 1 > integrities.len() {
+                    break;
+                }
+                *n_integrities += 1;
+            }
+        }
+        core::mem::forget(config);
+    }
+}
+
+/// A feature.
+#[derive(Debug, Copy, Clone)]
+#[repr(i32)]
+pub enum RiceFeature {
+    /// The configuration will automatically be used when supported.
+    Disabled = -1,
+    /// The configuration will automatically be used when supported.
+    Auto = 0,
+    /// The configuration is enabled and required.
+    Required = 1,
+}
+
+impl From<Feature> for RiceFeature {
+    fn from(value: Feature) -> Self {
+        match value {
+            Feature::Disabled => RiceFeature::Disabled,
+            Feature::Auto => RiceFeature::Auto,
+            Feature::Required => RiceFeature::Required,
+        }
+    }
+}
+impl From<RiceFeature> for Feature {
+    fn from(value: RiceFeature) -> Self {
+        match value {
+            RiceFeature::Disabled => Feature::Disabled,
+            RiceFeature::Auto => Feature::Auto,
+            RiceFeature::Required => Feature::Required,
+        }
+    }
+}
+
+/// Set whether anonymous username usage is required.
+///
+/// A value of `Required` requires the server to support RFC 8489 and the `Userhash` attribute.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_turn_config_set_anonymous_username(
+    config: *mut RiceTurnConfig,
+    anon: RiceFeature,
+) {
+    unsafe {
+        let mut config = RiceTurnConfig::into_rice_full(mut_override(config));
+        config.inner_mut().set_anonymous_username(anon.into());
+        core::mem::forget(config);
+    }
+}
+
+/// Whether anonymous username usage is required.
+///
+/// A value of `Required` requires the server to support RFC 8489 and the `Userhash` attribute.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_turn_config_get_anonymous_username(
+    config: *mut RiceTurnConfig,
+) -> RiceFeature {
+    unsafe {
+        let config = RiceTurnConfig::into_rice_full(mut_override(config));
+        let ret = config.inner().anonymous_username();
+        core::mem::forget(config);
+        ret.into()
     }
 }
 

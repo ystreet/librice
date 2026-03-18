@@ -22,7 +22,7 @@ use rice_c::turn::TurnConfig;
 use futures::future::{AbortHandle, Abortable};
 use futures::{SinkExt, StreamExt};
 
-use rice_c::{AddressFamily, prelude::*};
+use rice_c::prelude::*;
 
 use librice::agent::{Agent, AgentMessage};
 use librice::candidate::TransportType;
@@ -559,14 +559,7 @@ async fn udp_turn_server_localhost_ipv4() -> (turn_server::TurnServer, TurnConfi
     let listen_addr = server.listen_address();
     (
         server,
-        TurnConfig::new(
-            TransportType::Udp,
-            listen_addr.into(),
-            turn_credentials(),
-            TransportType::Udp,
-            &[AddressFamily::IPV4],
-            None,
-        ),
+        TurnConfig::new(TransportType::Udp, listen_addr.into(), turn_credentials()),
     )
 }
 
@@ -599,14 +592,7 @@ async fn tcp_turn_server_localhost_ipv4() -> (turn_server::TurnServer, TurnConfi
     let listen_addr = server.listen_address();
     (
         server,
-        TurnConfig::new(
-            TransportType::Tcp,
-            listen_addr.into(),
-            turn_credentials(),
-            TransportType::Udp,
-            &[AddressFamily::IPV4],
-            None,
-        ),
+        TurnConfig::new(TransportType::Tcp, listen_addr.into(), turn_credentials()),
     )
 }
 

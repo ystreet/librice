@@ -11,7 +11,7 @@
 //! TURN module.
 
 use crate::candidate::TransportType;
-use crate::{AddressFamily, const_override};
+use crate::{AddressFamily, Feature, IntegrityAlgorithm, const_override};
 
 pub use crate::stream::Credentials as TurnCredentials;
 
@@ -38,9 +38,6 @@ impl TurnConfig {
     ///     TransportType::Udp,
     ///     server_addr.clone(),
     ///     credentials.clone(),
-    ///     TransportType::Udp,
-    ///     &[AddressFamily::IPV4],
-    ///     None,
     /// );
     /// assert_eq!(config.client_transport(), TransportType::Udp);
     /// assert_eq!(config.addr(), server_addr);
@@ -51,28 +48,12 @@ impl TurnConfig {
         client_transport: TransportType,
         turn_server: crate::Address,
         credentials: TurnCredentials,
-        allocation_transport: TransportType,
-        families: &[AddressFamily],
-        tls_config: Option<TurnTlsConfig>,
     ) -> Self {
         unsafe {
-            let tls_config = if let Some(tls_config) = tls_config {
-                tls_config.into_c_full()
-            } else {
-                core::ptr::null_mut()
-            };
-            let families = families
-                .iter()
-                .map(|&family| family as u32)
-                .collect::<Vec<_>>();
             let ffi = crate::ffi::rice_turn_config_new(
                 client_transport.into(),
                 const_override(turn_server.as_c()),
                 credentials.into_c_none(),
-                allocation_transport.into(),
-                families.len(),
-                families.as_ptr(),
-                tls_config,
             );
             Self { ffi }
         }
@@ -96,6 +77,13 @@ impl TurnConfig {
         }
     }
 
+    /// The TLS configuration to use for connecting to this TURN server.
+    pub fn set_tls_config(&mut self, tls_config: TurnTlsConfig) {
+        unsafe {
+            crate::ffi::rice_turn_config_set_tls_config(self.ffi, tls_config.as_c());
+        }
+    }
+
     /// The TURN server address to connect to.
     pub fn addr(&self) -> crate::Address {
         unsafe { crate::Address::from_c_full(crate::ffi::rice_turn_config_get_addr(self.ffi)) }
@@ -106,11 +94,114 @@ impl TurnConfig {
         unsafe { crate::ffi::rice_turn_config_get_client_transport(self.ffi).into() }
     }
 
+    /// Set the allocation transport requested from the TURN server.
+    pub fn set_allocation_transport(&mut self, allocation_transport: TransportType) {
+        unsafe {
+            crate::ffi::rice_turn_config_set_allocation_transport(
+                self.ffi,
+                allocation_transport.into(),
+            );
+        }
+    }
+
+    /// Retrieve the allocation transport requested.
+    pub fn allocation_transport(&self) -> TransportType {
+        unsafe { crate::ffi::rice_turn_config_get_allocation_transport(self.ffi).into() }
+    }
+
+    /// Add an [`AddressFamily`] that will be requested.
+    ///
+    /// Duplicate [`AddressFamily`]s are ignored.
+    pub fn add_address_family(&mut self, family: AddressFamily) {
+        unsafe {
+            crate::ffi::rice_turn_config_add_address_family(self.ffi, family.into());
+        }
+    }
+
+    /// Set the [`AddressFamily`] that will be requested.
+    ///
+    /// This will override all previously set [`AddressFamily`]s.
+    pub fn set_address_family(&mut self, family: AddressFamily) {
+        unsafe {
+            crate::ffi::rice_turn_config_set_address_family(self.ffi, family.into());
+        }
+    }
+
+    /// Retrieve the [`AddressFamily`]s that are requested.
+    pub fn address_families(&self) -> Vec<AddressFamily> {
+        unsafe {
+            let mut len = 0;
+            crate::ffi::rice_turn_config_get_address_families(
+                self.ffi,
+                &mut len,
+                core::ptr::null_mut(),
+            );
+            let mut ret = vec![AddressFamily::IPV4; len];
+            crate::ffi::rice_turn_config_get_address_families(
+                self.ffi,
+                &mut len,
+                ret.as_mut_ptr() as _,
+            );
+            ret.resize(len, AddressFamily::IPV4);
+            ret
+        }
+    }
+
     /// The credentials for accessing the TURN server.
     pub fn credentials(&self) -> TurnCredentials {
         unsafe {
             TurnCredentials::from_c_full(crate::ffi::rice_turn_config_get_credentials(self.ffi))
         }
+    }
+
+    /// Add a supported integrity algorithm that could be used.
+    pub fn add_supported_integrity(&mut self, integrity: IntegrityAlgorithm) {
+        unsafe {
+            crate::ffi::rice_turn_config_add_supported_integrity(self.ffi, integrity.into());
+        }
+    }
+
+    /// Set the supported integrity algorithm used.
+    pub fn set_supported_integrity(&mut self, integrity: IntegrityAlgorithm) {
+        unsafe {
+            crate::ffi::rice_turn_config_set_supported_integrity(self.ffi, integrity.into());
+        }
+    }
+
+    /// The supported integrity algorithms used.
+    pub fn supported_integrity(&self) -> Vec<IntegrityAlgorithm> {
+        unsafe {
+            let mut len = 0;
+            crate::ffi::rice_turn_config_get_supported_integrity(
+                self.ffi,
+                &mut len,
+                core::ptr::null_mut(),
+            );
+            let mut ret = vec![IntegrityAlgorithm::Sha1; len];
+            crate::ffi::rice_turn_config_get_supported_integrity(
+                self.ffi,
+                &mut len,
+                ret.as_mut_ptr() as _,
+            );
+            ret.resize(len, IntegrityAlgorithm::Sha1);
+            ret
+        }
+    }
+
+    /// Set whether anonymous username usage is required.
+    ///
+    /// A value of `Required` requires the server to support RFC 8489 and the `Userhash` attribute.
+    pub fn set_anonymous_username(&mut self, anon: Feature) {
+        unsafe {
+            crate::ffi::rice_turn_config_set_anonymous_username(self.ffi, anon as _);
+        }
+    }
+
+    /// Whether anonymous username usage is required.
+    ///
+    /// A value of `Required` requires the server to support RFC 8489 and the `Userhash` attribute.
+    pub fn anonymous_username(&self) -> Feature {
+        unsafe { crate::ffi::rice_turn_config_get_anonymous_username(self.ffi).into() }
     }
 
     pub(crate) fn into_c_full(self) -> *mut crate::ffi::RiceTurnConfig {
@@ -124,7 +215,7 @@ impl Clone for TurnConfig {
     fn clone(&self) -> Self {
         unsafe {
             Self {
-                ffi: crate::ffi::rice_turn_config_ref(self.ffi),
+                ffi: crate::ffi::rice_turn_config_copy(self.ffi),
             }
         }
     }
@@ -133,7 +224,7 @@ impl Clone for TurnConfig {
 impl Drop for TurnConfig {
     fn drop(&mut self) {
         unsafe {
-            crate::ffi::rice_turn_config_unref(self.ffi);
+            crate::ffi::rice_turn_config_free(self.ffi);
         }
     }
 }
@@ -195,16 +286,15 @@ impl TurnTlsConfig {
         unsafe { Self::Openssl(crate::ffi::rice_tls_config_new_openssl(transport.into())) }
     }
 
-    pub(crate) fn into_c_full(self) -> *mut crate::ffi::RiceTlsConfig {
+    pub(crate) fn as_c(&self) -> *mut crate::ffi::RiceTlsConfig {
         #[allow(unreachable_patterns)]
         let ret = match self {
             #[cfg(feature = "rustls")]
-            Self::Rustls(cfg) => cfg,
+            Self::Rustls(cfg) => *cfg,
             #[cfg(feature = "openssl")]
-            Self::Openssl(cfg) => cfg,
+            Self::Openssl(cfg) => *cfg,
             _ => core::ptr::null_mut(),
         };
-        core::mem::forget(self);
         ret
     }
 }
@@ -225,19 +315,46 @@ mod tests {
 
     #[test]
     fn test_config_getter() {
-        let cfg = TurnConfig::new(
+        let mut cfg = TurnConfig::new(
             TransportType::Udp,
             turn_server_address(),
             turn_credentials(),
-            TransportType::Udp,
-            &[AddressFamily::IPV4],
-            None,
         );
         assert_eq!(cfg.addr(), turn_server_address());
         assert_eq!(cfg.client_transport(), TransportType::Udp);
         // TODO credentials
         //assert_eq!(cfg.credentials().username(), turn_credentials().username());
+        assert_eq!(&cfg.address_families(), &[AddressFamily::IPV4]);
+        assert_eq!(cfg.allocation_transport(), TransportType::Udp);
+        assert_eq!(&cfg.supported_integrity(), &[IntegrityAlgorithm::Sha1]);
+        assert_eq!(cfg.anonymous_username(), Feature::Auto);
         assert!(cfg.tls_config().is_none());
+
+        for transport in [TransportType::Udp, TransportType::Tcp] {
+            cfg.set_allocation_transport(transport);
+            assert_eq!(cfg.allocation_transport(), transport);
+        }
+
+        cfg.add_address_family(AddressFamily::IPV6);
+        assert_eq!(
+            &cfg.address_families(),
+            &[AddressFamily::IPV4, AddressFamily::IPV6]
+        );
+        cfg.set_address_family(AddressFamily::IPV6);
+        assert_eq!(&cfg.address_families(), &[AddressFamily::IPV6]);
+
+        cfg.add_supported_integrity(IntegrityAlgorithm::Sha256);
+        assert_eq!(
+            &cfg.supported_integrity(),
+            &[IntegrityAlgorithm::Sha1, IntegrityAlgorithm::Sha256]
+        );
+        cfg.set_supported_integrity(IntegrityAlgorithm::Sha256);
+        assert_eq!(&cfg.supported_integrity(), &[IntegrityAlgorithm::Sha256]);
+
+        for feat in [Feature::Disabled, Feature::Auto, Feature::Required] {
+            cfg.set_anonymous_username(feat);
+            assert_eq!(cfg.anonymous_username(), feat);
+        }
     }
 
     #[cfg(feature = "rustls")]
@@ -256,14 +373,12 @@ mod tests {
         fn test_rustls_getter() {
             let dns = "turn.example.com";
             let tls = TurnTlsConfig::new_rustls_with_dns(dns);
-            let cfg = TurnConfig::new(
+            let mut cfg = TurnConfig::new(
                 TransportType::Tcp,
                 turn_server_address(),
                 turn_credentials(),
-                TransportType::Udp,
-                &[AddressFamily::IPV4],
-                Some(tls.clone()),
             );
+            cfg.set_tls_config(tls.clone());
             let retrieved = cfg.tls_config().unwrap();
             assert!(matches!(retrieved, TurnTlsConfig::Rustls(_)));
         }
@@ -280,14 +395,12 @@ mod tests {
         #[test]
         fn test_openssl_getter() {
             let tls = TurnTlsConfig::new_openssl(TransportType::Udp);
-            let cfg = TurnConfig::new(
+            let mut cfg = TurnConfig::new(
                 TransportType::Udp,
                 turn_server_address(),
                 turn_credentials(),
-                TransportType::Udp,
-                &[AddressFamily::IPV4],
-                Some(tls),
             );
+            cfg.set_tls_config(tls.clone());
             let retrieved = cfg.tls_config().unwrap();
             assert!(matches!(retrieved, TurnTlsConfig::Openssl(_)));
         }

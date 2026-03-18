@@ -31,3 +31,6 @@ criterion = "0.6"
 [profile.bench]
 codegen-units = 16
 lto = "thin"
+
+[profile.release]
+panic = 'abort'
