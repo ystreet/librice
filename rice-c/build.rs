@@ -115,6 +115,9 @@ fn main() {
         .generate()
         .unwrap();
 
+    let output = Path::new(&out_dir).join("bindings.rs");
+    bindings.write_to_file(output).unwrap();
+
     if rice_proto_exists {
         // only update the bindings if we are building from a local checkout.
         bindings
