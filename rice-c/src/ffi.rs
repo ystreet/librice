@@ -18,7 +18,7 @@
 
 use crate::mut_override;
 
-include!("bindings.rs");
+include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
 impl Default for RiceStreamIncomingData {
     fn default() -> Self {
