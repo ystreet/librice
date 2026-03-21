@@ -18,6 +18,7 @@ use core::net::{IpAddr, SocketAddr};
 use core::time::Duration;
 
 use crate::candidate::{Candidate, TcpType, TransportType};
+use crate::turn::TurnClient;
 use crate::turn::TurnConfig;
 #[cfg(any(feature = "openssl", feature = "rustls"))]
 use crate::turn::TurnTlsConfig;
@@ -30,16 +31,15 @@ use stun_proto::types::message::{
 };
 use stun_proto::types::prelude::{MessageWrite, MessageWriteExt};
 use turn_client_proto::api::{TurnEvent, TurnPollRet, TurnRecvRet};
-use turn_client_proto::client::TurnClient;
 use turn_client_proto::prelude::*;
 use turn_client_proto::tcp::TurnClientTcp;
 use turn_client_proto::types::message::ALLOCATE;
 use turn_client_proto::udp::TurnClientUdp;
 
 #[cfg(feature = "openssl")]
-use turn_client_proto::openssl::TurnClientOpensslTls;
+use turn_client_openssl::TurnClientOpensslTls;
 #[cfg(feature = "rustls")]
-use turn_client_proto::rustls::TurnClientRustls;
+use turn_client_rustls::TurnClientRustls;
 
 use tracing::{debug, info, trace};
 

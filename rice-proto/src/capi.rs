@@ -63,14 +63,13 @@ use crate::stream::Credentials;
 use crate::turn::OpensslTurnConfig;
 #[cfg(feature = "rustls")]
 use crate::turn::RustlsTurnConfig;
-use crate::turn::{TurnConfig, TurnCredentials, TurnTlsConfig};
+use crate::turn::{TurnClient, TurnConfig, TurnCredentials, TurnTlsConfig};
 use stun_proto::Instant;
 use stun_proto::agent::{StunError, Transmit};
 use stun_proto::auth::Feature;
 use stun_proto::types::AddressFamily;
 use stun_proto::types::data::{Data, DataOwned, DataSlice};
 use stun_proto::types::message::IntegrityAlgorithm;
-use turn_client_proto::client::TurnClient;
 
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;

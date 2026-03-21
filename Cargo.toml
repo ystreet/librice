@@ -4,29 +4,33 @@ default-members = ["librice", "rice-proto", "rice-c", "rice-stun-types", "rice-c
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 repository = "https://github.com/ystreet/librice"
 edition = "2024"
 rust-version = "1.85.0"
 
 [workspace.dependencies]
-smallvec = "1"
+rice-proto = { version = "0.3.0", path = "rice-proto" }
+rice-c = { version = "0.3.1", path = "rice-c" }
+rice-stun-types = { version = "0.3.0", path = "rice-stun-types", default-features = false }
+rice-ctypes = { version = "0.3.0", path = "rice-ctypes" }
+
 stun-proto = { version = "2.0.0", default-features = false }
 stun-types = { version = "2.0.0", default-features = false }
-turn-client-proto = { version = "0.6.0", default-features = false }
-turn-server-proto = { version = "0.6.0", default-features = false }
-thiserror = { version = "2", default-features = false }
+turn-client-proto = { version = "0.7.0", default-features = false }
+turn-client-openssl = "0.1"
+turn-client-rustls = "0.1"
+turn-server-proto = { version = "0.7.0", default-features = false }
+
 arbitrary = { version = "1", features = ["derive"] }
 byteorder = { version = "1", default-features = false }
+criterion = "0.6"
 if-addrs = "0.15"
+smallvec = "1"
+thiserror = { version = "2", default-features = false }
 rand = { version = "0.9", default-features = false, features = ["os_rng"] }
 tracing = { version = "0.1", default-features = false, features = ["attributes"] }
 tracing-subscriber = "0.3"
-rice-proto = { version = "0.3.0", path = "rice-proto" }
-rice-c = { version = "0.3.0", path = "rice-c" }
-rice-stun-types = { version = "0.3.0", path = "rice-stun-types", default-features = false }
-rice-ctypes = { version = "0.3.0", path = "rice-ctypes" }
-criterion = "0.6"
 
 [profile.bench]
 codegen-units = 16
