@@ -21,7 +21,7 @@ jobs:
       with:
         tool: cargo-c
     - name: Build
-      run: cargo build --verbose
+      run: cargo build --verbose --all-features
     - name: Build (No default features)
       run: cargo build --verbose --no-default-features
   test:
@@ -33,7 +33,7 @@ jobs:
       with:
         tool: cargo-c
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test --verbose --all-features
     - name: Run tests (No default features + Tokio)
       run: cargo test --verbose --no-default-features --features runtime-tokio
     - name: Run tests (No default features + Smol)
@@ -47,4 +47,4 @@ jobs:
       with:
         tool: cargo-c
     - name: clippy
-      run: cargo clippy --verbose -- -Dwarnings
+      run: cargo clippy --verbose --all-features -- -Dwarnings

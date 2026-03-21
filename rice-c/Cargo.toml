@@ -14,8 +14,9 @@ workspace = ".."
 
 [features]
 default = ["rustls", "openssl"]
-rustls = []
+dimpl = []
 openssl = []
+rustls = []
 
 [build-dependencies]
 system-deps = "7"
