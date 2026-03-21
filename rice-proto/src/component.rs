@@ -291,7 +291,7 @@ pub(crate) enum GatherProgress {
 
 /// The state of a component
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[repr(C)]
+#[repr(u32)]
 pub enum ComponentConnectionState {
     /// Component is in initial state and no connectivity checks are in progress.
     New,
