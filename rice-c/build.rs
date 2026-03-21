@@ -100,7 +100,7 @@ fn main() {
     let bindings = bindgen::Builder::default()
         .header(rice_proto_h.as_path().to_str().unwrap())
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        .allowlist_file(".*/rice/rice-.*\\.h")
+        .allowlist_file(r".*[/\\]*rice[/\\]*rice-.*\.h")
         .prepend_enum_name(false)
         .default_enum_style(bindgen::EnumVariation::Consts)
         .disable_nested_struct_naming()
