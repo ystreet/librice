@@ -28,6 +28,7 @@ use crate::component::ComponentConnectionState;
 use crate::gathering::GatheredCandidate;
 use crate::rand::generate_random_ice_string;
 use crate::tcp::TcpBuffer;
+use crate::turn::TurnClient;
 use byteorder::{BigEndian, ByteOrder};
 use rice_stun_types::attribute::{IceControlled, IceControlling, Priority, UseCandidate};
 use stun_proto::Instant;
@@ -36,7 +37,6 @@ use stun_proto::types::attribute::*;
 use stun_proto::types::data::Data;
 use stun_proto::types::message::*;
 use turn_client_proto::api::{Socket5Tuple, TransmitBuild, TurnEvent, TurnPollRet, TurnRecvRet};
-use turn_client_proto::client::TurnClient;
 use turn_client_proto::prelude::*;
 
 use tracing::{debug, error, info, trace, warn};

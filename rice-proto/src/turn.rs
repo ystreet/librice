@@ -10,6 +10,8 @@
 
 //! TURN module.
 
+use alloc::vec::Vec;
+
 use core::net::SocketAddr;
 pub use stun_proto::auth::Feature;
 use stun_proto::types::{AddressFamily, message::IntegrityAlgorithm};
@@ -17,6 +19,13 @@ use stun_proto::types::{AddressFamily, message::IntegrityAlgorithm};
 use crate::candidate::TransportType;
 
 pub use turn_client_proto::types::TurnCredentials;
+
+#[cfg(feature = "openssl")]
+use turn_client_openssl::TurnClientOpensslTls;
+use turn_client_proto::tcp::TurnClientTcp;
+use turn_client_proto::udp::TurnClientUdp;
+#[cfg(feature = "rustls")]
+use turn_client_rustls::TurnClientRustls;
 
 /// Configuration for a particular TURN server connection.
 #[derive(Debug, Clone)]
@@ -229,3 +238,35 @@ impl From<OpensslTurnConfig> for TurnTlsConfig {
         Self::Openssl(value)
     }
 }
+
+#[cfg(all(feature = "openssl", feature = "rustls"))]
+turn_client_proto::impl_client!(
+    pub TurnClient,
+    (Udp, TurnClientUdp),
+    (Tcp, TurnClientTcp),
+    (Openssl, TurnClientOpensslTls),
+    (Rustls, TurnClientRustls)
+);
+
+#[cfg(all(feature = "openssl", not(feature = "rustls")))]
+turn_client_proto::impl_client!(
+    pub TurnClient,
+    (Udp, TurnClientUdp),
+    (Tcp, TurnClientTcp),
+    (Openssl, TurnClientOpensslTls),
+);
+
+#[cfg(all(not(feature = "openssl"), feature = "rustls"))]
+turn_client_proto::impl_client!(
+    pub TurnClient,
+    (Udp, TurnClientUdp),
+    (Tcp, TurnClientTcp),
+    (Rustls, TurnClientRustls)
+);
+
+#[cfg(all(not(feature = "openssl"), not(feature = "rustls")))]
+turn_client_proto::impl_client!(
+    pub TurnClient,
+    (Udp, TurnClientUdp),
+    (Tcp, TurnClientTcp),
+);

@@ -2,7 +2,7 @@
 
 pub const RICE_PROTO_MAJOR: u32 = 0;
 pub const RICE_PROTO_MINOR: u32 = 3;
-pub const RICE_PROTO_PATCH: u32 = 0;
+pub const RICE_PROTO_PATCH: u32 = 1;
 #[doc = " Component is in initial state and no connectivity checks are in progress."]
 pub const RICE_COMPONENT_CONNECTION_STATE_NEW: RiceComponentConnectionState = 0;
 #[doc = " Connectivity checks are in progress for this candidate"]
@@ -11,8 +11,7 @@ pub const RICE_COMPONENT_CONNECTION_STATE_CONNECTING: RiceComponentConnectionSta
 pub const RICE_COMPONENT_CONNECTION_STATE_CONNECTED: RiceComponentConnectionState = 2;
 #[doc = " No connection could be found for this Component"]
 pub const RICE_COMPONENT_CONNECTION_STATE_FAILED: RiceComponentConnectionState = 3;
-#[doc = " The state of a component"]
-pub type RiceComponentConnectionState = ::core::ffi::c_uint;
+pub type RiceComponentConnectionState = u32;
 #[doc = " IP version 4."]
 pub const RICE_ADDRESS_FAMILY_IPV4: RiceAddressFamily = 1;
 #[doc = " IP version 6."]
