@@ -343,7 +343,7 @@ pub struct RiceDataImpl {
 
 impl RiceDataImpl {
     unsafe fn owned_from_c(self) -> Box<[u8]> {
-        unsafe { Box::from_raw(core::slice::from_raw_parts_mut(self.ptr, self.size)) }
+        unsafe { Box::from_raw(core::ptr::slice_from_raw_parts_mut(self.ptr, self.size)) }
     }
 
     fn owned_to_c(val: Box<[u8]>) -> Self {
@@ -681,7 +681,6 @@ pub unsafe extern "C" fn rice_agent_poll_clear(poll: *mut RiceAgentPoll) {
                 }
                 if !pair.local_turn_remote_addr.is_null() {
                     rice_address_free(mut_override(pair.local_turn_remote_addr));
-                    pair.local_turn_remote_addr = core::ptr::null();
                 }
             }
             RiceAgentPoll::GatheredCandidate(mut gathered) => {
@@ -1297,12 +1296,10 @@ pub unsafe extern "C" fn rice_tls_config_new_rustls_with_ip(
 #[unsafe(no_mangle)]
 #[cfg(feature = "dimpl")]
 pub unsafe extern "C" fn rice_tls_config_new_dimpl() -> *mut RiceTlsConfig {
-    unsafe {
-        let config = dimpl::Config::builder().build().unwrap();
-        mut_override(Arc::into_raw(Arc::new(RiceTlsConfig {
-            variant: DimplTurnConfig::new(Arc::new(config)).into(),
-        })))
-    }
+    let config = dimpl::Config::builder().build().unwrap();
+    mut_override(Arc::into_raw(Arc::new(RiceTlsConfig {
+        variant: DimplTurnConfig::new(Arc::new(config)).into(),
+    })))
 }
 
 /// A data stream in a `RiceAgent`.
@@ -1510,7 +1507,7 @@ pub unsafe extern "C" fn rice_credentials_get_ufrag_bytes(
         let bytes = creds.credentials.ufrag.as_bytes();
         let len = bytes.len();
         std::ptr::copy(bytes.as_ptr().cast(), ptr, len);
-        std::ptr::write(ptr.offset(len as isize) as *mut u8, 0u8);
+        std::ptr::write(ptr.add(len) as *mut u8, 0u8);
         core::mem::forget(creds);
         len
     }
@@ -2875,7 +2872,7 @@ pub unsafe extern "C" fn rice_address_get_address_bytes(
 ) -> usize {
     unsafe {
         let addr = RiceAddress::into_rice_none(addr);
-        let ret = match addr.inner().ip() {
+        match addr.inner().ip() {
             IpAddr::V4(ip) => {
                 let bytes = core::slice::from_raw_parts_mut(bytes, 4);
                 for (i, octet) in ip.octets().into_iter().enumerate() {
@@ -2890,8 +2887,7 @@ pub unsafe extern "C" fn rice_address_get_address_bytes(
                 }
                 16
             }
-        };
-        ret
+        }
     }
 }
 
