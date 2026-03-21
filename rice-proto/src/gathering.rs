@@ -36,6 +36,8 @@ use turn_client_proto::tcp::TurnClientTcp;
 use turn_client_proto::types::message::ALLOCATE;
 use turn_client_proto::udp::TurnClientUdp;
 
+#[cfg(feature = "dimpl")]
+use turn_client_dimpl::TurnClientDimpl;
 #[cfg(feature = "openssl")]
 use turn_client_openssl::TurnClientOpensslTls;
 #[cfg(feature = "rustls")]
@@ -124,6 +126,15 @@ impl PendingRequest {
             }
             Method::Turn(config) => {
                 let client = match config.tls_config() {
+                    #[cfg(feature = "dimpl")]
+                    Some(TurnTlsConfig::Dimpl(dimpl)) => {
+                        Some(TurnClient::from(TurnClientDimpl::allocate(
+                            local_addr,
+                            self.server_addr,
+                            config.turn_config().clone(),
+                            dimpl.config(),
+                        )))
+                    }
                     #[cfg(feature = "rustls")]
                     Some(TurnTlsConfig::Rustls(rustls)) => {
                         Some(TurnClient::from(TurnClientRustls::allocate(
@@ -144,7 +155,11 @@ impl PendingRequest {
                             ossl.ssl_context().clone(),
                         )))
                     }
-                    #[cfg(all(not(feature = "rustls"), not(feature = "openssl")))]
+                    #[cfg(all(
+                        not(feature = "rustls"),
+                        not(feature = "openssl"),
+                        not(feature = "dimpl")
+                    ))]
                     Some(_) => None,
                     None => None,
                 };
@@ -408,6 +423,15 @@ impl StunGatherer {
                         }
                         Method::Turn(config) => {
                             let client = match config.tls_config() {
+                                #[cfg(feature = "dimpl")]
+                                Some(TurnTlsConfig::Dimpl(dimpl)) => {
+                                    Some(TurnClient::from(TurnClientDimpl::allocate(
+                                        pending_request.local_addr,
+                                        pending_request.server_addr,
+                                        config.turn_config().clone(),
+                                        dimpl.config(),
+                                    )))
+                                }
                                 #[cfg(feature = "rustls")]
                                 Some(TurnTlsConfig::Rustls(_rustls)) => {
                                     pending_request.completed = true;
@@ -423,7 +447,11 @@ impl StunGatherer {
                                         ossl.ssl_context().clone(),
                                     )))
                                 }
-                                #[cfg(all(not(feature = "rustls"), not(feature = "openssl")))]
+                                #[cfg(all(
+                                    not(feature = "rustls"),
+                                    not(feature = "openssl"),
+                                    not(feature = "dimpl")
+                                ))]
                                 Some(_) => None,
                                 None => None,
                             };

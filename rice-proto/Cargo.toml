@@ -16,6 +16,8 @@ workspace = ".."
 default = ["std", "rustls", "openssl"]
 capi = ["dep:libc", "dep:tracing-subscriber", "std", "dep:rice-ctypes"]
 std = ["rice-stun-types/std", "stun-proto/std", "turn-client-proto/std", "rand/thread_rng"]
+# Allows DTLS connections to TURN servers
+dimpl = ["std", "dep:turn-client-dimpl", "dep:dimpl"]
 # allows TLS connections to TURN servers
 rustls = ["std", "dep:turn-client-rustls", "dep:rustls", "dep:rustls-platform-verifier"]
 # allows (D)TLS connections to TURN servers
@@ -35,6 +37,9 @@ stun-proto.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, optional = true }
 turn-client-proto.workspace = true
+
+turn-client-dimpl = { workspace = true, optional = true }
+dimpl = { version = "0.4", optional = true }
 
 turn-client-openssl = { workspace = true, optional = true }
 openssl = { version = "0.10", optional = true }

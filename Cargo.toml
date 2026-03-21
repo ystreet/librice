@@ -18,6 +18,7 @@ rice-ctypes = { version = "0.3.0", path = "rice-ctypes" }
 stun-proto = { version = "2.0.0", default-features = false }
 stun-types = { version = "2.0.0", default-features = false }
 turn-client-proto = { version = "0.7.0", default-features = false }
+turn-client-dimpl = "0.1"
 turn-client-openssl = "0.1"
 turn-client-rustls = "0.1"
 turn-server-proto = { version = "0.7.0", default-features = false }

@@ -238,11 +238,16 @@ pub enum TurnTlsConfig {
     /// Openssl variant for TLS configuration.
     #[cfg(feature = "openssl")]
     Openssl(*mut crate::ffi::RiceTlsConfig),
+    /// Dimpl variant for TLS configuration.
+    #[cfg(feature = "dimpl")]
+    Dimpl(*mut crate::ffi::RiceTlsConfig),
 }
 
 impl Clone for TurnTlsConfig {
     fn clone(&self) -> Self {
         match self {
+            #[cfg(feature = "dimpl")]
+            Self::Dimpl(cfg) => unsafe { Self::Rustls(crate::ffi::rice_tls_config_ref(*cfg)) },
             #[cfg(feature = "rustls")]
             Self::Rustls(cfg) => unsafe { Self::Rustls(crate::ffi::rice_tls_config_ref(*cfg)) },
             #[cfg(feature = "openssl")]
@@ -254,6 +259,8 @@ impl Clone for TurnTlsConfig {
 impl Drop for TurnTlsConfig {
     fn drop(&mut self) {
         match self {
+            #[cfg(feature = "dimpl")]
+            Self::Dimpl(cfg) => unsafe { crate::ffi::rice_tls_config_unref(*cfg) },
             #[cfg(feature = "rustls")]
             Self::Rustls(cfg) => unsafe { crate::ffi::rice_tls_config_unref(*cfg) },
             #[cfg(feature = "openssl")]
@@ -286,9 +293,17 @@ impl TurnTlsConfig {
         unsafe { Self::Openssl(crate::ffi::rice_tls_config_new_openssl(transport.into())) }
     }
 
+    /// Construct a new client `dimpl` TLS configuration.
+    #[cfg(feature = "dimpl")]
+    pub fn new_dimpl() -> Self {
+        unsafe { Self::Dimpl(crate::ffi::rice_tls_config_new_dimpl()) }
+    }
+
     pub(crate) fn as_c(&self) -> *mut crate::ffi::RiceTlsConfig {
         #[allow(unreachable_patterns)]
         let ret = match self {
+            #[cfg(feature = "dimpl")]
+            Self::Dimpl(cfg) => *cfg,
             #[cfg(feature = "rustls")]
             Self::Rustls(cfg) => *cfg,
             #[cfg(feature = "openssl")]

@@ -20,6 +20,8 @@ use crate::candidate::TransportType;
 
 pub use turn_client_proto::types::TurnCredentials;
 
+#[cfg(feature = "dimpl")]
+use turn_client_dimpl::TurnClientDimpl;
 #[cfg(feature = "openssl")]
 use turn_client_openssl::TurnClientOpensslTls;
 use turn_client_proto::tcp::TurnClientTcp;
@@ -169,6 +171,9 @@ pub enum TurnTlsConfig {
     /// Openssl variant for TLS configuration.
     #[cfg(feature = "openssl")]
     Openssl(OpensslTurnConfig),
+    /// Dimpl variant for DTLS configuration.
+    #[cfg(feature = "dimpl")]
+    Dimpl(DimplTurnConfig),
 }
 
 #[cfg(feature = "rustls")]
@@ -239,7 +244,70 @@ impl From<OpensslTurnConfig> for TurnTlsConfig {
     }
 }
 
-#[cfg(all(feature = "openssl", feature = "rustls"))]
+/// Configuration parameters for TURN use over TLS with OpenSSL.
+#[cfg(feature = "dimpl")]
+#[derive(Debug, Clone)]
+pub struct DimplTurnConfig {
+    config: Arc<dimpl::Config>,
+}
+
+#[cfg(feature = "dimpl")]
+impl DimplTurnConfig {
+    /// Create a new [`DimplTurnConfig`] for TURN over DTLS with `dimpl`.
+    pub fn new(config: Arc<dimpl::Config>) -> Self {
+        Self { config }
+    }
+
+    /// The `dimpl::Config` for the TURN connection.
+    pub fn config(&self) -> Arc<dimpl::Config> {
+        self.config.clone()
+    }
+}
+
+#[cfg(feature = "dimpl")]
+impl From<DimplTurnConfig> for TurnTlsConfig {
+    fn from(value: DimplTurnConfig) -> Self {
+        Self::Dimpl(value)
+    }
+}
+
+#[cfg(all(feature = "openssl", feature = "rustls", feature = "dimpl"))]
+turn_client_proto::impl_client!(
+    pub TurnClient,
+    (Udp, TurnClientUdp),
+    (Tcp, TurnClientTcp),
+    (Openssl, TurnClientOpensslTls),
+    (Rustls, TurnClientRustls),
+    (Dimpl, TurnClientDimpl)
+);
+
+#[cfg(all(feature = "openssl", not(feature = "rustls"), feature = "dimpl"))]
+turn_client_proto::impl_client!(
+    pub TurnClient,
+    (Udp, TurnClientUdp),
+    (Tcp, TurnClientTcp),
+    (Openssl, TurnClientOpensslTls),
+    (Dimpl, TurnClientDimpl)
+);
+
+#[cfg(all(not(feature = "openssl"), feature = "rustls", feature = "dimpl"))]
+turn_client_proto::impl_client!(
+    pub TurnClient,
+    (Udp, TurnClientUdp),
+    (Tcp, TurnClientTcp),
+    (Rustls, TurnClientRustls),
+    (Dimpl, TurnClientDimpl)
+);
+
+#[cfg(all(not(feature = "openssl"), not(feature = "rustls"), feature = "dimpl"))]
+turn_client_proto::impl_client!(
+    pub TurnClient,
+    (Udp, TurnClientUdp),
+    (Tcp, TurnClientTcp),
+    (Dimpl, TurnClientDimpl)
+);
+
+#[cfg(all(feature = "openssl", feature = "rustls", not(feature = "dimpl")))]
 turn_client_proto::impl_client!(
     pub TurnClient,
     (Udp, TurnClientUdp),
@@ -248,15 +316,15 @@ turn_client_proto::impl_client!(
     (Rustls, TurnClientRustls)
 );
 
-#[cfg(all(feature = "openssl", not(feature = "rustls")))]
+#[cfg(all(feature = "openssl", not(feature = "rustls"), not(feature = "dimpl")))]
 turn_client_proto::impl_client!(
     pub TurnClient,
     (Udp, TurnClientUdp),
     (Tcp, TurnClientTcp),
-    (Openssl, TurnClientOpensslTls),
+    (Openssl, TurnClientOpensslTls)
 );
 
-#[cfg(all(not(feature = "openssl"), feature = "rustls"))]
+#[cfg(all(not(feature = "openssl"), feature = "rustls", not(feature = "dimpl")))]
 turn_client_proto::impl_client!(
     pub TurnClient,
     (Udp, TurnClientUdp),
@@ -264,9 +332,13 @@ turn_client_proto::impl_client!(
     (Rustls, TurnClientRustls)
 );
 
-#[cfg(all(not(feature = "openssl"), not(feature = "rustls")))]
+#[cfg(all(
+    not(feature = "openssl"),
+    not(feature = "rustls"),
+    not(feature = "dimpl")
+))]
 turn_client_proto::impl_client!(
     pub TurnClient,
     (Udp, TurnClientUdp),
-    (Tcp, TurnClientTcp),
+    (Tcp, TurnClientTcp)
 );

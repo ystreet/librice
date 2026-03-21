@@ -59,6 +59,8 @@ use crate::candidate::{Candidate, CandidatePair, CandidateType, TransportType};
 use crate::component::ComponentConnectionState;
 use crate::gathering::GatheredCandidate;
 use crate::stream::Credentials;
+#[cfg(feature = "dimpl")]
+use crate::turn::DimplTurnConfig;
 #[cfg(feature = "openssl")]
 use crate::turn::OpensslTurnConfig;
 #[cfg(feature = "rustls")]
@@ -1205,6 +1207,8 @@ pub enum RiceTlsVariant {
     Openssl = 1,
     /// Rustls.
     Rustls = 2,
+    /// Dimpl.
+    Dimpl = 3,
 }
 
 /// The TLS variant for a [`RiceTlsConfig`]
@@ -1213,6 +1217,8 @@ pub unsafe extern "C" fn rice_tls_config_variant(config: *const RiceTlsConfig) -
     unsafe {
         let config = Arc::from_raw(config);
         let ret = match config.variant {
+            #[cfg(feature = "dimpl")]
+            TurnTlsConfig::Dimpl(_) => RiceTlsVariant::Dimpl,
             #[cfg(feature = "rustls")]
             TurnTlsConfig::Rustls(_) => RiceTlsVariant::Rustls,
             #[cfg(feature = "openssl")]
@@ -1283,6 +1289,18 @@ pub unsafe extern "C" fn rice_tls_config_new_rustls_with_ip(
         };
         mut_override(Arc::into_raw(Arc::new(RiceTlsConfig {
             variant: RustlsTurnConfig::new(Arc::new(verifier), addr.inner().ip().into()).into(),
+        })))
+    }
+}
+
+/// Construct a new TLS configuration using Rustls.
+#[unsafe(no_mangle)]
+#[cfg(feature = "dimpl")]
+pub unsafe extern "C" fn rice_tls_config_new_dimpl() -> *mut RiceTlsConfig {
+    unsafe {
+        let config = dimpl::Config::builder().build().unwrap();
+        mut_override(Arc::into_raw(Arc::new(RiceTlsConfig {
+            variant: DimplTurnConfig::new(Arc::new(config)).into(),
         })))
     }
 }

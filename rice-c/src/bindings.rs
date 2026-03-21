@@ -81,6 +81,8 @@ pub type RiceTcpType = u32;
 pub const RICE_TLS_VARIANT_OPENSSL: RiceTlsVariant = 1;
 #[doc = " Rustls."]
 pub const RICE_TLS_VARIANT_RUSTLS: RiceTlsVariant = 2;
+#[doc = " Dimpl."]
+pub const RICE_TLS_VARIANT_DIMPL: RiceTlsVariant = 3;
 pub type RiceTlsVariant = u32;
 #[doc = " The UDP transport"]
 pub const RICE_TRANSPORT_TYPE_UDP: RiceTransportType = 0;
@@ -801,6 +803,10 @@ unsafe extern "C" {
 unsafe extern "C" {
     #[doc = " Construct a new TLS configuration using Rustls."]
     pub fn rice_tls_config_new_rustls_with_ip(addr: *const RiceAddress) -> *mut RiceTlsConfig;
+}
+unsafe extern "C" {
+    #[doc = " Construct a new TLS configuration using Rustls."]
+    pub fn rice_tls_config_new_dimpl() -> *mut RiceTlsConfig;
 }
 unsafe extern "C" {
     #[doc = " Add an ICE stream to the `RiceAgent`."]
