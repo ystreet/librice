@@ -20,7 +20,7 @@ use core::time::Duration;
 use crate::candidate::{Candidate, TcpType, TransportType};
 use crate::turn::TurnClient;
 use crate::turn::TurnConfig;
-#[cfg(any(feature = "openssl", feature = "rustls"))]
+#[cfg(any(feature = "openssl", feature = "rustls", feature = "dimpl"))]
 use crate::turn::TurnTlsConfig;
 use stun_proto::Instant;
 use stun_proto::agent::{StunAgent, StunAgentPollRet, StunError, Transmit};

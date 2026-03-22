@@ -38,6 +38,12 @@ jobs:
       run: cargo test --verbose --no-default-features --features runtime-tokio
     - name: Run tests (No default features + Smol)
       run: cargo test --verbose --no-default-features --features runtime-smol
+    - name: Run tests (No default features + openssl)
+      run: cargo test --verbose --no-default-features --features runtime-smol,openssl
+    - name: Run tests (No default features + rustls)
+      run: cargo test --verbose --no-default-features --features runtime-smol,rustls
+    - name: Run tests (No default features + dimpl)
+      run: cargo test --verbose --no-default-features --features runtime-smol,dimpl
   clippy:
     runs-on: ubuntu-latest
     steps:
