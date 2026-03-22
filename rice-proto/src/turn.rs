@@ -10,6 +10,8 @@
 
 //! TURN module.
 
+#[cfg(any(feature = "rustls", feature = "dimpl"))]
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use core::net::SocketAddr;
@@ -176,8 +178,6 @@ pub enum TurnTlsConfig {
     Dimpl(DimplTurnConfig),
 }
 
-#[cfg(feature = "rustls")]
-use alloc::sync::Arc;
 #[cfg(feature = "rustls")]
 use rustls::{ClientConfig, pki_types::ServerName};
 
