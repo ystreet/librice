@@ -1164,7 +1164,7 @@ dependencies = [
 
 [[package]]
 name = "librice"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-io",
  "byteorder",
@@ -1679,7 +1679,7 @@ checksum = "a96887878f22d7bad8a3b6dc5b7440e0ada9a245242924394987b21cf2210a4c"
 
 [[package]]
 name = "rice-c"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bindgen",
  "sans-io-time",
@@ -1691,11 +1691,11 @@ dependencies = [
 
 [[package]]
 name = "rice-ctypes"
-version = "0.3.1"
+version = "0.4.0"
 
 [[package]]
 name = "rice-fuzz"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
@@ -1706,7 +1706,7 @@ dependencies = [
 
 [[package]]
 name = "rice-io"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "arbitrary",
  "async-io",
@@ -1725,7 +1725,7 @@ dependencies = [
 
 [[package]]
 name = "rice-proto"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "arbitrary",
  "byteorder",
@@ -1752,7 +1752,7 @@ dependencies = [
 
 [[package]]
 name = "rice-stun-types"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "arbitrary",
  "byteorder",
