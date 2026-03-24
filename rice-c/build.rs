@@ -4,7 +4,9 @@
 
 // avoid linking/regenerating when running on docs.rs
 #[cfg(docsrs)]
-fn main() {}
+fn main() {
+    println!("cargo:rustc-cfg=docsrs");
+}
 
 #[cfg(not(docsrs))]
 fn main() {
@@ -13,6 +15,7 @@ fn main() {
     use std::process::Command;
 
     if env::var("DOCS_RS").is_ok() {
+        println!("cargo:rustc-cfg=docsrs");
         return;
     }
 
