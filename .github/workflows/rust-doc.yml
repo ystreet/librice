@@ -27,3 +27,23 @@ jobs:
         with:
           command: doc
           args: --no-deps
+
+  cargo_docs_rs:
+    name: Cargo docs-rs
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -Dwarnings
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+      - name: Install cargo-c
+        uses: taiki-e/cache-cargo-install-action@v2
+        with:
+          tool: cargo-c
+      - name: Install cargo-docs-rs
+        uses: taiki-e/cache-cargo-install-action@v2
+        with:
+          tool: cargo-docs-rs
+      - run: for p in librice rice-proto rice-ctypes rice-stun-types rice-c rice-io; do echo $p; cargo +nightly docs-rs -v -p $p; done
