@@ -18,6 +18,9 @@
 
 use crate::mut_override;
 
+#[cfg(docsrs)]
+include!("bindings.rs");
+#[cfg(not(docsrs))]
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
 impl Default for RiceStreamIncomingData {
