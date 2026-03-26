@@ -700,40 +700,47 @@ impl Stream {
 
         Ok(())
     }*/
-    /*
-        /// Retrieve previously gathered local candidates
-        pub fn local_candidates(&self) -> Vec<Candidate> {
-            self.proto_stream.local_candidates()
-        }
 
-        /// Retrieve previously set remote candidates for connection checks from this stream
-        ///
-        /// # Examples
-        ///
-        /// ```
-        /// # use librice::agent::Agent;
-        /// # use librice::candidate::*;
-        /// let agent = Agent::default();
-        /// let stream = agent.add_stream();
-        /// let component = stream.add_component().unwrap();
-        /// let addr = "127.0.0.1:9999".parse().unwrap();
-        /// let candidate = Candidate::builder(
-        ///     0,
-        ///     CandidateType::Host,
-        ///     TransportType::Udp,
-        ///     "0",
-        ///     addr
-        /// )
-        /// .build();
-        /// stream.add_remote_candidate(candidate.clone());
-        /// let remote_cands = stream.remote_candidates();
-        /// assert_eq!(remote_cands.len(), 1);
-        /// assert_eq!(remote_cands[0], candidate);
-        /// ```
-        pub fn remote_candidates(&self) -> Vec<Candidate> {
-            self.proto_stream.remote_candidates()
-        }
-    */
+    /// Retrieve previously gathered local candidates
+    pub fn local_candidates(&self) -> Vec<Candidate> {
+        self.state.proto_stream.local_candidates()
+    }
+
+    /// Retrieve previously set remote candidates for connection checks from this stream
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use librice::agent::Agent;
+    /// # use librice::candidate::*;
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let runtime = tokio::runtime::Builder::new_current_thread()
+    /// #     .enable_all()
+    /// #     .build()
+    /// #     .unwrap();
+    /// # #[cfg(feature = "runtime-tokio")]
+    /// # let _runtime = runtime.enter();
+    /// let agent = Agent::default();
+    /// let stream = agent.add_stream();
+    /// let component = stream.add_component().unwrap();
+    /// let addr = "127.0.0.1:9999".parse().unwrap();
+    /// let candidate = Candidate::builder(
+    ///     0,
+    ///     CandidateType::Host,
+    ///     TransportType::Udp,
+    ///     "0",
+    ///     addr
+    /// )
+    /// .build();
+    /// stream.add_remote_candidate(&candidate);
+    /// let remote_cands = stream.remote_candidates();
+    /// assert_eq!(remote_cands.len(), 1);
+    /// assert_eq!(remote_cands[0], candidate);
+    /// ```
+    pub fn remote_candidates(&self) -> Vec<Candidate> {
+        self.state.proto_stream.remote_candidates()
+    }
+
     /// Indicate that no more candidates are expected from the peer.  This may allow the ICE
     /// process to complete.
     #[tracing::instrument(
@@ -912,6 +919,7 @@ mod tests {
 
     use super::*;
     use crate::agent::{Agent, AgentMessage};
+    use crate::candidate::CandidateType;
 
     fn init() {
         crate::tests::test_init_log();
@@ -937,12 +945,13 @@ mod tests {
 
     async fn message_loop_task(agent: Arc<Agent>) {
         let mut messages = agent.messages();
-        loop {
-            if matches!(
-                messages.next().await,
-                Some(AgentMessage::GatheringComplete(_))
-            ) {
-                break;
+        while let Some(msg) = messages.next().await {
+            match msg {
+                AgentMessage::GatheringComplete(_) => break,
+                AgentMessage::GatheredCandidate(stream, candidate) => {
+                    stream.add_local_gathered_candidates(candidate);
+                }
+                AgentMessage::ComponentStateChange(_, _) => (),
             }
         }
     }
@@ -957,15 +966,14 @@ mod tests {
 
         s.gather_candidates().await.unwrap();
         message_loop_task(agent.clone()).await;
-        //let local_cands = s.local_candidates();
-        //info!("gathered local candidates {:?}", local_cands);
-        //assert!(!local_cands.is_empty());
+        assert!(!s.local_candidates().is_empty());
         let ret = s.gather_candidates().await;
         error!("ret: {ret:?}");
         assert!(matches!(
             ret,
             Err(AgentError::Proto(ProtoAgentError::AlreadyInProgress))
         ));
+        assert!(!s.local_candidates().is_empty());
     }
 
     #[cfg(feature = "runtime-smol")]
@@ -1005,12 +1013,14 @@ mod tests {
 
         s.gather_candidates().await.unwrap();
         recv.await.unwrap();
+        assert!(!s.local_candidates().is_empty());
         let ret = s.gather_candidates().await;
         error!("ret: {ret:?}");
         assert!(matches!(
             ret,
             Err(AgentError::Proto(ProtoAgentError::AlreadyInProgress))
         ));
+        assert!(!s.local_candidates().is_empty());
     }
 
     #[test]
@@ -1032,5 +1042,22 @@ mod tests {
         assert_eq!(stream.local_credentials().unwrap(), lcreds);
         stream.set_remote_credentials(&rcreds);
         assert_eq!(stream.remote_credentials().unwrap(), rcreds);
+    }
+
+    #[test]
+    fn remote_candidates() {
+        #[cfg(feature = "runtime-tokio")]
+        let _runtime = crate::tests::tokio_runtime().enter();
+        init();
+        let agent = Agent::default();
+        let stream = agent.add_stream();
+        let _component = stream.add_component().unwrap();
+        let addr = "127.0.0.1:9999".parse().unwrap();
+        let candidate =
+            Candidate::builder(0, CandidateType::Host, TransportType::Udp, "0", addr).build();
+        stream.add_remote_candidate(&candidate);
+        let remote_cands = stream.remote_candidates();
+        assert_eq!(remote_cands.len(), 1);
+        assert_eq!(remote_cands[0], candidate);
     }
 }

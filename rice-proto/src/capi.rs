@@ -2080,12 +2080,19 @@ pub unsafe extern "C" fn rice_candidate_copy_into(
             return;
         }
         let candidate = Box::from_raw(mut_override(candidate));
-        let foundation = CString::from_raw(mut_override(candidate.foundation));
+        let foundation = if candidate.foundation.is_null() {
+            core::ptr::null()
+        } else {
+            let foundation = CString::from_raw(mut_override(candidate.foundation));
+            let ret = foundation.clone().into_raw();
+            core::mem::forget(foundation);
+            ret
+        };
         *ret = RiceCandidate {
             component_id: candidate.component_id,
             candidate_type: candidate.candidate_type,
             transport_type: candidate.transport_type,
-            foundation: foundation.clone().into_raw(),
+            foundation,
             priority: candidate.priority,
             address: rice_address_copy(candidate.address),
             base_address: rice_address_copy(candidate.base_address),
@@ -2100,7 +2107,6 @@ pub unsafe extern "C" fn rice_candidate_copy_into(
             extensions_len: candidate.extensions_len,
         };
         core::mem::forget(candidate);
-        core::mem::forget(foundation);
     }
 }
 
@@ -2274,6 +2280,36 @@ pub unsafe extern "C" fn rice_stream_end_of_local_candidates(stream: *mut RiceSt
     }
 }
 
+/// Retrieve previously set local candidates for connection checks from this stream.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_stream_get_local_candidates(
+    stream: *mut RiceStream,
+    n_candidates: *mut usize,
+    candidates: *mut RiceCandidate,
+) {
+    unsafe {
+        let stream = Arc::from_raw(stream);
+        let proto_agent = stream.proto_agent.lock().unwrap();
+        let proto_stream = proto_agent.stream(stream.stream_id).unwrap();
+        if candidates.is_null() {
+            *n_candidates = proto_stream.local_candidates().count();
+        } else if *n_candidates > 0 {
+            let candidates = core::slice::from_raw_parts_mut(candidates, *n_candidates);
+            *n_candidates = 0;
+            for candidate in proto_stream.local_candidates() {
+                candidates[*n_candidates] = RiceCandidate::into_c_full(candidate.clone());
+                if *n_candidates + 1 > candidates.len() {
+                    break;
+                }
+                *n_candidates += 1;
+            }
+        }
+
+        drop(proto_agent);
+        core::mem::forget(stream);
+    }
+}
+
 /// Signal the end of a set of remote candidates.
 ///
 /// Any remote candidates provided after calling this function will result in an error.
@@ -2285,6 +2321,36 @@ pub unsafe extern "C" fn rice_stream_end_of_remote_candidates(stream: *mut RiceS
         let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
 
         proto_stream.end_of_remote_candidates();
+        drop(proto_agent);
+        core::mem::forget(stream);
+    }
+}
+
+/// Retrieve previously set remote candidates for connection checks from this stream.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_stream_get_remote_candidates(
+    stream: *mut RiceStream,
+    n_candidates: *mut usize,
+    candidates: *mut RiceCandidate,
+) {
+    unsafe {
+        let stream = Arc::from_raw(stream);
+        let proto_agent = stream.proto_agent.lock().unwrap();
+        let proto_stream = proto_agent.stream(stream.stream_id).unwrap();
+        if candidates.is_null() {
+            *n_candidates = proto_stream.remote_candidates().len();
+        } else if *n_candidates > 0 {
+            let candidates = core::slice::from_raw_parts_mut(candidates, *n_candidates);
+            *n_candidates = 0;
+            for candidate in proto_stream.remote_candidates() {
+                candidates[*n_candidates] = RiceCandidate::into_c_full(candidate.clone());
+                if *n_candidates + 1 > candidates.len() {
+                    break;
+                }
+                *n_candidates += 1;
+            }
+        }
+
         drop(proto_agent);
         core::mem::forget(stream);
     }
