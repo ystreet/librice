@@ -65,6 +65,7 @@ mod utils;
 
 pub use rice_c::candidate;
 pub use rice_c::random_string;
+pub use rice_c::{Address, AddressFamily, Feature, IntegrityAlgorithm};
 
 #[cfg(test)]
 pub(crate) mod tests {
