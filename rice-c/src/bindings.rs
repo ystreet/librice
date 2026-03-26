@@ -1000,8 +1000,24 @@ unsafe extern "C" {
     pub fn rice_stream_end_of_local_candidates(stream: *mut RiceStream);
 }
 unsafe extern "C" {
+    #[doc = " Retrieve previously set local candidates for connection checks from this stream."]
+    pub fn rice_stream_get_local_candidates(
+        stream: *mut RiceStream,
+        n_candidates: *mut usize,
+        candidates: *mut RiceCandidate,
+    );
+}
+unsafe extern "C" {
     #[doc = " Signal the end of a set of remote candidates.\n\n Any remote candidates provided after calling this function will result in an error."]
     pub fn rice_stream_end_of_remote_candidates(stream: *mut RiceStream);
+}
+unsafe extern "C" {
+    #[doc = " Retrieve previously set remote candidates for connection checks from this stream."]
+    pub fn rice_stream_get_remote_candidates(
+        stream: *mut RiceStream,
+        n_candidates: *mut usize,
+        candidates: *mut RiceCandidate,
+    );
 }
 unsafe extern "C" {
     #[doc = " Provide data to the `RiceStream` for processing.\n\n The returned value contains what processing was completed on the provided data and any\n application data that needs to be handled."]

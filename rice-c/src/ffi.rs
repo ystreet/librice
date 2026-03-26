@@ -86,3 +86,28 @@ impl RiceCandidate {
         }
     }
 }
+
+impl Clone for RiceCandidate {
+    fn clone(&self) -> Self {
+        unsafe {
+            let mut ret = RiceCandidate::zeroed();
+            crate::ffi::rice_candidate_copy_into(self, &mut ret);
+            ret
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rice_candidate_clone_zeroed() {
+        let _log = crate::tests::test_init_log();
+
+        unsafe {
+            let zeroed = RiceCandidate::zeroed();
+            let _cloned = zeroed.clone();
+        }
+    }
+}

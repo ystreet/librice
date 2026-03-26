@@ -133,7 +133,7 @@ mod sealed {
 }
 
 /// An ICE candidate.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Candidate {
     ffi: crate::ffi::RiceCandidate,
 }
@@ -154,18 +154,6 @@ impl PartialEq<CandidateOwned> for Candidate {
 }
 
 impl Eq for Candidate {}
-
-impl Clone for Candidate {
-    fn clone(&self) -> Self {
-        unsafe {
-            let mut ret = Self {
-                ffi: crate::ffi::RiceCandidate::zeroed(),
-            };
-            crate::ffi::rice_candidate_copy_into(&self.ffi, &mut ret.ffi);
-            ret
-        }
-    }
-}
 
 impl CandidateApi for Candidate {}
 impl sealed::CandidateAsC for Candidate {

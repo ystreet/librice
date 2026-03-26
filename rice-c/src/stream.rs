@@ -12,7 +12,10 @@
 
 use sans_io_time::Instant;
 
-use crate::{candidate::TransportType, mut_override};
+use crate::{
+    candidate::{Candidate, TransportType},
+    mut_override,
+};
 
 /// An ICE [`Stream`]
 #[derive(Debug)]
@@ -137,6 +140,19 @@ impl Stream {
         unsafe { crate::ffi::rice_stream_end_of_local_candidates(self.ffi) }
     }
 
+    /// Retrieve previously set local candidates for connection checks from this stream.
+    pub fn local_candidates(&self) -> Vec<Candidate> {
+        unsafe {
+            let mut len = 0;
+            crate::ffi::rice_stream_get_local_candidates(self.ffi, &mut len, core::ptr::null_mut());
+            let mut ret = vec![crate::ffi::RiceCandidate::zeroed(); len];
+            crate::ffi::rice_stream_get_local_candidates(self.ffi, &mut len, ret.as_mut_ptr());
+            ret.into_iter()
+                .map(|cand| Candidate::from_c_none(&cand))
+                .collect()
+        }
+    }
+
     /// Add a remote candidate for connection checks for use with this stream
     pub fn add_remote_candidate(&self, cand: &crate::candidate::Candidate) {
         unsafe { crate::ffi::rice_stream_add_remote_candidate(self.ffi, cand.as_c()) }
@@ -146,6 +162,21 @@ impl Stream {
     /// process to complete.
     pub fn end_of_remote_candidates(&self) {
         unsafe { crate::ffi::rice_stream_end_of_remote_candidates(self.ffi) }
+    }
+
+    /// Retrieve previously set remote candidates for connection checks from this stream.
+    pub fn remote_candidates(&self) -> Vec<Candidate> {
+        unsafe {
+            let mut len = 0;
+            crate::ffi::rice_stream_get_remote_candidates(
+                self.ffi,
+                &mut len,
+                core::ptr::null_mut(),
+            );
+            let mut ret = vec![crate::ffi::RiceCandidate::zeroed(); len];
+            crate::ffi::rice_stream_get_remote_candidates(self.ffi, &mut len, ret.as_mut_ptr());
+            ret.into_iter().map(Candidate::from_c_full).collect()
+        }
     }
 
     /// Add a local candidate for this stream.
@@ -371,7 +402,7 @@ impl GatheredCandidate {
         }
     }
 
-    /// The [`Candidate`](crate::candidate::Candidate).
+    /// The [`Candidate`].
     pub fn candidate(&self) -> crate::candidate::Candidate {
         unsafe { crate::candidate::Candidate::from_c_none(&self.ffi.candidate) }
     }
