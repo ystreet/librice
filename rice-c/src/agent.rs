@@ -268,7 +268,7 @@ impl AgentPoll {
                     Self::ComponentStateChange(AgentComponentStateChange {
                         stream_id: ty.stream_id,
                         component_id: ty.component_id,
-                        state: crate::component::ComponentConnectionState::from_c(ty.state),
+                        state: ty.state.into(),
                     })
                 }
                 crate::ffi::RICE_AGENT_POLL_GATHERED_CANDIDATE => {
@@ -472,5 +472,23 @@ impl AgentError {
             crate::ffi::RICE_ERROR_ALREADY_IN_PROGRESS => Err(AgentError::AlreadyInProgress),
             val => panic!("unknown RiceError value {val:x?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_getters() {
+        let agent = Agent::builder()
+            .trickle_ice(false)
+            .controlling(true)
+            .build();
+        assert!(agent.controlling());
+        assert_eq!(agent.id(), agent.clone().id());
+
+        let stream = agent.add_stream();
+        assert_eq!(stream.id(), agent.stream(stream.id()).unwrap().id());
     }
 }

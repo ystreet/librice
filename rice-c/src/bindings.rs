@@ -95,7 +95,7 @@ pub struct Credentials {
     _unused: [u8; 0],
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Copy, Clone)]
 pub struct RiceAddress {
     _unused: [u8; 0],
 }

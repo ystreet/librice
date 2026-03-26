@@ -185,14 +185,17 @@ pub enum ComponentConnectionState {
     Failed = crate::ffi::RICE_COMPONENT_CONNECTION_STATE_FAILED,
 }
 
-impl ComponentConnectionState {
-    pub(crate) fn from_c(ffi: crate::ffi::RiceComponentConnectionState) -> Self {
-        match ffi {
-            crate::ffi::RICE_COMPONENT_CONNECTION_STATE_NEW => Self::New,
-            crate::ffi::RICE_COMPONENT_CONNECTION_STATE_CONNECTING => Self::Connecting,
-            crate::ffi::RICE_COMPONENT_CONNECTION_STATE_CONNECTED => Self::Connected,
-            crate::ffi::RICE_COMPONENT_CONNECTION_STATE_FAILED => Self::Failed,
-            _ => panic!("Unknown RiceComponentConnectionState value {ffi:x?}"),
+impl From<ComponentConnectionState> for crate::ffi::RiceComponentConnectionState {
+    fn from(value: ComponentConnectionState) -> Self {
+        match value {
+            ComponentConnectionState::New => crate::ffi::RICE_COMPONENT_CONNECTION_STATE_NEW,
+            ComponentConnectionState::Connecting => {
+                crate::ffi::RICE_COMPONENT_CONNECTION_STATE_CONNECTING
+            }
+            ComponentConnectionState::Connected => {
+                crate::ffi::RICE_COMPONENT_CONNECTION_STATE_CONNECTED
+            }
+            ComponentConnectionState::Failed => crate::ffi::RICE_COMPONENT_CONNECTION_STATE_FAILED,
         }
     }
 }
@@ -206,5 +209,59 @@ impl From<crate::ffi::RiceComponentConnectionState> for ComponentConnectionState
             crate::ffi::RICE_COMPONENT_CONNECTION_STATE_FAILED => Self::Failed,
             val => panic!("Unknown component connection state value {val:x?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::agent::Agent;
+
+    use super::*;
+
+    #[test]
+    fn component_connection_state() {
+        let _log = crate::tests::test_init_log();
+
+        for (c, r) in [
+            (
+                crate::ffi::RICE_COMPONENT_CONNECTION_STATE_NEW,
+                ComponentConnectionState::New,
+            ),
+            (
+                crate::ffi::RICE_COMPONENT_CONNECTION_STATE_CONNECTING,
+                ComponentConnectionState::Connecting,
+            ),
+            (
+                crate::ffi::RICE_COMPONENT_CONNECTION_STATE_CONNECTED,
+                ComponentConnectionState::Connected,
+            ),
+            (
+                crate::ffi::RICE_COMPONENT_CONNECTION_STATE_FAILED,
+                ComponentConnectionState::Failed,
+            ),
+        ] {
+            assert_eq!(ComponentConnectionState::from(c), r);
+            assert_eq!(crate::ffi::RiceComponentConnectionState::from(r), c);
+        }
+    }
+
+    #[test]
+    #[should_panic = "Unknown component connection state value"]
+    fn component_connection_state_out_of_range() {
+        let _log = crate::tests::test_init_log();
+        let _ = ComponentConnectionState::from(u32::MAX);
+    }
+
+    #[test]
+    fn component_getters() {
+        let _log = crate::tests::test_init_log();
+        let agent = Agent::default();
+        let stream = agent.add_stream();
+        let component = stream.add_component();
+
+        assert_eq!(component.id(), component.clone().id());
+        assert_eq!(stream.id(), component.stream().id());
+        assert!(component.selected_pair().is_none());
+        assert_eq!(component.state(), ComponentConnectionState::New);
     }
 }

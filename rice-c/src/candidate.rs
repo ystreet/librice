@@ -71,23 +71,23 @@ pub trait CandidateApi: sealed::CandidateAsC {
 #[repr(i32)]
 pub enum ParseCandidateError {
     /// Not a candidate message.
-    NotCandidate = -1,
+    NotCandidate = crate::ffi::RICE_PARSE_CANDIDATE_ERROR_NOT_CANDIDATE,
     /// Invalid foundation value.
-    BadFoundation = -2,
+    BadFoundation = crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_FOUNDATION,
     /// Invalid component id.
-    BadComponentId = -3,
+    BadComponentId = crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_COMPONENT_ID,
     /// Invalid transport type.
-    BadTransportType = -4,
+    BadTransportType = crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_TRANSPORT_TYPE,
     /// Invalid priority value.
-    BadPriority = -5,
+    BadPriority = crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_PRIORITY,
     /// Invalid network address.
-    BadAddress = -6,
+    BadAddress = crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_ADDRESS,
     /// Invalid candidate type.
-    BadCandidateType = -7,
+    BadCandidateType = crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_CANDIDATE_TYPE,
     /// Invalid extension format.
-    BadExtension = -8,
+    BadExtension = crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_EXTENSION,
     /// Data is not well formed.
-    Malformed = -9,
+    Malformed = crate::ffi::RICE_PARSE_CANDIDATE_ERROR_MALFORMED,
 }
 
 impl ParseCandidateError {
@@ -133,13 +133,30 @@ mod sealed {
 }
 
 /// An ICE candidate.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Candidate {
     ffi: crate::ffi::RiceCandidate,
 }
 
 unsafe impl Send for Candidate {}
 unsafe impl Sync for Candidate {}
+
+impl core::fmt::Debug for Candidate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut dbg = f.debug_struct("Candidate");
+        dbg.field("component_id", &self.component_id());
+        dbg.field("candidate_type", &self.candidate_type());
+        dbg.field("transport_type", &self.transport());
+        dbg.field("foundation", &self.foundation());
+        dbg.field("priority", &self.priority());
+        dbg.field("address", &self.address());
+        dbg.field("base_address", &self.base_address());
+        dbg.field("related_address", &self.related_address());
+        dbg.field("tcp_type", &self.tcp_type());
+        // TODO: extensions
+        dbg.finish()
+    }
+}
 
 impl PartialEq<Candidate> for Candidate {
     fn eq(&self, other: &Candidate) -> bool {
@@ -301,15 +318,18 @@ unsafe impl Sync for CandidateOwned {}
 
 impl core::fmt::Debug for CandidateOwned {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        unsafe {
-            let mut dbg = f.debug_struct("Candidate");
-            let dbg2 = &mut dbg;
-            dbg2.field("ffi", &self.ffi);
-            if !self.ffi.is_null() {
-                dbg2.field("value", &*self.ffi);
-            }
-            dbg.finish()
-        }
+        let mut dbg = f.debug_struct("CandidateOwned");
+        dbg.field("component_id", &self.component_id());
+        dbg.field("candidate_type", &self.candidate_type());
+        dbg.field("transport_type", &self.transport());
+        dbg.field("foundation", &self.foundation());
+        dbg.field("priority", &self.priority());
+        dbg.field("address", &self.address());
+        dbg.field("base_address", &self.base_address());
+        dbg.field("related_address", &self.related_address());
+        dbg.field("tcp_type", &self.tcp_type());
+        // TODO: extensions
+        dbg.finish()
     }
 }
 
@@ -496,7 +516,7 @@ impl From<crate::ffi::RiceTcpType> for TcpType {
             crate::ffi::RICE_TCP_TYPE_ACTIVE => Self::Active,
             crate::ffi::RICE_TCP_TYPE_PASSIVE => Self::Passive,
             crate::ffi::RICE_TCP_TYPE_SO => Self::So,
-            val => panic!("Unknown RiceTcpType valyue {val:x?}"),
+            val => panic!("Unknown tcp type value {val:x?}"),
         }
     }
 }
@@ -532,7 +552,7 @@ impl From<crate::ffi::RiceTransportType> for TransportType {
         match value {
             crate::ffi::RICE_TRANSPORT_TYPE_UDP => Self::Udp,
             crate::ffi::RICE_TRANSPORT_TYPE_TCP => Self::Tcp,
-            _ => panic!("Unknown RiceTransportType value"),
+            _ => panic!("Unknown transport type value"),
         }
     }
 }
@@ -561,7 +581,7 @@ impl core::str::FromStr for TransportType {
 }
 
 /// Errors when parsing a [`TransportType`]
-#[derive(Debug, thiserror::Error)]
+#[derive(Copy, Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ParseTransportTypeError {
     /// An unknown transport value was provided
     #[error("Unknown transport value was provided")]
@@ -587,6 +607,149 @@ impl CandidatePair {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn candidate_type() {
+        let _log = crate::tests::test_init_log();
+
+        for (c, r) in [
+            (crate::ffi::RICE_CANDIDATE_TYPE_HOST, CandidateType::Host),
+            (
+                crate::ffi::RICE_CANDIDATE_TYPE_SERVER_REFLEXIVE,
+                CandidateType::ServerReflexive,
+            ),
+            (
+                crate::ffi::RICE_CANDIDATE_TYPE_PEER_REFLEXIVE,
+                CandidateType::PeerReflexive,
+            ),
+            (
+                crate::ffi::RICE_CANDIDATE_TYPE_RELAYED,
+                CandidateType::Relayed,
+            ),
+        ] {
+            assert_eq!(CandidateType::from(c), r);
+            assert_eq!(crate::ffi::RiceCandidateType::from(r), c);
+        }
+    }
+
+    #[test]
+    #[should_panic = "Unknown candidate type"]
+    fn candidate_type_out_of_range() {
+        let _log = crate::tests::test_init_log();
+        let _ = CandidateType::from(u32::MAX);
+    }
+
+    #[test]
+    fn tcp_type() {
+        let _log = crate::tests::test_init_log();
+
+        for (c, r) in [
+            (crate::ffi::RICE_TCP_TYPE_NONE, TcpType::None),
+            (crate::ffi::RICE_TCP_TYPE_ACTIVE, TcpType::Active),
+            (crate::ffi::RICE_TCP_TYPE_PASSIVE, TcpType::Passive),
+            (crate::ffi::RICE_TCP_TYPE_SO, TcpType::So),
+        ] {
+            assert_eq!(TcpType::from(c), r);
+            assert_eq!(crate::ffi::RiceTcpType::from(r), c);
+        }
+    }
+
+    #[test]
+    #[should_panic = "Unknown tcp type value"]
+    fn tcp_type_out_of_range() {
+        let _log = crate::tests::test_init_log();
+        let _ = TcpType::from(u32::MAX);
+    }
+
+    #[test]
+    fn transport_type() {
+        let _log = crate::tests::test_init_log();
+
+        for (c, r) in [
+            (crate::ffi::RICE_TRANSPORT_TYPE_UDP, TransportType::Udp),
+            (crate::ffi::RICE_TRANSPORT_TYPE_TCP, TransportType::Tcp),
+        ] {
+            assert_eq!(TransportType::from(c), r);
+            assert_eq!(crate::ffi::RiceTransportType::from(r), c);
+        }
+    }
+
+    #[test]
+    #[should_panic = "Unknown transport type value"]
+    fn transport_type_out_of_range() {
+        let _log = crate::tests::test_init_log();
+        let _ = TransportType::from(u32::MAX);
+    }
+
+    #[test]
+    fn parse_candidate_error() {
+        let _log = crate::tests::test_init_log();
+
+        for (c, r) in [
+            (crate::ffi::RICE_PARSE_CANDIDATE_ERROR_SUCCESS, Ok(())),
+            (
+                crate::ffi::RICE_PARSE_CANDIDATE_ERROR_NOT_CANDIDATE,
+                Err(ParseCandidateError::NotCandidate),
+            ),
+            (
+                crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_FOUNDATION,
+                Err(ParseCandidateError::BadFoundation),
+            ),
+            (
+                crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_COMPONENT_ID,
+                Err(ParseCandidateError::BadComponentId),
+            ),
+            (
+                crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_TRANSPORT_TYPE,
+                Err(ParseCandidateError::BadTransportType),
+            ),
+            (
+                crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_PRIORITY,
+                Err(ParseCandidateError::BadPriority),
+            ),
+            (
+                crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_ADDRESS,
+                Err(ParseCandidateError::BadAddress),
+            ),
+            (
+                crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_CANDIDATE_TYPE,
+                Err(ParseCandidateError::BadCandidateType),
+            ),
+            (
+                crate::ffi::RICE_PARSE_CANDIDATE_ERROR_BAD_EXTENSION,
+                Err(ParseCandidateError::BadExtension),
+            ),
+            (
+                crate::ffi::RICE_PARSE_CANDIDATE_ERROR_MALFORMED,
+                Err(ParseCandidateError::Malformed),
+            ),
+        ] {
+            assert_eq!(ParseCandidateError::from_c(c), r);
+        }
+    }
+
+    #[test]
+    #[should_panic = "Unknown RiceParseCandidateError value"]
+    fn parse_candidate_error_out_of_range() {
+        let _log = crate::tests::test_init_log();
+        let _ = ParseCandidateError::from_c(i32::MAX);
+    }
+
+    #[test]
+    fn transport_type_from_str() {
+        use core::str::FromStr;
+        let _log = crate::tests::test_init_log();
+
+        for (s, r) in [
+            ("udp", Ok(TransportType::Udp)),
+            ("UDP", Ok(TransportType::Udp)),
+            ("tcp", Ok(TransportType::Tcp)),
+            ("TCP", Ok(TransportType::Tcp)),
+            ("random", Err(ParseTransportTypeError::UnknownTransport)),
+        ] {
+            assert_eq!(TransportType::from_str(s), r);
+        }
+    }
 
     fn base_address() -> crate::Address {
         "127.0.0.1:1000".parse().unwrap()
@@ -617,6 +780,7 @@ mod tests {
         .base_address(base.clone())
         .related_address(related.clone())
         .tcp_type(TcpType::Active)
+        .priority(1234)
         .build();
         assert_eq!(cand.component_id(), 1);
         assert_eq!(cand.candidate_type(), CandidateType::PeerReflexive);
@@ -626,8 +790,63 @@ mod tests {
         assert_eq!(cand.base_address(), base);
         assert_eq!(cand.related_address(), Some(related));
         assert_eq!(cand.tcp_type(), TcpType::Active);
+        assert_eq!(cand.priority(), 1234);
 
         let cand_clone = cand.clone();
         assert_eq!(cand, cand_clone);
+    }
+
+    #[test]
+    fn candidate_to_owned() {
+        let _log = crate::tests::test_init_log();
+
+        let base = base_address();
+        let addr = address();
+        let related = related_address();
+        let cand = Candidate::builder(
+            1,
+            CandidateType::PeerReflexive,
+            TransportType::Tcp,
+            "foundation",
+            addr.clone(),
+        )
+        .base_address(base.clone())
+        .related_address(related.clone())
+        .tcp_type(TcpType::Active)
+        .priority(1234)
+        .build();
+        let owned = cand.to_owned();
+        assert_eq!(cand, owned);
+        assert_eq!(owned, cand);
+    }
+
+    #[test]
+    fn candidate_string() {
+        let _log = crate::tests::test_init_log();
+
+        let addr = address();
+        let related = related_address();
+        let cand = Candidate::builder(
+            1,
+            CandidateType::PeerReflexive,
+            TransportType::Tcp,
+            "foundation",
+            addr.clone(),
+        )
+        .related_address(related.clone())
+        .tcp_type(TcpType::Active)
+        .priority(1234)
+        .build();
+
+        let s = cand.to_sdp_string();
+        println!("{s}");
+        let parsed = Candidate::from_sdp_string(&s).unwrap();
+        assert_eq!(parsed, cand);
+
+        let owned = cand.to_owned();
+        let s = cand.to_sdp_string();
+        println!("{s}");
+        let parsed = Candidate::from_sdp_string(&s).unwrap();
+        assert_eq!(parsed, owned);
     }
 }

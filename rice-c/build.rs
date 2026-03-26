@@ -114,6 +114,7 @@ fn main() {
         .default_non_copy_union_style(bindgen::NonCopyUnionStyle::ManuallyDrop)
         .anon_fields_prefix("field")
         .use_core()
+        .no_debug("RiceAddress")
         .generate_cstr(true)
         .generate()
         .unwrap();
