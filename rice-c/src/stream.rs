@@ -416,6 +416,22 @@ mod tests {
     use crate::agent::{Agent, AgentPoll};
 
     #[test]
+    fn getters() {
+        let _log = crate::tests::test_init_log();
+        let agent = Agent::builder().build();
+        let stream = agent.add_stream();
+        let component = stream.add_component();
+
+        assert_eq!(stream.id(), stream.clone().id());
+        assert_eq!(agent.id(), stream.agent().id());
+        assert_eq!(
+            component.id(),
+            stream.component(component.id()).unwrap().id()
+        );
+        assert!(stream.component(0).is_none());
+    }
+
+    #[test]
     fn gather_candidates() {
         let addr: crate::Address = "192.168.0.1:1000".parse().unwrap();
         let stun_addr: crate::Address = "102.168.0.200:2000".parse().unwrap();

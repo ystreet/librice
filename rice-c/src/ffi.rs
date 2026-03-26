@@ -97,6 +97,13 @@ impl Clone for RiceCandidate {
     }
 }
 
+impl core::fmt::Debug for RiceAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let addr = crate::Address::from_c_none(self);
+        write!(f, "{addr:?}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
