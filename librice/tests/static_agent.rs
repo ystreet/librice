@@ -212,7 +212,7 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
                     AgentMessage::GatheredCandidate(_stream, gathered) => {
                         if config.local.candidate_filter.as_ref()(&gathered) {
                             let candidate = gathered.candidate();
-                            lstream.add_local_gathered_candidates(gathered);
+                            lstream.add_local_gathered_candidate(gathered);
                             rstream.add_remote_candidate(&candidate);
                         }
                     }
@@ -244,7 +244,7 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
                     AgentMessage::GatheredCandidate(_stream, gathered) => {
                         if config.remote.candidate_filter.as_ref()(&gathered) {
                             let candidate = gathered.candidate();
-                            rstream.add_local_gathered_candidates(gathered);
+                            rstream.add_local_gathered_candidate(gathered);
                             lstream.add_remote_candidate(&candidate);
                         }
                     }

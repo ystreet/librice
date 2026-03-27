@@ -207,6 +207,7 @@ impl Stream {
     /// let component = stream.add_component().unwrap();
     /// assert_eq!(component.id(), component::RTP);
     /// ```
+    // TODO: 0.5.0, remove Result
     pub fn add_component(&self) -> Result<Component, AgentError> {
         let component = self.state.proto_stream.add_component();
 
@@ -906,7 +907,15 @@ impl Stream {
     /// Add a local candidate for this stream.
     ///
     /// Returns whether the candidate was added internally.
+    #[deprecated]
     pub fn add_local_gathered_candidates(&self, gathered: GatheredCandidate) -> bool {
+        self.add_local_gathered_candidate(gathered)
+    }
+
+    /// Add a local candidate for this stream.
+    ///
+    /// Returns whether the candidate was added internally.
+    pub fn add_local_gathered_candidate(&self, gathered: GatheredCandidate) -> bool {
         self.state
             .proto_stream
             .add_local_gathered_candidate(gathered)
@@ -949,7 +958,7 @@ mod tests {
             match msg {
                 AgentMessage::GatheringComplete(_) => break,
                 AgentMessage::GatheredCandidate(stream, candidate) => {
-                    stream.add_local_gathered_candidates(candidate);
+                    stream.add_local_gathered_candidate(candidate);
                 }
                 AgentMessage::ComponentStateChange(_, _) => (),
             }
