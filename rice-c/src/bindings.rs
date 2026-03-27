@@ -625,6 +625,14 @@ unsafe extern "C" {
     pub fn rice_agent_id(agent: *const RiceAgent) -> u64;
 }
 unsafe extern "C" {
+    #[doc = " Get the timing advance time in nanoseconds of the `RiceAgent`.\n\n This is known as the Ta value in the ICE specification.\n\n The default value is 50ms."]
+    pub fn rice_agent_get_timing_advance(agent: *const RiceAgent) -> u64;
+}
+unsafe extern "C" {
+    #[doc = " Set the timing advance time in nanoseconds of the `RiceAgent`.\n\n This is known as the Ta value in the ICE specification.\n\n The default value is 50ms."]
+    pub fn rice_agent_set_timing_advance(agent: *const RiceAgent, ta: u64);
+}
+unsafe extern "C" {
     #[doc = " Get the controlling state of the `RiceAgent`.\n\n A return value of `true` indicates the `RiceAgent` is in controlling mode, false the controlled\n mode.  This value can change during ICE processing."]
     pub fn rice_agent_get_controlling(agent: *const RiceAgent) -> bool;
 }

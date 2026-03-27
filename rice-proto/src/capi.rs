@@ -257,6 +257,41 @@ pub unsafe extern "C" fn rice_agent_id(agent: *const RiceAgent) -> u64 {
     }
 }
 
+/// Get the timing advance time in nanoseconds of the `RiceAgent`.
+///
+/// This is known as the Ta value in the ICE specification.
+///
+/// The default value is 50ms.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_agent_get_timing_advance(agent: *const RiceAgent) -> u64 {
+    unsafe {
+        let agent = Arc::from_raw(agent);
+        let proto_agent = agent.proto_agent.lock().unwrap();
+        let ret = proto_agent.timing_advance().as_nanos() as u64;
+
+        drop(proto_agent);
+        core::mem::forget(agent);
+        ret
+    }
+}
+
+/// Set the timing advance time in nanoseconds of the `RiceAgent`.
+///
+/// This is known as the Ta value in the ICE specification.
+///
+/// The default value is 50ms.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_agent_set_timing_advance(agent: *const RiceAgent, ta: u64) {
+    unsafe {
+        let agent = Arc::from_raw(agent);
+        let mut proto_agent = agent.proto_agent.lock().unwrap();
+        proto_agent.set_timing_advance(core::time::Duration::from_nanos(ta));
+
+        drop(proto_agent);
+        core::mem::forget(agent);
+    }
+}
+
 /// Get the controlling state of the `RiceAgent`.
 ///
 /// A return value of `true` indicates the `RiceAgent` is in controlling mode, false the controlled
