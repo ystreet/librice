@@ -59,6 +59,7 @@ pub mod agent;
 pub mod component;
 mod gathering;
 pub mod runtime;
+// TODO: 0.5.0 remove pub
 pub mod socket;
 pub mod stream;
 mod utils;
