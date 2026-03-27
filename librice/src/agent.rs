@@ -14,6 +14,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
+use std::time::Duration;
 
 use rice_c::Instant;
 use rice_c::agent::{AgentError as ProtoAgentError, AgentPoll, AgentTransmit};
@@ -66,31 +67,37 @@ pub struct Agent {
 /// A builder for an [`Agent`]
 #[derive(Debug, Default)]
 pub struct AgentBuilder {
-    trickle_ice: bool,
-    controlling: bool,
+    parent: rice_c::agent::AgentBuilder,
     runtime: Option<Arc<dyn Runtime>>,
 }
 
 impl AgentBuilder {
     /// Whether candidates can trickle in during ICE negotiation
     pub fn trickle_ice(mut self, trickle_ice: bool) -> Self {
-        self.trickle_ice = trickle_ice;
+        self.parent = self.parent.trickle_ice(trickle_ice);
         self
     }
 
     /// The initial value of the controlling attribute.  During the ICE negotiation, the
     /// controlling value may change.
     pub fn controlling(mut self, controlling: bool) -> Self {
-        self.controlling = controlling;
+        self.parent = self.parent.controlling(controlling);
+        self
+    }
+
+    /// The minimum amount of time between subsequent STUN requests sent.
+    ///
+    /// This is known as the Ta value in the ICE specification.
+    ///
+    /// The default value is 50ms.
+    pub fn timing_advance(mut self, ta: Duration) -> Self {
+        self.parent = self.parent.timing_advance(ta);
         self
     }
 
     /// Construct a new [`Agent`]
     pub fn build(self) -> Agent {
-        let agent = rice_c::agent::Agent::builder()
-            .trickle_ice(self.trickle_ice)
-            .controlling(self.controlling)
-            .build();
+        let agent = self.parent.build();
         let base_instant = std::time::Instant::now();
 
         Agent {
@@ -119,6 +126,24 @@ impl Agent {
 
     fn id(&self) -> u64 {
         self.agent.id()
+    }
+
+    /// The minimum amount of time between subsequent STUN requests sent.
+    ///
+    /// This is known as the Ta value in the ICE specification.
+    ///
+    /// The default value is 50ms.
+    pub fn timing_advance(&self) -> Duration {
+        self.agent.timing_advance()
+    }
+
+    /// Set the minimum amount of time between subsequent STUN requests sent.
+    ///
+    /// This is known as the Ta value in the ICE specification.
+    ///
+    /// The default value is 50ms.
+    pub fn set_timing_advance(&mut self, ta: Duration) {
+        self.agent.set_timing_advance(ta)
     }
 
     pub(crate) fn from_parts(
@@ -441,5 +466,20 @@ mod tests {
         assert!(agent.controlling());
         let agent = Agent::builder().controlling(false).build();
         assert!(!agent.controlling());
+    }
+
+    #[test]
+    fn timing_advance() {
+        init();
+        #[cfg(feature = "runtime-tokio")]
+        let _runtime = crate::tests::tokio_runtime().enter();
+        let ta = Duration::from_secs(1);
+        let default_ta = Duration::from_millis(50);
+        let mut agent = Agent::default();
+        assert_eq!(agent.timing_advance(), default_ta);
+        agent.set_timing_advance(ta);
+        assert_eq!(agent.timing_advance(), ta);
+        let agent = Agent::builder().timing_advance(ta).build();
+        assert_eq!(agent.timing_advance(), ta);
     }
 }

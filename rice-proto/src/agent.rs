@@ -107,10 +107,21 @@ pub struct Agent {
 }
 
 /// A builder for an [`Agent`]
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct AgentBuilder {
     trickle_ice: bool,
     controlling: bool,
+    timing_advance: Duration,
+}
+
+impl Default for AgentBuilder {
+    fn default() -> Self {
+        Self {
+            trickle_ice: false,
+            controlling: false,
+            timing_advance: crate::conncheck::DEFAULT_MINIMUM_SET_TICK,
+        }
+    }
 }
 
 impl AgentBuilder {
@@ -127,6 +138,16 @@ impl AgentBuilder {
         self
     }
 
+    /// Set the minimum amount of time between subsequent STUN requests sent.
+    ///
+    /// This is known as the Ta value in the ICE specification.
+    ///
+    /// The default value is 50ms.
+    pub fn timing_advance(mut self, ta: Duration) -> Self {
+        self.timing_advance = ta;
+        self
+    }
+
     /// Construct a new [`Agent`]
     pub fn build(self) -> Agent {
         turn_client_proto::types::debug_init();
@@ -139,6 +160,7 @@ impl AgentBuilder {
             id,
             checklistset: ConnCheckListSet::builder(tie_breaker, controlling)
                 .trickle_ice(self.trickle_ice)
+                .timing_advance(self.timing_advance)
                 .build(),
             stun_servers: Vec::new(),
             turn_servers: Vec::new(),
@@ -164,6 +186,24 @@ impl Agent {
     /// The identifier for this [`Agent`]
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    /// The minimum amount of time between subsequent STUN requests sent.
+    ///
+    /// This is known as the Ta value in the ICE specification.
+    ///
+    /// The default value is 50ms.
+    pub fn timing_advance(&self) -> Duration {
+        self.checklistset.timing_advance()
+    }
+
+    /// Set the minimum amount of time between subsequent STUN requests sent.
+    ///
+    /// This is known as the Ta value in the ICE specification.
+    ///
+    /// The default value is 50ms.
+    pub fn set_timing_advance(&mut self, ta: Duration) {
+        self.checklistset.set_timing_advance(ta)
     }
 
     /// Add a new `Stream` to this agent
@@ -579,5 +619,18 @@ mod tests {
         assert!(agent.controlling());
         let agent = Agent::builder().controlling(false).build();
         assert!(!agent.controlling());
+    }
+
+    #[test]
+    fn timing_advance() {
+        let _log = crate::tests::test_init_log();
+        let ta = Duration::from_secs(1);
+        let default_ta = Duration::from_millis(50);
+        let mut agent = Agent::default();
+        assert_eq!(agent.timing_advance(), default_ta);
+        agent.set_timing_advance(ta);
+        assert_eq!(agent.timing_advance(), ta);
+        let agent = Agent::builder().timing_advance(ta).build();
+        assert_eq!(agent.timing_advance(), ta);
     }
 }

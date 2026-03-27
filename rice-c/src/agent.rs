@@ -10,6 +10,8 @@
 
 //! ICE Agent implementation as specified in RFC 8445
 
+use core::time::Duration;
+
 use crate::{candidate::TransportType, mut_override, stream::Stream};
 
 use sans_io_time::Instant;
@@ -56,6 +58,26 @@ impl Agent {
     /// A process-unique identifier for this agent.
     pub fn id(&self) -> u64 {
         unsafe { crate::ffi::rice_agent_id(self.ffi) }
+    }
+
+    /// The minimum amount of time between subsequent STUN requests sent.
+    ///
+    /// This is known as the Ta value in the ICE specification.
+    ///
+    /// The default value is 50ms.
+    pub fn timing_advance(&self) -> Duration {
+        unsafe { Duration::from_nanos(crate::ffi::rice_agent_get_timing_advance(self.ffi)) }
+    }
+
+    /// Set the minimum amount of time between subsequent STUN requests sent.
+    ///
+    /// This is known as the Ta value in the ICE specification.
+    ///
+    /// The default value is 50ms.
+    pub fn set_timing_advance(&mut self, ta: Duration) {
+        unsafe {
+            crate::ffi::rice_agent_set_timing_advance(self.ffi, ta.as_nanos() as u64);
+        }
     }
 
     /// Add a new `Stream` to this agent
@@ -152,10 +174,21 @@ impl Agent {
 }
 
 /// A builder for an [`Agent`]
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct AgentBuilder {
     trickle_ice: bool,
     controlling: bool,
+    timing_advance: Duration,
+}
+
+impl Default for AgentBuilder {
+    fn default() -> Self {
+        Self {
+            trickle_ice: false,
+            controlling: false,
+            timing_advance: Duration::from_millis(50),
+        }
+    }
 }
 
 impl AgentBuilder {
@@ -172,10 +205,22 @@ impl AgentBuilder {
         self
     }
 
+    /// Set the minimum amount of time between subsequent STUN requests sent.
+    ///
+    /// This is known as the Ta value in the ICE specification.
+    ///
+    /// The default value is 50ms.
+    pub fn timing_advance(mut self, ta: Duration) -> Self {
+        self.timing_advance = ta;
+        self
+    }
+
     /// Construct a new [`Agent`]
     pub fn build(self) -> Agent {
-        Agent {
-            ffi: unsafe { crate::ffi::rice_agent_new(self.controlling, self.trickle_ice) },
+        unsafe {
+            let ffi = crate::ffi::rice_agent_new(self.controlling, self.trickle_ice);
+            crate::ffi::rice_agent_set_timing_advance(ffi, self.timing_advance.as_nanos() as u64);
+            Agent { ffi }
         }
     }
 }
