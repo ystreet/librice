@@ -10,6 +10,7 @@
 
 #![deny(missing_debug_implementations)]
 #![deny(missing_docs)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 //! # rice-proto
 //!
