@@ -9,5 +9,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 #![deny(missing_debug_implementations)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod capi;
