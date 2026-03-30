@@ -2125,9 +2125,9 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "stun-proto"
-version = "2.0.0"
+version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "afe3e4132a5b931f267f46989cba5b5c19e50b672b10c429428cca34a32d0d5d"
+checksum = "973ff3a3150361200a26ae16936cfc8fd379d047db6a27633874120e45f33fa6"
 dependencies = [
  "base64",
  "byteorder",
@@ -2143,9 +2143,9 @@ dependencies = [
 
 [[package]]
 name = "stun-types"
-version = "2.0.0"
+version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "536c4c55da9926c80f28256da74b6004245c437fd94ac9f63203c1b5d7aa09fb"
+checksum = "4e82b9e932463d6485689c145e557bc5f0b5c3e61081a418f2d2642cd2e1e1a0"
 dependencies = [
  "byteorder",
  "crc",
@@ -2448,9 +2448,9 @@ dependencies = [
 
 [[package]]
 name = "turn-client-proto"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cec842967ba2d894ed95048d99b95ae00df8ea61d63a074b14862955c34b5c0c"
+checksum = "3cecb85f46bc0d695711183cdd36be9fd7fd30232f46235c0525276fe14093f2"
 dependencies = [
  "byteorder",
  "smallvec",
@@ -2489,9 +2489,9 @@ dependencies = [
 
 [[package]]
 name = "turn-types"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e454dba020bdf40eb24ade8f83f6537f4b9b90db24c63568cef71188679eea1c"
+checksum = "007fa4d7a37fe9106d50af79be0b338cda7deb5c5cfe71ccdb8917ed7e5d2829"
 dependencies = [
  "byteorder",
  "stun-proto",
