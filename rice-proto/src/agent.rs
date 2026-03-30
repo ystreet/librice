@@ -24,7 +24,9 @@ use stun_proto::types::data::Data;
 
 use crate::candidate::{ParseCandidateError, TransportType};
 use crate::component::ComponentConnectionState;
-use crate::conncheck::{CheckListSetPollRet, ConnCheckEvent, ConnCheckListSet, SelectedPair};
+use crate::conncheck::{
+    CheckListSetPollRet, ConnCheckEvent, ConnCheckListSet, RequestRto, SelectedPair,
+};
 use crate::gathering::{GatherPoll, GatheredCandidate};
 use crate::rand::rand_u64;
 use crate::stream::{Stream, StreamMut, StreamState};
@@ -104,6 +106,7 @@ pub struct Agent {
     pub(crate) stun_servers: Vec<(TransportType, SocketAddr)>,
     pub(crate) turn_servers: Vec<TurnConfig>,
     streams: Vec<StreamState>,
+    pub(crate) rto: Option<RequestRto>,
 }
 
 /// A builder for an [`Agent`]
@@ -112,6 +115,7 @@ pub struct AgentBuilder {
     trickle_ice: bool,
     controlling: bool,
     timing_advance: Duration,
+    rto: Option<RequestRto>,
 }
 
 impl Default for AgentBuilder {
@@ -120,6 +124,7 @@ impl Default for AgentBuilder {
             trickle_ice: false,
             controlling: false,
             timing_advance: crate::conncheck::DEFAULT_MINIMUM_SET_TICK,
+            rto: None,
         }
     }
 }
@@ -148,6 +153,37 @@ impl AgentBuilder {
         self
     }
 
+    /// Configure the default timeouts and retransmissions for each STUN request.
+    ///
+    /// - `initial` - the initial time between consecutive transmissions. If 0, or 1, then only a
+    ///   single request will be performed.
+    /// - `max` - the maximum amount of time between consecutive retransmits.
+    /// - `retransmits` - the total number of transmissions of the request.
+    /// - `final_retransmit_timeout` - the amount of time after the final transmission to wait
+    ///   for a response before considering the request as having timed out.
+    ///
+    /// As specified in RFC 8489, `initial_rto` should be >= 500ms (unless specific information is
+    /// available on the RTT, `max` is `Duration::MAX`, `retransmits` has a default value of 7,
+    /// and `last_retransmit_timeout` should be `16 * initial_rto`.
+    ///
+    /// STUN transactions over TCP will only send a single request and have a timeout of the sum of
+    /// the timeouts of a UDP transaction.
+    pub fn set_request_retransmits(
+        mut self,
+        initial: Duration,
+        max: Duration,
+        retransmits: u32,
+        final_retransmit_timeout: Duration,
+    ) -> Self {
+        self.rto = Some(RequestRto::from_parts(
+            initial,
+            max,
+            retransmits,
+            final_retransmit_timeout,
+        ));
+        self
+    }
+
     /// Construct a new [`Agent`]
     pub fn build(self) -> Agent {
         turn_client_proto::types::debug_init();
@@ -156,15 +192,20 @@ impl AgentBuilder {
         let id = AGENT_COUNT.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
         let tie_breaker = rand_u64();
         let controlling = self.controlling;
+        let mut checklistset = ConnCheckListSet::builder(tie_breaker, controlling)
+            .trickle_ice(self.trickle_ice)
+            .timing_advance(self.timing_advance)
+            .build();
+        if let Some(rto) = self.rto.clone() {
+            checklistset.set_request_retransmits(rto);
+        }
         Agent {
             id,
-            checklistset: ConnCheckListSet::builder(tie_breaker, controlling)
-                .trickle_ice(self.trickle_ice)
-                .timing_advance(self.timing_advance)
-                .build(),
+            checklistset,
             stun_servers: Vec::new(),
             turn_servers: Vec::new(),
             streams: Vec::new(),
+            rto: self.rto,
         }
     }
 }
@@ -204,6 +245,35 @@ impl Agent {
     /// The default value is 50ms.
     pub fn set_timing_advance(&mut self, ta: Duration) {
         self.checklistset.set_timing_advance(ta)
+    }
+
+    /// Configure the default timeouts and retransmissions for each STUN request.
+    ///
+    /// - `initial` - the initial time between consecutive transmissions. If 0, or 1, then only a
+    ///   single request will be performed.
+    /// - `max` - the maximum amount of time between consecutive retransmits.
+    /// - `retransmits` - the total number of transmissions of the request.
+    /// - `final_retransmit_timeout` - the amount of time after the final transmission to wait
+    ///   for a response before considering the request as having timed out.
+    ///
+    /// As specified in RFC 8489, `initial_rto` should be >= 500ms (unless specific information is
+    /// available on the RTT, `max` is `Duration::MAX`, `retransmits` has a default value of 7,
+    /// and `last_retransmit_timeout` should be `16 * initial_rto`.
+    ///
+    /// STUN transactions over TCP will only send a single request and have a timeout of the sum of
+    /// the timeouts of a UDP transaction.
+    pub fn set_request_retransmits(
+        &mut self,
+        initial: Duration,
+        max: Duration,
+        retransmits: u32,
+        final_retransmit_timeout: Duration,
+    ) {
+        let rto = RequestRto::from_parts(initial, max, retransmits, final_retransmit_timeout);
+        for stream in self.streams.iter_mut() {
+            stream.set_request_retransmits(rto.clone());
+        }
+        self.checklistset.set_request_retransmits(rto);
     }
 
     /// Add a new `Stream` to this agent

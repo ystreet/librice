@@ -633,6 +633,16 @@ unsafe extern "C" {
     pub fn rice_agent_set_timing_advance(agent: *const RiceAgent, ta: u64);
 }
 unsafe extern "C" {
+    #[doc = " Configure the default timeouts and retransmissions for each STUN request.\n\n - `initial` - the initial time between consecutive transmissions. If 0, or 1, then only a\n   single request will be performed.\n - `max` - the maximum amount of time between consecutive retransmits.\n - `retransmits` - the total number of transmissions of the request.\n - `final_retransmit_timeout` - the amount of time after the final transmission to wait\n   for a response before considering the request as having timed out.\n\n As specified in RFC 8489, `initial_rto` should be >= 500ms (unless specific information is\n available on the RTT, `max` is `Duration::MAX`, `retransmits` has a default value of 7,\n and `last_retransmit_timeout` should be `16 * initial_rto`.\n\n STUN transactions over TCP will only send a single request and have a timeout of the sum of\n the timeouts of a UDP transaction."]
+    pub fn rice_agent_set_request_retransmits(
+        agent: *const RiceAgent,
+        initial_nanos: u64,
+        max_nanos: u64,
+        retransmits: u32,
+        final_retransmit_timeout_nanos: u64,
+    );
+}
+unsafe extern "C" {
     #[doc = " Get the controlling state of the `RiceAgent`.\n\n A return value of `true` indicates the `RiceAgent` is in controlling mode, false the controlled\n mode.  This value can change during ICE processing."]
     pub fn rice_agent_get_controlling(agent: *const RiceAgent) -> bool;
 }

@@ -20,7 +20,7 @@ use stun_proto::types::data::Data;
 
 use crate::agent::{Agent, AgentError};
 use crate::component::{Component, ComponentMut, ComponentState, GatherProgress};
-use crate::conncheck::{HandleRecvReply, PendingRecv};
+use crate::conncheck::{HandleRecvReply, PendingRecv, RequestRto};
 
 use crate::candidate::{Candidate, TransportType};
 //use crate::turn::agent::TurnCredentials;
@@ -671,6 +671,19 @@ impl StreamState {
             }
         }
         None
+    }
+
+    pub(crate) fn set_request_retransmits(&mut self, rto: RequestRto) {
+        for component in self.components.iter_mut() {
+            let Some(component) = component else {
+                continue;
+            };
+            let Some(gatherer) = component.gatherer.as_mut() else {
+                continue;
+            };
+
+            gatherer.set_request_retransmits(rto.clone());
+        }
     }
 }
 

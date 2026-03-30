@@ -47,6 +47,7 @@ use libc::{c_char, c_int, c_void};
 use tracing::{debug, warn};
 
 use core::mem::MaybeUninit;
+use core::time::Duration;
 
 use alloc::sync::{Arc, Weak};
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -286,6 +287,43 @@ pub unsafe extern "C" fn rice_agent_set_timing_advance(agent: *const RiceAgent, 
         let agent = Arc::from_raw(agent);
         let mut proto_agent = agent.proto_agent.lock().unwrap();
         proto_agent.set_timing_advance(core::time::Duration::from_nanos(ta));
+
+        drop(proto_agent);
+        core::mem::forget(agent);
+    }
+}
+
+/// Configure the default timeouts and retransmissions for each STUN request.
+///
+/// - `initial` - the initial time between consecutive transmissions. If 0, or 1, then only a
+///   single request will be performed.
+/// - `max` - the maximum amount of time between consecutive retransmits.
+/// - `retransmits` - the total number of transmissions of the request.
+/// - `final_retransmit_timeout` - the amount of time after the final transmission to wait
+///   for a response before considering the request as having timed out.
+///
+/// As specified in RFC 8489, `initial_rto` should be >= 500ms (unless specific information is
+/// available on the RTT, `max` is `Duration::MAX`, `retransmits` has a default value of 7,
+/// and `last_retransmit_timeout` should be `16 * initial_rto`.
+///
+/// STUN transactions over TCP will only send a single request and have a timeout of the sum of
+/// the timeouts of a UDP transaction.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_agent_set_request_retransmits(
+    agent: *const RiceAgent,
+    initial_nanos: u64,
+    max_nanos: u64,
+    retransmits: u32,
+    final_retransmit_timeout_nanos: u64,
+) {
+    unsafe {
+        let agent = Arc::from_raw(agent);
+        let mut proto_agent = agent.proto_agent.lock().unwrap();
+        let initial = Duration::from_nanos(initial_nanos);
+        let max = Duration::from_nanos(max_nanos);
+        let final_retransmit_timeout = Duration::from_nanos(final_retransmit_timeout_nanos);
+
+        proto_agent.set_request_retransmits(initial, max, retransmits, final_retransmit_timeout);
 
         drop(proto_agent);
         core::mem::forget(agent);

@@ -18,6 +18,7 @@ use core::net::{IpAddr, SocketAddr};
 use core::time::Duration;
 
 use crate::candidate::{Candidate, TcpType, TransportType};
+use crate::conncheck::RequestRto;
 use crate::turn::TurnClient;
 use crate::turn::TurnConfig;
 #[cfg(any(feature = "openssl", feature = "rustls", feature = "dimpl"))]
@@ -91,7 +92,7 @@ struct Request {
 #[derive(Debug)]
 enum Method {
     Stun,
-    Turn(TurnConfig),
+    Turn(Box<TurnConfig>),
 }
 
 #[derive(Debug)]
@@ -107,13 +108,21 @@ struct PendingRequest {
 }
 
 impl PendingRequest {
-    fn as_tcp_request(&self, local_addr: SocketAddr) -> Request {
+    fn as_tcp_request(&self, local_addr: SocketAddr, rto: Option<&RequestRto>) -> Request {
         assert_eq!(self.transport_type, TransportType::Tcp);
         match &self.method {
             Method::Stun => {
-                let agent = StunAgent::builder(TransportType::Tcp, local_addr)
-                    .remote_addr(self.server_addr)
-                    .build();
+                let mut agent = StunAgent::builder(TransportType::Tcp, local_addr)
+                    .remote_addr(self.server_addr);
+                if let Some(rto) = rto {
+                    agent = agent.request_retransmits(
+                        rto.initial,
+                        rto.max,
+                        rto.retransmits,
+                        rto.final_retransmit_timeout,
+                    );
+                }
+                let agent = agent.build();
                 Request {
                     protocol: RequestProtocol::Tcp(None),
                     agent: StunOrTurnClient::Stun(Box::new(agent)),
@@ -204,6 +213,7 @@ pub struct StunGatherer {
     pending_tcp: VecDeque<PendingTcp>,
     tcp_buffers: VecDeque<GatherTcpBuffer>,
     completed: bool,
+    rto: Option<RequestRto>,
 }
 
 #[derive(Debug)]
@@ -368,7 +378,7 @@ impl StunGatherer {
                 other_preference,
                 completed: false,
                 agent_request_time: None,
-                method: Method::Turn((*turn_config).clone()),
+                method: Method::Turn(Box::new((*turn_config).clone())),
             });
         }
 
@@ -383,7 +393,25 @@ impl StunGatherer {
             pending_tcp: Default::default(),
             tcp_buffers: Default::default(),
             completed: false,
+            rto: None,
         }
+    }
+
+    pub(crate) fn set_request_retransmits(&mut self, rto: RequestRto) {
+        for request in self.pending_requests.iter_mut() {
+            match request.method {
+                Method::Stun => (),
+                Method::Turn(ref mut config) => {
+                    config.mut_turn_config().set_request_retransmits(
+                        rto.initial,
+                        rto.max,
+                        rto.retransmits,
+                        rto.final_retransmit_timeout,
+                    );
+                }
+            }
+        }
+        self.rto = Some(rto);
     }
 
     /// Poll the gatherer.  Should be called repeatedly until [`GatherPoll::WaitUntil`]
@@ -392,6 +420,7 @@ impl StunGatherer {
     pub(crate) fn poll(&mut self, now: Instant) -> GatherPoll {
         let mut lowest_wait = None;
 
+        let rto = self.rto.clone();
         for pending_request in self.pending_requests.iter_mut() {
             if pending_request.completed {
                 continue;
@@ -413,12 +442,23 @@ impl StunGatherer {
                                 local_addr = pending_request.local_addr,
                                 server_addr = pending_request.server_addr
                             );
+                            let transaction_id = msg.transaction_id();
                             self.pending_transmits.push_front(
                                 agent
                                     .send_request(msg.finish(), pending_request.server_addr, now)
                                     .unwrap()
                                     .into_owned(),
                             );
+                            if let Some(rto) = rto.as_ref() {
+                                let mut request =
+                                    agent.mut_request_transaction(transaction_id).unwrap();
+                                request.configure_timeout_with_max(
+                                    rto.initial,
+                                    rto.retransmits,
+                                    rto.final_retransmit_timeout,
+                                    rto.max,
+                                );
+                            }
                             StunOrTurnClient::Stun(Box::new(agent))
                         }
                         Method::Turn(config) => {
@@ -477,7 +517,8 @@ impl StunGatherer {
                         }) {
                             pending_request.completed = true;
                             self.requests.push(
-                                pending_request.as_tcp_request(self.tcp_buffers[idx].local_addr),
+                                pending_request
+                                    .as_tcp_request(self.tcp_buffers[idx].local_addr, rto.as_ref()),
                             );
                             continue;
                         }
@@ -686,6 +727,7 @@ impl StunGatherer {
             );
             return Some(transmit);
         }
+        let rto = self.rto.clone();
         for request in self.requests.iter_mut() {
             if request.completed {
                 continue;
@@ -700,12 +742,24 @@ impl StunGatherer {
                                 let mut msg =
                                     Message::builder_request(BINDING, MessageWriteVec::new());
                                 msg.add_fingerprint().unwrap();
-                                *tcp = Some(msg.transaction_id());
+                                let transaction_id = msg.transaction_id();
+                                *tcp = Some(transaction_id);
                                 let Ok(transmit) =
                                     agent.send_request(msg.finish(), request.server, now)
                                 else {
                                     continue;
                                 };
+                                let transmit = transmit.into_owned();
+                                if let Some(rto) = rto.as_ref() {
+                                    let mut request =
+                                        agent.mut_request_transaction(transaction_id).unwrap();
+                                    request.configure_timeout_with_max(
+                                        rto.initial,
+                                        rto.retransmits,
+                                        rto.final_retransmit_timeout,
+                                        rto.max,
+                                    );
+                                }
                                 trace!(
                                     "returning {:?} byte {} transmission from {} -> {}",
                                     transmit.data.len(),
@@ -713,7 +767,7 @@ impl StunGatherer {
                                     transmit.from,
                                     transmit.to
                                 );
-                                return Some(transmit.into_owned());
+                                return Some(transmit);
                             }
                             StunOrTurnClient::Turn(_) => *tcp = Some(TransactionId::generate()),
                         }
@@ -999,6 +1053,7 @@ impl StunGatherer {
         };
         self.pending_tcp.swap_remove_back(pending_tcp_idx);
         let mut tcp_buffer_added = false;
+        let rto = self.rto.clone();
         for request in self.pending_requests.iter_mut() {
             if !request.completed
                 && request.agent_request_time.is_some()
@@ -1009,7 +1064,8 @@ impl StunGatherer {
                 info!("adding TCP socket with local addr {socket:?}",);
                 request.completed = true;
                 if let Ok(socket_addr) = socket {
-                    self.requests.push(request.as_tcp_request(*socket_addr));
+                    self.requests
+                        .push(request.as_tcp_request(*socket_addr, rto.as_ref()));
                     if !tcp_buffer_added {
                         tcp_buffer_added = true;
                         self.tcp_buffers.push_back(GatherTcpBuffer {
@@ -1682,6 +1738,71 @@ mod tests {
         }
 
         assert!(matches!(gather.poll(now), GatherPoll::Complete(_)));
+        assert!(matches!(gather.poll(now), GatherPoll::Finished));
+    }
+
+    #[test]
+    fn turn_udp_configure_retransmit() {
+        let _log = crate::tests::test_init_log();
+        let local_addr = "192.168.1.1:1000".parse().unwrap();
+        let turn_listen_addr = "192.168.1.2:2000".parse().unwrap();
+        let turn_credentials = TurnCredentials::new("tuser", "tpass");
+
+        let mut turn_server = turn_server_proto::server::TurnServer::new(
+            TransportType::Tcp,
+            turn_listen_addr,
+            "realm".to_string(),
+        );
+        turn_server.add_user(
+            turn_credentials.username().to_string(),
+            turn_credentials.password().to_string(),
+        );
+        let mut config = TurnConfig::new(TransportType::Udp, turn_listen_addr, turn_credentials);
+        config.set_allocation_transport(TransportType::Udp);
+        let mut gather = StunGatherer::new(
+            1,
+            &[(TransportType::Udp, local_addr)],
+            &[(TransportType::Udp, turn_listen_addr)],
+            &[(local_addr, &config)],
+        );
+        gather.set_request_retransmits(RequestRto::from_parts(
+            Duration::from_millis(800),
+            Duration::from_secs(1),
+            3,
+            Duration::from_secs(2),
+        ));
+        let mut now = Instant::ZERO;
+        /* host candidate contents checked in `host_udp()` */
+        assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
+
+        for timeouts in [800, 1000, 2000] {
+            let stun_transmit = gather.poll_transmit(now).unwrap();
+            assert_eq!(stun_transmit.from, local_addr);
+            assert_eq!(stun_transmit.to, turn_listen_addr);
+            let msg = Message::from_bytes(&stun_transmit.data).unwrap();
+            assert!(msg.has_method(BINDING));
+            let GatherPoll::WaitUntil(new_now) = gather.poll(now) else {
+                unreachable!();
+            };
+            assert_eq!(new_now, now);
+
+            // unauthenticated TURN ALLOCATE
+            let turn_transmit = gather.poll_transmit(now).unwrap();
+            assert_eq!(turn_transmit.from, local_addr);
+            assert_eq!(turn_transmit.to, turn_listen_addr);
+            let msg = Message::from_bytes(&turn_transmit.data).unwrap();
+            assert!(msg.has_method(ALLOCATE));
+
+            let GatherPoll::WaitUntil(new_now) = gather.poll(now) else {
+                unreachable!();
+            };
+            assert_eq!(new_now - now, Duration::from_millis(timeouts));
+            now = new_now;
+        }
+        let GatherPoll::Complete(1) = gather.poll(now) else {
+            unreachable!();
+        };
+
         assert!(matches!(gather.poll(now), GatherPoll::Finished));
     }
 }

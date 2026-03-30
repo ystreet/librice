@@ -162,6 +162,10 @@ impl TurnConfig {
     pub(crate) fn turn_config(&self) -> &turn_client_proto::api::TurnConfig {
         &self.turn_config
     }
+
+    pub(crate) fn mut_turn_config(&mut self) -> &mut turn_client_proto::api::TurnConfig {
+        &mut self.turn_config
+    }
 }
 
 /// Configuration parameters for TURN use over (D)TLS.
