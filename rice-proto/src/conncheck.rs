@@ -149,6 +149,30 @@ impl SelectedPair {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestRto {
+    pub(crate) initial: Duration,
+    pub(crate) max: Duration,
+    pub(crate) retransmits: u32,
+    pub(crate) final_retransmit_timeout: Duration,
+}
+
+impl RequestRto {
+    pub fn from_parts(
+        initial: Duration,
+        max: Duration,
+        retransmits: u32,
+        final_retransmit_timeout: Duration,
+    ) -> Self {
+        Self {
+            initial,
+            max,
+            retransmits,
+            final_retransmit_timeout,
+        }
+    }
+}
+
 /// Return value when handling received data
 #[derive(Debug)]
 pub struct HandleRecvReply<T: AsRef<[u8]> + core::fmt::Debug> {
@@ -1657,7 +1681,7 @@ impl ConnCheckList {
         if self.state == CheckListState::Completed {
             return;
         }
-        if !self.trickle_ice || (self.local_end_of_candidates && self.remote_end_of_candidates) {
+        if self.local_end_of_candidates && self.remote_end_of_candidates {
             debug!("all candidates have arrived");
             let mut any_not_failed = false;
             for (component_id, state) in self.component_ids.iter_mut() {
@@ -2047,6 +2071,7 @@ pub struct ConnCheckListSetBuilder {
     controlling: bool,
     trickle_ice: bool,
     timing_advance: Duration,
+    rto: Option<RequestRto>,
 }
 
 impl ConnCheckListSetBuilder {
@@ -2056,6 +2081,7 @@ impl ConnCheckListSetBuilder {
             controlling,
             trickle_ice: false,
             timing_advance: DEFAULT_MINIMUM_SET_TICK,
+            rto: None,
         }
     }
 
@@ -2090,6 +2116,7 @@ impl ConnCheckListSetBuilder {
             completed: false,
             closed: false,
             timing_advance: self.timing_advance,
+            rto: self.rto,
         }
     }
 }
@@ -2114,6 +2141,7 @@ pub struct ConnCheckListSet {
     completed: bool,
     closed: bool,
     timing_advance: Duration,
+    rto: Option<RequestRto>,
 }
 
 impl ConnCheckListSet {
@@ -2164,6 +2192,31 @@ impl ConnCheckListSet {
     /// The default value is 50ms.
     pub fn set_timing_advance(&mut self, ta: Duration) {
         self.timing_advance = ta.max(MIN_TIMING_ADVANCE);
+    }
+
+    pub fn set_request_retransmits(&mut self, rto: RequestRto) {
+        for checklist in self.checklists.iter_mut() {
+            let requests = checklist
+                .pairs
+                .iter()
+                .filter_map(|check| check.agent_id().zip(check.stun_request))
+                .collect::<Vec<_>>();
+            for (agent_id, request_id) in requests {
+                let Some(agent) = checklist.mut_agent_by_id(agent_id) else {
+                    continue;
+                };
+                let Some(mut transaction) = agent.mut_request_transaction(request_id) else {
+                    continue;
+                };
+                transaction.configure_timeout_with_max(
+                    rto.initial,
+                    rto.retransmits,
+                    rto.final_retransmit_timeout,
+                    rto.max,
+                );
+            }
+        }
+        self.rto = Some(rto);
     }
 
     fn handle_stun<T: AsRef<[u8]>>(
@@ -3321,11 +3374,11 @@ impl ConnCheckListSet {
     #[tracing::instrument(name = "check_set_poll", level = "debug", ret, skip(self))]
     pub fn poll(&mut self, now: Instant) -> CheckListSetPollRet {
         if !self.pending_transmits.is_empty() || !self.pending_messages.is_empty() {
-            error!("pending transmits/messages");
+            trace!("have pending transmits/messages");
             return CheckListSetPollRet::WaitUntil(now);
         }
 
-        let mut any_running = false;
+        let mut n_running = 0;
         let mut all_failed = true;
         let mut all_turn_closed = self.closed;
         let start_idx = self.checklist_i;
@@ -3618,11 +3671,8 @@ impl ConnCheckListSet {
             }
 
             let checklist_state = checklist.state();
-            if checklist_state != CheckListState::Failed {
-                all_failed = false;
-            }
             if checklist_state == CheckListState::Running {
-                any_running = true;
+                n_running += 1;
                 for idx in 0..checklist.pairs.len() {
                     let check = &mut checklist.pairs[idx];
                     if check.state != CandidatePairState::InProgress {
@@ -3645,7 +3695,7 @@ impl ConnCheckListSet {
                                 }
                                 StunAgentPollRet::WaitUntil(wait) => {
                                     if wait < lowest_wait {
-                                        error!("stun poll ret {wait:?}");
+                                        trace!("stun poll ret {wait:?}");
                                         lowest_wait = wait.max(
                                             self.last_send_time
                                                 .map(|last_send| last_send + self.timing_advance)
@@ -3690,13 +3740,26 @@ impl ConnCheckListSet {
                         }
                     }
                 }
-                error!("last send time {:?}", self.last_send_time);
+                trace!("last send time {:?}", self.last_send_time);
                 if let Some(last_send) = self.last_send_time {
                     if last_send + self.timing_advance > now {
-                        error!("last send time to close to the past, waiting");
+                        trace!("last send time too close to the past, waiting");
                         return CheckListSetPollRet::WaitUntil(last_send + self.timing_advance);
                     }
                 }
+            }
+            checklist.check_for_failure();
+            trace!(
+                "checklist id:{} state: {:?}",
+                checklist_id,
+                checklist.state()
+            );
+            if checklist.state() == CheckListState::Failed {
+                if checklist_state == CheckListState::Running {
+                    n_running -= 1;
+                }
+            } else {
+                all_failed = false;
             }
 
             let conncheck_id = match self.next_check() {
@@ -3704,12 +3767,12 @@ impl ConnCheckListSet {
                 None => {
                     if start_idx == self.checklist_i {
                         debug!(
-                            "nothing to do yet any-running:{any_running} completed:{} all-failed:{all_failed} turn-closed:{all_turn_closed}",
+                            "nothing to do yet n-running:{n_running} completed:{} all-failed:{all_failed} turn-closed:{all_turn_closed}",
                             self.completed
                         );
                         // we looked at them all and none of the checklist could find anything to
                         // do
-                        if !any_running && !self.completed {
+                        if n_running == 0 && !self.completed {
                             self.completed = true;
                             return CheckListSetPollRet::Completed;
                         } else if let Some(remove) = self.pending_remove_sockets.pop_front() {
@@ -3761,6 +3824,7 @@ impl ConnCheckListSet {
             return Some(pending);
         }
 
+        let rto = self.rto.clone();
         while let Some(pending) = self.pending_messages.pop_back() {
             let Some(checklist) = self.mut_list(pending.checklist_id) else {
                 continue;
@@ -3769,18 +3833,27 @@ impl ConnCheckListSet {
                 continue;
             };
             if pending.is_request {
+                let hdr = MessageHeader::from_bytes(&pending.msg).unwrap();
                 debug!(
-                    "Sending request {:?} to {:?} using agent: {:?} and turn id {:?}",
-                    MessageHeader::from_bytes(&pending.msg).unwrap(),
-                    pending.to,
-                    pending.agent_id,
-                    pending.turn_id
+                    "Sending request {hdr:?} to {:?} using agent: {:?} and turn id {:?}",
+                    pending.to, pending.agent_id, pending.turn_id
                 );
                 match agent.send_request(pending.msg, pending.to, now) {
                     Ok(transmit) => {
                         let transport = transmit.transport;
                         let transmit =
                             transmit.reinterpret_data(|data| transmit_send(transport, data));
+                        if let Some(rto) = rto.as_ref() {
+                            let mut request = agent
+                                .mut_request_transaction(hdr.transaction_id())
+                                .expect("Just sent request does not exist!");
+                            request.configure_timeout_with_max(
+                                rto.initial,
+                                rto.retransmits,
+                                rto.final_retransmit_timeout,
+                                rto.max,
+                            );
+                        }
                         if let Some((turn_id, _turn_to)) = pending.turn_id {
                             let transport = transmit.transport;
                             let Some(client) = checklist.mut_turn_client_by_id(turn_id) else {
@@ -4927,25 +5000,21 @@ mod tests {
             .build();
         let local2 = Peer::builder()
             .foundation("0")
-            .component_id(2)
             .priority(3)
             .local_addr("127.0.0.2:3".parse().unwrap())
             .build();
         let remote2 = Peer::builder()
             .foundation("0")
-            .component_id(2)
             .priority(4)
             .local_addr("127.0.0.2:4".parse().unwrap())
             .build();
         let local3 = Peer::builder()
             .foundation("1")
-            .component_id(2)
             .priority(7)
             .local_addr("127.0.0.3:5".parse().unwrap())
             .build();
         let remote3 = Peer::builder()
             .foundation("1")
-            .component_id(2)
             .priority(10)
             .local_addr("127.0.0.3:6".parse().unwrap())
             .build();
@@ -4959,7 +5028,6 @@ mod tests {
 
         let list1 = set.mut_list(list1_id).unwrap();
         list1.add_component(1);
-        list1.add_component(2);
         list1.add_local_candidate(local1.candidate.clone());
         list1.add_remote_candidate(remote1.candidate.clone());
 
@@ -4967,7 +5035,6 @@ mod tests {
 
         let list2 = set.mut_list(list2_id).unwrap();
         list2.add_component(1);
-        list2.add_component(2);
         list2.add_local_candidate(local2.candidate.clone());
         list2.add_remote_candidate(remote2.candidate.clone());
         list2.add_local_candidate(local3.candidate.clone());
@@ -7405,5 +7472,113 @@ mod tests {
                 unreachable!();
             };
         }
+    }
+
+    #[test]
+    fn conncheck_request_retransmit_timings() {
+        let _log = crate::tests::test_init_log();
+        let mut state = FineControl::builder().build();
+        state
+            .local
+            .checklist_set
+            .set_request_retransmits(RequestRto::from_parts(
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                4,
+                Duration::from_secs(4),
+            ));
+        state.local_list().end_of_local_candidates();
+        state.local_list().end_of_remote_candidates();
+
+        let pair = CandidatePair::new(
+            state.local.peer.candidate.clone(),
+            state.remote.candidate.clone(),
+        );
+        let initial_check = state
+            .local_list()
+            .matching_check(&pair, Nominate::False)
+            .unwrap();
+        assert_eq!(initial_check.state(), CandidatePairState::Frozen);
+        let check_id = initial_check.conncheck_id;
+
+        // Don't generate any initial checks as they should be done as candidates are added to
+        // the checklist
+        let mut now = Instant::ZERO;
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        // send the conncheck (unanswered)
+        let set_ret = state.local.checklist_set.poll(now);
+        assert!(matches!(set_ret, CheckListSetPollRet::WaitUntil(_)));
+        state.local.checklist_set.poll_transmit(now).unwrap();
+        let new_now = wait_advance(&mut state.local.checklist_set, now);
+        let new_now = wait_advance(&mut state.local.checklist_set, new_now);
+        assert_eq!(new_now - now, Duration::from_secs(1));
+        now = new_now;
+
+        let initial_check = state.local_list().check_by_id(check_id).unwrap();
+        assert_eq!(initial_check.state(), CandidatePairState::InProgress);
+
+        let set_ret = state.local.checklist_set.poll(now);
+        assert!(matches!(set_ret, CheckListSetPollRet::WaitUntil(_)));
+        state.local.checklist_set.poll_transmit(now).unwrap();
+        let new_now = wait_advance(&mut state.local.checklist_set, now);
+        let new_now = wait_advance(&mut state.local.checklist_set, new_now);
+        assert_eq!(new_now - now, Duration::from_secs(2));
+        now = new_now;
+
+        let set_ret = state.local.checklist_set.poll(now);
+        assert!(matches!(set_ret, CheckListSetPollRet::WaitUntil(_)));
+        state.local.checklist_set.poll_transmit(now).unwrap();
+        let new_now = wait_advance(&mut state.local.checklist_set, now);
+        let new_now = wait_advance(&mut state.local.checklist_set, new_now);
+        assert_eq!(new_now - now, Duration::from_secs(2));
+        now = new_now;
+
+        let set_ret = state.local.checklist_set.poll(now);
+        assert!(matches!(set_ret, CheckListSetPollRet::WaitUntil(_)));
+        state.local.checklist_set.poll_transmit(now).unwrap();
+        let new_now = wait_advance(&mut state.local.checklist_set, now);
+        let new_now = wait_advance(&mut state.local.checklist_set, new_now);
+        assert_eq!(new_now - now, Duration::from_secs(4));
+        now = new_now;
+
+        let CheckListSetPollRet::Completed = state.local.checklist_set.poll(now) else {
+            unreachable!();
+        };
+
+        let initial_check = state.local_list().check_by_id(check_id).unwrap();
+        assert_eq!(initial_check.state(), CandidatePairState::Failed);
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(1, ComponentConnectionState::Failed),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        state.local.checklist_set.close(now);
+
+        let CheckListSetPollRet::RemoveSocket {
+            checklist_id: _,
+            component_id: 1,
+            transport: TransportType::Udp,
+            local_addr,
+            remote_addr: _,
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(local_addr, pair.local.base_address);
+        let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
+            unreachable!();
+        };
     }
 }

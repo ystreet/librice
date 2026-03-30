@@ -924,6 +924,8 @@ impl Stream {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use tracing::error;
 
     use super::*;
@@ -973,6 +975,13 @@ mod tests {
         s.set_remote_credentials(&Credentials::new("ruser", "rpass"));
         let _c = s.add_component().unwrap();
 
+        agent.set_request_retransmits(
+            Duration::from_millis(100),
+            Duration::from_secs(1),
+            4,
+            Duration::from_secs(4),
+        );
+
         s.gather_candidates().await.unwrap();
         message_loop_task(agent.clone()).await;
         assert!(!s.local_candidates().is_empty());
@@ -1019,6 +1028,13 @@ mod tests {
                 let _ = send.send(());
             })
         });
+
+        agent.set_request_retransmits(
+            Duration::from_millis(100),
+            Duration::from_secs(1),
+            4,
+            Duration::from_secs(4),
+        );
 
         s.gather_candidates().await.unwrap();
         recv.await.unwrap();

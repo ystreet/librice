@@ -24,7 +24,7 @@ use crate::candidate::{CandidatePair, CandidateType, TransportType};
 
 use crate::agent::{Agent, AgentError};
 pub use crate::conncheck::SelectedPair;
-use crate::conncheck::transmit_send;
+use crate::conncheck::{RequestRto, transmit_send};
 use crate::gathering::StunGatherer;
 use crate::stream::Stream;
 use crate::turn::TurnConfig;
@@ -161,9 +161,10 @@ impl<'a> ComponentMut<'a> {
         stun_servers: &[(TransportType, SocketAddr)],
         turn_servers: &[(SocketAddr, &TurnConfig)],
     ) -> Result<(), AgentError> {
+        let rto = self.agent.rto.clone();
         let stream = self.agent.mut_stream_state(self.stream_id).unwrap();
         let component = stream.mut_component_state(self.component_id).unwrap();
-        component.gather_candidates(sockets, stun_servers, turn_servers)
+        component.gather_candidates(sockets, stun_servers, turn_servers, rto)
     }
 
     /// Set the pair that will be used to send/receive data.  This will override the ICE
@@ -328,17 +329,17 @@ impl ComponentState {
         sockets: &[(TransportType, SocketAddr)],
         stun_servers: &[(TransportType, SocketAddr)],
         turn_servers: &[(SocketAddr, &TurnConfig)],
+        rto: Option<RequestRto>,
     ) -> Result<(), AgentError> {
         if self.gather_state != GatherProgress::New {
             return Err(AgentError::AlreadyInProgress);
         }
 
-        self.gatherer = Some(StunGatherer::new(
-            self.id,
-            sockets,
-            stun_servers,
-            turn_servers,
-        ));
+        let mut gatherer = StunGatherer::new(self.id, sockets, stun_servers, turn_servers);
+        if let Some(rto) = rto {
+            gatherer.set_request_retransmits(rto);
+        }
+        self.gatherer = Some(gatherer);
         self.gather_state = GatherProgress::InProgress;
 
         Ok(())

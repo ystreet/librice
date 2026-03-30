@@ -80,6 +80,39 @@ impl Agent {
         }
     }
 
+    /// Configure the default timeouts and retransmissions for each STUN request.
+    ///
+    /// - `initial` - the initial time between consecutive transmissions. If 0, or 1, then only a
+    ///   single request will be performed.
+    /// - `max` - the maximum amount of time between consecutive retransmits.
+    /// - `retransmits` - the total number of transmissions of the request.
+    /// - `final_retransmit_timeout` - the amount of time after the final transmission to wait
+    ///   for a response before considering the request as having timed out.
+    ///
+    /// As specified in RFC 8489, `initial_rto` should be >= 500ms (unless specific information is
+    /// available on the RTT, `max` is `Duration::MAX`, `retransmits` has a default value of 7,
+    /// and `last_retransmit_timeout` should be `16 * initial_rto`.
+    ///
+    /// STUN transactions over TCP will only send a single request and have a timeout of the sum of
+    /// the timeouts of a UDP transaction.
+    pub fn set_request_retransmits(
+        &self,
+        initial: Duration,
+        max: Duration,
+        retransmits: u32,
+        final_retransmit_timeout: Duration,
+    ) {
+        unsafe {
+            crate::ffi::rice_agent_set_request_retransmits(
+                self.ffi,
+                initial.as_nanos() as u64,
+                max.as_nanos() as u64,
+                retransmits,
+                final_retransmit_timeout.as_nanos() as u64,
+            );
+        }
+    }
+
     /// Add a new `Stream` to this agent
     ///
     /// # Examples
@@ -173,12 +206,37 @@ impl Agent {
     // TODO: stun_servers(), add_turn_server(), turn_servers(), stream()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RequestRto {
+    initial: Duration,
+    max: Duration,
+    retransmits: u32,
+    final_retransmit_timeout: Duration,
+}
+
+impl RequestRto {
+    fn from_parts(
+        initial: Duration,
+        max: Duration,
+        retransmits: u32,
+        final_retransmit_timeout: Duration,
+    ) -> Self {
+        Self {
+            initial,
+            max,
+            retransmits,
+            final_retransmit_timeout,
+        }
+    }
+}
+
 /// A builder for an [`Agent`]
 #[derive(Debug)]
 pub struct AgentBuilder {
     trickle_ice: bool,
     controlling: bool,
     timing_advance: Duration,
+    rto: Option<RequestRto>,
 }
 
 impl Default for AgentBuilder {
@@ -187,6 +245,7 @@ impl Default for AgentBuilder {
             trickle_ice: false,
             controlling: false,
             timing_advance: Duration::from_millis(50),
+            rto: None,
         }
     }
 }
@@ -215,12 +274,52 @@ impl AgentBuilder {
         self
     }
 
+    /// Configure the default timeouts and retransmissions for each STUN request.
+    ///
+    /// - `initial` - the initial time between consecutive transmissions. If 0, or 1, then only a
+    ///   single request will be performed.
+    /// - `max` - the maximum amount of time between consecutive retransmits.
+    /// - `retransmits` - the total number of transmissions of the request.
+    /// - `final_retransmit_timeout` - the amount of time after the final transmission to wait
+    ///   for a response before considering the request as having timed out.
+    ///
+    /// As specified in RFC 8489, `initial_rto` should be >= 500ms (unless specific information is
+    /// available on the RTT, `max` is `Duration::MAX`, `retransmits` has a default value of 7,
+    /// and `last_retransmit_timeout` should be `16 * initial_rto`.
+    ///
+    /// STUN transactions over TCP will only send a single request and have a timeout of the sum of
+    /// the timeouts of a UDP transaction.
+    pub fn request_retransmits(
+        mut self,
+        initial: Duration,
+        max: Duration,
+        retransmits: u32,
+        final_retransmit_timeout: Duration,
+    ) -> Self {
+        self.rto = Some(RequestRto::from_parts(
+            initial,
+            max,
+            retransmits,
+            final_retransmit_timeout,
+        ));
+        self
+    }
+
     /// Construct a new [`Agent`]
     pub fn build(self) -> Agent {
         unsafe {
             let ffi = crate::ffi::rice_agent_new(self.controlling, self.trickle_ice);
             crate::ffi::rice_agent_set_timing_advance(ffi, self.timing_advance.as_nanos() as u64);
-            Agent { ffi }
+            let ret = Agent { ffi };
+            if let Some(rto) = self.rto {
+                ret.set_request_retransmits(
+                    rto.initial,
+                    rto.max,
+                    rto.retransmits,
+                    rto.final_retransmit_timeout,
+                );
+            }
+            ret
         }
     }
 }
@@ -535,5 +634,17 @@ mod tests {
 
         let stream = agent.add_stream();
         assert_eq!(stream.id(), agent.stream(stream.id()).unwrap().id());
+    }
+
+    #[test]
+    fn agent_build_request_retransmits() {
+        let _agent = Agent::builder()
+            .request_retransmits(
+                Duration::from_millis(500),
+                Duration::from_secs(1),
+                10,
+                Duration::from_secs(10),
+            )
+            .build();
     }
 }
