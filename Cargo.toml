@@ -4,16 +4,16 @@ default-members = ["librice", "rice-proto", "rice-c", "rice-stun-types", "rice-c
 resolver = "2"
 
 [workspace.package]
-version = "0.4.1"
+version = "0.4.2"
 repository = "https://github.com/ystreet/librice"
 edition = "2024"
 rust-version = "1.85.0"
 
 [workspace.dependencies]
-rice-proto = { version = "0.4.1", path = "rice-proto" }
-rice-c = { version = "0.4.1", path = "rice-c" }
-rice-stun-types = { version = "0.4.1", path = "rice-stun-types", default-features = false }
-rice-ctypes = { version = "0.4.1", path = "rice-ctypes" }
+rice-proto = { version = "0.4.2", path = "rice-proto" }
+rice-c = { version = "0.4.2", path = "rice-c" }
+rice-stun-types = { version = "0.4.2", path = "rice-stun-types", default-features = false }
+rice-ctypes = { version = "0.4.2", path = "rice-ctypes" }
 
 stun-proto = { version = "2.0.1", default-features = false }
 stun-types = { version = "2.0.1", default-features = false }
