@@ -1062,6 +1062,14 @@ pub unsafe extern "C" fn rice_sockets_recv(
             match tcp.inner.socket.get_ref().read(data) {
                 Ok(len) => {
                     tcp.readable.semaphore_guard.lock().unwrap().take();
+                    if len == 0 {
+                        *ret = RiceIoRecv::Closed(RiceIoClosed {
+                            transport: RiceTransportType::Tcp,
+                            from: mut_override(RiceAddress::new(remote_addr).into_c_full()),
+                            to: mut_override(RiceAddress::new(local_addr).into_c_full()),
+                        });
+                        break;
+                    }
                     *ret = RiceIoRecv::Data(RiceIoData {
                         transport: RiceTransportType::Tcp,
                         from: mut_override(RiceAddress::new(remote_addr).into_c_full()),
