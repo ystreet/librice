@@ -458,6 +458,37 @@ impl RiceSockets {
         }
     }
 
+    fn set_timeouts(&self, read_timeout_us: u64, write_timeout_us: u64) -> RiceError {
+        let inner = self.inner.lock().unwrap();
+        let read_timeout = std::time::Duration::from_micros(read_timeout_us);
+        let write_timeout = std::time::Duration::from_micros(write_timeout_us);
+
+        for udp in inner.udp_sockets.values() {
+            let inner_udp_socket = udp.inner.socket.get_ref();
+            if let Err(e) = inner_udp_socket.set_read_timeout(Some(read_timeout)) {
+                warn!("Failed to set UDP socket read timeout: {e}");
+                return RiceError::Failed;
+            }
+            if let Err(e) = inner_udp_socket.set_write_timeout(Some(write_timeout)) {
+                warn!("Failed to set UDP socket write timeout: {e}");
+                return RiceError::Failed;
+            }
+        }
+
+        for tcp in inner.tcp_sockets.values() {
+            let inner_tcp_socket = tcp.inner.socket.get_ref();
+            if let Err(e) = inner_tcp_socket.set_read_timeout(Some(read_timeout)) {
+                warn!("Failed to set TCP socket read timeout: {e}");
+                return RiceError::Failed;
+            }
+            if let Err(e) = inner_tcp_socket.set_write_timeout(Some(write_timeout)) {
+                warn!("Failed to set TCP socket write timeout: {e}");
+                return RiceError::Failed;
+            }
+        }
+        RiceError::Success
+    }
+
     fn set_notify(&self, notify_data: Option<IoNotifyData>) {
         let removed_notify = {
             let mut our_notify_data = self.notify_data.lock().unwrap();
@@ -653,6 +684,24 @@ pub unsafe extern "C" fn rice_sockets_set_buffer_sizes(
         let sockets = Arc::from_raw(sockets);
         sockets.set_buffer_sizes(send_buffer_size, recv_buffer_size);
         core::mem::forget(sockets);
+    }
+}
+
+/// Set the TCP and UDP read and write timeouts, expressed in micro-seconds, on
+/// the `RiceSockets`.
+///
+/// This function is multi-threading safe.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_sockets_set_timeouts(
+    sockets: *const RiceSockets,
+    read_timeout: u64,
+    write_timeout: u64,
+) -> RiceError {
+    unsafe {
+        let sockets = Arc::from_raw(sockets);
+        let result = sockets.set_timeouts(read_timeout, write_timeout);
+        core::mem::forget(sockets);
+        result
     }
 }
 
