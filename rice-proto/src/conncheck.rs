@@ -1842,6 +1842,7 @@ impl ConnCheckList {
         } else {
             warn!("unknown nomination for pair {pair:?}");
         }
+        self.dump_check_state();
     }
 
     fn try_nominate(&mut self) {
@@ -2762,6 +2763,18 @@ impl ConnCheckListSet {
             });
         trace!("remote candidate {remote:?}");
         // RFC 8445 Section 7.3.1.4. Triggered Checks
+        if !self.controlling && !checklist.nominated.is_empty() {
+            // we don't allow renominations
+            let mut response = Message::builder_error(msg, MessageWriteVec::new());
+            let error = ErrorCode::builder(ErrorCode::BAD_REQUEST).build().unwrap();
+            response.add_attribute(&error).unwrap();
+            return response_add_credentials(
+                response,
+                &mut self.checklists[checklist_i].stun_auth_local,
+            )
+            .unwrap();
+        }
+
         let pair = CandidatePair::new(local.clone(), remote);
         if let Some(mut check) = checklist.take_matching_check(&pair, Nominate::DontCare) {
             // When the pair is already on the checklist:
@@ -2785,6 +2798,7 @@ impl ConnCheckListSet {
                         checklist.add_check(check);
                         new_check.set_state(CandidatePairState::Waiting);
                         checklist.add_valid(new_check.conncheck_id, &pair);
+                        checklist.add_triggered(&new_check);
                         checklist.add_check(new_check);
                         checklist.nominated_pair(&pair);
                     } else {
@@ -5211,7 +5225,7 @@ mod tests {
             self.local_list().set_remote_credentials(credentials);
         }
 
-        fn check_nomination(&mut self, pair: &CandidatePair, now: Instant) {
+        fn check_nomination(&mut self, pair: &CandidatePair, controlling: bool, now: Instant) {
             let nominate_check = self
                 .local_list()
                 .matching_check(pair, Nominate::True)
@@ -5219,16 +5233,18 @@ mod tests {
             assert_eq!(nominate_check.state(), CandidatePairState::Waiting);
             let pair = nominate_check.pair.clone();
             let check_id = nominate_check.conncheck_id;
-            assert!(self.local_list().is_triggered(&pair));
+            if controlling {
+                assert!(self.local_list().is_triggered(&pair));
 
-            // perform one tick which will perform the nomination check
-            send_next_check_and_response(&self.local.peer, &self.remote)
-                .perform(&mut self.local.checklist_set, now);
+                // perform one tick which will perform the nomination check
+                send_next_check_and_response(&self.local.peer, &self.remote)
+                    .perform(&mut self.local.checklist_set, now);
 
-            let nominate_check = self.local_list().check_by_id(check_id).unwrap();
-            assert_eq!(nominate_check.state(), CandidatePairState::Succeeded);
+                let nominate_check = self.local_list().check_by_id(check_id).unwrap();
+                assert_eq!(nominate_check.state(), CandidatePairState::Succeeded);
 
-            error!("{:?}", self.local_list());
+                error!("{:?}", self.local_list());
+            }
 
             // check list is done
             assert_eq!(self.local_list().state(), CheckListState::Completed);
@@ -5431,7 +5447,7 @@ mod tests {
 
         let now = wait_advance(&mut state.local.checklist_set, now);
 
-        state.check_nomination(&pair, now);
+        state.check_nomination(&pair, true, now);
 
         state.local.checklist_set.close(now);
 
@@ -5504,7 +5520,7 @@ mod tests {
         assert_eq!(triggered_check.state(), CandidatePairState::Succeeded);
 
         let now = wait_advance(&mut state.local.checklist_set, now);
-        state.check_nomination(&pair, now);
+        state.check_nomination(&pair, true, now);
 
         state.local.checklist_set.close(now);
 
@@ -5939,6 +5955,8 @@ mod tests {
         remote_peer: &Peer,
         remote_agent: &'a mut StunAgent,
         to: SocketAddr,
+        nominate: bool,
+        controlling: bool,
         now: Instant,
     ) -> Transmit<Data<'a>> {
         // send a request from some unknown to the local agent address to produce a peer
@@ -5946,8 +5964,11 @@ mod tests {
         let mut request = Message::builder_request(BINDING, MessageWriteVec::new());
         let priority = Priority::new(remote_peer.candidate.priority);
         request.add_attribute(&priority).unwrap();
-        let ice = IceControlled::new(200);
-        request.add_attribute(&ice).unwrap();
+        if controlling {
+            request.add_attribute(&IceControlling::new(200)).unwrap();
+        } else {
+            request.add_attribute(&IceControlled::new(200)).unwrap();
+        }
         let username = Username::new(
             &(remote_peer.remote_credentials.clone().unwrap().ufrag
                 + ":"
@@ -5955,6 +5976,9 @@ mod tests {
         )
         .unwrap();
         request.add_attribute(&username).unwrap();
+        if nominate {
+            request.add_attribute(&UseCandidate::new()).unwrap();
+        }
         request
             .add_message_integrity(
                 &MessageIntegrityCredentials::ShortTerm(
@@ -5995,8 +6019,14 @@ mod tests {
         let (mut remote_agent, _remote_auth, mut local_auth) = unknown_remote_peer.stun_agent();
 
         let local_addr = state.local.peer.candidate.base_address;
-        let transmit =
-            remote_generate_check(&unknown_remote_peer, &mut remote_agent, local_addr, now);
+        let transmit = remote_generate_check(
+            &unknown_remote_peer,
+            &mut remote_agent,
+            local_addr,
+            false,
+            false,
+            now,
+        );
 
         info!("sending prflx request");
         let reply =
@@ -6266,7 +6296,7 @@ mod tests {
         state.local_list().dump_check_state();
 
         let now = wait_advance(&mut state.local.checklist_set, now);
-        state.check_nomination(&pair, now);
+        state.check_nomination(&pair, true, now);
 
         state.local.checklist_set.close(now);
 
@@ -6395,7 +6425,14 @@ mod tests {
 
         let (mut remote_agent, _remote_auth, _local_auth) = state.remote.stun_agent();
         let local_addr = state.local.peer.stun_agent().0.local_addr();
-        let transmit = remote_generate_check(&state.remote, &mut remote_agent, local_addr, now);
+        let transmit = remote_generate_check(
+            &state.remote,
+            &mut remote_agent,
+            local_addr,
+            false,
+            false,
+            now,
+        );
 
         info!("sending request");
         let reply =
@@ -6434,7 +6471,7 @@ mod tests {
         assert_eq!(triggered_check.state(), CandidatePairState::Succeeded);
 
         let now = wait_advance(&mut state.local.checklist_set, now);
-        state.check_nomination(&pair, now);
+        state.check_nomination(&pair, true, now);
 
         state.local.checklist_set.close(now);
 
@@ -6506,7 +6543,14 @@ mod tests {
         // The handling of this will add another triggered check entry.
         let (mut remote_agent, _remote_auth, _local_auth) = state.remote.stun_agent();
         let local_addr = state.local.peer.stun_agent().0.local_addr();
-        let transmit = remote_generate_check(&state.remote, &mut remote_agent, local_addr, now);
+        let transmit = remote_generate_check(
+            &state.remote,
+            &mut remote_agent,
+            local_addr,
+            false,
+            false,
+            now,
+        );
 
         info!("sending request");
         let reply =
@@ -6550,7 +6594,7 @@ mod tests {
         assert_eq!(triggered_check.state(), CandidatePairState::InProgress);
 
         let now = wait_advance(&mut state.local.checklist_set, now);
-        state.check_nomination(&pair, now);
+        state.check_nomination(&pair, true, now);
 
         state.local.checklist_set.close(now);
 
@@ -6593,7 +6637,8 @@ mod tests {
         let (mut remote_agent, _remote_auth, _local_auth) = state.remote.stun_agent();
         let now = Instant::ZERO;
         let to = state.local.peer.candidate.base_address;
-        let transmit = remote_generate_check(&remote_peer, &mut remote_agent, to, now);
+        let transmit =
+            remote_generate_check(&remote_peer, &mut remote_agent, to, false, false, now);
 
         info!("sending prflx request");
         let reply =
@@ -6665,7 +6710,7 @@ mod tests {
         assert_eq!(prflx_check.state(), CandidatePairState::Succeeded);
 
         let now = wait_advance(&mut state.local.checklist_set, now);
-        state.check_nomination(&pair, now);
+        state.check_nomination(&pair, true, now);
 
         state.local.checklist_set.close(now);
 
@@ -7453,7 +7498,7 @@ mod tests {
                 response.response(&mut state.local.checklist_set, transmit, now);
             }
 
-            state.check_nomination(&pair1, now);
+            state.check_nomination(&pair1, true, now);
 
             state.local.checklist_set.close(now);
 
@@ -7577,6 +7622,185 @@ mod tests {
             unreachable!();
         };
         assert_eq!(local_addr, pair.local.base_address);
+        let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
+            unreachable!();
+        };
+    }
+
+    #[test]
+    fn conncheck_trickle_ice_controlled_nomination() {
+        let _log = crate::tests::test_init_log();
+        let mut state = FineControl::builder()
+            .trickle_ice(true)
+            .controlling(false)
+            .build();
+        let now = Instant::ZERO;
+        assert_eq!(state.local.component_id, 1);
+
+        // Don't generate any initial checks as they should be done as candidates are added to
+        // the checklist
+        let set_ret = state.local.checklist_set.poll(now);
+        // a checklist with no candidates has nothing to do
+        assert!(matches!(set_ret, CheckListSetPollRet::WaitUntil(_)));
+
+        let local_candidate = state.local.peer.candidate.clone();
+        let local_ipv6_addr = "[f8e0::1]:8".parse().unwrap();
+        let mut local_candidate2 = state.local.peer.candidate.clone();
+        local_candidate2.address = local_ipv6_addr;
+        local_candidate2.base_address = local_ipv6_addr;
+        local_candidate2.priority -= 1;
+        local_candidate2.foundation = "ipv6".to_owned();
+        state.local_list().add_local_candidate(local_candidate);
+        state
+            .local_list()
+            .add_local_candidate(local_candidate2.clone());
+
+        let set_ret = state.local.checklist_set.poll(now);
+        // a checklist with only a local candidates has nothing to do
+        assert!(matches!(set_ret, CheckListSetPollRet::WaitUntil(_)));
+
+        let remote_candidate = state.remote.candidate.clone();
+        let mut remote_candidate2 = state.remote.candidate.clone();
+        let remote_ipv6_addr = "[f8e0::2]:9".parse().unwrap();
+        remote_candidate2.address = remote_ipv6_addr;
+        remote_candidate2.base_address = remote_ipv6_addr;
+        remote_candidate2.priority -= 1;
+        remote_candidate2.foundation = "ipv6".to_owned();
+        state.local_list().add_remote_candidate(remote_candidate);
+
+        // adding one local and one remote candidate that can be paired should have generated
+        // the relevant waiting check. Not frozen because there is not other check with the
+        // same foundation that already exists
+        let ipv4_pair = CandidatePair::new(
+            state.local.peer.candidate.clone(),
+            state.remote.candidate.clone(),
+        );
+        let ipv6_pair = CandidatePair::new(local_candidate2.clone(), remote_candidate2.clone());
+        let check = state
+            .local_list()
+            .matching_check(&ipv4_pair, Nominate::False)
+            .unwrap();
+        assert_eq!(check.state(), CandidatePairState::Waiting);
+        let check_id = check.conncheck_id;
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        // perform one tick which will start a connectivity check with the peer
+        send_next_check_and_response(&state.local.peer, &state.remote)
+            .perform(&mut state.local.checklist_set, now);
+        let check = state.local_list().check_by_id(check_id).unwrap();
+        assert_eq!(check.state(), CandidatePairState::Succeeded);
+
+        state.local_list().dump_check_state();
+
+        let now = wait_advance(&mut state.local.checklist_set, now);
+
+        let mut local_auth = ShortTermAuth::new();
+        local_auth.set_credentials(
+            state.local.peer.local_credentials.clone().unwrap().into(),
+            IntegrityAlgorithm::Sha1,
+        );
+        let mut remote_agent = StunAgent::builder(
+            state.remote.candidate.transport_type,
+            state.remote.candidate.base_address,
+        )
+        .build();
+        let transmit = remote_generate_check(
+            &state.remote,
+            &mut remote_agent,
+            state.local.peer.candidate.address,
+            true,
+            true,
+            now,
+        );
+        let reply =
+            state
+                .local
+                .checklist_set
+                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        assert!(reply.handled);
+        let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
+            unreachable!();
+        };
+
+        let response = Message::from_bytes(&transmit.transmit.data).unwrap();
+        trace!("received: {response}");
+        assert!(matches!(
+            local_auth.validate_incoming_message(&response).unwrap(),
+            Some(IntegrityAlgorithm::Sha1)
+        ));
+        assert!(remote_agent.handle_stun_message(&response, transmit.transmit.from));
+        assert_eq!(transmit.transmit.from, state.local.peer.candidate.address);
+        assert!(response.has_class(MessageClass::Success));
+
+        state.check_nomination(&ipv4_pair, false, now);
+
+        state.local_list().add_remote_candidate(remote_candidate2);
+
+        let mut remote_agent =
+            StunAgent::builder(state.remote.candidate.transport_type, remote_ipv6_addr).build();
+        let transmit = remote_generate_check(
+            &state.remote,
+            &mut remote_agent,
+            local_ipv6_addr,
+            true,
+            true,
+            now,
+        );
+        let reply =
+            state
+                .local
+                .checklist_set
+                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        assert!(reply.handled);
+        let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
+            unreachable!();
+        };
+
+        let response = Message::from_bytes(&transmit.transmit.data).unwrap();
+        trace!("received: {response}");
+        assert!(matches!(
+            local_auth.validate_incoming_message(&response).unwrap(),
+            Some(IntegrityAlgorithm::Sha1)
+        ));
+        assert!(remote_agent.handle_stun_message(&response, transmit.transmit.from));
+        assert_eq!(transmit.transmit.from, local_candidate2.address);
+        assert!(response.has_class(MessageClass::Error));
+        assert_eq!(
+            response.attribute::<ErrorCode>().unwrap().code(),
+            ErrorCode::BAD_REQUEST
+        );
+
+        state.local.checklist_set.close(now);
+
+        let CheckListSetPollRet::RemoveSocket {
+            checklist_id: _,
+            component_id: 1,
+            transport: TransportType::Udp,
+            local_addr,
+            remote_addr: _,
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(local_addr, ipv4_pair.local.base_address);
+        let CheckListSetPollRet::RemoveSocket {
+            checklist_id: _,
+            component_id: 1,
+            transport: TransportType::Udp,
+            local_addr,
+            remote_addr: _,
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(local_addr, ipv6_pair.local.base_address);
         let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
