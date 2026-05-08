@@ -750,6 +750,12 @@ impl ConnCheckList {
         turn_id: Option<StunAgentId>,
     ) -> (StunAgentId, usize) {
         let agent_id = StunAgentId::generate();
+        trace!(
+            "Adding STUN Agent with id {agent_id} for transport {}, remote:{:?}, local:{}, turn:{turn_id:?}",
+            agent.transport(),
+            agent.remote_addr(),
+            agent.local_addr()
+        );
         self.agents.push(CheckStunAgent {
             id: agent_id,
             agent,
@@ -1711,13 +1717,6 @@ impl ConnCheckList {
         fields(component.id = pair.local.component_id)
     )]
     fn nominated_pair(&mut self, pair: &CandidatePair) {
-        if self.state != CheckListState::Running {
-            warn!(
-                "cannot nominate a pair with checklist in state {:?}",
-                self.state
-            );
-            return;
-        }
         self.dump_check_state();
         if let Some(idx) = self.valid.iter().position(|&check_id| {
             self.check_by_id(check_id).is_some_and(|check| {
@@ -2763,18 +2762,6 @@ impl ConnCheckListSet {
             });
         trace!("remote candidate {remote:?}");
         // RFC 8445 Section 7.3.1.4. Triggered Checks
-        if !self.controlling && !checklist.nominated.is_empty() {
-            // we don't allow renominations
-            let mut response = Message::builder_error(msg, MessageWriteVec::new());
-            let error = ErrorCode::builder(ErrorCode::BAD_REQUEST).build().unwrap();
-            response.add_attribute(&error).unwrap();
-            return response_add_credentials(
-                response,
-                &mut self.checklists[checklist_i].stun_auth_local,
-            )
-            .unwrap();
-        }
-
         let pair = CandidatePair::new(local.clone(), remote);
         if let Some(mut check) = checklist.take_matching_check(&pair, Nominate::DontCare) {
             // When the pair is already on the checklist:
@@ -2800,7 +2787,6 @@ impl ConnCheckListSet {
                         checklist.add_valid(new_check.conncheck_id, &pair);
                         checklist.add_triggered(&new_check);
                         checklist.add_check(new_check);
-                        checklist.nominated_pair(&pair);
                     } else {
                         checklist.add_check(check);
                     }
@@ -2881,6 +2867,10 @@ impl ConnCheckListSet {
             check.set_state(CandidatePairState::Waiting);
             checklist.add_triggered(&check);
             checklist.add_check(check);
+        }
+
+        if let Some(agent) = self.checklists[checklist_i].mut_agent_by_id(agent_id) {
+            agent.validated_peer(from);
         }
 
         binding_success_response(msg, from, &mut self.checklists[checklist_i].stun_auth_local)
@@ -5225,7 +5215,7 @@ mod tests {
             self.local_list().set_remote_credentials(credentials);
         }
 
-        fn check_nomination(&mut self, pair: &CandidatePair, controlling: bool, now: Instant) {
+        fn check_nomination(&mut self, pair: &CandidatePair, now: Instant) {
             let nominate_check = self
                 .local_list()
                 .matching_check(pair, Nominate::True)
@@ -5233,18 +5223,14 @@ mod tests {
             assert_eq!(nominate_check.state(), CandidatePairState::Waiting);
             let pair = nominate_check.pair.clone();
             let check_id = nominate_check.conncheck_id;
-            if controlling {
-                assert!(self.local_list().is_triggered(&pair));
+            assert!(self.local_list().is_triggered(&pair));
 
-                // perform one tick which will perform the nomination check
-                send_next_check_and_response(&self.local.peer, &self.remote)
-                    .perform(&mut self.local.checklist_set, now);
+            // perform one tick which will perform the nomination check
+            send_next_check_and_response(&self.local.peer, &self.remote)
+                .perform(&mut self.local.checklist_set, now);
 
-                let nominate_check = self.local_list().check_by_id(check_id).unwrap();
-                assert_eq!(nominate_check.state(), CandidatePairState::Succeeded);
-
-                error!("{:?}", self.local_list());
-            }
+            let nominate_check = self.local_list().check_by_id(check_id).unwrap();
+            assert_eq!(nominate_check.state(), CandidatePairState::Succeeded);
 
             // check list is done
             assert_eq!(self.local_list().state(), CheckListState::Completed);
@@ -5269,6 +5255,36 @@ mod tests {
                 self.local.checklist_set.poll(now),
                 CheckListSetPollRet::Completed
             ));
+        }
+
+        fn recv_data<T: AsRef<[u8]> + core::fmt::Debug>(&mut self, data: T, now: Instant) {
+            let pair = CandidatePair::new(
+                self.local.peer.candidate.clone(),
+                self.remote.candidate.clone(),
+            );
+            self.recv_data_with_pair(&pair, data, now);
+        }
+
+        fn recv_data_with_pair<T: AsRef<[u8]> + core::fmt::Debug>(
+            &mut self,
+            pair: &CandidatePair,
+            data: T,
+            now: Instant,
+        ) {
+            let checklist_id = self.local.checklist_id;
+            let transmit = Transmit::new(
+                data.as_ref(),
+                TransportType::Udp,
+                pair.remote.address,
+                pair.local.address,
+            );
+            let reply = self.local.checklist_set.incoming_data(
+                checklist_id,
+                pair.local.component_id,
+                transmit,
+                now,
+            );
+            assert_eq!(reply.data.unwrap().as_ref(), data.as_ref());
         }
     }
 
@@ -5447,7 +5463,7 @@ mod tests {
 
         let now = wait_advance(&mut state.local.checklist_set, now);
 
-        state.check_nomination(&pair, true, now);
+        state.check_nomination(&pair, now);
 
         state.local.checklist_set.close(now);
 
@@ -5520,7 +5536,7 @@ mod tests {
         assert_eq!(triggered_check.state(), CandidatePairState::Succeeded);
 
         let now = wait_advance(&mut state.local.checklist_set, now);
-        state.check_nomination(&pair, true, now);
+        state.check_nomination(&pair, now);
 
         state.local.checklist_set.close(now);
 
@@ -6296,7 +6312,7 @@ mod tests {
         state.local_list().dump_check_state();
 
         let now = wait_advance(&mut state.local.checklist_set, now);
-        state.check_nomination(&pair, true, now);
+        state.check_nomination(&pair, now);
 
         state.local.checklist_set.close(now);
 
@@ -6471,7 +6487,7 @@ mod tests {
         assert_eq!(triggered_check.state(), CandidatePairState::Succeeded);
 
         let now = wait_advance(&mut state.local.checklist_set, now);
-        state.check_nomination(&pair, true, now);
+        state.check_nomination(&pair, now);
 
         state.local.checklist_set.close(now);
 
@@ -6594,7 +6610,7 @@ mod tests {
         assert_eq!(triggered_check.state(), CandidatePairState::InProgress);
 
         let now = wait_advance(&mut state.local.checklist_set, now);
-        state.check_nomination(&pair, true, now);
+        state.check_nomination(&pair, now);
 
         state.local.checklist_set.close(now);
 
@@ -6710,7 +6726,7 @@ mod tests {
         assert_eq!(prflx_check.state(), CandidatePairState::Succeeded);
 
         let now = wait_advance(&mut state.local.checklist_set, now);
-        state.check_nomination(&pair, true, now);
+        state.check_nomination(&pair, now);
 
         state.local.checklist_set.close(now);
 
@@ -7498,7 +7514,7 @@ mod tests {
                 response.response(&mut state.local.checklist_set, transmit, now);
             }
 
-            state.check_nomination(&pair1, true, now);
+            state.check_nomination(&pair1, now);
 
             state.local.checklist_set.close(now);
 
@@ -7628,7 +7644,7 @@ mod tests {
     }
 
     #[test]
-    fn conncheck_trickle_ice_controlled_nomination() {
+    fn conncheck_trickle_ice_controlled_renomination() {
         let _log = crate::tests::test_init_log();
         let mut state = FineControl::builder()
             .trickle_ice(true)
@@ -7650,7 +7666,9 @@ mod tests {
         local_candidate2.base_address = local_ipv6_addr;
         local_candidate2.priority -= 1;
         local_candidate2.foundation = "ipv6".to_owned();
-        state.local_list().add_local_candidate(local_candidate);
+        state
+            .local_list()
+            .add_local_candidate(local_candidate.clone());
         state
             .local_list()
             .add_local_candidate(local_candidate2.clone());
@@ -7666,7 +7684,9 @@ mod tests {
         remote_candidate2.base_address = remote_ipv6_addr;
         remote_candidate2.priority -= 1;
         remote_candidate2.foundation = "ipv6".to_owned();
-        state.local_list().add_remote_candidate(remote_candidate);
+        state
+            .local_list()
+            .add_remote_candidate(remote_candidate.clone());
 
         // adding one local and one remote candidate that can be paired should have generated
         // the relevant waiting check. Not frozen because there is not other check with the
@@ -7739,10 +7759,16 @@ mod tests {
         assert_eq!(transmit.transmit.from, state.local.peer.candidate.address);
         assert!(response.has_class(MessageClass::Success));
 
-        state.check_nomination(&ipv4_pair, false, now);
+        let now = wait_advance(&mut state.local.checklist_set, now);
+        state.check_nomination(&ipv4_pair, now);
 
-        state.local_list().add_remote_candidate(remote_candidate2);
+        let recv = [8; 9];
+        state.recv_data(recv, now);
 
+        // peer renominates a different candidate
+        state
+            .local_list()
+            .add_remote_candidate(remote_candidate2.clone());
         let mut remote_agent =
             StunAgent::builder(state.remote.candidate.transport_type, remote_ipv6_addr).build();
         let transmit = remote_generate_check(
@@ -7771,11 +7797,10 @@ mod tests {
         ));
         assert!(remote_agent.handle_stun_message(&response, transmit.transmit.from));
         assert_eq!(transmit.transmit.from, local_candidate2.address);
-        assert!(response.has_class(MessageClass::Error));
-        assert_eq!(
-            response.attribute::<ErrorCode>().unwrap().code(),
-            ErrorCode::BAD_REQUEST
-        );
+        assert!(response.has_class(MessageClass::Success));
+
+        let recv = [12; 5];
+        state.recv_data_with_pair(&ipv6_pair, recv, now);
 
         state.local.checklist_set.close(now);
 
