@@ -647,6 +647,14 @@ unsafe extern "C" {
     pub fn rice_agent_get_controlling(agent: *const RiceAgent) -> bool;
 }
 unsafe extern "C" {
+    #[doc = " Retrieve whether the `RiceAgent` is configured for ice-lite usage.\n\n ICE-lite has the following limitations:\n  - A single host candidate is gathered per network interface and component id\n  - Connectivity checks are never initiated from the ICE-lite peer."]
+    pub fn rice_agent_get_ice_lite(agent: *const RiceAgent) -> bool;
+}
+unsafe extern "C" {
+    #[doc = " Set whether the `RiceAgent` is confifured for ice-lite usage.\n\n ICE-lite has the following limitations:\n  - A single host candidate is gathered per network interface and component id\n  - Connectivity checks are never initiated from the ICE-lite peer."]
+    pub fn rice_agent_set_ice_lite(agent: *const RiceAgent, ice_lite: bool);
+}
+unsafe extern "C" {
     #[doc = " The number of bytes in a `RiceData`."]
     pub fn rice_data_len(data: *const RiceData) -> usize;
 }

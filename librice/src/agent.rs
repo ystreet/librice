@@ -95,6 +95,16 @@ impl AgentBuilder {
         self
     }
 
+    /// Configure the agent for ICE-lite usage.
+    ///
+    /// ICE-lite has the following limitations:
+    ///  - A single host candidate is gathered per network interface and component id
+    ///  - Connectivity checks are never initiated from the ICE-lite peer.
+    pub fn ice_lite(mut self, ice_lite: bool) -> Self {
+        self.parent = self.parent.ice_lite(ice_lite);
+        self
+    }
+
     /// Construct a new [`Agent`]
     pub fn build(self) -> Agent {
         let agent = self.parent.build();
@@ -170,6 +180,24 @@ impl Agent {
     ) {
         self.agent
             .set_request_retransmits(initial, max, retransmits, final_retransmit_timeout);
+    }
+
+    /// Retrieve whether the agent is confiugred for ICE-lite usage.
+    ///
+    /// ICE-lite has the following limitations:
+    ///  - A single host candidate is gathered per network interface and component id
+    ///  - Connectivity checks are never initiated from the ICE-lite peer.
+    pub fn ice_lite(&self) -> bool {
+        self.agent.ice_lite()
+    }
+
+    /// Configure the agent for ICE-lite usage.
+    ///
+    /// ICE-lite has the following limitations:
+    ///  - A single host candidate is gathered per network interface and component id
+    ///  - Connectivity checks are never initiated from the ICE-lite peer.
+    pub fn set_ice_lite(&self, ice_lite: bool) {
+        self.agent.set_ice_lite(ice_lite);
     }
 
     pub(crate) fn from_parts(
@@ -507,5 +535,16 @@ mod tests {
         assert_eq!(agent.timing_advance(), ta);
         let agent = Agent::builder().timing_advance(ta).build();
         assert_eq!(agent.timing_advance(), ta);
+    }
+
+    #[test]
+    fn ice_lite() {
+        init();
+        #[cfg(feature = "runtime-tokio")]
+        let _runtime = crate::tests::tokio_runtime().enter();
+        let agent = Agent::builder().ice_lite(true).build();
+        assert!(agent.ice_lite());
+        agent.set_ice_lite(false);
+        assert!(!agent.ice_lite());
     }
 }

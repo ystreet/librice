@@ -69,6 +69,7 @@ impl<T> core::ops::DerefMut for DebugWrapper<T> {
 struct AgentConfig {
     controlling: bool,
     trickle_ice: bool,
+    ice_lite: bool,
     transports: Vec<TransportType>,
     candidate_filter: DebugWrapper<Box<dyn Fn(&GatheredCandidate) -> bool + core::marker::Send>>,
     turn_servers: Vec<TurnConfig>,
@@ -79,6 +80,7 @@ impl Default for AgentConfig {
         Self {
             controlling: false,
             trickle_ice: false,
+            ice_lite: false,
             transports: vec![],
             candidate_filter: DebugWrapper::new(Box::new(candidate_filter_accept_all)),
             turn_servers: vec![],
@@ -93,6 +95,10 @@ impl AgentConfig {
     }
     fn trickle_ice(mut self, trickle_ice: bool) -> Self {
         self.trickle_ice = trickle_ice;
+        self
+    }
+    fn ice_lite(mut self, ice_lite: bool) -> Self {
+        self.ice_lite = ice_lite;
         self
     }
     fn transports(mut self, transports: &[TransportType]) -> Self {
@@ -148,6 +154,7 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
         Agent::builder()
             .controlling(config.local.controlling)
             .trickle_ice(config.local.trickle_ice)
+            .ice_lite(config.local.ice_lite)
             .build(),
     );
     if config.local.transports.contains(&TransportType::Udp) {
@@ -165,6 +172,7 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
         Agent::builder()
             .controlling(config.remote.controlling)
             .trickle_ice(config.remote.trickle_ice)
+            .ice_lite(config.remote.ice_lite)
             .build(),
     );
     if config.remote.transports.contains(&TransportType::Udp) {
@@ -613,4 +621,37 @@ fn agent_static_connection_local_controlling_tcp_client_turn_server() {
         })
         .await
     });
+}
+
+async fn agent_static_connection_local_controlled_ice_lite_udp_local_trickle() {
+    common::debug_init();
+    agent_static_connection_test(AgentStaticTestConfig {
+        local: AgentConfig::default()
+            .trickle_ice(true)
+            .ice_lite(true)
+            .transports(&[TransportType::Udp])
+            .candidate_filter(Box::new(move |candidate| {
+                candidate_filter_accept_transport(candidate, &[TransportType::Udp])
+            })),
+        remote: AgentConfig::default()
+            .controlling(true)
+            .transports(&[TransportType::Udp])
+            .candidate_filter(Box::new(move |candidate| {
+                candidate_filter_accept_transport(candidate, &[TransportType::Udp])
+            })),
+    })
+    .await;
+}
+
+#[cfg(feature = "runtime-smol")]
+#[test]
+fn smol_agent_static_connection_local_controlled_ice_lite_udp_local_trickle() {
+    smol::block_on(agent_static_connection_local_controlled_ice_lite_udp_local_trickle());
+}
+
+#[cfg(feature = "runtime-tokio")]
+#[test]
+fn tokio_agent_static_connection_local_controlled_ice_lite_udp_local_trickle() {
+    crate::common::tokio_runtime()
+        .block_on(agent_static_connection_local_controlled_ice_lite_udp_local_trickle());
 }

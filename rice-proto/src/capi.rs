@@ -347,6 +347,41 @@ pub unsafe extern "C" fn rice_agent_get_controlling(agent: *const RiceAgent) -> 
     }
 }
 
+/// Retrieve whether the `RiceAgent` is configured for ice-lite usage.
+///
+/// ICE-lite has the following limitations:
+///  - A single host candidate is gathered per network interface and component id
+///  - Connectivity checks are never initiated from the ICE-lite peer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_agent_get_ice_lite(agent: *const RiceAgent) -> bool {
+    unsafe {
+        let agent = Arc::from_raw(agent);
+        let proto_agent = agent.proto_agent.lock().unwrap();
+        let ret = proto_agent.ice_lite();
+
+        drop(proto_agent);
+        core::mem::forget(agent);
+        ret
+    }
+}
+
+/// Set whether the `RiceAgent` is confifured for ice-lite usage.
+///
+/// ICE-lite has the following limitations:
+///  - A single host candidate is gathered per network interface and component id
+///  - Connectivity checks are never initiated from the ICE-lite peer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_agent_set_ice_lite(agent: *const RiceAgent, ice_lite: bool) {
+    unsafe {
+        let agent = Arc::from_raw(agent);
+        let mut proto_agent = agent.proto_agent.lock().unwrap();
+        proto_agent.set_ice_lite(ice_lite);
+
+        drop(proto_agent);
+        core::mem::forget(agent);
+    }
+}
+
 /// Return value of `rice_agent_poll()`.
 #[derive(Debug)]
 #[repr(C)]
@@ -2478,7 +2513,7 @@ pub unsafe extern "C" fn rice_stream_handle_incoming_data(
         core::mem::forget(to);
 
         let stream_ret = proto_stream.handle_incoming_data(component_id, transmit, now);
-        let data = if let Some(_data_and_range) = stream_ret.data {
+        let data = if let Some(_data_and_range) = &stream_ret.data {
             RiceDataImpl {
                 ptr: mut_override(data),
                 size: data_len,
@@ -2495,6 +2530,12 @@ pub unsafe extern "C" fn rice_stream_handle_incoming_data(
             have_more_data: stream_ret.have_more_data,
             data,
         });
+
+        // FIXME: 0.5 expose this a separate API when bumping ABI to support multiple agents
+        // listening on the same local socket.
+        if let Some(ignorable) = stream_ret.into_ignorable() {
+            proto_stream.send_ignorable_error(ignorable);
+        }
 
         drop(proto_agent);
         core::mem::forget(stream);
