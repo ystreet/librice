@@ -173,12 +173,48 @@ impl RequestRto {
     }
 }
 
-/// Return value when handling received data
+/// Return value when handling received data.
 #[derive(Debug)]
 pub struct HandleRecvReply<T: AsRef<[u8]> + core::fmt::Debug> {
     pub handled: bool,
     pub have_more_data: bool,
     pub data: Option<DataAndRange<T>>,
+    ignorable: Option<RecvIgnorable>,
+}
+
+#[derive(Debug)]
+enum IgnorableReason {
+    WrongLocalUsername,
+    WrongRemoteUsername,
+    IntegrityFailure,
+}
+
+/// An error reply that can be ignored if another agent handles the STUN message.
+#[derive(Debug)]
+pub struct RecvIgnorable {
+    reason: IgnorableReason,
+    transaction_id: TransactionId,
+    checklist_id: usize,
+    agent_id: StunAgentId,
+    to: SocketAddr,
+    turn_id: Option<(StunAgentId, SocketAddr)>,
+}
+
+impl<T: AsRef<[u8]> + core::fmt::Debug> HandleRecvReply<T> {
+    /// The data was actioned and resulted in a change of some state.
+    ///
+    /// `poll()` should be called again.
+    pub fn handled(&self) -> bool {
+        self.handled
+    }
+
+    pub fn is_ignorable(&self) -> bool {
+        self.ignorable.is_some()
+    }
+
+    pub fn into_ignorable(self) -> Option<RecvIgnorable> {
+        self.ignorable
+    }
 }
 
 impl<T: AsRef<[u8]> + core::fmt::Debug> core::fmt::Display for HandleRecvReply<T> {
@@ -205,6 +241,7 @@ impl<T: AsRef<[u8]> + core::fmt::Debug> Default for HandleRecvReply<T> {
             handled: false,
             have_more_data: false,
             data: None,
+            ignorable: None,
         }
     }
 }
@@ -472,9 +509,10 @@ pub struct ConnCheckList {
     triggered: VecDeque<ConnCheckId>,
     pairs: VecDeque<ConnCheck>,
     valid: Vec<ConnCheckId>,
-    nominated: Vec<ConnCheckId>,
+    nominated: Vec<(ConnCheckId, CandidatePair)>,
     controlling: bool,
     trickle_ice: bool,
+    ice_lite: bool,
     local_end_of_candidates: bool,
     remote_end_of_candidates: bool,
     events: VecDeque<ConnCheckEvent>,
@@ -600,7 +638,7 @@ fn generate_random_credentials() -> Credentials {
 }
 
 impl ConnCheckList {
-    fn new(checklist_id: usize, controlling: bool, trickle_ice: bool) -> Self {
+    fn new(checklist_id: usize, controlling: bool, trickle_ice: bool, ice_lite: bool) -> Self {
         let local_credentials = generate_random_credentials();
         let remote_credentials = generate_random_credentials();
         let mut stun_auth_local = ShortTermAuth::new();
@@ -622,6 +660,7 @@ impl ConnCheckList {
             nominated: Vec::new(),
             controlling,
             trickle_ice,
+            ice_lite,
             local_end_of_candidates: false,
             remote_end_of_candidates: false,
             events: VecDeque::new(),
@@ -861,6 +900,13 @@ impl ConnCheckList {
         (agent_id, &self.agents[agent_idx].agent)
     }
 
+    fn remove_agent_by_id(&mut self, agent_id: StunAgentId) -> Option<StunAgent> {
+        self.agents
+            .iter()
+            .position(|agent| agent_id == agent.id)
+            .map(|idx| self.agents.remove(idx).agent)
+    }
+
     fn mut_turn_client_by_id(&mut self, id: StunAgentId) -> Option<&mut TurnClient> {
         self.turn_clients
             .iter_mut()
@@ -1027,6 +1073,14 @@ impl ConnCheckList {
             .find(|(id, _state)| id == &local.component_id);
         if existing.is_none() {
             panic!("Attempt made to add a local candidate without a corresponding add_component()");
+        }
+
+        if self.ice_lite && local.candidate_type != CandidateType::Host {
+            info!(
+                "Using ICE-lite, not adding local candidate with type {}",
+                local.candidate_type
+            );
+            return false;
         }
 
         if let Some(idx) = self
@@ -1298,6 +1352,10 @@ impl ConnCheckList {
         )
     )]
     fn add_triggered(&mut self, check: &ConnCheck) {
+        if self.ice_lite {
+            return;
+        }
+
         if let Some(idx) = self.triggered.iter().position(|&existing| {
             self.check_by_id(existing).is_some_and(|existing| {
                 candidate_pair_is_same_connection(&existing.pair, &check.pair)
@@ -1349,6 +1407,9 @@ impl ConnCheckList {
         )
     )]
     fn generate_checks(&mut self) {
+        if self.ice_lite {
+            return;
+        };
         let mut checks = Vec::new();
         // Trickle ICE mandates that we only check redundancy with Frozen or Waiting pairs.  This
         // is compatible with non-trickle-ICE as checks start off in the frozen state until the
@@ -1732,114 +1793,132 @@ impl ConnCheckList {
                 foundation = %pair.foundation(),
                 "nominated"
             );
-            self.nominated.push(self.valid.remove(idx));
-            let component_id = self.component_ids.iter().find_map(|(id, _state)| {
-                if *id == pair.local.component_id {
-                    Some(*id)
-                } else {
-                    None
-                }
-            });
-            // o Once a candidate pair for a component of a data stream has been
-            //   nominated, and the state of the checklist associated with the data
-            //   stream is Running, the ICE agent MUST remove all candidate pairs
-            //   for the same component from the checklist and from the triggered-
-            //   check queue.  If the state of a pair is In-Progress, the agent
-            //   cancels the In-Progress transaction.  Cancellation means that the
-            //   agent will not retransmit the Binding requests associated with the
-            //   connectivity-check transaction, will not treat the lack of
-            //   response to be a failure, but will wait the duration of the
-            //   transaction timeout for a response.
-            let triggered_to_remove = self
-                .triggered
-                .iter()
-                .filter(|&check_id| {
-                    let Some(check) = self.check_by_id(*check_id) else {
-                        return true;
-                    };
-                    check.pair.local.component_id == pair.local.component_id
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            self.triggered
-                .retain(|check_id| !triggered_to_remove.contains(check_id));
-            let nominated_ids = self.nominated.clone();
-            self.pairs.retain(|check| {
-                if nominated_ids.contains(&check.conncheck_id) {
-                    true
-                } else {
-                    check.pair.local.component_id != pair.local.component_id
-                }
-            });
-            // XXX: do we also need to clear self.valid?
-            // o Once candidate pairs for each component of a data stream have been
-            //   nominated, and the state of the checklist associated with the data
-            //   stream is Running, the ICE agent sets the state of the checklist
-            //   to Completed.
-            let all_nominated = self.component_ids.iter().all(|(component_id, _state)| {
-                self.nominated
-                    .iter()
-                    .filter_map(|&check_id| self.check_by_id(check_id))
-                    .any(|check| check.pair.local.component_id == *component_id)
-            });
-            if all_nominated {
-                // ... Once an ICE agent sets the
-                // state of the checklist to Completed (when there is a nominated pair
-                // for each component of the data stream), that pair becomes the
-                // selected pair for that agent and is used for sending and receiving
-                // data for that component of the data stream.
-                info!(
-                    "all {} component/s nominated, setting selected pair/s",
-                    self.component_ids.len()
-                );
-                self.nominated.clone().iter().fold(
-                    Vec::new(),
-                    |mut component_ids_selected, &check_id| {
-                        let Some(check) = self.check_by_id(check_id) else {
-                            return component_ids_selected;
-                        };
-                        let check_component_id = check.pair.local.component_id;
-                        // Only nominate one valid candidatePair
-                        if component_ids_selected.contains(&check_component_id) {
-                            return component_ids_selected;
-                        }
-                        if let Some(component_id) = component_id {
-                            let agent_id = check.agent_id().unwrap();
-                            let turn = {
-                                let ret = self
-                                    .turn_client_by_allocated_address(
-                                        check.pair.local.transport_type,
-                                        check.pair.local.base_address,
-                                    )
-                                    .map(|(_turn_id, client)| SelectedTurn {
-                                        transport: client.transport(),
-                                        local_addr: client.local_addr(),
-                                        remote_addr: client.remote_addr(),
-                                    });
-                                if check.pair.local.candidate_type == CandidateType::Relayed {
-                                    trace!("turn clients: {:?}", self.turn_clients);
-                                    debug_assert!(ret.is_some());
-                                }
-                                ret
-                            };
-                            self.events.push_front(ConnCheckEvent::SelectedPair(
-                                component_id,
-                                Box::new(SelectedPair::new(pair.clone(), agent_id, turn)),
-                            ));
-                            debug!("trying to signal component {:?}", component_id);
-                            self.events.push_front(ConnCheckEvent::ComponentState(
-                                component_id,
-                                ComponentConnectionState::Connected,
-                            ));
-                        }
-                        component_ids_selected.push(check_component_id);
-                        component_ids_selected
-                    },
-                );
-                self.set_state(CheckListState::Completed);
-            }
+            self.nominated.push((self.valid.remove(idx), pair.clone()));
+        } else if self.ice_lite {
+            self.nominated.push((ConnCheckId(usize::MAX), pair.clone()));
         } else {
             warn!("unknown nomination for pair {pair:?}");
+            return;
+        }
+        let component_id = self.component_ids.iter().find_map(|(id, _state)| {
+            if *id == pair.local.component_id {
+                Some(*id)
+            } else {
+                None
+            }
+        });
+        // o Once a candidate pair for a component of a data stream has been
+        //   nominated, and the state of the checklist associated with the data
+        //   stream is Running, the ICE agent MUST remove all candidate pairs
+        //   for the same component from the checklist and from the triggered-
+        //   check queue.  If the state of a pair is In-Progress, the agent
+        //   cancels the In-Progress transaction.  Cancellation means that the
+        //   agent will not retransmit the Binding requests associated with the
+        //   connectivity-check transaction, will not treat the lack of
+        //   response to be a failure, but will wait the duration of the
+        //   transaction timeout for a response.
+        let triggered_to_remove = self
+            .triggered
+            .iter()
+            .filter(|&check_id| {
+                let Some(check) = self.check_by_id(*check_id) else {
+                    return true;
+                };
+                check.pair.local.component_id == pair.local.component_id
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        self.triggered
+            .retain(|check_id| !triggered_to_remove.contains(check_id));
+        let nominated_ids = self.nominated.clone();
+        self.pairs.retain(|check| {
+            if nominated_ids
+                .iter()
+                .any(|(check_id, _pair)| *check_id == check.conncheck_id)
+            {
+                true
+            } else {
+                check.pair.local.component_id != pair.local.component_id
+            }
+        });
+        // XXX: do we also need to clear self.valid?
+        // o Once candidate pairs for each component of a data stream have been
+        //   nominated, and the state of the checklist associated with the data
+        //   stream is Running, the ICE agent sets the state of the checklist
+        //   to Completed.
+        let all_nominated = self.component_ids.iter().all(|(component_id, _state)| {
+            self.nominated
+                .iter()
+                .any(|(_check_id, pair)| pair.local.component_id == *component_id)
+        });
+        if all_nominated {
+            // ... Once an ICE agent sets the
+            // state of the checklist to Completed (when there is a nominated pair
+            // for each component of the data stream), that pair becomes the
+            // selected pair for that agent and is used for sending and receiving
+            // data for that component of the data stream.
+            info!(
+                "all {} component/s nominated, setting selected pair/s",
+                self.component_ids.len()
+            );
+            self.nominated.clone().iter().fold(
+                Vec::new(),
+                |mut component_ids_selected, (check_id, pair)| {
+                    let check = self.check_by_id(*check_id);
+                    let check_component_id = pair.local.component_id;
+                    // Only nominate one valid candidatePair
+                    if component_ids_selected.contains(&check_component_id) {
+                        return component_ids_selected;
+                    }
+                    if let Some(component_id) = component_id {
+                        let Some(agent_id) =
+                            check.and_then(|check| check.agent_id()).or_else(|| {
+                                if self.ice_lite {
+                                    self.find_agent_for_5tuple(
+                                        pair.local.transport_type,
+                                        pair.local.base_address,
+                                        pair.remote.address,
+                                    )
+                                    .map(|(id, _agent)| id)
+                                } else {
+                                    None
+                                }
+                            })
+                        else {
+                            return component_ids_selected;
+                        };
+                        let turn = {
+                            let ret = self
+                                .turn_client_by_allocated_address(
+                                    pair.local.transport_type,
+                                    pair.local.base_address,
+                                )
+                                .map(|(_turn_id, client)| SelectedTurn {
+                                    transport: client.transport(),
+                                    local_addr: client.local_addr(),
+                                    remote_addr: client.remote_addr(),
+                                });
+                            if pair.local.candidate_type == CandidateType::Relayed {
+                                trace!("turn clients: {:?}", self.turn_clients);
+                                debug_assert!(ret.is_some());
+                            }
+                            ret
+                        };
+                        self.events.push_front(ConnCheckEvent::SelectedPair(
+                            component_id,
+                            Box::new(SelectedPair::new(pair.clone(), agent_id, turn)),
+                        ));
+                        debug!("trying to signal component {:?}", component_id);
+                        self.events.push_front(ConnCheckEvent::ComponentState(
+                            component_id,
+                            ComponentConnectionState::Connected,
+                        ));
+                    }
+                    component_ids_selected.push(check_component_id);
+                    component_ids_selected
+                },
+            );
+            self.set_state(CheckListState::Completed);
         }
         self.dump_check_state();
     }
@@ -2072,6 +2151,7 @@ pub struct ConnCheckListSetBuilder {
     trickle_ice: bool,
     timing_advance: Duration,
     rto: Option<RequestRto>,
+    ice_lite: bool,
 }
 
 impl ConnCheckListSetBuilder {
@@ -2082,6 +2162,7 @@ impl ConnCheckListSetBuilder {
             trickle_ice: false,
             timing_advance: DEFAULT_MINIMUM_SET_TICK,
             rto: None,
+            ice_lite: false,
         }
     }
 
@@ -2101,6 +2182,16 @@ impl ConnCheckListSetBuilder {
         self
     }
 
+    /// Configure the agent for ICE-lite usage.
+    ///
+    /// ICE-lite has the following limitations:
+    ///  - A single host candidate is gathered per network interface and component id
+    ///  - Connectivity checks are never initiated from the ICE-lite peer.
+    pub fn ice_lite(mut self, ice_lite: bool) -> Self {
+        self.ice_lite = ice_lite;
+        self
+    }
+
     /// Build the [`ConnCheckListSet`]
     pub fn build(self) -> ConnCheckListSet {
         ConnCheckListSet {
@@ -2117,6 +2208,7 @@ impl ConnCheckListSetBuilder {
             closed: false,
             timing_advance: self.timing_advance,
             rto: self.rto,
+            ice_lite: self.ice_lite,
         }
     }
 }
@@ -2142,6 +2234,7 @@ pub struct ConnCheckListSet {
     closed: bool,
     timing_advance: Duration,
     rto: Option<RequestRto>,
+    ice_lite: bool,
 }
 
 impl ConnCheckListSet {
@@ -2155,7 +2248,12 @@ impl ConnCheckListSet {
     /// Construct a new [`ConnCheckList`] and return its ID.
     pub fn new_list(&mut self) -> usize {
         let checklist_id = CONN_CHECK_LIST_COUNT.fetch_add(1, Ordering::SeqCst);
-        let ret = ConnCheckList::new(checklist_id, self.controlling(), self.trickle_ice);
+        let ret = ConnCheckList::new(
+            checklist_id,
+            self.controlling(),
+            self.trickle_ice,
+            self.ice_lite,
+        );
         self.checklists.push(ret);
         checklist_id
     }
@@ -2183,6 +2281,15 @@ impl ConnCheckListSet {
     /// The default value is 50ms.
     pub fn timing_advance(&self) -> Duration {
         self.timing_advance
+    }
+
+    /// Retrieve whether the agent is configured for ICE-lite usage.
+    ///
+    /// ICE-lite has the following limitations:
+    ///  - A single host candidate is gathered per network interface and component id
+    ///  - Connectivity checks are never initiated from the ICE-lite peer.
+    pub fn ice_lite(&self) -> bool {
+        self.ice_lite
     }
 
     /// Set the minimum amount of time between subsequent STUN requests sent.
@@ -2219,6 +2326,23 @@ impl ConnCheckListSet {
         self.rto = Some(rto);
     }
 
+    pub fn set_controlling(&mut self, controlling: bool) {
+        for l in self.checklists.iter_mut() {
+            l.set_controlling(controlling);
+        }
+    }
+
+    pub fn set_ice_lite(&mut self, ice_lite: bool) {
+        if self.ice_lite != ice_lite {
+            for c in self.checklists.iter_mut() {
+                c.pairs.clear();
+                c.triggered.clear();
+                c.ice_lite = ice_lite;
+            }
+            self.ice_lite = ice_lite;
+        }
+    }
+
     fn handle_stun<T: AsRef<[u8]>>(
         &mut self,
         checklist_i: usize,
@@ -2226,6 +2350,7 @@ impl ConnCheckListSet {
         transmit: &Transmit<T>,
         agent_id: StunAgentId,
         turn_id: Option<(StunAgentId, SocketAddr)>,
+        ignorable: &mut Option<RecvIgnorable>,
     ) -> bool {
         debug!("received STUN message {msg}");
         if msg.is_response() {
@@ -2240,8 +2365,7 @@ impl ConnCheckListSet {
                     if !agent.handle_stun_message(&msg, transmit.from) {
                         return false;
                     }
-                    self.handle_stun_response(checklist_i, &msg, transmit.from);
-                    true
+                    self.handle_stun_response(checklist_i, &msg, transmit.from)
                 }
                 _ => false,
             }
@@ -2266,25 +2390,38 @@ impl ConnCheckListSet {
                     };
 
                     let checklist_id = self.checklists[checklist_i].checklist_id;
-                    let response = self.handle_binding_request(
+                    match self.handle_binding_request(
                         checklist_i,
                         &local_cand,
                         agent_id,
                         &msg,
                         transmit.from,
-                    );
-                    self.pending_messages.push_back(CheckListSetPendingMessage {
-                        checklist_id,
-                        agent_id,
-                        is_request: false,
-                        msg: response.finish(),
-                        to: transmit.from,
-                        turn_id,
-                    });
+                    ) {
+                        Ok(response) => {
+                            self.pending_messages.push_back(CheckListSetPendingMessage {
+                                checklist_id,
+                                agent_id,
+                                is_request: false,
+                                msg: response.finish(),
+                                to: transmit.from,
+                                turn_id,
+                            });
+                        }
+                        Err(reason) => {
+                            *ignorable = Some(RecvIgnorable {
+                                checklist_id,
+                                agent_id,
+                                reason,
+                                transaction_id: msg.transaction_id(),
+                                to: transmit.from,
+                                turn_id,
+                            });
+                        }
+                    }
                     true
                 }
                 Ok(None) => {
-                    warn!("incoming message failed did not have integrity");
+                    warn!("incoming message did not have integrity");
                     let code = ErrorCode::builder(ErrorCode::UNAUTHORIZED).build().unwrap();
                     let mut response = Message::builder_error(&msg, MessageWriteVec::new());
                     response.add_attribute(&code).unwrap();
@@ -2300,14 +2437,11 @@ impl ConnCheckListSet {
                 }
                 Err(e) => {
                     warn!("incoming message failed integrity check: {e:?}");
-                    let code = ErrorCode::builder(ErrorCode::UNAUTHORIZED).build().unwrap();
-                    let mut response = Message::builder_error(&msg, MessageWriteVec::new());
-                    response.add_attribute(&code).unwrap();
-                    self.pending_messages.push_back(CheckListSetPendingMessage {
+                    *ignorable = Some(RecvIgnorable {
                         checklist_id: self.checklists[checklist_i].checklist_id,
                         agent_id,
-                        is_request: false,
-                        msg: response.finish(),
+                        reason: IgnorableReason::IntegrityFailure,
+                        transaction_id: msg.transaction_id(),
                         to: transmit.from,
                         turn_id,
                     });
@@ -2337,7 +2471,7 @@ impl ConnCheckListSet {
         turn_client_id: Option<(StunAgentId, SocketAddr)>,
     ) -> HandleRecvReply<T> {
         if !self.checklists[checklist_i].pending_recv.is_empty() {
-            panic!("Previous data has not been complete handled yet");
+            panic!("Previous data has not been completely handled yet");
         }
         let (agent_id, checklist_i) = self.checklists[checklist_i]
             .find_agent_for_5tuple(transmit.transport, transmit.to, transmit.from)
@@ -2366,11 +2500,20 @@ impl ConnCheckListSet {
         match transmit.transport {
             TransportType::Udp => match Message::from_bytes(transmit.data.as_ref()) {
                 Ok(msg) => {
-                    if self.handle_stun(checklist_i, msg, &transmit, agent_id, turn_client_id) {
+                    let mut ignorable = None;
+                    if self.handle_stun(
+                        checklist_i,
+                        msg,
+                        &transmit,
+                        agent_id,
+                        turn_client_id,
+                        &mut ignorable,
+                    ) {
                         return HandleRecvReply {
                             handled: true,
                             have_more_data: false,
                             data: None,
+                            ignorable,
                         };
                     }
                 }
@@ -2384,6 +2527,7 @@ impl ConnCheckListSet {
                                     range: 0..transmit.data.as_ref().len(),
                                     data: transmit.data,
                                 }),
+                                ignorable: None,
                             };
                         }
                     }
@@ -2406,14 +2550,19 @@ impl ConnCheckListSet {
                     };
                     match Message::from_bytes(&data) {
                         Ok(msg) => {
+                            let mut ignorable = None;
                             if self.handle_stun(
                                 checklist_i,
                                 msg,
                                 &transmit,
                                 agent_id,
                                 turn_client_id,
+                                &mut ignorable,
                             ) {
                                 handled = true;
+                            }
+                            if let Some(ignorable) = ignorable {
+                                self.send_ignorable_error(ignorable);
                             }
                         }
                         Err(_) => {
@@ -2437,6 +2586,7 @@ impl ConnCheckListSet {
                     handled,
                     have_more_data,
                     data: None,
+                    ignorable: None,
                 };
             }
         }
@@ -2444,6 +2594,7 @@ impl ConnCheckListSet {
             handled: false,
             have_more_data: false,
             data: None,
+            ignorable: None,
         }
     }
 
@@ -2501,8 +2652,7 @@ impl ConnCheckListSet {
                     trace!("TURN client handled the incoming data");
                     return HandleRecvReply {
                         handled: true,
-                        have_more_data: false,
-                        data: None,
+                        ..Default::default()
                     };
                 }
                 TurnRecvRet::Ignored(ignored) => {
@@ -2564,7 +2714,7 @@ impl ConnCheckListSet {
                     return HandleRecvReply {
                         handled: ret.handled,
                         have_more_data: true,
-                        data: None,
+                        ..Default::default()
                     };
                 }
                 TurnRecvRet::PeerIcmp {
@@ -2579,8 +2729,7 @@ impl ConnCheckListSet {
                     );
                     return HandleRecvReply {
                         handled: true,
-                        have_more_data: false,
-                        data: None,
+                        ..Default::default()
                     };
                 }
             }
@@ -2589,7 +2738,6 @@ impl ConnCheckListSet {
         self.incoming_data_or_stun(checklist_i, component_id, transmit, turn_client_id)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn handle_binding_request(
         &mut self,
         checklist_i: usize,
@@ -2597,7 +2745,7 @@ impl ConnCheckListSet {
         agent_id: StunAgentId,
         msg: &Message,
         from: SocketAddr,
-    ) -> MessageWriteVec {
+    ) -> Result<MessageWriteVec, IgnorableReason> {
         let checklist = &mut self.checklists[checklist_i];
         trace!("have request {}", msg);
 
@@ -2621,14 +2769,14 @@ impl ConnCheckListSet {
             MessageWriteVec::new(),
         ) {
             // failure -> send error response
-            return error_msg;
+            return Ok(error_msg);
         }
         let peer_nominating = if let Some(use_candidate_raw) = msg.raw_attribute(UseCandidate::TYPE)
         {
             if UseCandidate::from_raw(use_candidate_raw).is_ok() {
                 true
             } else {
-                return Message::bad_request(msg, MessageWriteVec::new());
+                return Ok(Message::bad_request(msg, MessageWriteVec::new()));
             }
         } else {
             false
@@ -2637,7 +2785,7 @@ impl ConnCheckListSet {
         let priority = match msg.attribute::<Priority>() {
             Ok(p) => p.priority(),
             Err(_) => {
-                return Message::bad_request(msg, MessageWriteVec::new());
+                return Ok(Message::bad_request(msg, MessageWriteVec::new()));
             }
         };
 
@@ -2646,86 +2794,94 @@ impl ConnCheckListSet {
 
         // validate username
         if let Ok(username) = msg.attribute::<Username>() {
-            if !validate_username(username, &checklist.local_credentials) {
-                warn!("binding request failed username validation -> UNAUTHORIZED");
-                let mut response = Message::builder_error(msg, MessageWriteVec::new());
-                let error = ErrorCode::builder(ErrorCode::UNAUTHORIZED).build().unwrap();
-                response.add_attribute(&error).unwrap();
-                return response;
+            let ret = validate_username(
+                username,
+                &checklist.local_credentials,
+                &checklist.remote_credentials,
+            );
+            // XXX: should we only fail remote user validation in ice-lite mode
+            if !matches!(ret, Err(IgnorableReason::WrongRemoteUsername)) {
+                ret?
             }
         } else {
             // existence is checked above so can only fail when the username is invalid
-            return Message::bad_request(msg, MessageWriteVec::new());
+            return Ok(Message::bad_request(msg, MessageWriteVec::new()));
         }
 
-        // Deal with role conflicts
-        // RFC 8445 7.3.1.1.  Detecting and Repairing Role Conflicts
-        trace!("checking for role conflicts");
-        if let Ok(ice_controlling) = ice_controlling {
-            //  o  If the agent is in the controlling role, and the ICE-CONTROLLING
-            //     attribute is present in the request:
-            if self.controlling {
-                if self.tie_breaker >= ice_controlling.tie_breaker() {
-                    debug!("role conflict detected (controlling=true), returning ROLE_CONFLICT");
-                    // *  If the agent's tiebreaker value is larger than or equal to the
-                    //    contents of the ICE-CONTROLLING attribute, the agent generates
-                    //    a Binding error response and includes an ERROR-CODE attribute
-                    //    with a value of 487 (Role Conflict) but retains its role.
-                    let mut response = Message::builder_error(msg, MessageWriteVec::new());
-                    let error = ErrorCode::builder(ErrorCode::ROLE_CONFLICT)
-                        .build()
-                        .unwrap();
-                    response.add_attribute(&error).unwrap();
-                    return response_add_credentials(
-                        response,
-                        &mut self.checklists[checklist_i].stun_auth_local,
-                    )
-                    .unwrap();
-                } else {
-                    debug!("role conflict detected, updating controlling state to false");
-                    // *  If the agent's tiebreaker value is less than the contents of
-                    //    the ICE-CONTROLLING attribute, the agent switches to the
-                    //    controlled role.
-                    self.controlling = false;
-                    for l in self.checklists.iter_mut() {
-                        l.set_controlling(false);
+        if !self.ice_lite {
+            // Deal with role conflicts
+            // RFC 8445 7.3.1.1.  Detecting and Repairing Role Conflicts
+            trace!("checking for role conflicts");
+            if let Ok(ice_controlling) = ice_controlling {
+                //  o  If the agent is in the controlling role, and the ICE-CONTROLLING
+                //     attribute is present in the request:
+                if self.controlling {
+                    if self.tie_breaker >= ice_controlling.tie_breaker() {
+                        debug!(
+                            "role conflict detected (controlling=true), returning ROLE_CONFLICT"
+                        );
+                        // *  If the agent's tiebreaker value is larger than or equal to the
+                        //    contents of the ICE-CONTROLLING attribute, the agent generates
+                        //    a Binding error response and includes an ERROR-CODE attribute
+                        //    with a value of 487 (Role Conflict) but retains its role.
+                        let mut response = Message::builder_error(msg, MessageWriteVec::new());
+                        let error = ErrorCode::builder(ErrorCode::ROLE_CONFLICT)
+                            .build()
+                            .unwrap();
+                        response.add_attribute(&error).unwrap();
+                        return Ok(response_add_credentials(
+                            response,
+                            &mut self.checklists[checklist_i].stun_auth_local,
+                        )
+                        .unwrap());
+                    } else {
+                        debug!("role conflict detected, updating controlling state to false");
+                        // *  If the agent's tiebreaker value is less than the contents of
+                        //    the ICE-CONTROLLING attribute, the agent switches to the
+                        //    controlled role.
+                        self.controlling = false;
+                        for l in self.checklists.iter_mut() {
+                            l.set_controlling(false);
+                        }
                     }
                 }
             }
-        }
-        if let Ok(ice_controlled) = ice_controlled {
-            // o  If the agent is in the controlled role, and the ICE-CONTROLLED
-            //    attribute is present in the request:
-            if !self.controlling {
-                if self.tie_breaker >= ice_controlled.tie_breaker() {
-                    debug!("role conflict detected, updating controlling state to true");
-                    // *  If the agent's tiebreaker value is larger than or equal to the
-                    //    contents of the ICE-CONTROLLED attribute, the agent switches to
-                    //    the controlling role.
-                    self.controlling = true;
-                    for l in self.checklists.iter_mut() {
-                        l.set_controlling(true);
+            if let Ok(ice_controlled) = ice_controlled {
+                // o  If the agent is in the controlled role, and the ICE-CONTROLLED
+                //    attribute is present in the request:
+                if !self.controlling {
+                    if self.tie_breaker >= ice_controlled.tie_breaker() {
+                        debug!("role conflict detected, updating controlling state to true");
+                        // *  If the agent's tiebreaker value is larger than or equal to the
+                        //    contents of the ICE-CONTROLLED attribute, the agent switches to
+                        //    the controlling role.
+                        self.controlling = true;
+                        for l in self.checklists.iter_mut() {
+                            l.set_controlling(true);
+                        }
+                    } else {
+                        debug!(
+                            "role conflict detected (controlling=false), returning ROLE_CONFLICT"
+                        );
+                        // *  If the agent's tiebreaker value is less than the contents of
+                        //    the ICE-CONTROLLED attribute, the agent generates a Binding
+                        //    error response and includes an ERROR-CODE attribute with a
+                        //    value of 487 (Role Conflict) but retains its role.
+                        let mut response = Message::builder_error(msg, MessageWriteVec::new());
+                        let error = ErrorCode::builder(ErrorCode::ROLE_CONFLICT)
+                            .build()
+                            .unwrap();
+                        response.add_attribute(&error).unwrap();
+                        return Ok(response_add_credentials(
+                            response,
+                            &mut self.checklists[checklist_i].stun_auth_local,
+                        )
+                        .unwrap());
                     }
-                } else {
-                    debug!("role conflict detected (controlling=false), returning ROLE_CONFLICT");
-                    // *  If the agent's tiebreaker value is less than the contents of
-                    //    the ICE-CONTROLLED attribute, the agent generates a Binding
-                    //    error response and includes an ERROR-CODE attribute with a
-                    //    value of 487 (Role Conflict) but retains its role.
-                    let mut response = Message::builder_error(msg, MessageWriteVec::new());
-                    let error = ErrorCode::builder(ErrorCode::ROLE_CONFLICT)
-                        .build()
-                        .unwrap();
-                    response.add_attribute(&error).unwrap();
-                    return response_add_credentials(
-                        response,
-                        &mut self.checklists[checklist_i].stun_auth_local,
-                    )
-                    .unwrap();
                 }
             }
+            trace!("checked for role conflicts");
         }
-        trace!("checked for role conflicts");
         let checklist = &mut self.checklists[checklist_i];
         let remote = checklist
             .find_remote_candidate(local.component_id, local.transport_type, from)
@@ -2761,119 +2917,129 @@ impl ConnCheckListSet {
                 cand
             });
         trace!("remote candidate {remote:?}");
-        // RFC 8445 Section 7.3.1.4. Triggered Checks
         let pair = CandidatePair::new(local.clone(), remote);
-        if let Some(mut check) = checklist.take_matching_check(&pair, Nominate::DontCare) {
-            // When the pair is already on the checklist:
-            trace!("found existing {:?} check {:?}", check.state(), check);
-            match check.state() {
-                // If the state of that pair is Succeeded, nothing further is
-                // done.
-                CandidatePairState::Succeeded => {
-                    if peer_nominating && !check.nominate() {
-                        debug!("existing pair succeeded -> nominate");
+        if self.ice_lite {
+            if peer_nominating {
+                checklist.nominated_pair(&pair);
+            }
+        } else {
+            // RFC 8445 Section 7.3.1.4. Triggered Checks
+            if let Some(mut check) = checklist.take_matching_check(&pair, Nominate::DontCare) {
+                // When the pair is already on the checklist:
+                trace!("found existing {:?} check {:?}", check.state(), check);
+                match check.state() {
+                    // If the state of that pair is Succeeded, nothing further is
+                    // done.
+                    CandidatePairState::Succeeded => {
+                        if peer_nominating && !check.nominate() {
+                            debug!("existing pair succeeded -> nominate");
+                            let pair = check.pair.clone();
+                            let agent_id = check.agent_id().unwrap();
+                            let mut new_check = ConnCheck::new(
+                                checklist.checklist_id,
+                                pair.clone(),
+                                agent_id,
+                                true,
+                                self.controlling,
+                                checklist.remote_credentials.clone(),
+                            );
+                            checklist.add_check(check);
+                            new_check.set_state(CandidatePairState::Waiting);
+                            checklist.add_valid(new_check.conncheck_id, &pair);
+                            checklist.add_triggered(&new_check);
+                            checklist.add_check(new_check);
+                        } else {
+                            checklist.add_check(check);
+                        }
+                    }
+                    // If the state of that pair is In-Progress, the agent cancels the
+                    // In-Progress transaction.  Cancellation means that the agent
+                    // will not retransmit the Binding requests associated with the
+                    // connectivity-check transaction, will not treat the lack of
+                    // response to be a failure, but will wait the duration of the
+                    // transaction timeout for a response.  In addition, the agent
+                    // MUST enqueue the pair in the triggered checklist associated
+                    // with the checklist, and set the state of the pair to Waiting,
+                    // in order to trigger a new connectivity check of the pair.
+                    // Creating a new connectivity check enables validating
+                    // In-Progress pairs as soon as possible, without having to wait
+                    // for retransmissions of the Binding requests associated with the
+                    // original connectivity-check transaction.
+                    CandidatePairState::InProgress => {
+                        let old_check_id = check.conncheck_id;
                         let pair = check.pair.clone();
+                        // TODO: ignore response timeouts
+
                         let agent_id = check.agent_id().unwrap();
                         let mut new_check = ConnCheck::new(
                             checklist.checklist_id,
-                            pair.clone(),
-                            agent_id,
-                            true,
-                            self.controlling,
-                            checklist.remote_credentials.clone(),
-                        );
-                        checklist.add_check(check);
-                        new_check.set_state(CandidatePairState::Waiting);
-                        checklist.add_valid(new_check.conncheck_id, &pair);
-                        checklist.add_triggered(&new_check);
-                        checklist.add_check(new_check);
-                    } else {
-                        checklist.add_check(check);
-                    }
-                }
-                // If the state of that pair is In-Progress, the agent cancels the
-                // In-Progress transaction.  Cancellation means that the agent
-                // will not retransmit the Binding requests associated with the
-                // connectivity-check transaction, will not treat the lack of
-                // response to be a failure, but will wait the duration of the
-                // transaction timeout for a response.  In addition, the agent
-                // MUST enqueue the pair in the triggered checklist associated
-                // with the checklist, and set the state of the pair to Waiting,
-                // in order to trigger a new connectivity check of the pair.
-                // Creating a new connectivity check enables validating
-                // In-Progress pairs as soon as possible, without having to wait
-                // for retransmissions of the Binding requests associated with the
-                // original connectivity-check transaction.
-                CandidatePairState::InProgress => {
-                    let old_check_id = check.conncheck_id;
-                    let pair = check.pair.clone();
-                    // TODO: ignore response timeouts
-
-                    let agent_id = check.agent_id().unwrap();
-                    let mut new_check = ConnCheck::new(
-                        checklist.checklist_id,
-                        pair,
-                        agent_id,
-                        peer_nominating,
-                        self.controlling,
-                        checklist.remote_credentials.clone(),
-                    );
-                    checklist.check_cancel_retransmissions(old_check_id);
-                    checklist.add_check(check);
-                    new_check.set_state(CandidatePairState::Waiting);
-                    checklist.add_triggered(&new_check);
-                    checklist.add_check(new_check);
-                }
-                // If the state of that pair is Waiting, Frozen, or Failed, the
-                // agent MUST enqueue the pair in the triggered checklist
-                // associated with the checklist (if not already present), and set
-                // the state of the pair to Waiting, in order to trigger a new
-                // connectivity check of the pair.  Note that a state change of
-                // the pair from Failed to Waiting might also trigger a state
-                // change of the associated checklist.
-                CandidatePairState::Waiting
-                | CandidatePairState::Frozen
-                | CandidatePairState::Failed => {
-                    let mut old_check_id = None;
-                    if peer_nominating && !check.nominate() {
-                        old_check_id = Some(check.conncheck_id);
-                        check = ConnCheck::new(
-                            checklist.checklist_id,
-                            check.pair.clone(),
+                            pair,
                             agent_id,
                             peer_nominating,
                             self.controlling,
                             checklist.remote_credentials.clone(),
                         );
+                        checklist.check_cancel_retransmissions(old_check_id);
+                        checklist.add_check(check);
+                        new_check.set_state(CandidatePairState::Waiting);
+                        checklist.add_triggered(&new_check);
+                        checklist.add_check(new_check);
                     }
-                    check.set_state(CandidatePairState::Waiting);
-                    if let Some(old_check_id) = old_check_id {
-                        checklist.check_cancel(old_check_id);
+                    // If the state of that pair is Waiting, Frozen, or Failed, the
+                    // agent MUST enqueue the pair in the triggered checklist
+                    // associated with the checklist (if not already present), and set
+                    // the state of the pair to Waiting, in order to trigger a new
+                    // connectivity check of the pair.  Note that a state change of
+                    // the pair from Failed to Waiting might also trigger a state
+                    // change of the associated checklist.
+                    CandidatePairState::Waiting
+                    | CandidatePairState::Frozen
+                    | CandidatePairState::Failed => {
+                        let mut old_check_id = None;
+                        if peer_nominating && !check.nominate() {
+                            old_check_id = Some(check.conncheck_id);
+                            check = ConnCheck::new(
+                                checklist.checklist_id,
+                                check.pair.clone(),
+                                agent_id,
+                                peer_nominating,
+                                self.controlling,
+                                checklist.remote_credentials.clone(),
+                            );
+                        }
+                        check.set_state(CandidatePairState::Waiting);
+                        if let Some(old_check_id) = old_check_id {
+                            checklist.check_cancel(old_check_id);
+                        }
+                        checklist.add_triggered(&check);
+                        checklist.add_check(check);
                     }
-                    checklist.add_triggered(&check);
-                    checklist.add_check(check);
                 }
+            } else {
+                debug!("creating new check for pair {:?}", pair);
+                let mut check = ConnCheck::new(
+                    checklist.checklist_id,
+                    pair,
+                    agent_id,
+                    peer_nominating,
+                    self.controlling,
+                    checklist.remote_credentials.clone(),
+                );
+                check.set_state(CandidatePairState::Waiting);
+                checklist.add_triggered(&check);
+                checklist.add_check(check);
             }
-        } else {
-            debug!("creating new check for pair {:?}", pair);
-            let mut check = ConnCheck::new(
-                checklist.checklist_id,
-                pair,
-                agent_id,
-                peer_nominating,
-                self.controlling,
-                checklist.remote_credentials.clone(),
-            );
-            check.set_state(CandidatePairState::Waiting);
-            checklist.add_triggered(&check);
-            checklist.add_check(check);
         }
 
         if let Some(agent) = self.checklists[checklist_i].mut_agent_by_id(agent_id) {
             agent.validated_peer(from);
         }
 
-        binding_success_response(msg, from, &mut self.checklists[checklist_i].stun_auth_local)
+        Ok(binding_success_response(
+            msg,
+            from,
+            &mut self.checklists[checklist_i].stun_auth_local,
+        ))
     }
 
     fn check_success(
@@ -2883,6 +3049,7 @@ impl ConnCheckListSet {
         addr: SocketAddr,
         controlling: bool,
     ) {
+        let ice_lite = self.ice_lite;
         let checklist = &mut self.checklists[checklist_i];
         let checklist_id = checklist.checklist_id;
         checklist.check_cancel_retransmissions(conncheck_id);
@@ -2987,8 +3154,8 @@ impl ConnCheckListSet {
                 return;
             }
         }
-        // Try and nominate some pair
-        if controlling {
+        if !ice_lite && controlling {
+            // Try and nominate some pair
             checklist.try_nominate();
         }
     }
@@ -2999,7 +3166,12 @@ impl ConnCheckListSet {
             checklist_id = self.checklists[checklist_i].checklist_id,
         ),
     )]
-    fn handle_stun_response(&mut self, checklist_i: usize, response: &Message, from: SocketAddr) {
+    fn handle_stun_response(
+        &mut self,
+        checklist_i: usize,
+        response: &Message,
+        from: SocketAddr,
+    ) -> bool {
         let checklist = &mut self.checklists[checklist_i];
         let checklist_id = checklist.checklist_id;
         // find conncheck
@@ -3009,7 +3181,7 @@ impl ConnCheckListSet {
             None => {
                 checklist.dump_check_state();
                 warn!("No existing check available, ignoring");
-                return;
+                return false;
             }
         };
         let conncheck_id = conncheck.conncheck_id;
@@ -3022,7 +3194,7 @@ impl ConnCheckListSet {
                 from, conncheck.pair.remote.address
             );
             checklist.check_response_failure(conncheck_id);
-            return;
+            return true;
         }
 
         // if response error -> fail TODO: might be a recoverable error!
@@ -3054,7 +3226,7 @@ impl ConnCheckListSet {
                         checklist.add_check(conncheck);
                         self.checklists[checklist_i].remove_valid(&old_pair);
                     }
-                    return;
+                    return true;
                 }
             }
             // FIXME: some failures are recoverable
@@ -3064,10 +3236,12 @@ impl ConnCheckListSet {
 
         if let Ok(xor) = response.attribute::<XorMappedAddress>() {
             let xor_addr = xor.addr(response.transaction_id());
-            return self.check_success(checklist_i, conncheck_id, xor_addr, self.controlling);
+            self.check_success(checklist_i, conncheck_id, xor_addr, self.controlling);
+            return true;
         }
 
         self.checklists[checklist_i].check_response_failure(conncheck_id);
+        true
     }
 
     fn perform_conncheck(
@@ -3182,6 +3356,10 @@ impl ConnCheckListSet {
     )]
     // RFC8445: 6.1.4.2. Performing Connectivity Checks
     fn next_check(&mut self) -> Option<ConnCheckId> {
+        if self.ice_lite {
+            return None;
+        }
+
         let checklist = &mut self.checklists[self.checklist_i];
         {
             if checklist.state != CheckListState::Running {
@@ -3287,7 +3465,7 @@ impl ConnCheckListSet {
             return;
         }
 
-        let Some(agent) = checklist.agent_by_id(check_agent_id) else {
+        let Some(agent) = checklist.remove_agent_by_id(check_agent_id) else {
             return;
         };
 
@@ -4021,6 +4199,10 @@ impl ConnCheckListSet {
         local_addr: Result<SocketAddr, StunError>,
         now: Instant,
     ) {
+        if self.ice_lite {
+            trace!("In ice lite mode, cannot accept an allocated socket. Ignoring");
+            return;
+        }
         let Some(checklist) = self
             .checklists
             .iter_mut()
@@ -4184,9 +4366,35 @@ impl ConnCheckListSet {
         }
     }
 
+    pub fn send_ignorable_error(&mut self, ignorable: RecvIgnorable) {
+        trace!(
+            "Sending ignorable error {:?} to {}",
+            ignorable.reason, ignorable.to
+        );
+        let mut response = Message::builder(
+            MessageType::from_class_method(MessageClass::Error, BINDING),
+            ignorable.transaction_id,
+            MessageWriteVec::new(),
+        );
+        let error = ErrorCode::builder(ErrorCode::UNAUTHORIZED).build().unwrap();
+        response.add_attribute(&error).unwrap();
+        if let Some(checklist) = self.mut_list(ignorable.checklist_id) {
+            response = response_add_credentials(response, &mut checklist.stun_auth_local).unwrap();
+        }
+        self.pending_messages.push_back(CheckListSetPendingMessage {
+            checklist_id: ignorable.checklist_id,
+            agent_id: ignorable.agent_id,
+            is_request: false,
+            msg: response.finish(),
+            to: ignorable.to,
+            turn_id: ignorable.turn_id,
+        });
+    }
+
     pub fn close(&mut self, now: Instant) {
         for checklist_i in 0..self.checklists.len() {
             let checklist = &mut self.checklists[checklist_i];
+            let checklist_id = checklist.checklist_id;
             let mut checks = VecDeque::new();
             core::mem::swap(&mut checks, &mut checklist.pairs);
             for check in checks {
@@ -4198,6 +4406,31 @@ impl ConnCheckListSet {
             for mut client in turn_clients {
                 let _ = client.client.delete(now);
                 checklist.pending_delete_turn_clients.push(client);
+            }
+            for agent_id in checklist.agents.iter().map(|a| a.id).collect::<Vec<_>>() {
+                let Some(agent) = checklist.remove_agent_by_id(agent_id) else {
+                    continue;
+                };
+                match agent.transport() {
+                    TransportType::Udp => {
+                        self.pending_remove_sockets.push_back(CheckListSetSocket {
+                            checklist_id,
+                            component_id: 1, // FIXME
+                            transport: agent.transport(),
+                            local_addr: agent.local_addr(),
+                            remote_addr: "0.0.0.0:0".parse().unwrap(),
+                        });
+                    }
+                    TransportType::Tcp => {
+                        self.pending_remove_sockets.push_back(CheckListSetSocket {
+                            checklist_id,
+                            component_id: 1, // FIXME
+                            transport: agent.transport(),
+                            local_addr: agent.local_addr(),
+                            remote_addr: agent.remote_addr().unwrap(),
+                        });
+                    }
+                }
             }
             checklist.close();
         }
@@ -4329,21 +4562,33 @@ fn candidate_can_pair_with(local: &Candidate, remote: &Candidate) -> bool {
         && local.base_address.is_ipv6() == remote.address.is_ipv6()
 }
 
-fn validate_username(username: Username, local_credentials: &Credentials) -> bool {
-    let username = username.username().as_bytes();
-    let local_user = local_credentials.ufrag.as_bytes();
-    if local_user.len()
-        == local_user
-            .iter()
-            .zip(username)
-            .take_while(|(l, r)| l == r)
-            .count()
-    {
-        true
-    } else {
-        debug!("binding request failed username validation");
-        false
+fn validate_username(
+    username: Username,
+    local_credentials: &Credentials,
+    remote_credentials: &Credentials,
+) -> Result<(), IgnorableReason> {
+    let username = username.username();
+    if !username.starts_with(&local_credentials.ufrag) {
+        debug!("binding request failed username validation, local user incorrect");
+        return Err(IgnorableReason::WrongLocalUsername);
     }
+    let local_ufrag_len = local_credentials.ufrag.len();
+    if username
+        .get(local_ufrag_len..local_ufrag_len + 1)
+        .is_some_and(|c| c != ":")
+    {
+        debug!("binding request failed username validation, local user length incorrect");
+        return Err(IgnorableReason::WrongLocalUsername);
+    }
+    if username[local_ufrag_len + 1..] != remote_credentials.ufrag {
+        debug!(
+            "binding request failed username validation, remote user {} != {}",
+            &username[local_ufrag_len + 1..],
+            remote_credentials.ufrag
+        );
+        return Err(IgnorableReason::WrongRemoteUsername);
+    }
+    Ok(())
 }
 
 pub(crate) fn transmit_send<T: AsRef<[u8]>>(transport: TransportType, data: T) -> Box<[u8]> {
@@ -4764,6 +5009,7 @@ mod tests {
     fn handle_binding_request(
         local_auth: &ShortTermAuth,
         local_credentials: &Credentials,
+        remote_credentials: &Credentials,
         msg: &Message,
         from: SocketAddr,
         error_response: Option<u16>,
@@ -4808,8 +5054,10 @@ mod tests {
         let ice_controlled = msg.attribute::<IceControlled>();
         let username = msg.attribute::<Username>();
         let valid_username = username
-            .map(|username| validate_username(username, local_credentials))
-            .unwrap_or(false);
+            .map_or(Err(IgnorableReason::IntegrityFailure), |username| {
+                validate_username(username, local_credentials, remote_credentials)
+            })
+            .map_or(false, |_| true);
 
         let mut response = if ice_controlling.is_err() && ice_controlled.is_err() {
             warn!("missing ice controlled/controlling attribute");
@@ -4843,7 +5091,8 @@ mod tests {
     fn reply_to_conncheck<T: AsRef<[u8]>>(
         agent: &mut StunAgent,
         auth: &ShortTermAuth,
-        credentials: &Credentials,
+        local_credentials: &Credentials,
+        remote_credentials: &Credentials,
         transmit: Transmit<T>,
         error_response: Option<u16>,
         response_address: Option<SocketAddr>,
@@ -4863,7 +5112,8 @@ mod tests {
                         .send(
                             handle_binding_request(
                                 auth,
-                                credentials,
+                                local_credentials,
+                                remote_credentials,
                                 &msg,
                                 transmit.from,
                                 error_response,
@@ -5123,6 +5373,7 @@ mod tests {
     }
 
     struct FineControlBuilder {
+        ice_lite: bool,
         trickle_ice: bool,
         controlling: bool,
         local_peer_builder: PeerBuilder,
@@ -5134,6 +5385,7 @@ mod tests {
             let local_credentials = Credentials::new("luser".into(), "lpass".into());
             let remote_credentials = Credentials::new("ruser".into(), "rpass".into());
             Self {
+                ice_lite: false,
                 trickle_ice: false,
                 controlling: true,
                 local_peer_builder: Peer::builder()
@@ -5161,6 +5413,11 @@ mod tests {
             self
         }
 
+        fn ice_lite(mut self, ice_lite: bool) -> Self {
+            self.ice_lite = ice_lite;
+            self
+        }
+
         fn local_candidate(mut self, candidate: Candidate) -> Self {
             self.local_peer_builder.candidate = Some(candidate);
             self
@@ -5169,6 +5426,7 @@ mod tests {
         fn build(self) -> FineControl {
             let mut local_set = ConnCheckListSet::builder(0, self.controlling)
                 .trickle_ice(self.trickle_ice)
+                .ice_lite(self.ice_lite)
                 .build();
             let local_list = local_set.new_list();
             let local_list = local_set.mut_list(local_list).unwrap();
@@ -5294,6 +5552,7 @@ mod tests {
         remote_agent: StunAgent,
         remote_auth: ShortTermAuth,
         remote_credentials: Credentials,
+        local_credentials: Credentials,
         turn_server: Option<TurnServer>,
         error_response: Option<u16>,
         response_address: Option<SocketAddr>,
@@ -5361,6 +5620,7 @@ mod tests {
                 &mut self.remote_agent,
                 &self.remote_auth,
                 &self.remote_credentials,
+                &self.local_credentials,
                 transmit,
                 self.error_response,
                 self.response_address,
@@ -5404,6 +5664,7 @@ mod tests {
             remote_agent,
             remote_auth,
             remote_credentials: remote_peer.local_credentials.clone().unwrap(),
+            local_credentials: remote_peer.remote_credentials.clone().unwrap(),
             turn_server: None,
             error_response: None,
             response_address: None,
@@ -5422,6 +5683,7 @@ mod tests {
             remote_agent,
             remote_auth,
             remote_credentials: remote_peer.local_credentials.clone().unwrap(),
+            local_credentials: remote_peer.remote_credentials.clone().unwrap(),
             turn_server: None,
             error_response: None,
             response_address: None,
@@ -5689,6 +5951,7 @@ mod tests {
             &mut remote_agent,
             &remote_auth,
             state.local.peer.remote_credentials.as_ref().unwrap(),
+            state.local.peer.local_credentials.as_ref().unwrap(),
             transmit.transmit,
             None,
             None,
@@ -5720,6 +5983,7 @@ mod tests {
             &mut remote_agent,
             &remote_auth,
             state.local.peer.remote_credentials.as_ref().unwrap(),
+            state.local.peer.local_credentials.as_ref().unwrap(),
             transmit.transmit,
             None,
             None,
@@ -5879,6 +6143,7 @@ mod tests {
             &mut remote_agent,
             &remote_auth,
             state.local.peer.remote_credentials.as_ref().unwrap(),
+            state.local.peer.local_credentials.as_ref().unwrap(),
             transmit.transmit,
             None,
             None,
@@ -5911,6 +6176,7 @@ mod tests {
             &mut remote_agent,
             &remote_auth,
             state.local.peer.remote_credentials.as_ref().unwrap(),
+            state.local.peer.local_credentials.as_ref().unwrap(),
             transmit.transmit,
             None,
             None,
@@ -6346,7 +6612,9 @@ mod tests {
         // a checklist with no candidates has nothing to do
         assert!(matches!(set_ret, CheckListSetPollRet::WaitUntil(_)));
 
-        state.local_list().add_local_candidate(local_candidate);
+        state
+            .local_list()
+            .add_local_candidate(local_candidate.clone());
         state.local_list().end_of_local_candidates();
 
         let set_ret = state.local.checklist_set.poll(now);
@@ -6369,6 +6637,18 @@ mod tests {
         assert_eq!(state.local_list().state(), CheckListState::Failed);
 
         state.local.checklist_set.close(now);
+
+        let CheckListSetPollRet::RemoveSocket {
+            checklist_id: _,
+            component_id: 1,
+            transport: TransportType::Udp,
+            local_addr,
+            remote_addr: _,
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(local_addr, local_candidate.base_address);
         let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
@@ -7529,6 +7809,18 @@ mod tests {
                 unreachable!();
             };
             assert_eq!(local_addr, pair1.local.base_address);
+
+            let CheckListSetPollRet::RemoveSocket {
+                checklist_id: _,
+                component_id: 1,
+                transport: TransportType::Udp,
+                local_addr,
+                remote_addr: _,
+            } = state.local.checklist_set.poll(now)
+            else {
+                unreachable!();
+            };
+            assert_eq!(local_addr, pair2.local.base_address);
             let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
                 unreachable!();
             };
@@ -7826,6 +8118,404 @@ mod tests {
             unreachable!();
         };
         assert_eq!(local_addr, ipv6_pair.local.base_address);
+        let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
+            unreachable!();
+        };
+    }
+
+    #[test]
+    fn conncheck_ice_lite_controlled() {
+        let _log = crate::tests::test_init_log();
+        let mut state = FineControl::builder()
+            .ice_lite(true)
+            .controlling(false)
+            .build();
+        let now = Instant::ZERO;
+        assert_eq!(state.local.component_id, 1);
+
+        // Don't generate any initial checks as they should be done as candidates are added to
+        // the checklist
+        let set_ret = state.local.checklist_set.poll(now);
+        // a checklist with no candidates has nothing to do
+        assert!(matches!(set_ret, CheckListSetPollRet::WaitUntil(_)));
+
+        let local_candidate = state.local.peer.candidate.clone();
+        let local_ipv6_addr = "[f8e0::1]:8".parse().unwrap();
+        let mut local_candidate2 = state.local.peer.candidate.clone();
+        local_candidate2.address = local_ipv6_addr;
+        local_candidate2.base_address = local_ipv6_addr;
+        local_candidate2.priority -= 1;
+        local_candidate2.foundation = "ipv6".to_owned();
+        state
+            .local_list()
+            .add_local_candidate(local_candidate.clone());
+        state
+            .local_list()
+            .add_local_candidate(local_candidate2.clone());
+
+        let set_ret = state.local.checklist_set.poll(now);
+        // a checklist with only local candidates has nothing to do
+        assert!(matches!(set_ret, CheckListSetPollRet::WaitUntil(_)));
+
+        //let remote_candidate = state.remote.candidate.clone();
+        let mut remote_candidate2 = state.remote.candidate.clone();
+        let remote_ipv6_addr = "[f8e0::2]:9".parse().unwrap();
+        remote_candidate2.address = remote_ipv6_addr;
+        remote_candidate2.base_address = remote_ipv6_addr;
+        remote_candidate2.priority -= 1;
+        remote_candidate2.foundation = "ipv6".to_owned();
+
+        // adding one local and one remote candidate that can be paired should have generated
+        // the relevant waiting check. Not frozen because there is not other check with the
+        // same foundation that already exists
+        let ipv4_pair = CandidatePair::new(
+            state.local.peer.candidate.clone(),
+            state.remote.candidate.clone(),
+        );
+        let ipv6_pair = CandidatePair::new(local_candidate2.clone(), remote_candidate2.clone());
+
+        state.local_list().dump_check_state();
+
+        let mut local_auth = ShortTermAuth::new();
+        local_auth.set_credentials(
+            state.local.peer.local_credentials.clone().unwrap().into(),
+            IntegrityAlgorithm::Sha1,
+        );
+        let mut remote_agent = StunAgent::builder(
+            state.remote.candidate.transport_type,
+            state.remote.candidate.base_address,
+        )
+        .build();
+        let transmit = remote_generate_check(
+            &state.remote,
+            &mut remote_agent,
+            state.local.peer.candidate.address,
+            true,
+            true,
+            now,
+        );
+        let reply =
+            state
+                .local
+                .checklist_set
+                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        assert!(reply.handled);
+
+        let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
+            unreachable!();
+        };
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::SelectedPair(_cid, _selected_pair),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connected),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        // perform one final tick attempt which should end the processing
+        assert!(matches!(
+            state.local.checklist_set.poll(now),
+            CheckListSetPollRet::Completed
+        ));
+
+        let response = Message::from_bytes(&transmit.transmit.data).unwrap();
+        trace!("received: {response}");
+        assert!(matches!(
+            local_auth.validate_incoming_message(&response).unwrap(),
+            Some(IntegrityAlgorithm::Sha1)
+        ));
+        assert!(remote_agent.handle_stun_message(&response, transmit.transmit.from));
+        assert_eq!(transmit.transmit.from, state.local.peer.candidate.address);
+        assert!(response.has_class(MessageClass::Success));
+
+        let now = wait_advance(&mut state.local.checklist_set, now);
+
+        let recv = [8; 9];
+        state.recv_data(recv, now);
+
+        // peer renominates a different candidate
+        state
+            .local_list()
+            .add_remote_candidate(remote_candidate2.clone());
+        let mut remote_agent =
+            StunAgent::builder(state.remote.candidate.transport_type, remote_ipv6_addr).build();
+        let transmit = remote_generate_check(
+            &state.remote,
+            &mut remote_agent,
+            local_ipv6_addr,
+            true,
+            true,
+            now,
+        );
+        let reply =
+            state
+                .local
+                .checklist_set
+                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        assert!(reply.handled);
+        let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
+            unreachable!();
+        };
+
+        let response = Message::from_bytes(&transmit.transmit.data).unwrap();
+        trace!("received: {response}");
+        assert!(matches!(
+            local_auth.validate_incoming_message(&response).unwrap(),
+            Some(IntegrityAlgorithm::Sha1)
+        ));
+        assert!(remote_agent.handle_stun_message(&response, transmit.transmit.from));
+        assert_eq!(transmit.transmit.from, local_candidate2.address);
+        assert!(response.has_class(MessageClass::Success));
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::SelectedPair(_cid, _selected_pair),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connected),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        let recv = [12; 5];
+        state.recv_data_with_pair(&ipv6_pair, recv, now);
+
+        state.local.checklist_set.close(now);
+
+        let CheckListSetPollRet::RemoveSocket {
+            checklist_id: _,
+            component_id: 1,
+            transport: TransportType::Udp,
+            local_addr,
+            remote_addr: _,
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(local_addr, ipv4_pair.local.base_address);
+        let CheckListSetPollRet::RemoveSocket {
+            checklist_id: _,
+            component_id: 1,
+            transport: TransportType::Udp,
+            local_addr,
+            remote_addr: _,
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(local_addr, ipv6_pair.local.base_address);
+        let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
+            unreachable!();
+        };
+    }
+
+    #[test]
+    fn conncheck_ice_lite_ignores_wrong_credentials() {
+        let _log = crate::tests::test_init_log();
+        let mut state = FineControl::builder()
+            .ice_lite(true)
+            .controlling(false)
+            .build();
+        let now = Instant::ZERO;
+        assert_eq!(state.local.component_id, 1);
+
+        // Don't generate any initial checks as they should be done as candidates are added to
+        // the checklist
+        let set_ret = state.local.checklist_set.poll(now);
+        // a checklist with no candidates has nothing to do
+        assert!(matches!(set_ret, CheckListSetPollRet::WaitUntil(_)));
+
+        let local_candidate = state.local.peer.candidate.clone();
+        state
+            .local_list()
+            .add_local_candidate(local_candidate.clone());
+
+        let set_ret = state.local.checklist_set.poll(now);
+        // a checklist with only local candidates has nothing to do
+        assert!(matches!(set_ret, CheckListSetPollRet::WaitUntil(_)));
+
+        // adding one local and one remote candidate that can be paired should have generated
+        // the relevant waiting check. Not frozen because there is not other check with the
+        // same foundation that already exists
+        let ipv4_pair = CandidatePair::new(
+            state.local.peer.candidate.clone(),
+            state.remote.candidate.clone(),
+        );
+
+        state.local_list().dump_check_state();
+
+        let correct_credentials = state.local.peer.local_credentials.clone().unwrap();
+        let wrong_user = Credentials::new(
+            correct_credentials.ufrag.clone() + "wrong",
+            correct_credentials.passwd.clone(),
+        );
+        state.remote.remote_credentials = Some(wrong_user.clone());
+        let mut remote_agent = StunAgent::builder(
+            state.remote.candidate.transport_type,
+            state.remote.candidate.base_address,
+        )
+        .build();
+        let transmit = remote_generate_check(
+            &state.remote,
+            &mut remote_agent,
+            state.local.peer.candidate.address,
+            true,
+            true,
+            now,
+        );
+        let reply =
+            state
+                .local
+                .checklist_set
+                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        assert!(reply.handled);
+        assert!(reply.is_ignorable());
+        let ignorable = reply.into_ignorable().unwrap();
+        state.local.checklist_set.send_ignorable_error(ignorable);
+
+        let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
+            unreachable!();
+        };
+        assert!(state.local.checklist_set.poll_transmit(now).is_none());
+
+        let mut local_auth = ShortTermAuth::new();
+        local_auth.set_credentials(wrong_user.into(), IntegrityAlgorithm::Sha1);
+
+        let response = Message::from_bytes(&transmit.transmit.data).unwrap();
+        trace!("received: {response}");
+        assert!(matches!(
+            local_auth.validate_incoming_message(&response).unwrap(),
+            Some(IntegrityAlgorithm::Sha1)
+        ));
+        assert!(remote_agent.handle_stun_message(&response, transmit.transmit.from));
+        assert_eq!(transmit.transmit.from, state.local.peer.candidate.address);
+        assert!(response.has_class(MessageClass::Error));
+
+        let wrong_password = Credentials::new(
+            correct_credentials.ufrag.clone(),
+            correct_credentials.passwd.clone() + "wrong",
+        );
+        state.remote.remote_credentials = Some(wrong_password.clone());
+        let transmit = remote_generate_check(
+            &state.remote,
+            &mut remote_agent,
+            state.local.peer.candidate.address,
+            true,
+            true,
+            now,
+        );
+        let reply =
+            state
+                .local
+                .checklist_set
+                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        assert!(reply.handled);
+        assert!(reply.is_ignorable());
+        let ignorable = reply.into_ignorable().unwrap();
+        state.local.checklist_set.send_ignorable_error(ignorable);
+
+        let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
+            unreachable!();
+        };
+        assert!(state.local.checklist_set.poll_transmit(now).is_none());
+
+        let mut local_auth = ShortTermAuth::new();
+        local_auth.set_credentials(wrong_password.into(), IntegrityAlgorithm::Sha1);
+
+        let response = Message::from_bytes(&transmit.transmit.data).unwrap();
+        trace!("received: {response}");
+        assert!(matches!(
+            local_auth.validate_incoming_message(&response),
+            Err(ValidateError::IntegrityFailed),
+        ));
+        assert_eq!(transmit.transmit.from, state.local.peer.candidate.address);
+        assert!(response.has_class(MessageClass::Error));
+
+        state.remote.remote_credentials = Some(correct_credentials.clone());
+        let transmit = remote_generate_check(
+            &state.remote,
+            &mut remote_agent,
+            state.local.peer.candidate.address,
+            true,
+            true,
+            now,
+        );
+        let reply =
+            state
+                .local
+                .checklist_set
+                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        assert!(reply.handled);
+        assert!(!reply.is_ignorable());
+
+        let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
+            unreachable!();
+        };
+        assert!(state.local.checklist_set.poll_transmit(now).is_none());
+
+        let mut local_auth = ShortTermAuth::new();
+        local_auth.set_credentials(correct_credentials.into(), IntegrityAlgorithm::Sha1);
+
+        let response = Message::from_bytes(&transmit.transmit.data).unwrap();
+        trace!("received: {response}");
+        assert!(matches!(
+            local_auth.validate_incoming_message(&response).unwrap(),
+            Some(IntegrityAlgorithm::Sha1),
+        ));
+        assert_eq!(transmit.transmit.from, state.local.peer.candidate.address);
+        assert!(response.has_class(MessageClass::Success));
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::SelectedPair(_cid, _selected_pair),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connected),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        // perform one final tick attempt which should end the processing
+        assert!(matches!(
+            state.local.checklist_set.poll(now),
+            CheckListSetPollRet::Completed
+        ));
+        let now = wait_advance(&mut state.local.checklist_set, now);
+
+        let recv = [8; 9];
+        state.recv_data(recv, now);
+
+        state.local.checklist_set.close(now);
+
+        let CheckListSetPollRet::RemoveSocket {
+            checklist_id: _,
+            component_id: 1,
+            transport: TransportType::Udp,
+            local_addr,
+            remote_addr: _,
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(local_addr, ipv4_pair.local.base_address);
         let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
             unreachable!();
         };

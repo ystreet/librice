@@ -80,6 +80,24 @@ impl Agent {
         }
     }
 
+    /// Retrieve whether the agent is configured for ICE-lite usage.
+    ///
+    /// ICE-lite has the following limitations:
+    ///  - A single host candidate is gathered per network interface and component id
+    ///  - Connectivity checks are never initiated from the ICE-lite peer.
+    pub fn ice_lite(&self) -> bool {
+        unsafe { crate::ffi::rice_agent_get_ice_lite(self.ffi) }
+    }
+
+    /// Configure the agent for ICE-lite usage.
+    ///
+    /// ICE-lite has the following limitations:
+    ///  - A single host candidate is gathered per network interface and component id
+    ///  - Connectivity checks are never initiated from the ICE-lite peer.
+    pub fn set_ice_lite(&self, ice_lite: bool) {
+        unsafe { crate::ffi::rice_agent_set_ice_lite(self.ffi, ice_lite) }
+    }
+
     /// Configure the default timeouts and retransmissions for each STUN request.
     ///
     /// - `initial` - the initial time between consecutive transmissions. If 0, or 1, then only a
@@ -235,6 +253,7 @@ impl RequestRto {
 pub struct AgentBuilder {
     trickle_ice: bool,
     controlling: bool,
+    ice_lite: bool,
     timing_advance: Duration,
     rto: Option<RequestRto>,
 }
@@ -244,6 +263,7 @@ impl Default for AgentBuilder {
         Self {
             trickle_ice: false,
             controlling: false,
+            ice_lite: false,
             timing_advance: Duration::from_millis(50),
             rto: None,
         }
@@ -305,11 +325,23 @@ impl AgentBuilder {
         self
     }
 
+    /// Configure the agent for ICE-lite usage.
+    ///
+    /// ICE-lite has the following limitations:
+    ///  - A single host candidate is gathered per network interface and component id
+    ///  - Connectivity checks are never initiated from the ICE-lite peer.
+    ///  - Always in the controlled mode.
+    pub fn ice_lite(mut self, ice_lite: bool) -> Self {
+        self.ice_lite = ice_lite;
+        self
+    }
+
     /// Construct a new [`Agent`]
     pub fn build(self) -> Agent {
         unsafe {
             let ffi = crate::ffi::rice_agent_new(self.controlling, self.trickle_ice);
             crate::ffi::rice_agent_set_timing_advance(ffi, self.timing_advance.as_nanos() as u64);
+            crate::ffi::rice_agent_set_ice_lite(ffi, self.ice_lite);
             let ret = Agent { ffi };
             if let Some(rto) = self.rto {
                 ret.set_request_retransmits(

@@ -116,6 +116,7 @@ pub struct AgentBuilder {
     controlling: bool,
     timing_advance: Duration,
     rto: Option<RequestRto>,
+    ice_lite: bool,
 }
 
 impl Default for AgentBuilder {
@@ -125,6 +126,7 @@ impl Default for AgentBuilder {
             controlling: false,
             timing_advance: crate::conncheck::DEFAULT_MINIMUM_SET_TICK,
             rto: None,
+            ice_lite: false,
         }
     }
 }
@@ -184,6 +186,17 @@ impl AgentBuilder {
         self
     }
 
+    /// Configure the agent for ICE-lite usage.
+    ///
+    /// ICE-lite has the following limitations:
+    ///  - A single host candidate is gathered per network interface and component id
+    ///  - Connectivity checks are never initiated from the ICE-lite peer.
+    ///  - Always in the controlled mode.
+    pub fn ice_lite(mut self, ice_lite: bool) -> Self {
+        self.ice_lite = ice_lite;
+        self
+    }
+
     /// Construct a new [`Agent`]
     pub fn build(self) -> Agent {
         turn_client_proto::types::debug_init();
@@ -191,10 +204,11 @@ impl AgentBuilder {
 
         let id = AGENT_COUNT.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
         let tie_breaker = rand_u64();
-        let controlling = self.controlling;
+        let controlling = self.controlling && !self.ice_lite;
         let mut checklistset = ConnCheckListSet::builder(tie_breaker, controlling)
             .trickle_ice(self.trickle_ice)
             .timing_advance(self.timing_advance)
+            .ice_lite(self.ice_lite)
             .build();
         if let Some(rto) = self.rto.clone() {
             checklistset.set_request_retransmits(rto);
@@ -247,6 +261,15 @@ impl Agent {
         self.checklistset.set_timing_advance(ta)
     }
 
+    /// Retrieve whether the agent is configured for ICE-lite usage.
+    ///
+    /// ICE-lite has the following limitations:
+    ///  - A single host candidate is gathered per network interface and component id
+    ///  - Connectivity checks are never initiated from the ICE-lite peer.
+    pub fn ice_lite(&self) -> bool {
+        self.checklistset.ice_lite()
+    }
+
     /// Configure the default timeouts and retransmissions for each STUN request.
     ///
     /// - `initial` - the initial time between consecutive transmissions. If 0, or 1, then only a
@@ -274,6 +297,21 @@ impl Agent {
             stream.set_request_retransmits(rto.clone());
         }
         self.checklistset.set_request_retransmits(rto);
+    }
+
+    /// Update the controlling state of the agent based on external factors.
+    pub fn set_controlling(&mut self, controlling: bool) {
+        self.checklistset.set_controlling(controlling);
+    }
+
+    /// Configure the [`Agent`] to be in ICE-lite mode.
+    ///
+    /// ICE-lite has the following limitations:
+    ///  - A single host candidate is gathered per network interface and component id
+    ///  - Connectivity checks are never initiated from the ICE-lite peer.
+    ///  - Always in the controlled mode.
+    pub fn set_ice_lite(&mut self, ice_lite: bool) {
+        self.checklistset.set_ice_lite(ice_lite);
     }
 
     /// Add a new `Stream` to this agent

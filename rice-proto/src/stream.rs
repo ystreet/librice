@@ -20,7 +20,7 @@ use stun_proto::types::data::Data;
 
 use crate::agent::{Agent, AgentError};
 use crate::component::{Component, ComponentMut, ComponentState, GatherProgress};
-use crate::conncheck::{HandleRecvReply, PendingRecv, RequestRto};
+use crate::conncheck::{HandleRecvReply, PendingRecv, RecvIgnorable, RequestRto};
 
 use crate::candidate::{Candidate, TransportType};
 //use crate::turn::agent::TurnCredentials;
@@ -384,6 +384,24 @@ impl<'a> StreamMut<'a> {
             .incoming_data(checklist_id, component_id, transmit, now)
     }
 
+    /// Send an ignorable error.
+    ///
+    /// Send an error produced by [`StreamMut::handle_incoming_data`] that could have been (but was not)
+    /// handled by another agent listening on the same local port.
+    ///
+    /// This should be called once all agents listening on the same local socket port have failed
+    /// to handle the incoming data.
+    #[tracing::instrument(
+        name = "stream_send_ignorable_error",
+        skip(self),
+        fields(
+            stream.id = self.id,
+        )
+    )]
+    pub fn send_ignorable_error(&mut self, ignorable: RecvIgnorable) {
+        self.agent.checklistset.send_ignorable_error(ignorable)
+    }
+
     /// Poll for any received data.
     ///
     /// Must be called after `handle_incoming_data` if `have_more_data` is `true`.
@@ -602,14 +620,9 @@ impl StreamState {
         };
         // XXX: is this enough to successfully route to the gatherer over the
         // connection check or component received handling?
-        if gather.handle_data(transmit, now) {
-            HandleRecvReply {
-                handled: true,
-                ..Default::default()
-            }
-        } else {
-            HandleRecvReply::default()
-        }
+        let mut ret = HandleRecvReply::default();
+        ret.handled = gather.handle_data(transmit, now);
+        ret
     }
 
     #[tracing::instrument(ret, level = "trace", skip(self))]
