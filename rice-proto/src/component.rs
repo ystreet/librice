@@ -162,9 +162,10 @@ impl<'a> ComponentMut<'a> {
         turn_servers: &[(SocketAddr, &TurnConfig)],
     ) -> Result<(), AgentError> {
         let rto = self.agent.rto.clone();
+        let ice_lite = self.agent.ice_lite();
         let stream = self.agent.mut_stream_state(self.stream_id).unwrap();
         let component = stream.mut_component_state(self.component_id).unwrap();
-        component.gather_candidates(sockets, stun_servers, turn_servers, rto)
+        component.gather_candidates(ice_lite, sockets, stun_servers, turn_servers, rto)
     }
 
     /// Set the pair that will be used to send/receive data.  This will override the ICE
@@ -326,6 +327,7 @@ impl ComponentState {
 
     pub(crate) fn gather_candidates(
         &mut self,
+        ice_lite: bool,
         sockets: &[(TransportType, SocketAddr)],
         stun_servers: &[(TransportType, SocketAddr)],
         turn_servers: &[(SocketAddr, &TurnConfig)],
@@ -335,7 +337,8 @@ impl ComponentState {
             return Err(AgentError::AlreadyInProgress);
         }
 
-        let mut gatherer = StunGatherer::new(self.id, sockets, stun_servers, turn_servers);
+        let mut gatherer =
+            StunGatherer::new(ice_lite, self.id, sockets, stun_servers, turn_servers);
         if let Some(rto) = rto {
             gatherer.set_request_retransmits(rto);
         }
