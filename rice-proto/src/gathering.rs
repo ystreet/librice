@@ -44,7 +44,7 @@ use turn_client_openssl::TurnClientOpensslTls;
 #[cfg(feature = "rustls")]
 use turn_client_rustls::TurnClientRustls;
 
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 fn address_is_ignorable(ip: IpAddr) -> bool {
     // TODO: add is_benchmarking() and is_documentation() when they become stable
@@ -256,6 +256,7 @@ pub(crate) enum GatherPoll {
 impl StunGatherer {
     /// Create a new gatherer
     pub(crate) fn new(
+        ice_lite: bool,
         component_id: usize,
         stun_sockets: &[(TransportType, SocketAddr)],
         stun_servers: &[(TransportType, SocketAddr)],
@@ -338,31 +339,41 @@ impl StunGatherer {
                     });
                 }
             }
-            for (stun_transport, stun_addr) in stun_servers {
-                if socket_transport != stun_transport {
-                    continue;
+            if !ice_lite {
+                for (stun_transport, stun_addr) in stun_servers {
+                    if socket_transport != stun_transport {
+                        continue;
+                    }
+                    if socket_addr.is_ipv4() && !stun_addr.is_ipv4() {
+                        continue;
+                    }
+                    if socket_addr.is_ipv6() && !stun_addr.is_ipv6() {
+                        continue;
+                    }
+                    let other_preference =
+                        turn_servers.len() as u32 * 2 + (stun_sockets.len() - i) as u32 * 2;
+                    pending_requests.push_back(PendingRequest {
+                        component_id,
+                        transport_type: *socket_transport,
+                        local_addr: *socket_addr,
+                        server_addr: *stun_addr,
+                        other_preference,
+                        completed: false,
+                        agent_request_time: None,
+                        method: Method::Stun,
+                    });
                 }
-                if socket_addr.is_ipv4() && !stun_addr.is_ipv4() {
-                    continue;
-                }
-                if socket_addr.is_ipv6() && !stun_addr.is_ipv6() {
-                    continue;
-                }
-                let other_preference =
-                    turn_servers.len() as u32 * 2 + (stun_sockets.len() - i) as u32 * 2;
-                pending_requests.push_back(PendingRequest {
-                    component_id,
-                    transport_type: *socket_transport,
-                    local_addr: *socket_addr,
-                    server_addr: *stun_addr,
-                    other_preference,
-                    completed: false,
-                    agent_request_time: None,
-                    method: Method::Stun,
-                });
             }
         }
         for (i, (turn_socket, turn_config)) in turn_servers.iter().enumerate() {
+            if ice_lite {
+                warn!(
+                    "TURN server {} over {} ignored because we are in ice-lite mode",
+                    turn_config.addr(),
+                    turn_config.client_transport()
+                );
+                continue;
+            }
             if turn_socket.is_ipv4() && !turn_config.addr().is_ipv4() {
                 continue;
             }
@@ -380,6 +391,13 @@ impl StunGatherer {
                 agent_request_time: None,
                 method: Method::Turn(Box::new((*turn_config).clone())),
             });
+        }
+        if ice_lite {
+            for (stun_transport, stun_addr) in stun_servers {
+                warn!(
+                    "STUN server {stun_addr} over {stun_transport} ignored because we are in ice-lite mode"
+                );
+            }
         }
 
         Self {
@@ -1111,7 +1129,7 @@ mod tests {
     fn host_udp() {
         let _log = crate::tests::test_init_log();
         let local_addr = "192.168.1.1:1000".parse().unwrap();
-        let mut gather = StunGatherer::new(1, &[(TransportType::Udp, local_addr)], &[], &[]);
+        let mut gather = StunGatherer::new(false, 1, &[(TransportType::Udp, local_addr)], &[], &[]);
         let now = Instant::ZERO;
         let ret = gather.poll(now);
         if let GatherPoll::NewCandidate(cand) = ret {
@@ -1136,7 +1154,7 @@ mod tests {
     fn host_udp_incoming_data_ignored() {
         let _log = crate::tests::test_init_log();
         let local_addr = "192.168.1.1:1000".parse().unwrap();
-        let mut gather = StunGatherer::new(1, &[(TransportType::Udp, local_addr)], &[], &[]);
+        let mut gather = StunGatherer::new(false, 1, &[(TransportType::Udp, local_addr)], &[], &[]);
         let now = Instant::ZERO;
         let ret = gather.poll(now);
         if let GatherPoll::NewCandidate(cand) = ret {
@@ -1165,7 +1183,7 @@ mod tests {
     fn host_tcp() {
         let _log = crate::tests::test_init_log();
         let local_addr = "192.168.1.1:1000".parse().unwrap();
-        let mut gather = StunGatherer::new(1, &[(TransportType::Tcp, local_addr)], &[], &[]);
+        let mut gather = StunGatherer::new(false, 1, &[(TransportType::Tcp, local_addr)], &[], &[]);
         let now = Instant::ZERO;
         let ret = gather.poll(now);
         if let GatherPoll::NewCandidate(cand) = ret {
@@ -1228,6 +1246,7 @@ mod tests {
         let stun_addr = "192.168.1.2:2000".parse().unwrap();
         let public_ip = "192.168.1.3:3000".parse().unwrap();
         let mut gather = StunGatherer::new(
+            false,
             1,
             &[(TransportType::Udp, local_addr)],
             &[(TransportType::Udp, stun_addr)],
@@ -1285,6 +1304,7 @@ mod tests {
         let stun_addr = "192.168.1.2:2000".parse().unwrap();
         let public_ip = "192.168.1.3:3000".parse().unwrap();
         let mut gather = StunGatherer::new(
+            false,
             1,
             &[(TransportType::Tcp, local_addr)],
             &[(TransportType::Tcp, stun_addr)],
@@ -1345,6 +1365,7 @@ mod tests {
         let local_addr = "192.168.1.1:1000".parse().unwrap();
         let stun_addr = "192.168.1.2:2000".parse().unwrap();
         let mut gather = StunGatherer::new(
+            false,
             1,
             &[(TransportType::Tcp, local_addr)],
             &[(TransportType::Tcp, stun_addr)],
@@ -1388,6 +1409,7 @@ mod tests {
             turn_credentials.password().to_string(),
         );
         let mut gather = StunGatherer::new(
+            false,
             1,
             &[(TransportType::Udp, local_addr)],
             &[(TransportType::Udp, turn_listen_addr)],
@@ -1499,6 +1521,7 @@ mod tests {
             turn_credentials.password().to_string(),
         );
         let mut gather = StunGatherer::new(
+            false,
             1,
             &[(TransportType::Tcp, local_addr)],
             &[(TransportType::Tcp, turn_listen_addr)],
@@ -1632,6 +1655,7 @@ mod tests {
         let mut config = TurnConfig::new(TransportType::Tcp, turn_listen_addr, turn_credentials);
         config.set_allocation_transport(TransportType::Tcp);
         let mut gather = StunGatherer::new(
+            false,
             1,
             &[(TransportType::Tcp, local_addr)],
             &[(TransportType::Tcp, turn_listen_addr)],
@@ -1760,6 +1784,7 @@ mod tests {
         let mut config = TurnConfig::new(TransportType::Udp, turn_listen_addr, turn_credentials);
         config.set_allocation_transport(TransportType::Udp);
         let mut gather = StunGatherer::new(
+            false,
             1,
             &[(TransportType::Udp, local_addr)],
             &[(TransportType::Udp, turn_listen_addr)],
@@ -1799,6 +1824,33 @@ mod tests {
             assert_eq!(new_now - now, Duration::from_millis(timeouts));
             now = new_now;
         }
+        let GatherPoll::Complete(1) = gather.poll(now) else {
+            unreachable!();
+        };
+
+        assert!(matches!(gather.poll(now), GatherPoll::Finished));
+    }
+
+    #[test]
+    fn gather_ice_lite_turn_ignored() {
+        let _log = crate::tests::test_init_log();
+        let local_addr = "192.168.1.1:1000".parse().unwrap();
+        let turn_listen_addr = "192.168.1.2:2000".parse().unwrap();
+        let turn_credentials = TurnCredentials::new("tuser", "tpass");
+        let mut config = TurnConfig::new(TransportType::Udp, turn_listen_addr, turn_credentials);
+        config.set_allocation_transport(TransportType::Udp);
+
+        let mut gather = StunGatherer::new(
+            true,
+            1,
+            &[(TransportType::Udp, local_addr)],
+            &[(TransportType::Udp, turn_listen_addr)],
+            &[(local_addr, &config)],
+        );
+        let now = Instant::ZERO;
+        /* host candidate contents checked in `host_udp()` */
+        assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
+
         let GatherPoll::Complete(1) = gather.poll(now) else {
             unreachable!();
         };
