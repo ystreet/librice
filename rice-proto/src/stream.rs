@@ -448,11 +448,10 @@ impl<'a> StreamMut<'a> {
         let Some(component_state) = stream_state.mut_component_state(component_id) else {
             return;
         };
-        if component_state.gather_state != GatherProgress::InProgress {
-            return;
-        }
-        if let Some(gather) = component_state.gatherer.as_mut() {
-            gather.allocated_socket(transport, from, to, &local_addr)
+        if component_state.gather_state == GatherProgress::InProgress {
+            if let Some(gather) = component_state.gatherer.as_mut() {
+                gather.allocated_socket(transport, from, to, &local_addr);
+            }
         }
         self.agent.checklistset.allocated_socket(
             checklist_id,
@@ -703,6 +702,8 @@ impl StreamState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::{Agent, AgentPoll};
+    use crate::candidate::{Candidate, CandidateType, TcpType, TransportType};
 
     #[test]
     fn getters_setters() {
@@ -721,5 +722,94 @@ mod tests {
         assert_eq!(stream.local_credentials().unwrap(), lcreds);
         stream.set_remote_credentials(rcreds.clone());
         assert_eq!(stream.remote_credentials().unwrap(), rcreds);
+    }
+
+    /// After local gathering completes, TCP connectivity checks still request a socket via
+    /// [`AgentPoll::AllocateSocket`]. `StreamMut::allocated_socket` must forward that to the
+    /// checklist (not only to the gatherer while gathering is in progress).
+    #[test]
+    fn allocated_socket_reaches_checklist_after_gathering() {
+        let _log = crate::tests::test_init_log();
+        let now = Instant::ZERO;
+        let local_bind: SocketAddr = "192.168.1.1:1000".parse().unwrap();
+
+        let mut agent = Agent::default();
+        let stream_id = agent.add_stream();
+        let component_id = agent.mut_stream(stream_id).unwrap().add_component().unwrap();
+        {
+            let mut stream = agent.mut_stream(stream_id).unwrap();
+            stream.set_local_credentials(Credentials::new("luser".into(), "lpass".into()));
+            stream.set_remote_credentials(Credentials::new("ruser".into(), "rpass".into()));
+            stream
+                .mut_component(component_id)
+                .unwrap()
+                .gather_candidates(&[(TransportType::Tcp, local_bind)], &[], &[])
+                .unwrap();
+        }
+
+        let mut gathering_done = false;
+        while !gathering_done {
+            match agent.poll(now) {
+                AgentPoll::GatheredCandidate(gathered) => {
+                    agent
+                        .mut_stream(stream_id)
+                        .unwrap()
+                        .add_local_gathered_candidate(gathered.gathered);
+                }
+                AgentPoll::GatheringComplete(complete) => {
+                    assert_eq!(complete.component_id, component_id);
+                    agent
+                        .mut_stream(stream_id)
+                        .unwrap()
+                        .end_of_local_candidates();
+                    gathering_done = true;
+                }
+                other => panic!("unexpected poll during gathering: {other:?}"),
+            }
+        }
+
+        let remote_addr: SocketAddr = "192.168.1.2:2000".parse().unwrap();
+        let remote = Candidate::builder(
+            component_id,
+            CandidateType::Host,
+            TransportType::Tcp,
+            "1",
+            remote_addr,
+        )
+        .tcp_type(TcpType::Passive)
+        .priority(5000)
+        .build();
+        agent
+            .mut_stream(stream_id)
+            .unwrap()
+            .add_remote_candidate(remote);
+        agent
+            .mut_stream(stream_id)
+            .unwrap()
+            .end_of_remote_candidates();
+
+        let AgentPoll::AllocateSocket(alloc) = agent.poll(now) else {
+            panic!("expected AllocateSocket for TCP connectivity check");
+        };
+        assert_eq!(alloc.component_id, component_id);
+        assert_eq!(alloc.transport, TransportType::Tcp);
+
+        let bound: SocketAddr = "192.168.1.1:15000".parse().unwrap();
+        agent
+            .mut_stream(stream_id)
+            .unwrap()
+            .allocated_socket(
+                alloc.component_id,
+                alloc.transport,
+                alloc.from,
+                alloc.to,
+                Ok(bound),
+                now,
+            );
+
+        assert!(
+            agent.poll_transmit(now).is_some(),
+            "checklist should emit STUN after allocated_socket"
+        );
     }
 }
