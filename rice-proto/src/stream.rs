@@ -735,7 +735,11 @@ mod tests {
 
         let mut agent = Agent::default();
         let stream_id = agent.add_stream();
-        let component_id = agent.mut_stream(stream_id).unwrap().add_component().unwrap();
+        let component_id = agent
+            .mut_stream(stream_id)
+            .unwrap()
+            .add_component()
+            .unwrap();
         {
             let mut stream = agent.mut_stream(stream_id).unwrap();
             stream.set_local_credentials(Credentials::new("luser".into(), "lpass".into()));
@@ -795,17 +799,14 @@ mod tests {
         assert_eq!(alloc.transport, TransportType::Tcp);
 
         let bound: SocketAddr = "192.168.1.1:15000".parse().unwrap();
-        agent
-            .mut_stream(stream_id)
-            .unwrap()
-            .allocated_socket(
-                alloc.component_id,
-                alloc.transport,
-                alloc.from,
-                alloc.to,
-                Ok(bound),
-                now,
-            );
+        agent.mut_stream(stream_id).unwrap().allocated_socket(
+            alloc.component_id,
+            alloc.transport,
+            alloc.from,
+            alloc.to,
+            Ok(bound),
+            now,
+        );
 
         assert!(
             agent.poll_transmit(now).is_some(),
