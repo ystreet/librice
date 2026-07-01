@@ -2544,10 +2544,7 @@ impl ConnCheckListSet {
 
                 let mut handled = false;
                 let mut have_more_data = false;
-                loop {
-                    let Some(data) = tcp_buffer.pull_data() else {
-                        break;
-                    };
+                while let Some(data) = tcp_buffer.pull_data() {
                     match Message::from_bytes(&data) {
                         Ok(msg) => {
                             let mut ignorable = None;
