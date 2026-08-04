@@ -3194,9 +3194,24 @@ impl ConnCheckListSet {
                         existing.id = *check.conncheck_id,
                         "found existing check in checklist {}", checklist.checklist_id
                     );
-                    checklist.add_valid(check.conncheck_id, &pair);
+                    let existing_id = check.conncheck_id;
+                    let existing_pair = check.pair.clone();
+                    // It is the existing pair that is added to the valid list, and it is
+                    // that pair a nomination applies to (RFC 8445 7.2.5.3.4).  The
+                    // existing check may be an ordinary (non-nominating) one — e.g. when
+                    // a NAT rewrites the XOR-MAPPED-ADDRESS, a nominating check's valid
+                    // pair folds into the peer-reflexive pair discovered by an earlier
+                    // ordinary check on the same connection — so the nominating flag of
+                    // the check that just succeeded must be carried over or the
+                    // nomination would be lost.
                     if nominate {
-                        checklist.nominated_pair(&pair);
+                        if let Some(existing) = checklist.mut_check_by_id(existing_id) {
+                            existing.nominate = true;
+                        }
+                    }
+                    checklist.add_valid(existing_id, &existing_pair);
+                    if nominate {
+                        checklist.nominated_pair(&existing_pair);
                         return;
                     }
                     pair_dealt_with = true;
@@ -8309,6 +8324,142 @@ mod tests {
         let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
+    }
+
+    /// A controlled agent behind a NAT: every check it sends succeeds with an
+    /// XOR-MAPPED-ADDRESS that differs from its local base address, so each success's valid
+    /// pair folds into the peer-reflexive pair discovered by the first success
+    /// (RFC 8445 7.2.5.3.2 case 2).  When the controlling peer then nominates
+    /// (USE-CANDIDATE), the triggered nominating check's success takes the same fold path:
+    /// the nomination must carry over to the pair added to the valid list
+    /// (RFC 8445 7.2.5.3.4) instead of being dropped because the folded-into check never
+    /// had the nominate flag.
+    #[test]
+    fn conncheck_controlled_nomination_nat_mapped_address() {
+        let _log = crate::tests::test_init_log();
+        let mut state = FineControl::builder().controlling(false).build();
+        let now = Instant::ZERO;
+        assert_eq!(state.local.component_id, 1);
+
+        // The NAT-mapped address the remote reports in every check response: same local
+        // socket (base address), different address on the wire.
+        let nat_mapped: SocketAddr = "192.0.2.7:7000".parse().unwrap();
+
+        let pair = CandidatePair::new(
+            state.local.peer.candidate.clone(),
+            state.remote.candidate.clone(),
+        );
+        let check = state
+            .local_list()
+            .matching_check(&pair, Nominate::False)
+            .unwrap();
+        assert_eq!(check.state(), CandidatePairState::Frozen);
+        let check_id = check.conncheck_id;
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        // The ordinary check succeeds with the NAT-mapped address: the valid pair is the
+        // peer-reflexive pair, recorded through check_success() case 3.
+        send_next_check_and_response(&state.local.peer, &state.remote)
+            .response_address(nat_mapped)
+            .perform(&mut state.local.checklist_set, now);
+        let check = state.local_list().check_by_id(check_id).unwrap();
+        assert_eq!(check.state(), CandidatePairState::Succeeded);
+
+        let now = wait_advance(&mut state.local.checklist_set, now);
+
+        // The controlling peer nominates: its Binding request with USE-CANDIDATE produces
+        // a triggered nominating check on the same pair.
+        let mut local_auth = ShortTermAuth::new();
+        local_auth.set_credentials(
+            state.local.peer.local_credentials.clone().unwrap().into(),
+            IntegrityAlgorithm::Sha1,
+        );
+        let mut remote_agent = StunAgent::builder(
+            state.remote.candidate.transport_type,
+            state.remote.candidate.base_address,
+        )
+        .build();
+        let transmit = remote_generate_check(
+            &state.remote,
+            &mut remote_agent,
+            state.local.peer.candidate.address,
+            true,
+            true,
+            now,
+        );
+        let reply =
+            state
+                .local
+                .checklist_set
+                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        assert!(reply.handled);
+        let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
+            unreachable!();
+        };
+        let response = Message::from_bytes(&transmit.transmit.data).unwrap();
+        assert!(matches!(
+            local_auth.validate_incoming_message(&response).unwrap(),
+            Some(IntegrityAlgorithm::Sha1)
+        ));
+        assert!(remote_agent.handle_stun_message(&response, transmit.transmit.from));
+        assert!(response.has_class(MessageClass::Success));
+
+        let now = wait_advance(&mut state.local.checklist_set, now);
+
+        // The triggered nominating check runs and succeeds with the same NAT-mapped
+        // address, so its valid pair folds into the existing peer-reflexive check
+        // (check_success() case 2) — the nomination must survive the fold.
+        let nominate_check = state
+            .local_list()
+            .matching_check(&pair, Nominate::True)
+            .unwrap();
+        assert_eq!(nominate_check.state(), CandidatePairState::Waiting);
+        let nominate_check_pair = nominate_check.pair.clone();
+        assert!(state.local_list().is_triggered(&nominate_check_pair));
+
+        send_next_check_and_response(&state.local.peer, &state.remote)
+            .response_address(nat_mapped)
+            .perform(&mut state.local.checklist_set, now);
+
+        // The nomination completed: the checklist is done and the selected pair is the
+        // peer-reflexive (NAT-mapped) valid pair on the same local socket.  (The check
+        // that carried the nomination is the folded-into peer-reflexive one; the triggered
+        // check itself is pruned with the rest of the component's checks on completion.)
+        assert_eq!(state.local_list().state(), CheckListState::Completed);
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::SelectedPair(_cid, selected_pair),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(selected_pair.candidate_pair.local.address, nat_mapped);
+        assert_eq!(
+            selected_pair.candidate_pair.local.base_address,
+            pair.local.base_address
+        );
+        assert_eq!(
+            selected_pair.candidate_pair.remote.address,
+            pair.remote.address
+        );
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connected),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert!(matches!(
+            state.local.checklist_set.poll(now),
+            CheckListSetPollRet::Completed
+        ));
     }
 
     #[test]
