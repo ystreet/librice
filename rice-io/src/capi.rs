@@ -1380,11 +1380,11 @@ mod tests {
                             debug!("tcp connect created connection");
                             let tcp = mut_override(Arc::into_raw(tcp));
                             let addr = rice_tcp_socket_local_addr(tcp);
-                            send.send(Event::Address(addr)).unwrap();
                             rice_sockets_add_tcp(
                                 sockets.ptr as *mut RiceSockets,
                                 mut_override(tcp),
                             );
+                            send.send(Event::Address(addr)).unwrap();
                         }
                     }
                 },
@@ -1414,6 +1414,14 @@ mod tests {
                     data.len()
                 )
             );
+            loop {
+                let event = recv.recv().unwrap();
+                debug!("{event:?}");
+                let Event::Io = event else {
+                    continue;
+                };
+                break;
+            }
 
             let mut io_recv = RiceIoRecv::WouldBlock;
             let mut recv_buf = [0; 1500];
