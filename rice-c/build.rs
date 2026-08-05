@@ -23,11 +23,15 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let destdir = Path::new(&out_dir).join("rice-proto-cbuild");
     let pkgconfigdir = destdir.clone().join("lib").join("pkgconfig");
-    let rice_proto_dir = manifest_dir.join("../rice-proto");
+    let rice_proto_dir = manifest_dir.join("..").join("rice-proto");
     let features = env::var("CARGO_CFG_FEATURE").unwrap();
     std::eprintln!("features: {features}");
 
-    let rice_proto_exists = std::fs::File::open(rice_proto_dir.as_path()).is_ok();
+    let rice_proto_exists = std::fs::exists(rice_proto_dir.as_path()).unwrap_or(false);
+    std::eprintln!(
+        "rice_proto_exists: {rice_proto_exists}, {}",
+        rice_proto_dir.display()
+    );
     if rice_proto_exists {
         println!(
             "cargo:rerun-if-changed={}",
@@ -59,6 +63,12 @@ fn main() {
     let config = system_deps::Config::new()
         .add_build_internal("rice-proto", move |lib, version| {
             if rice_proto_exists {
+                use std::io::Read;
+
+                std::eprintln!(
+                    "building internal rice-proto into prefix \'{}\'",
+                    destdir.display()
+                );
                 let target = env::var("TARGET").unwrap();
                 let mut cmd = Command::new("cargo");
                 cmd.stderr(std::process::Stdio::piped())
@@ -85,6 +95,16 @@ fn main() {
                     eprintln!("stderr: {stderr}");
                     panic!("Could not build rice-proto");
                 }
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                eprintln!("stdout: {stdout}");
+                let mut rice_proto_pc = destdir.clone();
+                rice_proto_pc.push("lib");
+                rice_proto_pc.push("pkgconfig");
+                rice_proto_pc.push("rice-proto.pc");
+                let mut f = std::fs::File::open(&rice_proto_pc).unwrap();
+                let mut data = String::new();
+                f.read_to_string(&mut data).unwrap();
+                eprintln!("{}: {data}", rice_proto_pc.display());
             }
             system_deps::Library::from_internal_pkg_config(pkgconfigdir, lib, version)
         })
