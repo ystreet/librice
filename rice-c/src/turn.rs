@@ -247,7 +247,7 @@ impl Clone for TurnTlsConfig {
     fn clone(&self) -> Self {
         match self {
             #[cfg(feature = "dimpl")]
-            Self::Dimpl(cfg) => unsafe { Self::Rustls(crate::ffi::rice_tls_config_ref(*cfg)) },
+            Self::Dimpl(cfg) => unsafe { Self::Dimpl(crate::ffi::rice_tls_config_ref(*cfg)) },
             #[cfg(feature = "rustls")]
             Self::Rustls(cfg) => unsafe { Self::Rustls(crate::ffi::rice_tls_config_ref(*cfg)) },
             #[cfg(feature = "openssl")]
