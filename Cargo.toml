@@ -1,7 +1,7 @@
 [workspace]
 members = ["rice-proto", "librice", "rice-io", "rice-c", "rice-stun-types", "rice-ctypes", "fuzz"]
 default-members = ["librice", "rice-proto", "rice-c", "rice-stun-types", "rice-ctypes"]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 version = "0.4.3"
