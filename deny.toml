@@ -15,8 +15,6 @@ allow = [
     "BSD-3-Clause",
     "Unicode-3.0",
     "ISC",
-    "OpenSSL",
-    "Zlib",
 ]
 confidence-threshold = 0.9
 
@@ -25,16 +23,11 @@ multiple-versions = "deny"
 wildcards = "allow"
 highlight = "all"
 skip-tree = [
-    # FIXME: replace get_if_addrs
-    { crate = "get_if_addrs", reason = "Outdated dependency that needs replacing" },
     { crate = "bindgen", reason = "Build dependency only" },
-    { crate = "windows-sys@0.45", reason = "a foundational crate for many that bumps far too frequently to ever have a shared version" },
     { crate = "windows-sys@0.52", reason = "a foundational crate for many that bumps far too frequently to ever have a shared version" },
-    { crate = "windows-sys@0.59", reason = "a foundational crate for many that bumps far too frequently to ever have a shared version" },
-    { crate = "windows-sys@0.60", reason = "a foundational crate for many that bumps far too frequently to ever have a shared version" },
     { crate = "getrandom@0.2", reason = "flume depends on an old version of getrandom" },
-    { crate = "thiserror@1", reason = "jni depends on this version" },
-    { crate = "thiserror-impl@1", reason = "jni depends on this version" },
+    { crate = "syn@2", reason = "rand, tracing-attributes, serde, thiserror depend on two different versions of syn" },
+    { crate = "getrandom@0.3", reason = "rand depends on old version of getrandom" },
 ]
 
 [sources]
