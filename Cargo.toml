@@ -11,7 +11,7 @@ rust-version = "1.85.0"
 
 [workspace.dependencies]
 rice-proto = { version = "0.4.3", path = "rice-proto" }
-rice-c = { version = "0.4.3", path = "rice-c" }
+rice-c = { version = "0.4.3", path = "rice-c", default-features = false }
 rice-stun-types = { version = "0.4.3", path = "rice-stun-types", default-features = false }
 rice-ctypes = { version = "0.4.3", path = "rice-ctypes" }
 

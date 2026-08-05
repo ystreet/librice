@@ -252,6 +252,8 @@ impl Clone for TurnTlsConfig {
             Self::Rustls(cfg) => unsafe { Self::Rustls(crate::ffi::rice_tls_config_ref(*cfg)) },
             #[cfg(feature = "openssl")]
             Self::Openssl(cfg) => unsafe { Self::Openssl(crate::ffi::rice_tls_config_ref(*cfg)) },
+            #[allow(unreachable_patterns)]
+            _ => unreachable!(),
         }
     }
 }
@@ -265,6 +267,8 @@ impl Drop for TurnTlsConfig {
             Self::Rustls(cfg) => unsafe { crate::ffi::rice_tls_config_unref(*cfg) },
             #[cfg(feature = "openssl")]
             Self::Openssl(cfg) => unsafe { crate::ffi::rice_tls_config_unref(*cfg) },
+            #[allow(unreachable_patterns)]
+            _ => unreachable!(),
         }
     }
 }

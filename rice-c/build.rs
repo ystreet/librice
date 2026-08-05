@@ -24,6 +24,8 @@ fn main() {
     let destdir = Path::new(&out_dir).join("rice-proto-cbuild");
     let pkgconfigdir = destdir.clone().join("lib").join("pkgconfig");
     let rice_proto_dir = manifest_dir.join("../rice-proto");
+    let features = env::var("CARGO_CFG_FEATURE").unwrap();
+    std::eprintln!("features: {features}");
 
     let rice_proto_exists = std::fs::File::open(rice_proto_dir.as_path()).is_ok();
     if rice_proto_exists {
@@ -67,7 +69,8 @@ fn main() {
                     .args([
                         "--target-dir",
                         destdir.join("target").as_path().to_str().unwrap(),
-                    ]);
+                    ])
+                    .args(["--no-default-features", "--features", &features]);
                 let cmd_state = &mut cmd;
                 if env::var("DEBUG").map(|v| v == "true").unwrap_or(false) {
                     cmd_state.arg("--debug");

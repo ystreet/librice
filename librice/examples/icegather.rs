@@ -101,7 +101,9 @@ impl clap::builder::TypedValueParser for TurnServerConfigParser {
         };
         let tls = if let Some(tls) = split.next() {
             match tls {
+                #[cfg(feature = "rustls")]
                 "rustls" => Some(TlsConfig::Rustls(split.next().map(|s| s.to_string()))),
+                #[cfg(feature = "openssl")]
                 "openssl" => Some(TlsConfig::Openssl),
                 tls_name => {
                     eprintln!("Unknown TLS implementation: {tls_name}");
@@ -204,7 +206,9 @@ async fn run() -> io::Result<()> {
     for ts in cli.turn_server {
         let credentials = TurnCredentials::new(&ts.user, &ts.pass);
         let tls_config = ts.tls.and_then(|tls| match tls {
+            #[cfg(feature = "openssl")]
             TlsConfig::Openssl => Some(TurnTlsConfig::new_openssl(ts.client_transport)),
+            #[cfg(feature = "rustls")]
             TlsConfig::Rustls(server_name) => {
                 if ts.client_transport != TransportType::Tcp {
                     eprintln!(
@@ -218,6 +222,8 @@ async fn run() -> io::Result<()> {
                     Some(TurnTlsConfig::new_rustls_with_ip(&ts.addr.into()))
                 }
             }
+            #[allow(unreachable_patterns)]
+            _ => None,
         });
         let mut turn_cfg =
             TurnConfig::new(ts.client_transport, ts.addr.into(), credentials.clone());

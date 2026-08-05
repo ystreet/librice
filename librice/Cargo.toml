@@ -13,9 +13,12 @@ rust-version.workspace = true
 workspace = ".."
 
 [features]
-default = ["runtime-smol", "runtime-tokio"]
+default = ["runtime-smol", "runtime-tokio", "openssl", "rustls"]
 runtime-smol = ["dep:smol", "dep:async-io"]
 runtime-tokio = ["dep:tokio"]
+openssl = ["rice-c/openssl"]
+rustls = ["rice-c/rustls"]
+dimpl = ["rice-c/dimpl"]
 
 [dependencies]
 rice-c.workspace = true
