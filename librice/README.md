@@ -41,7 +41,7 @@ more scenarios is part of the near and long term future roadmap.
    Traversal Using Relays around NAT (TURN) Extension for IPv6
  - [x] [RFC6544](https://tools.ietf.org/html/rfc6544):
    TCP Candidates with Interactive Connectivity Establishment (ICE)
- - [ ] [RFC7675](https://tools.ietf.org/html/rfc7675):
+ - [x] [RFC7675](https://tools.ietf.org/html/rfc7675):
    Session Traversal Utilities for NAT (STUN) Usage for Consent Freshness
  - [x] [RFC8445](https://tools.ietf.org/html/rfc8445):
    Interactive Connectivity Establishment (ICE): A Protocol for Network Address
@@ -54,10 +54,6 @@ more scenarios is part of the near and long term future roadmap.
  - [x] [RFC8838](https://tools.ietf.org/html/rfc8838):
    Trickle ICE: Incremental Provisioning of Candidates for the Interactive
    Connectivity Establishment (ICE) Protocol
-
-## TODO
-
-- RFC7675
 
 ## Building
 

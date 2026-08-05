@@ -108,10 +108,6 @@ An optional library exposing a C interface for handling IO using Rust's network
 primitives `UdpSocket`, and `TcpStream`. Uses a single dedicated thread for
 handling IO wakeups. It is not required for implementation.
 
-## TODO
-
-- RFC7675
-
 ## Building
 
 All crates in the workspace can be built using a standard `cargo build`
