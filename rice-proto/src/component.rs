@@ -209,7 +209,7 @@ impl<'a> ComponentMut<'a> {
             let msg = Message::from_bytes(&transmit.data).unwrap();
             let response = Message::builder_success(&msg, MessageWriteVec::new()).finish();
             let response = Message::from_bytes(&response).unwrap();
-            agent.handle_stun_message(&response, selected.remote.address);
+            agent.handle_stun_message_with_time(&response, selected.remote.address, Instant::ZERO);
         }
 
         let selected_pair = SelectedPair::new(selected, agent_id, None);

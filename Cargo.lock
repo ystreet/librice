@@ -2196,9 +2196,9 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "stun-proto"
-version = "2.0.1"
+version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "973ff3a3150361200a26ae16936cfc8fd379d047db6a27633874120e45f33fa6"
+checksum = "d93b223082474c3952d14cbea5b2d5356e913f6253e6b0e0659199149c483058"
 dependencies = [
  "base64",
  "byteorder",
@@ -2214,9 +2214,9 @@ dependencies = [
 
 [[package]]
 name = "stun-types"
-version = "2.0.1"
+version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e82b9e932463d6485689c145e557bc5f0b5c3e61081a418f2d2642cd2e1e1a0"
+checksum = "d50df914b1fa980b7408d3f49bdab19db7223115f8c4ae6eb162c039d7d63ad3"
 dependencies = [
  "byteorder",
  "crc",

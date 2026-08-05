@@ -2376,6 +2376,7 @@ impl ConnCheckListSet {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn handle_stun<T: AsRef<[u8]>>(
         &mut self,
         checklist_i: usize,
@@ -2384,6 +2385,7 @@ impl ConnCheckListSet {
         agent_id: StunAgentId,
         turn_id: Option<(StunAgentId, SocketAddr)>,
         ignorable: &mut Option<RecvIgnorable>,
+        now: Instant,
     ) -> bool {
         debug!("received STUN message {msg}");
         if msg.is_response() {
@@ -2395,7 +2397,7 @@ impl ConnCheckListSet {
                     let Some(agent) = self.checklists[checklist_i].mut_agent_by_id(agent_id) else {
                         return false;
                     };
-                    if !agent.handle_stun_message(&msg, transmit.from) {
+                    if !agent.handle_stun_message_with_time(&msg, transmit.from, now) {
                         return false;
                     }
                     self.handle_stun_response(checklist_i, &msg, transmit.from)
@@ -2526,6 +2528,7 @@ impl ConnCheckListSet {
         component_id: usize,
         transmit: Transmit<T>,
         turn_client_id: Option<(StunAgentId, SocketAddr)>,
+        now: Instant,
     ) -> HandleRecvReply<T> {
         if !self.checklists[checklist_i].pending_recv.is_empty() {
             panic!("Previous data has not been completely handled yet");
@@ -2565,6 +2568,7 @@ impl ConnCheckListSet {
                         agent_id,
                         turn_client_id,
                         &mut ignorable,
+                        now,
                     ) {
                         return HandleRecvReply {
                             handled: true,
@@ -2630,6 +2634,7 @@ impl ConnCheckListSet {
                                 agent_id,
                                 turn_client_id,
                                 &mut ignorable,
+                                now,
                             ) {
                                 handled = true;
                             }
@@ -2756,6 +2761,7 @@ impl ConnCheckListSet {
                         component_id,
                         transmit,
                         turn_client_id,
+                        now,
                     );
                     if let Some(data) = ret.data.as_ref() {
                         let checklist = &mut self.checklists[checklist_i];
@@ -2783,6 +2789,7 @@ impl ConnCheckListSet {
                                 component_id,
                                 transmit,
                                 turn_client_id,
+                                now,
                             );
                             if let Some(data) = ret.data.as_ref() {
                                 let checklist = &mut self.checklists[checklist_i];
@@ -2817,7 +2824,7 @@ impl ConnCheckListSet {
             }
         }
 
-        self.incoming_data_or_stun(checklist_i, component_id, transmit, turn_client_id)
+        self.incoming_data_or_stun(checklist_i, component_id, transmit, turn_client_id, now)
     }
 
     fn handle_binding_request(
@@ -5291,6 +5298,7 @@ mod tests {
         Ok(response.finish())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn reply_to_conncheck<T: AsRef<[u8]>>(
         agent: &mut StunAgent,
         auth: &ShortTermAuth,
@@ -6530,7 +6538,7 @@ mod tests {
             local_auth.validate_incoming_message(&response).unwrap(),
             Some(IntegrityAlgorithm::Sha1)
         ));
-        assert!(remote_agent.handle_stun_message(&response, transmit.transmit.from));
+        assert!(remote_agent.handle_stun_message_with_time(&response, transmit.transmit.from, now));
         assert_eq!(transmit.transmit.from, local_addr);
         assert!(response.has_class(MessageClass::Success));
         info!("have prflx response");
@@ -8250,7 +8258,7 @@ mod tests {
             local_auth.validate_incoming_message(&response).unwrap(),
             Some(IntegrityAlgorithm::Sha1)
         ));
-        assert!(remote_agent.handle_stun_message(&response, transmit.transmit.from));
+        assert!(remote_agent.handle_stun_message_with_time(&response, transmit.transmit.from, now));
         assert_eq!(transmit.transmit.from, state.local.peer.candidate.address);
         assert!(response.has_class(MessageClass::Success));
 
@@ -8290,7 +8298,7 @@ mod tests {
             local_auth.validate_incoming_message(&response).unwrap(),
             Some(IntegrityAlgorithm::Sha1)
         ));
-        assert!(remote_agent.handle_stun_message(&response, transmit.transmit.from));
+        assert!(remote_agent.handle_stun_message_with_time(&response, transmit.transmit.from, now));
         assert_eq!(transmit.transmit.from, local_candidate2.address);
         assert!(response.has_class(MessageClass::Success));
 
@@ -8408,7 +8416,7 @@ mod tests {
             local_auth.validate_incoming_message(&response).unwrap(),
             Some(IntegrityAlgorithm::Sha1)
         ));
-        assert!(remote_agent.handle_stun_message(&response, transmit.transmit.from));
+        assert!(remote_agent.handle_stun_message_with_time(&response, transmit.transmit.from, now));
         assert!(response.has_class(MessageClass::Success));
 
         let now = wait_advance(&mut state.local.checklist_set, now);
@@ -8571,7 +8579,7 @@ mod tests {
             local_auth.validate_incoming_message(&response).unwrap(),
             Some(IntegrityAlgorithm::Sha1)
         ));
-        assert!(remote_agent.handle_stun_message(&response, transmit.transmit.from));
+        assert!(remote_agent.handle_stun_message_with_time(&response, transmit.transmit.from, now));
         assert_eq!(transmit.transmit.from, state.local.peer.candidate.address);
         assert!(response.has_class(MessageClass::Success));
 
@@ -8610,7 +8618,7 @@ mod tests {
             local_auth.validate_incoming_message(&response).unwrap(),
             Some(IntegrityAlgorithm::Sha1)
         ));
-        assert!(remote_agent.handle_stun_message(&response, transmit.transmit.from));
+        assert!(remote_agent.handle_stun_message_with_time(&response, transmit.transmit.from, now));
         assert_eq!(transmit.transmit.from, local_candidate2.address);
         assert!(response.has_class(MessageClass::Success));
 
@@ -8739,7 +8747,7 @@ mod tests {
             local_auth.validate_incoming_message(&response).unwrap(),
             Some(IntegrityAlgorithm::Sha1)
         ));
-        assert!(remote_agent.handle_stun_message(&response, transmit.transmit.from));
+        assert!(remote_agent.handle_stun_message_with_time(&response, transmit.transmit.from, now));
         assert_eq!(transmit.transmit.from, state.local.peer.candidate.address);
         assert!(response.has_class(MessageClass::Error));
 

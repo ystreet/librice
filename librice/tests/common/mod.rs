@@ -83,9 +83,10 @@ fn handle_incoming_data(
     data: &[u8],
     from: SocketAddr,
     stun_agent: &mut StunAgent,
+    now: Instant,
 ) -> Option<(MessageWriteVec, SocketAddr)> {
     let msg = Message::from_bytes(data).ok()?;
-    if !stun_agent.handle_stun_message(&msg, from) {
+    if !stun_agent.handle_stun_message_with_time(&msg, from, now) {
         return None;
     }
     if msg.is_response() {
@@ -116,12 +117,17 @@ pub async fn stund_udp(udp_socket: Arc<dyn AsyncUdpSocket>) -> std::io::Result<(
     let local_addr = udp_socket.local_addr()?;
     let mut udp_stun_agent =
         StunAgent::builder(stun_proto::types::TransportType::Udp, local_addr).build();
+    let base_instant = std::time::Instant::now();
 
     loop {
         let mut data = vec![0; 1500];
         let (len, from) = warn_on_err(udp_socket.recv_from(&mut data).await, (0, local_addr));
-        if let Some((response, to)) = handle_incoming_data(&data[..len], from, &mut udp_stun_agent)
-        {
+        if let Some((response, to)) = handle_incoming_data(
+            &data[..len],
+            from,
+            &mut udp_stun_agent,
+            Instant::from_std(base_instant),
+        ) {
             warn_on_err(udp_socket.send_to(&response.finish(), to).await, 0);
         }
     }
@@ -150,9 +156,12 @@ pub async fn stund_tcp(
                 return;
             }
             debug!("stund tcp received {size} bytes");
-            if let Some((response, to)) =
-                handle_incoming_data(&data[..size], remote_addr, &mut tcp_stun_agent)
-            {
+            if let Some((response, to)) = handle_incoming_data(
+                &data[..size],
+                remote_addr,
+                &mut tcp_stun_agent,
+                Instant::from_std(base_instant),
+            ) {
                 if let Ok(transmit) =
                     tcp_stun_agent.send(response.finish(), to, Instant::from_std(base_instant))
                 {

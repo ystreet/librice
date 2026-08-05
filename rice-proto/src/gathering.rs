@@ -949,7 +949,7 @@ impl StunGatherer {
                             let other_preference = request.other_preference;
                             let component_id = request.component_id;
                             let server = request.server;
-                            if agent.handle_stun_message(&msg, transmit.from) {
+                            if agent.handle_stun_message_with_time(&msg, transmit.from, now) {
                                 request.completed = true;
                                 let Ok(xor_addr) = msg.attribute::<XorMappedAddress>() else {
                                     return true;
@@ -988,7 +988,7 @@ impl StunGatherer {
                                     "parsed STUN message {msg} from {} to {}",
                                     transmit.from, transmit.to
                                 );
-                                if agent.handle_stun_message(&msg, transmit.from) {
+                                if agent.handle_stun_message_with_time(&msg, transmit.from, now) {
                                     request.completed = true;
                                     let foundation = self.produced_i.to_string();
                                     let Ok(xor_addr) = msg.attribute::<XorMappedAddress>() else {
