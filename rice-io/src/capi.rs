@@ -814,7 +814,7 @@ pub unsafe extern "C" fn rice_sockets_add_tcp(
                     .map(|notify| Arc::new(Mutex::new(notify)));
                 let (runnable, task) = async_task::spawn(
                     {
-                        debug!("staring tcp recv task for {local_addr:?} -> {remote_addr:?}");
+                        debug!("starting tcp recv task for {local_addr:?} -> {remote_addr:?}");
                         let poll_guard = poll_guard.clone();
                         let semaphore = semaphore.clone();
                         let io_notify_data = io_notify_data.clone();
@@ -1341,6 +1341,7 @@ mod tests {
         enum Event {
             Io,
             Address(*mut RiceAddress),
+            Listened,
         }
         unsafe impl Send for Event {}
         unsafe {
@@ -1356,6 +1357,7 @@ mod tests {
 
             let addr = mut_override(RiceAddress::new("127.0.0.1:0".parse().unwrap()).into_c_full());
             let listener = rice_tcp_listen_with_callback(addr, {
+                let send = send.clone();
                 move |tcp| {
                     let sockets = sockets;
                     if let Some(tcp) = tcp {
@@ -1364,6 +1366,7 @@ mod tests {
                             sockets.ptr as *mut RiceSockets,
                             mut_override(Arc::into_raw(tcp)),
                         );
+                        let _ = send.send(Event::Listened);
                     }
                 }
             });
@@ -1390,16 +1393,21 @@ mod tests {
                 },
                 core::ptr::null_mut(),
             );
-            let remote_addr;
+            let mut remote_addr = None;
+            let mut listened = false;
             loop {
                 let event = recv.recv().unwrap();
                 debug!("{event:?}");
-                let Event::Address(addr) = event else {
-                    continue;
+                match event {
+                    Event::Address(addr) => remote_addr = Some(addr),
+                    Event::Listened => listened = true,
+                    _ => continue,
                 };
-                remote_addr = addr;
-                break;
+                if remote_addr.is_some() && listened {
+                    break;
+                }
             }
+            let remote_addr = remote_addr.unwrap();
             rice_tcp_listener_unref(listener);
 
             let data = [4; 6];
