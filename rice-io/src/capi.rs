@@ -14,10 +14,8 @@
 
 use core::ffi::c_void;
 
-use libc;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket};
-use std::os::fd::{AsFd, AsRawFd};
 use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::{panic, thread};
 
@@ -427,6 +425,7 @@ pub struct RiceSockets {
 }
 
 impl RiceSockets {
+    #[cfg(not(windows))]
     fn set_buffer_sizes_on_socket(&self, fd: i32, send_buf_size: u32, recv_buf_size: u32) {
         unsafe {
             libc::setsockopt(
@@ -446,7 +445,9 @@ impl RiceSockets {
         }
     }
 
+    #[cfg(not(windows))]
     fn set_buffer_sizes(&self, send_buf_size: u32, recv_buf_size: u32) {
+        use std::os::fd::{AsFd, AsRawFd};
         let inner = self.inner.lock().unwrap();
         for udp in inner.udp_sockets.values() {
             let fd = udp.inner.socket.as_fd().as_raw_fd();
@@ -539,6 +540,7 @@ impl RiceSockets {
 
     #[cfg(not(windows))]
     fn set_tos(&self, tos: i32) {
+        use std::os::fd::{AsFd, AsRawFd};
         let inner = self.inner.lock().unwrap();
         for udp in inner.udp_sockets.values() {
             let fd = udp.inner.socket.as_fd().as_raw_fd();
@@ -674,6 +676,7 @@ pub unsafe extern "C" fn rice_sockets_set_tos(sockets: *const RiceSockets, tos: 
 /// `RiceSockets`.
 ///
 /// This function is multi-threading safe.
+#[cfg(not(windows))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_sockets_set_buffer_sizes(
     sockets: *const RiceSockets,
