@@ -343,6 +343,26 @@ impl Credentials {
         }
     }
 
+    /// The username for this credential.
+    pub fn user(&self) -> String {
+        unsafe {
+            let user = crate::ffi::rice_credentials_get_user(self.ffi);
+            let owned = std::ffi::CStr::from_ptr(user).to_str().unwrap().to_string();
+            crate::ffi::rice_string_free(user);
+            owned
+        }
+    }
+
+    /// The password of this credential.
+    pub fn password(&self) -> String {
+        unsafe {
+            let pass = crate::ffi::rice_credentials_get_password(self.ffi);
+            let owned = std::ffi::CStr::from_ptr(pass).to_str().unwrap().to_string();
+            crate::ffi::rice_string_free(pass);
+            owned
+        }
+    }
+
     pub(crate) fn from_c_full(ffi: *mut crate::ffi::RiceCredentials) -> Self {
         Self { ffi }
     }

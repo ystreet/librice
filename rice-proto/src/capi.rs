@@ -1727,6 +1727,39 @@ pub unsafe extern "C" fn rice_credentials_get_ufrag_bytes(
     }
 }
 
+/// Retrieve the password for this `RiceCredentials`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_credentials_get_user(
+    credentials: *const RiceCredentials,
+) -> *mut c_char {
+    unsafe {
+        let creds = Box::from_raw(mut_override(credentials));
+        let s = CString::new(creds.credentials.ufrag.clone())
+            .unwrap()
+            .into_raw();
+        core::mem::forget(creds);
+        s
+    }
+}
+
+/// Retrieve the `RiceCandidate` ufrag attribute bytes.
+/// The pre-allocated array should be 256 bytes at most.
+///
+/// Returns the actual length of the ufrag attribute.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_credentials_get_password(
+    credentials: *const RiceCredentials,
+) -> *mut c_char {
+    unsafe {
+        let creds = Box::from_raw(mut_override(credentials));
+        let s = CString::new(creds.credentials.passwd.clone())
+            .unwrap()
+            .into_raw();
+        core::mem::forget(creds);
+        s
+    }
+}
+
 /// Compare two sets of Credentials.
 ///
 /// This function is NULL safe.
@@ -3434,6 +3467,16 @@ mod tests {
             let s = c_str.to_str().expect("Bad encoding!");
             assert_eq!(s, "luser");
             assert_eq!(len, 5);
+            let user = rice_credentials_get_user(credentials);
+            let c_str = CStr::from_ptr(user);
+            let s = c_str.to_str().expect("Bad encoding!");
+            assert_eq!(s, "luser");
+            rice_string_free(user);
+            let pass = rice_credentials_get_password(credentials);
+            let c_str = CStr::from_ptr(pass);
+            let s = c_str.to_str().expect("Bad encoding!");
+            assert_eq!(s, "lpass");
+            rice_string_free(pass);
             rice_credentials_free(credentials);
         }
     }
