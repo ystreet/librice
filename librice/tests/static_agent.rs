@@ -8,7 +8,7 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-use core::net::SocketAddr;
+use core::net::{IpAddr, SocketAddr};
 
 use std::net::UdpSocket;
 use std::sync::Arc;
@@ -72,7 +72,7 @@ struct AgentConfig {
     ice_lite: bool,
     transports: Vec<TransportType>,
     candidate_filter: DebugWrapper<Box<dyn Fn(&GatheredCandidate) -> bool + core::marker::Send>>,
-    turn_servers: Vec<TurnConfig>,
+    turn_servers: Vec<TransportType>,
 }
 
 impl Default for AgentConfig {
@@ -105,7 +105,7 @@ impl AgentConfig {
         self.transports = transports.to_vec();
         self
     }
-    fn turn_servers(mut self, turn_servers: Vec<TurnConfig>) -> Self {
+    fn turn_servers(mut self, turn_servers: Vec<TransportType>) -> Self {
         self.turn_servers = turn_servers;
         self
     }
@@ -124,31 +124,35 @@ struct AgentStaticTestConfig {
     remote: AgentConfig,
 }
 
+fn address_is_ignorable(ip: IpAddr) -> bool {
+    // TODO: add is_benchmarking() and is_documentation() when they become stable
+    if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
+        return true;
+    }
+    match ip {
+        IpAddr::V4(ipv4) => ipv4.is_broadcast() || ipv4.is_link_local(),
+        IpAddr::V6(_ipv6) => false,
+    }
+}
+
+fn turn_credentials() -> Credentials {
+    Credentials::new("tuser", "tpass")
+}
+
 #[tracing::instrument(name = "agent_static_connection")]
 async fn agent_static_connection_test(config: AgentStaticTestConfig) {
-    let runtime = default_runtime().expect("No runtime");
-    let udp_stun_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-    let udp_stun_addr = udp_stun_socket.local_addr().unwrap();
-    let (udp_abort_handle, abort_registration) = AbortHandle::new_pair();
-    let udp_stun_socket = runtime.wrap_udp_socket(udp_stun_socket).unwrap();
-    let udp_stun_server = Abortable::new(common::stund_udp(udp_stun_socket), abort_registration);
-    runtime.spawn(Box::pin(async move {
-        let _ = udp_stun_server.await;
-    }));
+    let mut ifaces = if_addrs::get_if_addrs().unwrap();
+    // We only care about non-loopback interfaces for now
+    // TODO: remove 'Deprecated IPv4-compatible IPv6 addresses [RFC4291]'
+    // TODO: remove 'IPv6 site-local unicast addresses [RFC3879]'
+    // TODO: remove 'IPv4-mapped IPv6 addresses unless ipv6 only'
+    // TODO: location tracking Ipv6 address mismatches
+    ifaces.retain(|e| !address_is_ignorable(e.ip()));
 
-    let tcp_stun_socket = runtime
-        .new_tcp_listener("127.0.0.1:0".parse().unwrap())
-        .await
-        .unwrap();
-    let tcp_stun_addr = tcp_stun_socket.local_addr().unwrap();
-    let (tcp_abort_handle, abort_registration) = AbortHandle::new_pair();
-    let tcp_stun_server = Abortable::new(
-        common::stund_tcp(runtime.clone(), tcp_stun_socket),
-        abort_registration,
-    );
-    runtime.spawn(Box::pin(async move {
-        let _ = tcp_stun_server.await;
-    }));
+    let mut stun_abort_handles = vec![];
+    #[cfg(feature = "runtime-smol")]
+    let mut turn_servers = vec![];
+    let runtime = default_runtime().expect("No runtime");
 
     let lagent = Arc::new(
         Agent::builder()
@@ -157,16 +161,6 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
             .ice_lite(config.local.ice_lite)
             .build(),
     );
-    if config.local.transports.contains(&TransportType::Udp) {
-        lagent.add_stun_server(TransportType::Udp, udp_stun_addr);
-    }
-    if config.local.transports.contains(&TransportType::Tcp) {
-        lagent.add_stun_server(TransportType::Tcp, tcp_stun_addr);
-    }
-
-    for turn in config.local.turn_servers {
-        lagent.add_turn_server(turn);
-    }
 
     let ragent = Arc::new(
         Agent::builder()
@@ -175,15 +169,102 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
             .ice_lite(config.remote.ice_lite)
             .build(),
     );
-    if config.remote.transports.contains(&TransportType::Udp) {
-        ragent.add_stun_server(TransportType::Udp, udp_stun_addr);
-    }
-    if config.remote.transports.contains(&TransportType::Tcp) {
-        ragent.add_stun_server(TransportType::Tcp, tcp_stun_addr);
-    }
 
-    for turn in config.remote.turn_servers {
-        ragent.add_turn_server(turn);
+    for iface in ifaces {
+        let local_addr = SocketAddr::new(iface.ip(), 0);
+
+        let udp_stun_socket = UdpSocket::bind(local_addr).unwrap();
+        let udp_stun_addr = udp_stun_socket.local_addr().unwrap();
+        let (udp_abort_handle, abort_registration) = AbortHandle::new_pair();
+        let udp_stun_socket = runtime.wrap_udp_socket(udp_stun_socket).unwrap();
+        let udp_stun_server =
+            Abortable::new(common::stund_udp(udp_stun_socket), abort_registration);
+        runtime.spawn(Box::pin(async move {
+            let _ = udp_stun_server.await;
+        }));
+        stun_abort_handles.push(udp_abort_handle);
+
+        if config.local.transports.contains(&TransportType::Udp) {
+            lagent.add_stun_server(TransportType::Udp, udp_stun_addr);
+        }
+        if config.remote.transports.contains(&TransportType::Udp) {
+            ragent.add_stun_server(TransportType::Udp, udp_stun_addr);
+        }
+
+        let tcp_stun_socket = runtime.new_tcp_listener(local_addr).await.unwrap();
+        let tcp_stun_addr = tcp_stun_socket.local_addr().unwrap();
+        let (tcp_abort_handle, abort_registration) = AbortHandle::new_pair();
+        let tcp_stun_server = Abortable::new(
+            common::stund_tcp(runtime.clone(), tcp_stun_socket),
+            abort_registration,
+        );
+        runtime.spawn(Box::pin(async move {
+            let _ = tcp_stun_server.await;
+        }));
+        stun_abort_handles.push(tcp_abort_handle);
+
+        if config.local.transports.contains(&TransportType::Tcp) {
+            lagent.add_stun_server(TransportType::Tcp, tcp_stun_addr);
+        }
+        if config.remote.transports.contains(&TransportType::Tcp) {
+            ragent.add_stun_server(TransportType::Tcp, tcp_stun_addr);
+        }
+
+        #[cfg(feature = "runtime-smol")]
+        for transport in config.local.turn_servers.iter() {
+            let server = match transport {
+                TransportType::Udp => {
+                    turn_server::TurnServer::new_udp(
+                        local_addr,
+                        "realm".to_string(),
+                        local_addr.ip(),
+                    )
+                    .await
+                }
+                TransportType::Tcp => {
+                    turn_server::TurnServer::new_tcp(
+                        local_addr,
+                        "realm".to_string(),
+                        local_addr.ip(),
+                    )
+                    .await
+                }
+            };
+            let credentials = turn_credentials();
+            server.add_user(&credentials.user(), &credentials.password());
+            let listen_addr = server.listen_address();
+            let config = TurnConfig::new(*transport, listen_addr.into(), credentials);
+            turn_servers.push(server);
+            lagent.add_turn_server(config);
+        }
+
+        #[cfg(feature = "runtime-smol")]
+        for transport in config.remote.turn_servers.iter() {
+            let server = match transport {
+                TransportType::Udp => {
+                    turn_server::TurnServer::new_udp(
+                        local_addr,
+                        "realm".to_string(),
+                        local_addr.ip(),
+                    )
+                    .await
+                }
+                TransportType::Tcp => {
+                    turn_server::TurnServer::new_tcp(
+                        local_addr,
+                        "realm".to_string(),
+                        local_addr.ip(),
+                    )
+                    .await
+                }
+            };
+            let credentials = turn_credentials();
+            server.add_user(&credentials.user(), &credentials.password());
+            let listen_addr = server.listen_address();
+            let config = TurnConfig::new(*transport, listen_addr.into(), credentials);
+            turn_servers.push(server);
+            lagent.add_turn_server(config);
+        }
     }
 
     let lcreds = Credentials::new("luser", "lpass");
@@ -312,8 +393,9 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     ragent.close();
     trace!("agents closed");
 
-    udp_abort_handle.abort();
-    tcp_abort_handle.abort();
+    for handle in stun_abort_handles {
+        handle.abort();
+    }
     trace!("agents aborted");
 
     lexit.next().await.unwrap();
@@ -553,35 +635,15 @@ fn candidate_filter_relay_only(gathered: &GatheredCandidate) -> bool {
 }
 
 #[cfg(feature = "runtime-smol")]
-fn turn_credentials() -> Credentials {
-    Credentials::new("tuser", "tpass")
-}
-
-#[cfg(feature = "runtime-smol")]
-async fn udp_turn_server_localhost_ipv4() -> (turn_server::TurnServer, TurnConfig) {
-    let listen_addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
-    let relay_addr = listen_addr.ip();
-    let server =
-        turn_server::TurnServer::new_udp(listen_addr, "realm".to_string(), relay_addr).await;
-    server.add_user("tuser", "tpass");
-    let listen_addr = server.listen_address();
-    (
-        server,
-        TurnConfig::new(TransportType::Udp, listen_addr.into(), turn_credentials()),
-    )
-}
-
-#[cfg(feature = "runtime-smol")]
 #[test]
 fn agent_static_connection_local_controlling_udp_client_turn_server() {
     common::debug_init();
     smol::block_on(async move {
-        let local_turn = udp_turn_server_localhost_ipv4().await;
         agent_static_connection_test(AgentStaticTestConfig {
             local: AgentConfig::default()
                 .controlling(true)
                 .candidate_filter(Box::new(candidate_filter_relay_only))
-                .turn_servers(vec![local_turn.1]),
+                .turn_servers(vec![TransportType::Udp]),
             remote: AgentConfig::default().candidate_filter(Box::new(move |candidate| {
                 candidate_filter_accept_transport(candidate, &[TransportType::Udp])
             })),
@@ -591,30 +653,15 @@ fn agent_static_connection_local_controlling_udp_client_turn_server() {
 }
 
 #[cfg(feature = "runtime-smol")]
-async fn tcp_turn_server_localhost_ipv4() -> (turn_server::TurnServer, TurnConfig) {
-    let listen_addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
-    let relay_addr = listen_addr.ip();
-    let server =
-        turn_server::TurnServer::new_tcp(listen_addr, "realm".to_string(), relay_addr).await;
-    server.add_user("tuser", "tpass");
-    let listen_addr = server.listen_address();
-    (
-        server,
-        TurnConfig::new(TransportType::Tcp, listen_addr.into(), turn_credentials()),
-    )
-}
-
-#[cfg(feature = "runtime-smol")]
 #[test]
 fn agent_static_connection_local_controlling_tcp_client_turn_server() {
     common::debug_init();
     smol::block_on(async move {
-        let local_turn = tcp_turn_server_localhost_ipv4().await;
         agent_static_connection_test(AgentStaticTestConfig {
             local: AgentConfig::default()
                 .controlling(true)
                 .candidate_filter(Box::new(candidate_filter_relay_only))
-                .turn_servers(vec![local_turn.1]),
+                .turn_servers(vec![TransportType::Tcp]),
             remote: AgentConfig::default().candidate_filter(Box::new(move |candidate| {
                 candidate_filter_accept_transport(candidate, &[TransportType::Udp])
             })),
