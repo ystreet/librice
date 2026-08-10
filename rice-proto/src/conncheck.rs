@@ -707,11 +707,15 @@ impl ConnCheckList {
     pub fn set_local_credentials(&mut self, credentials: Credentials) {
         trace!(
             "changing local credentials from {:?} to {credentials:?}",
-            self.remote_credentials
+            self.local_credentials
         );
         self.stun_auth_local
             .set_credentials(credentials.clone().into(), IntegrityAlgorithm::Sha1);
         self.local_credentials = credentials;
+    }
+
+    pub fn local_credentials(&self) -> &Credentials {
+        &self.local_credentials
     }
 
     /// Set the remote [`Credentials`] for this checklist
@@ -772,6 +776,10 @@ impl ConnCheckList {
         }
 
         self.remote_credentials = credentials;
+    }
+
+    pub fn remote_credentials(&self) -> &Credentials {
+        &self.remote_credentials
     }
 
     /// Add a component id to this checklist

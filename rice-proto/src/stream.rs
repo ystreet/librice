@@ -119,11 +119,12 @@ impl<'a> Stream<'a> {
     /// let mut stream = agent.mut_stream(stream_id).unwrap();
     /// let credentials = Credentials {ufrag: "1".to_owned(), passwd: "2".to_owned()};
     /// stream.set_local_credentials(credentials.clone());
-    /// assert_eq!(stream.local_credentials(), Some(credentials));
+    /// assert_eq!(stream.local_credentials(), Some(&credentials));
     /// ```
-    pub fn local_credentials(&self) -> Option<Credentials> {
+    pub fn local_credentials(&self) -> Option<&Credentials> {
         let stream_state = self.agent.stream_state(self.id)?;
-        stream_state.local_credentials()
+        let checklist = self.agent.checklistset.list(stream_state.checklist_id)?;
+        Some(checklist.local_credentials())
     }
 
     /// Retreive the previouly set remote ICE credentials for this `Stream`.
@@ -138,11 +139,12 @@ impl<'a> Stream<'a> {
     /// let mut stream = agent.mut_stream(stream_id).unwrap();
     /// let credentials = Credentials {ufrag: "1".to_owned(), passwd: "2".to_owned()};
     /// stream.set_remote_credentials(credentials.clone());
-    /// assert_eq!(stream.remote_credentials(), Some(credentials));
+    /// assert_eq!(stream.remote_credentials(), Some(&credentials));
     /// ```
-    pub fn remote_credentials(&self) -> Option<Credentials> {
+    pub fn remote_credentials(&self) -> Option<&Credentials> {
         let stream_state = self.agent.stream_state(self.id)?;
-        stream_state.remote_credentials()
+        let checklist = self.agent.checklistset.list(stream_state.checklist_id)?;
+        Some(checklist.remote_credentials())
     }
 
     /// Retrieve previously gathered local candidates
@@ -284,7 +286,6 @@ impl<'a> StreamMut<'a> {
     /// ```
     pub fn set_local_credentials(&mut self, credentials: Credentials) {
         let stream_state = self.agent.mut_stream_state(self.id).unwrap();
-        stream_state.set_local_credentials(credentials.clone());
         let checklist_id = stream_state.checklist_id;
         let checklist = self.agent.checklistset.mut_list(checklist_id).unwrap();
         checklist.set_local_credentials(credentials);
@@ -305,7 +306,6 @@ impl<'a> StreamMut<'a> {
     /// ```
     pub fn set_remote_credentials(&mut self, credentials: Credentials) {
         let stream_state = self.agent.mut_stream_state(self.id).unwrap();
-        stream_state.set_remote_credentials(credentials.clone());
         let checklist_id = stream_state.checklist_id;
         let checklist = self.agent.checklistset.mut_list(checklist_id).unwrap();
         checklist.set_remote_credentials(credentials);
@@ -499,8 +499,6 @@ pub(crate) struct StreamState {
     id: usize,
     pub(crate) checklist_id: usize,
     components: Vec<Option<ComponentState>>,
-    local_credentials: Option<Credentials>,
-    remote_credentials: Option<Credentials>,
 }
 
 impl StreamState {
@@ -509,8 +507,6 @@ impl StreamState {
             id,
             checklist_id,
             components: Vec::new(),
-            local_credentials: None,
-            remote_credentials: None,
         }
     }
 
@@ -570,36 +566,6 @@ impl StreamState {
         self.components[index] = Some(component);
         trace!("Added component at index {}", index);
         Ok(index + 1)
-    }
-
-    #[tracing::instrument(
-        skip(self),
-        fields(
-            stream.id = self.id
-        )
-    )]
-    fn set_local_credentials(&mut self, credentials: Credentials) {
-        info!("setting");
-        self.local_credentials = Some(credentials.clone());
-    }
-
-    pub(crate) fn local_credentials(&self) -> Option<Credentials> {
-        self.local_credentials.clone()
-    }
-
-    #[tracing::instrument(
-        skip(self),
-        fields(
-            stream.id = self.id()
-        )
-    )]
-    fn set_remote_credentials(&mut self, credentials: Credentials) {
-        info!("setting");
-        self.remote_credentials = Some(credentials.clone());
-    }
-
-    pub(crate) fn remote_credentials(&self) -> Option<Credentials> {
-        self.remote_credentials.clone()
     }
 
     pub(crate) fn handle_incoming_data<T: AsRef<[u8]> + core::fmt::Debug>(
@@ -719,9 +685,9 @@ mod tests {
         assert_eq!(comp_id, stream.component(comp_id).unwrap().id());
 
         stream.set_local_credentials(lcreds.clone());
-        assert_eq!(stream.local_credentials().unwrap(), lcreds);
+        assert_eq!(stream.local_credentials().unwrap(), &lcreds);
         stream.set_remote_credentials(rcreds.clone());
-        assert_eq!(stream.remote_credentials().unwrap(), rcreds);
+        assert_eq!(stream.remote_credentials().unwrap(), &rcreds);
     }
 
     /// After local gathering completes, TCP connectivity checks still request a socket via

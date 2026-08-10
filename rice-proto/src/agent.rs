@@ -606,28 +606,20 @@ impl Agent {
                     {
                         if stream.component_state(cid).is_some() {
                             if !self.checklistset.ice_lite() {
-                                if let Some(cf) = &mut self.consent_freshness {
-                                    let pair = selected.candidate_pair();
+                                if let Some(checklist) = self.checklistset.list(checklist_id) {
+                                    if let Some(cf) = &mut self.consent_freshness {
+                                        let pair = selected.candidate_pair();
 
-                                    if let (Some(local_creds), Some(remote_creds)) =
-                                        (stream.local_credentials(), stream.remote_credentials())
-                                    {
                                         cf.start(
                                             stream.id(),
                                             cid,
                                             pair.local.clone(),
                                             pair.remote.address,
-                                            local_creds,
-                                            remote_creds,
+                                            checklist.local_credentials().clone(),
+                                            checklist.remote_credentials().clone(),
                                             self.checklistset.controlling(),
                                             self.checklistset.tie_breaker(),
                                             now,
-                                        );
-                                    } else {
-                                        warn!(
-                                            "missing credentials for stream {}, component {}",
-                                            stream.id(),
-                                            cid
                                         );
                                     }
                                 }

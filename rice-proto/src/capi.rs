@@ -1800,7 +1800,7 @@ pub unsafe extern "C" fn rice_stream_get_local_credentials(
         let proto_stream = proto_agent.stream(stream.stream_id).unwrap();
 
         let ret = if let Some(credentials) = proto_stream.local_credentials() {
-            credentials_to_c(credentials)
+            credentials_to_c(credentials.clone())
         } else {
             mut_override(core::ptr::null::<RiceCredentials>())
         };
@@ -1822,7 +1822,7 @@ pub unsafe extern "C" fn rice_stream_get_remote_credentials(
         let proto_stream = proto_agent.stream(stream.stream_id).unwrap();
 
         let ret = if let Some(credentials) = proto_stream.remote_credentials() {
-            credentials_to_c(credentials)
+            credentials_to_c(credentials.clone())
         } else {
             mut_override(core::ptr::null::<RiceCredentials>())
         };
