@@ -144,7 +144,7 @@ impl<'a> Stream<'a> {
     pub fn remote_credentials(&self) -> Option<&Credentials> {
         let stream_state = self.agent.stream_state(self.id)?;
         let checklist = self.agent.checklistset.list(stream_state.checklist_id)?;
-        Some(checklist.remote_credentials())
+        checklist.remote_credentials()
     }
 
     /// Retrieve previously gathered local candidates
@@ -668,8 +668,9 @@ impl StreamState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{Agent, AgentPoll};
+    use crate::agent::{Agent, AgentComponentStateChange, AgentPoll};
     use crate::candidate::{Candidate, CandidateType, TcpType, TransportType};
+    use crate::component::ComponentConnectionState;
 
     #[test]
     fn getters_setters() {
@@ -773,6 +774,22 @@ mod tests {
             Ok(bound),
             now,
         );
+
+        let AgentPoll::ComponentStateChange(AgentComponentStateChange {
+            stream_id: recv_stream_id,
+            component_id: recv_component_id,
+            state,
+        }) = agent.poll(now)
+        else {
+            unreachable!()
+        };
+        assert_eq!(recv_stream_id, stream_id);
+        assert_eq!(recv_component_id, component_id);
+        assert_eq!(state, ComponentConnectionState::Connecting);
+
+        let AgentPoll::WaitUntil(_now) = agent.poll(now) else {
+            unreachable!();
+        };
 
         assert!(
             agent.poll_transmit(now).is_some(),

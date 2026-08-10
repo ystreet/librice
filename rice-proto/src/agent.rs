@@ -608,19 +608,23 @@ impl Agent {
                             if !self.checklistset.ice_lite() {
                                 if let Some(checklist) = self.checklistset.list(checklist_id) {
                                     if let Some(cf) = &mut self.consent_freshness {
-                                        let pair = selected.candidate_pair();
+                                        if let Some(remote_credentials) =
+                                            checklist.remote_credentials()
+                                        {
+                                            let pair = selected.candidate_pair();
 
-                                        cf.start(
-                                            stream.id(),
-                                            cid,
-                                            pair.local.clone(),
-                                            pair.remote.address,
-                                            checklist.local_credentials().clone(),
-                                            checklist.remote_credentials().clone(),
-                                            self.checklistset.controlling(),
-                                            self.checklistset.tie_breaker(),
-                                            now,
-                                        );
+                                            cf.start(
+                                                stream.id(),
+                                                cid,
+                                                pair.local.clone(),
+                                                pair.remote.address,
+                                                checklist.local_credentials().clone(),
+                                                remote_credentials.clone(),
+                                                self.checklistset.controlling(),
+                                                self.checklistset.tie_breaker(),
+                                                now,
+                                            );
+                                        }
                                     }
                                 }
                             }
