@@ -4047,13 +4047,6 @@ impl ConnCheckListSet {
                         }
                     }
                 }
-                trace!("last send time {:?}", self.last_send_time);
-                if let Some(last_send) = self.last_send_time {
-                    if last_send + self.timing_advance > now {
-                        trace!("last send time too close to the past, waiting");
-                        return CheckListSetPollRet::WaitUntil(last_send + self.timing_advance);
-                    }
-                }
             }
             checklist.check_for_failure();
             trace!(
@@ -4067,6 +4060,15 @@ impl ConnCheckListSet {
                 }
             } else {
                 all_failed = false;
+            }
+            if checklist_state == CheckListState::Running {
+                trace!("last send time {:?}", self.last_send_time);
+                if let Some(last_send) = self.last_send_time {
+                    if last_send + self.timing_advance > now {
+                        trace!("last send time too close to the past, waiting");
+                        return CheckListSetPollRet::WaitUntil(last_send + self.timing_advance);
+                    }
+                }
             }
 
             let conncheck_id = match self.next_check() {
@@ -6023,6 +6025,8 @@ mod tests {
         let wrong_credentials =
             Credentials::new(String::from("wronguser"), String::from("wrongpass"));
         local_list.set_local_credentials(wrong_credentials);
+        local_list.end_of_local_candidates();
+        local_list.end_of_remote_candidates();
 
         let pair = CandidatePair::new(
             state.local.peer.candidate.clone(),
@@ -6047,14 +6051,21 @@ mod tests {
         let check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(check.state(), CandidatePairState::Failed);
 
-        // TODO: properly failing the checklist on all checks failing
-        // check should be failed
-        //assert_eq!(state.local_list().state(), CheckListState::Failed);
-
-        //assert!(matches!(
-        //    state.local.checklist_set.poll(now),
-        //    CheckListSetPollRet::Completed
-        //));
+        assert!(matches!(
+            state.local.checklist_set.poll(now),
+            CheckListSetPollRet::Event {
+                checklist_id: _,
+                event: ConnCheckEvent::ComponentState(
+                    _component_state,
+                    ComponentConnectionState::Failed
+                )
+            }
+        ));
+        assert_eq!(state.local_list().state(), CheckListState::Failed);
+        assert!(matches!(
+            state.local.checklist_set.poll(now),
+            CheckListSetPollRet::Completed
+        ));
     }
 
     #[test]
