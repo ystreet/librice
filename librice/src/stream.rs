@@ -28,7 +28,7 @@ use rice_c::agent::{AgentError as ProtoAgentError, AgentTransmit, SelectedTurn};
 use rice_c::candidate::{Candidate, TransportType};
 use rice_c::stream::GatheredCandidate;
 
-pub use rice_c::stream::Credentials;
+pub use rice_c::stream::{Credentials, RestartStreamConfig};
 
 /// An ICE [`Stream`]
 #[derive(Debug, Clone)]
@@ -957,6 +957,14 @@ impl Stream {
             .proto_stream
             .add_local_gathered_candidate(gathered)
     }
+
+    /// Perform an ICE restart of this stream.
+    pub fn restart(&self, config: &RestartStreamConfig) {
+        let base_instant = self.state.base_instant;
+        self.state
+            .proto_stream
+            .restart(config, Instant::from_std(base_instant));
+    }
 }
 
 #[cfg(test)]
@@ -1123,5 +1131,20 @@ mod tests {
         let remote_cands = stream.remote_candidates();
         assert_eq!(remote_cands.len(), 1);
         assert_eq!(remote_cands[0], candidate);
+    }
+
+    #[test]
+    fn restart_config_getters_setters() {
+        let mut config = RestartStreamConfig::default();
+        for val in [true, false] {
+            config = config.set_remove_local_candidates(val);
+            assert_eq!(config.remove_local_candidates(), val);
+        }
+        let mut config = config.clone();
+        assert!(config.new_local_credentials().is_none());
+        let credentials = Credentials::new("restartuser", "restartpass");
+        config = config.set_new_local_credentials(&credentials);
+        let retrieved = config.new_local_credentials().unwrap();
+        assert_eq!(credentials, retrieved);
     }
 }

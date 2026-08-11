@@ -11,8 +11,8 @@
 use core::net::{IpAddr, SocketAddr};
 
 use std::net::UdpSocket;
-use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, Mutex};
 
 use librice::runtime::default_runtime;
 use rice_c::candidate::CandidateType;
@@ -24,10 +24,10 @@ use futures::{SinkExt, StreamExt};
 
 use rice_c::prelude::*;
 
-use librice::agent::{Agent, AgentMessage};
+use librice::agent::{Agent, AgentMessage, RestartConfig, RoleChange};
 use librice::candidate::TransportType;
 use librice::component::ComponentConnectionState;
-use librice::stream::Credentials;
+use librice::stream::{Credentials, RestartStreamConfig};
 
 #[macro_use]
 extern crate tracing;
@@ -66,13 +66,30 @@ impl<T> core::ops::DerefMut for DebugWrapper<T> {
 }
 
 #[derive(Debug)]
+enum Restart {
+    Agent(RestartConfig),
+    Stream(RestartStreamConfig),
+}
+
+impl Restart {
+    fn remove_local_candidates(&self) -> bool {
+        match self {
+            Self::Agent(config) => config.remove_local_candidates(),
+            Self::Stream(config) => config.remove_local_candidates(),
+        }
+    }
+}
+
+#[derive(Debug)]
 struct AgentConfig {
     controlling: bool,
     trickle_ice: bool,
     ice_lite: bool,
     transports: Vec<TransportType>,
-    candidate_filter: DebugWrapper<Box<dyn Fn(&GatheredCandidate) -> bool + core::marker::Send>>,
+    candidate_filter:
+        DebugWrapper<Option<Box<dyn Fn(&GatheredCandidate) -> bool + core::marker::Send>>>,
     turn_servers: Vec<TransportType>,
+    restarts: Vec<Restart>,
 }
 
 impl Default for AgentConfig {
@@ -82,8 +99,9 @@ impl Default for AgentConfig {
             trickle_ice: false,
             ice_lite: false,
             transports: vec![],
-            candidate_filter: DebugWrapper::new(Box::new(candidate_filter_accept_all)),
+            candidate_filter: DebugWrapper::new(Some(Box::new(candidate_filter_accept_all))),
             turn_servers: vec![],
+            restarts: vec![],
         }
     }
 }
@@ -113,7 +131,11 @@ impl AgentConfig {
         mut self,
         candidate_filter: Box<dyn Fn(&GatheredCandidate) -> bool + core::marker::Send>,
     ) -> Self {
-        self.candidate_filter.inner = candidate_filter;
+        self.candidate_filter.inner = Some(candidate_filter);
+        self
+    }
+    fn restarts(mut self, restarts: Vec<Restart>) -> Self {
+        self.restarts = restarts;
         self
     }
 }
@@ -140,7 +162,7 @@ fn turn_credentials() -> Credentials {
 }
 
 #[tracing::instrument(name = "agent_static_connection")]
-async fn agent_static_connection_test(config: AgentStaticTestConfig) {
+async fn agent_static_connection_test(mut config: AgentStaticTestConfig) {
     let mut ifaces = if_addrs::get_if_addrs().unwrap();
     // We only care about non-loopback interfaces for now
     // TODO: remove 'Deprecated IPv4-compatible IPv6 addresses [RFC4291]'
@@ -271,35 +293,44 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     let rcreds = Credentials::new("ruser", "rpass");
 
     let lstream = lagent.add_stream();
+    let lcomp = lstream.add_component().unwrap();
     lstream.set_local_credentials(&lcreds);
     lstream.set_remote_credentials(&rcreds);
-    let lcomp = lstream.add_component().unwrap();
 
     let rstream = ragent.add_stream();
+    let rcomp = rstream.add_component().unwrap();
     rstream.set_local_credentials(&rcreds);
     rstream.set_remote_credentials(&lcreds);
-    let rcomp = rstream.add_component().unwrap();
 
     lstream.gather_candidates().await.unwrap();
     rstream.gather_candidates().await.unwrap();
 
+    let local_candidate_filter =
+        Arc::new(Mutex::new(config.local.candidate_filter.take().unwrap()));
+    let remote_candidate_filter =
+        Arc::new(Mutex::new(config.remote.candidate_filter.take().unwrap()));
+    let (lexit_send, mut lexit) = futures::channel::mpsc::channel(1);
+    let (rexit_send, mut rexit) = futures::channel::mpsc::channel(1);
     let n_completed = Arc::new(AtomicUsize::new(0));
     let (complete_send, mut completed) = futures::channel::mpsc::channel(1);
     let mut lmessages = lagent.messages();
     let mut rmessages = ragent.messages();
     let (lgath_send, mut lgathered) = futures::channel::mpsc::channel(1);
-    let (mut lexit_send, mut lexit) = futures::channel::mpsc::channel(1);
+    let (rgath_send, mut rgathered) = futures::channel::mpsc::channel(1);
     runtime.spawn({
         let n_completed = n_completed.clone();
         let complete_send = complete_send.clone();
         let lgath_send = lgath_send.clone();
         let lstream = lstream.clone();
         let rstream = rstream.clone();
+        let mut lexit_send = lexit_send.clone();
+        let local_candidate_filter = local_candidate_filter.clone();
         Box::pin(async move {
             while let Some(msg) = lmessages.next().await {
                 match msg {
                     AgentMessage::GatheredCandidate(_stream, gathered) => {
-                        if config.local.candidate_filter.as_ref()(&gathered) {
+                        let local_candidate_filter = local_candidate_filter.lock().unwrap();
+                        if local_candidate_filter.as_ref()(&gathered) {
                             let candidate = gathered.candidate();
                             lstream.add_local_gathered_candidate(gathered);
                             rstream.add_remote_candidate(&candidate);
@@ -322,16 +353,19 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
         })
     });
 
-    let (rgath_send, mut rgathered) = futures::channel::mpsc::channel(1);
-    let (mut rexit_send, mut rexit) = futures::channel::mpsc::channel(1);
     runtime.spawn({
         let rgath_send = rgath_send.clone();
         let n_completed = n_completed.clone();
+        let lstream = lstream.clone();
+        let rstream = rstream.clone();
+        let mut rexit_send = rexit_send.clone();
+        let remote_candidate_filter = remote_candidate_filter.clone();
         Box::pin(async move {
             while let Some(msg) = rmessages.next().await {
                 match msg {
                     AgentMessage::GatheredCandidate(_stream, gathered) => {
-                        if config.remote.candidate_filter.as_ref()(&gathered) {
+                        let remote_candidate_filter = remote_candidate_filter.lock().unwrap();
+                        if remote_candidate_filter.as_ref()(&gathered) {
                             let candidate = gathered.candidate();
                             rstream.add_local_gathered_candidate(gathered);
                             lstream.add_remote_candidate(&candidate);
@@ -360,34 +394,134 @@ async fn agent_static_connection_test(config: AgentStaticTestConfig) {
     if !config.remote.trickle_ice {
         let _ = rgathered.next().await;
     }
-    drop(lgathered);
-    drop(rgathered);
     trace!("gathered");
 
-    completed.next().await.unwrap();
+    let mut rrestart_config = None::<Restart>;
+    let mut lrestart_config = None::<Restart>;
+    loop {
+        completed.next().await.unwrap();
+        n_completed.store(0, std::sync::atomic::Ordering::SeqCst);
+
+        assert_eq!(lcomp.state(), ComponentConnectionState::Connected);
+        assert_eq!(rcomp.state(), ComponentConnectionState::Connected);
+        trace!("connected");
+
+        let rcomp_recv_stream = rcomp.recv();
+        let data = vec![5; 8];
+        lcomp.send(&data).await.unwrap();
+        trace!("local sent");
+        futures::pin_mut!(rcomp_recv_stream);
+        let received = rcomp_recv_stream.next().await.unwrap();
+        assert_eq!(&data, &*received);
+        trace!("local sent remote received");
+
+        let lcomp_recv_stream = lcomp.recv();
+        let data = vec![3; 8];
+        rcomp.send(&data).await.unwrap();
+        trace!("remote sent");
+        futures::pin_mut!(lcomp_recv_stream);
+        let received = lcomp_recv_stream.next().await.unwrap();
+        assert_eq!(&data, &*received);
+        trace!("remote sent local received");
+
+        if config.local.trickle_ice
+            && lrestart_config
+                .as_ref()
+                .is_none_or(|config| config.remove_local_candidates())
+        {
+            let _ = lgathered.next().await;
+        }
+        trace!("local gathered");
+        if config.remote.trickle_ice
+            && rrestart_config
+                .as_ref()
+                .is_none_or(|config| config.remove_local_candidates())
+        {
+            let _ = rgathered.next().await;
+        }
+        trace!("remote gathered");
+
+        lrestart_config = config.local.restarts.pop();
+        rrestart_config = config.remote.restarts.pop();
+        assert!(lrestart_config.is_none() == rrestart_config.is_none());
+
+        if let Some((lrestart, rrestart)) = lrestart_config.as_ref().zip(rrestart_config.as_ref()) {
+            trace!("restarting local with {lrestart:?}");
+            match lrestart {
+                Restart::Agent(lrestart) => lagent.restart(lrestart),
+                Restart::Stream(lrestart) => lstream.restart(lrestart),
+            }
+            trace!("restarting remote with {rrestart:?}");
+            match lrestart {
+                Restart::Agent(lrestart) => ragent.restart(lrestart),
+                Restart::Stream(lrestart) => rstream.restart(lrestart),
+            }
+
+            let lcreds = lstream.local_credentials().unwrap();
+            let rcreds = rstream.local_credentials().unwrap();
+            lstream.set_remote_credentials(&rcreds);
+            rstream.set_remote_credentials(&lcreds);
+
+            if lrestart.remove_local_candidates() {
+                lstream.gather_candidates().await.unwrap();
+            } else {
+                for candidate in lstream.local_candidates() {
+                    rstream.add_remote_candidate(&candidate);
+                }
+                rstream.end_of_remote_candidates();
+            }
+            match lrestart {
+                Restart::Agent(lrestart) => match lrestart.local_role_change() {
+                    RoleChange::None => (),
+                    RoleChange::Lite => config.local.ice_lite = true,
+                    RoleChange::Full => config.local.ice_lite = false,
+                },
+                Restart::Stream(lrestart) => {
+                    assert!(
+                        lrestart
+                            .new_local_credentials()
+                            .is_none_or(|creds| creds == lcreds)
+                    );
+                }
+            }
+            if rrestart.remove_local_candidates() {
+                rstream.gather_candidates().await.unwrap();
+            } else {
+                for candidate in rstream.local_candidates() {
+                    lstream.add_remote_candidate(&candidate);
+                }
+                lstream.end_of_remote_candidates();
+            }
+            match rrestart {
+                Restart::Agent(rrestart) => match rrestart.local_role_change() {
+                    RoleChange::None => (),
+                    RoleChange::Lite => config.remote.ice_lite = true,
+                    RoleChange::Full => config.remote.ice_lite = false,
+                },
+                Restart::Stream(rrestart) => {
+                    assert!(
+                        rrestart
+                            .new_local_credentials()
+                            .is_none_or(|creds| creds == rcreds)
+                    );
+                }
+            }
+
+            if lrestart.remove_local_candidates() && !config.local.trickle_ice {
+                let _ = lgathered.next().await;
+            }
+            if rrestart.remove_local_candidates() && !config.remote.trickle_ice {
+                let _ = rgathered.next().await;
+            }
+            trace!("gathered");
+        } else {
+            trace!("no more restarts");
+            break;
+        }
+    }
+    drop(lgathered);
+    drop(rgathered);
     drop(completed);
-
-    assert_eq!(lcomp.state(), ComponentConnectionState::Connected);
-    assert_eq!(rcomp.state(), ComponentConnectionState::Connected);
-    trace!("connected");
-
-    let rcomp_recv_stream = rcomp.recv();
-    let data = vec![5; 8];
-    lcomp.send(&data).await.unwrap();
-    trace!("local sent");
-    futures::pin_mut!(rcomp_recv_stream);
-    let received = rcomp_recv_stream.next().await.unwrap();
-    assert_eq!(&data, &*received);
-    trace!("local sent remote received");
-
-    let lcomp_recv_stream = lcomp.recv();
-    let data = vec![3; 8];
-    rcomp.send(&data).await.unwrap();
-    trace!("remote sent");
-    futures::pin_mut!(lcomp_recv_stream);
-    let received = lcomp_recv_stream.next().await.unwrap();
-    assert_eq!(&data, &*received);
-    trace!("remote sent local received");
 
     lagent.close();
     ragent.close();
@@ -701,4 +835,64 @@ fn smol_agent_static_connection_local_controlled_ice_lite_udp_local_trickle() {
 fn tokio_agent_static_connection_local_controlled_ice_lite_udp_local_trickle() {
     crate::common::tokio_runtime()
         .block_on(agent_static_connection_local_controlled_ice_lite_udp_local_trickle());
+}
+
+async fn agent_static_connection_local_controlled_ice_lite_trickle_restart_into_full() {
+    common::debug_init();
+    agent_static_connection_test(AgentStaticTestConfig {
+        local: AgentConfig::default()
+            .trickle_ice(true)
+            .ice_lite(true)
+            .restarts(vec![Restart::Agent(
+                RestartConfig::new().set_local_role_change(RoleChange::Full),
+            )]),
+        remote: AgentConfig::default()
+            .controlling(true)
+            .restarts(vec![Restart::Stream(RestartStreamConfig::new())]),
+    })
+    .await;
+}
+
+#[cfg(feature = "runtime-smol")]
+#[test]
+fn smol_agent_static_connection_local_controlled_ice_lite_trickle_restart_into_full() {
+    smol::block_on(agent_static_connection_local_controlled_ice_lite_trickle_restart_into_full());
+}
+
+#[cfg(feature = "runtime-tokio")]
+#[test]
+fn tokio_agent_static_connection_local_controlled_ice_lite_trickle_restart_into_full() {
+    crate::common::tokio_runtime()
+        .block_on(agent_static_connection_local_controlled_ice_lite_trickle_restart_into_full());
+}
+
+async fn agent_static_connection_local_controlled_trickle_regather() {
+    common::debug_init();
+    agent_static_connection_test(AgentStaticTestConfig {
+        local: AgentConfig::default()
+            .trickle_ice(true)
+            .restarts(vec![Restart::Stream(
+                RestartStreamConfig::new().set_remove_local_candidates(true),
+            )]),
+        remote: AgentConfig::default()
+            .trickle_ice(true)
+            .controlling(true)
+            .restarts(vec![Restart::Agent(
+                RestartConfig::new().set_remove_local_candidates(true),
+            )]),
+    })
+    .await;
+}
+
+#[cfg(feature = "runtime-smol")]
+#[test]
+fn smol_agent_static_connection_local_controlled_trickle_regather() {
+    smol::block_on(agent_static_connection_local_controlled_trickle_regather());
+}
+
+#[cfg(feature = "runtime-tokio")]
+#[test]
+fn tokio_agent_static_connection_local_controlled_trickle_regather() {
+    crate::common::tokio_runtime()
+        .block_on(agent_static_connection_local_controlled_trickle_regather());
 }

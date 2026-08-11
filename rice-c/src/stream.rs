@@ -281,6 +281,13 @@ impl Stream {
             })
         }
     }
+
+    /// Perform an ICE restart of this stream.
+    pub fn restart(&self, config: &RestartStreamConfig, now: Instant) {
+        unsafe {
+            crate::ffi::rice_stream_restart(self.ffi, config.ffi, now.as_nanos());
+        }
+    }
 }
 
 /// Data that should be sent to a peer as a result of calling [`Stream::poll_recv()`].
@@ -451,10 +458,85 @@ impl Drop for GatheredCandidate {
     }
 }
 
+/// Configuration for what to reset when restarting.
+#[derive(Debug)]
+pub struct RestartStreamConfig {
+    ffi: *mut crate::ffi::RiceStreamRestartConfig,
+}
+
+impl Default for RestartStreamConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RestartStreamConfig {
+    /// Construct a new [`RestartStreamConfig`] for initiating a restart of a stream.
+    pub fn new() -> Self {
+        unsafe {
+            Self {
+                ffi: crate::ffi::rice_stream_restart_config_new(),
+            }
+        }
+    }
+
+    /// Configure the local credentials to use after the ICE-restart.
+    pub fn set_new_local_credentials(self, credentials: &Credentials) -> Self {
+        unsafe {
+            crate::ffi::rice_stream_restart_config_set_new_local_credentials(
+                self.ffi,
+                credentials.ffi,
+            );
+        }
+        self
+    }
+
+    /// Configure the local credentials to use after the ICE-restart.
+    pub fn new_local_credentials(&self) -> Option<Credentials> {
+        unsafe {
+            let ret = crate::ffi::rice_stream_restart_config_get_new_local_credentials(self.ffi);
+            if ret.is_null() {
+                None
+            } else {
+                Some(Credentials::from_c_full(ret))
+            }
+        }
+    }
+
+    /// Configure whether any existing local candidates are removed or kept.
+    pub fn set_remove_local_candidates(self, remove: bool) -> Self {
+        unsafe {
+            crate::ffi::rice_stream_restart_config_set_remove_local_candidates(self.ffi, remove);
+        }
+        self
+    }
+
+    /// Retrieve whether any existing local candidates are removed or kept.
+    pub fn remove_local_candidates(&self) -> bool {
+        unsafe { crate::ffi::rice_stream_restart_config_get_remove_local_candidates(self.ffi) }
+    }
+}
+
+impl Clone for RestartStreamConfig {
+    fn clone(&self) -> Self {
+        unsafe {
+            Self {
+                ffi: crate::ffi::rice_stream_restart_config_copy(self.ffi),
+            }
+        }
+    }
+}
+
+impl Drop for RestartStreamConfig {
+    fn drop(&mut self) {
+        unsafe {
+            crate::ffi::rice_stream_restart_config_free(self.ffi);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use sans_io_time::Instant;
-
     use super::*;
     use crate::agent::{Agent, AgentPoll};
 

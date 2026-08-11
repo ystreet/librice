@@ -68,6 +68,13 @@ pub const RICE_PARSE_CANDIDATE_ERROR_BAD_EXTENSION: RiceParseCandidateError = -8
 #[doc = " Data is not well formed."]
 pub const RICE_PARSE_CANDIDATE_ERROR_MALFORMED: RiceParseCandidateError = -9;
 pub type RiceParseCandidateError = i32;
+#[doc = " No role change."]
+pub const RICE_ROLE_CHANGE_NONE: RiceRoleChange = 0;
+#[doc = " Change role to Lite."]
+pub const RICE_ROLE_CHANGE_LITE: RiceRoleChange = 1;
+#[doc = " Change role to Full."]
+pub const RICE_ROLE_CHANGE_FULL: RiceRoleChange = 2;
+pub type RiceRoleChange = i32;
 #[doc = " Not a TCP candidate."]
 pub const RICE_TCP_TYPE_NONE: RiceTcpType = 0;
 #[doc = " The candidate address will connect to a remote address."]
@@ -111,7 +118,17 @@ pub struct RiceComponent {
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+pub struct RiceRestartConfig {
+    _unused: [u8; 0],
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct RiceStream {
+    _unused: [u8; 0],
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct RiceStreamRestartConfig {
     _unused: [u8; 0],
 }
 #[repr(C)]
@@ -863,6 +880,52 @@ unsafe extern "C" {
     pub fn rice_tls_config_new_dimpl() -> *mut RiceTlsConfig;
 }
 unsafe extern "C" {
+    #[doc = " Create a new [`RiceStreamRestartConfig`]."]
+    pub fn rice_restart_config_new() -> *mut RiceRestartConfig;
+}
+unsafe extern "C" {
+    #[doc = " Copy a [`RiceRestartConfig`]."]
+    pub fn rice_restart_config_copy(config: *const RiceRestartConfig) -> *mut RiceRestartConfig;
+}
+unsafe extern "C" {
+    #[doc = " Free a [`RiceRestartConfig`]."]
+    pub fn rice_restart_config_free(config: *mut RiceRestartConfig);
+}
+unsafe extern "C" {
+    #[doc = " Configure whether any existing local candidates are removed or kept."]
+    pub fn rice_restart_config_set_remove_local_candidates(
+        config: *mut RiceRestartConfig,
+        remove: bool,
+    );
+}
+unsafe extern "C" {
+    #[doc = " Retrieve whether any existing local candidates are removed or kept."]
+    pub fn rice_restart_config_get_remove_local_candidates(
+        config: *const RiceRestartConfig,
+    ) -> bool;
+}
+unsafe extern "C" {
+    #[doc = " We are changing roles to the specified role."]
+    pub fn rice_restart_config_set_local_role_change(
+        config: *mut RiceRestartConfig,
+        role: RiceRoleChange,
+    );
+}
+unsafe extern "C" {
+    #[doc = " We are changing roles to the specified role."]
+    pub fn rice_restart_config_get_local_role_change(
+        config: *mut RiceRestartConfig,
+    ) -> RiceRoleChange;
+}
+unsafe extern "C" {
+    #[doc = " Restart a stream with the provided configuration."]
+    pub fn rice_agent_restart(
+        agent: *mut RiceAgent,
+        config: *const RiceRestartConfig,
+        now_nanos: i64,
+    );
+}
+unsafe extern "C" {
     #[doc = " Add an ICE stream to the `RiceAgent`."]
     pub fn rice_agent_add_stream(agent: *mut RiceAgent) -> *mut RiceStream;
 }
@@ -1122,6 +1185,54 @@ unsafe extern "C" {
 unsafe extern "C" {
     #[doc = " Return the component ids currently in use by a `RiceStream`.\n\n `ret` can be NULL to discover the length of the data that would be provided."]
     pub fn rice_stream_component_ids(stream: *mut RiceStream, len: *mut usize, ret: *mut usize);
+}
+unsafe extern "C" {
+    #[doc = " Create a new [`RiceStreamRestartConfig`]."]
+    pub fn rice_stream_restart_config_new() -> *mut RiceStreamRestartConfig;
+}
+unsafe extern "C" {
+    #[doc = " Copy a [`RiceStreamRestartConfig`]."]
+    pub fn rice_stream_restart_config_copy(
+        config: *const RiceStreamRestartConfig,
+    ) -> *mut RiceStreamRestartConfig;
+}
+unsafe extern "C" {
+    #[doc = " Free a [`RiceStreamRestartConfig`]."]
+    pub fn rice_stream_restart_config_free(config: *mut RiceStreamRestartConfig);
+}
+unsafe extern "C" {
+    #[doc = " Configure the local credentials to use after the ICE-restart."]
+    pub fn rice_stream_restart_config_set_new_local_credentials(
+        config: *mut RiceStreamRestartConfig,
+        creds: *const RiceCredentials,
+    );
+}
+unsafe extern "C" {
+    #[doc = " Retrieve the local credentials to use after the ICE-restart."]
+    pub fn rice_stream_restart_config_get_new_local_credentials(
+        config: *const RiceStreamRestartConfig,
+    ) -> *mut RiceCredentials;
+}
+unsafe extern "C" {
+    #[doc = " Configure whether any existing local candidates are removed or kept."]
+    pub fn rice_stream_restart_config_set_remove_local_candidates(
+        config: *mut RiceStreamRestartConfig,
+        remove: bool,
+    );
+}
+unsafe extern "C" {
+    #[doc = " Configure whether any existing local candidates are removed or kept."]
+    pub fn rice_stream_restart_config_get_remove_local_candidates(
+        config: *const RiceStreamRestartConfig,
+    ) -> bool;
+}
+unsafe extern "C" {
+    #[doc = " Restart a stream with the provided configuration."]
+    pub fn rice_stream_restart(
+        stream: *mut RiceStream,
+        config: *const RiceStreamRestartConfig,
+        now_nanos: i64,
+    );
 }
 unsafe extern "C" {
     #[doc = " Add an ICE component to a `RiceStream`."]

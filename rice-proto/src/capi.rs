@@ -60,7 +60,8 @@ use crate::candidate::{Candidate, CandidatePair, CandidateType, TransportType};
 use crate::component::ComponentConnectionState;
 use crate::consent;
 use crate::gathering::GatheredCandidate;
-use crate::stream::Credentials;
+use crate::restart::{RestartConfig, RoleChange};
+use crate::stream::{Credentials, RestartStreamConfig};
 #[cfg(feature = "dimpl")]
 use crate::turn::DimplTurnConfig;
 #[cfg(feature = "openssl")]
@@ -1517,6 +1518,145 @@ pub unsafe extern "C" fn rice_tls_config_new_dimpl() -> *mut RiceTlsConfig {
     })))
 }
 
+#[derive(Debug, Clone)]
+/// Configuration for what to reset when restarting.
+pub struct RiceRestartConfig {
+    config: RestartConfig,
+}
+
+/// Create a new [`RiceStreamRestartConfig`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_restart_config_new() -> *mut RiceRestartConfig {
+    let ret = RiceRestartConfig {
+        config: RestartConfig::new(),
+    };
+    Box::into_raw(Box::new(ret))
+}
+
+/// Copy a [`RiceRestartConfig`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_restart_config_copy(
+    config: *const RiceRestartConfig,
+) -> *mut RiceRestartConfig {
+    unsafe {
+        let config = Box::from_raw(mut_override(config));
+        let new_config = config.clone();
+        let ret = mut_override(Box::into_raw(new_config));
+        core::mem::forget(config);
+        ret
+    }
+}
+
+/// Free a [`RiceRestartConfig`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_restart_config_free(config: *mut RiceRestartConfig) {
+    unsafe {
+        let _config = Box::from_raw(config);
+    }
+}
+
+/// Configure whether any existing local candidates are removed or kept.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_restart_config_set_remove_local_candidates(
+    config: *mut RiceRestartConfig,
+    remove: bool,
+) {
+    unsafe {
+        let mut config = Box::from_raw(config);
+        config.config = config.config.set_remove_local_candidates(remove);
+        core::mem::forget(config);
+    }
+}
+
+/// Retrieve whether any existing local candidates are removed or kept.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_restart_config_get_remove_local_candidates(
+    config: *const RiceRestartConfig,
+) -> bool {
+    unsafe {
+        let config = Box::from_raw(mut_override(config));
+        let ret = config.config.remove_local_candidates();
+        core::mem::forget(config);
+        ret
+    }
+}
+
+/// Possible role changes for ICE-restart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+pub enum RiceRoleChange {
+    /// No role change.
+    None = 0,
+    /// Change role to Lite.
+    Lite,
+    /// Change role to Full.
+    Full,
+}
+
+impl RiceRoleChange {
+    fn to_c(role: RoleChange) -> Self {
+        match role {
+            RoleChange::None => RiceRoleChange::None,
+            RoleChange::Lite => RiceRoleChange::Lite,
+            RoleChange::Full => RiceRoleChange::Full,
+        }
+    }
+    fn to_rust(self) -> RoleChange {
+        match self {
+            RiceRoleChange::None => RoleChange::None,
+            RiceRoleChange::Lite => RoleChange::Lite,
+            RiceRoleChange::Full => RoleChange::Full,
+        }
+    }
+}
+
+/// We are changing roles to the specified role.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_restart_config_set_local_role_change(
+    config: *mut RiceRestartConfig,
+    role: RiceRoleChange,
+) {
+    unsafe {
+        let mut config = Box::from_raw(config);
+        config.config = config.config.set_local_role_change(role.to_rust());
+        core::mem::forget(config);
+    }
+}
+
+/// We are changing roles to the specified role.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_restart_config_get_local_role_change(
+    config: *mut RiceRestartConfig,
+) -> RiceRoleChange {
+    unsafe {
+        let config = Box::from_raw(config);
+        let ret = RiceRoleChange::to_c(config.config.local_role_change());
+        core::mem::forget(config);
+        ret
+    }
+}
+
+/// Restart a stream with the provided configuration.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_agent_restart(
+    agent: *mut RiceAgent,
+    config: *const RiceRestartConfig,
+    now_nanos: i64,
+) {
+    unsafe {
+        let agent = Arc::from_raw(agent);
+        let config = Box::from_raw(mut_override(config));
+        let now = Instant::from_nanos(now_nanos);
+
+        let mut proto_agent = agent.proto_agent.lock().unwrap();
+        proto_agent.restart(&config.config, now);
+
+        drop(proto_agent);
+        core::mem::forget(config);
+        core::mem::forget(agent);
+    }
+}
+
 /// A data stream in a `RiceAgent`.
 #[derive(Debug)]
 pub struct RiceStream {
@@ -2839,6 +2979,124 @@ pub unsafe extern "C" fn rice_stream_component_ids(
     }
 }
 
+/// Configuration for restarting an ICE stream.
+#[derive(Debug, Clone)]
+pub struct RiceStreamRestartConfig {
+    config: RestartStreamConfig,
+}
+
+/// Create a new [`RiceStreamRestartConfig`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_stream_restart_config_new() -> *mut RiceStreamRestartConfig {
+    let ret = RiceStreamRestartConfig {
+        config: RestartStreamConfig::new(),
+    };
+    Box::into_raw(Box::new(ret))
+}
+
+/// Copy a [`RiceStreamRestartConfig`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_stream_restart_config_copy(
+    config: *const RiceStreamRestartConfig,
+) -> *mut RiceStreamRestartConfig {
+    unsafe {
+        let config = Box::from_raw(mut_override(config));
+        let new_config = config.clone();
+        let ret = mut_override(Box::into_raw(new_config));
+        core::mem::forget(config);
+        ret
+    }
+}
+
+/// Free a [`RiceStreamRestartConfig`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_stream_restart_config_free(config: *mut RiceStreamRestartConfig) {
+    unsafe {
+        let _config = Box::from_raw(config);
+    }
+}
+
+/// Configure the local credentials to use after the ICE-restart.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_stream_restart_config_set_new_local_credentials(
+    config: *mut RiceStreamRestartConfig,
+    creds: *const RiceCredentials,
+) {
+    unsafe {
+        let mut config = Box::from_raw(config);
+        let creds = Box::from_raw(mut_override(creds));
+        config.config = config
+            .config
+            .set_new_local_credentials(creds.credentials.clone());
+        core::mem::forget(config);
+        core::mem::forget(creds);
+    }
+}
+
+/// Retrieve the local credentials to use after the ICE-restart.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_stream_restart_config_get_new_local_credentials(
+    config: *const RiceStreamRestartConfig,
+) -> *mut RiceCredentials {
+    unsafe {
+        let config = Box::from_raw(mut_override(config));
+        let creds = config.config.new_local_credentials().cloned();
+        core::mem::forget(config);
+        if let Some(creds) = creds {
+            credentials_to_c(creds)
+        } else {
+            core::ptr::null_mut()
+        }
+    }
+}
+
+/// Configure whether any existing local candidates are removed or kept.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_stream_restart_config_set_remove_local_candidates(
+    config: *mut RiceStreamRestartConfig,
+    remove: bool,
+) {
+    unsafe {
+        let mut config = Box::from_raw(config);
+        config.config = config.config.set_remove_local_candidates(remove);
+        core::mem::forget(config);
+    }
+}
+
+/// Configure whether any existing local candidates are removed or kept.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_stream_restart_config_get_remove_local_candidates(
+    config: *const RiceStreamRestartConfig,
+) -> bool {
+    unsafe {
+        let config = Box::from_raw(mut_override(config));
+        let ret = config.config.remove_local_candidates();
+        core::mem::forget(config);
+        ret
+    }
+}
+
+/// Restart a stream with the provided configuration.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_stream_restart(
+    stream: *mut RiceStream,
+    config: *const RiceStreamRestartConfig,
+    now_nanos: i64,
+) {
+    unsafe {
+        let stream = Arc::from_raw(stream);
+        let config = Box::from_raw(mut_override(config));
+        let now = Instant::from_nanos(now_nanos);
+
+        let mut proto_agent = stream.proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
+        proto_stream.restart(&config.config, now);
+        drop(proto_agent);
+        core::mem::forget(stream);
+        core::mem::forget(config);
+    }
+}
+
 // TODO:
 // - local_candidates
 
@@ -3630,6 +3888,50 @@ mod tests {
             rice_component_unref(component);
             rice_stream_unref(stream);
             rice_agent_unref(agent);
+        }
+    }
+
+    #[test]
+    fn rice_restart_config() {
+        unsafe {
+            let config = rice_restart_config_new();
+            rice_restart_config_set_remove_local_candidates(config, true);
+            assert!(rice_restart_config_get_remove_local_candidates(config));
+            rice_restart_config_set_remove_local_candidates(config, false);
+            assert!(!rice_restart_config_get_remove_local_candidates(config));
+            let copy = rice_restart_config_copy(config);
+            for role in [
+                RiceRoleChange::None,
+                RiceRoleChange::Lite,
+                RiceRoleChange::Full,
+            ] {
+                rice_restart_config_set_local_role_change(copy, role);
+                assert_eq!(rice_restart_config_get_local_role_change(copy), role);
+            }
+            rice_restart_config_free(config);
+            rice_restart_config_free(copy);
+        }
+    }
+
+    #[test]
+    fn rice_stream_restart_config() {
+        unsafe {
+            let config = rice_stream_restart_config_new();
+            rice_stream_restart_config_set_remove_local_candidates(config, true);
+            assert!(rice_stream_restart_config_get_remove_local_candidates(
+                config
+            ));
+            rice_stream_restart_config_set_remove_local_candidates(config, false);
+            assert!(!rice_stream_restart_config_get_remove_local_candidates(
+                config
+            ));
+            let creds =
+                credentials_to_c(Credentials::new("luser".to_string(), "lpass".to_string()));
+            rice_stream_restart_config_set_new_local_credentials(config, creds);
+            rice_credentials_free(creds);
+            let copy = rice_stream_restart_config_copy(config);
+            rice_stream_restart_config_free(config);
+            rice_stream_restart_config_free(copy);
         }
     }
 }

@@ -100,6 +100,7 @@ mod conncheck;
 pub mod consent;
 mod gathering;
 mod rand;
+mod restart;
 pub mod stream;
 mod tcp;
 pub mod turn;

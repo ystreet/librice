@@ -25,6 +25,7 @@ use tracing::warn;
 use crate::component::{Component, SelectedPair};
 use crate::runtime::Runtime;
 use crate::stream::Stream;
+pub use rice_c::agent::{RestartConfig, RoleChange};
 use rice_c::candidate::{CandidatePair, TransportType};
 pub use rice_c::turn::{TurnConfig, TurnCredentials};
 
@@ -324,6 +325,12 @@ impl Agent {
     pub fn set_consent_freshness_config(&self, interval: Duration, timeout: Duration) {
         self.agent.set_consent_freshness_config(interval, timeout)
     }
+
+    /// Perform an ICE-restart.
+    pub fn restart(&self, config: &RestartConfig) {
+        self.agent
+            .restart(config, Instant::from_std(self.base_instant))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -591,5 +598,20 @@ mod tests {
 
         agent.disable_consent_freshness();
         agent.enable_consent_freshness();
+    }
+
+    #[test]
+    fn restart_config_getters_setters() {
+        let mut config = RestartConfig::default();
+        for val in [true, false] {
+            config = config.set_remove_local_candidates(val);
+            assert_eq!(config.remove_local_candidates(), val);
+        }
+        let mut config = config.clone();
+        assert_eq!(config.local_role_change(), RoleChange::None);
+        for role in [RoleChange::Lite, RoleChange::Full, RoleChange::None] {
+            config = config.set_local_role_change(role);
+            assert_eq!(config.local_role_change(), role);
+        }
     }
 }

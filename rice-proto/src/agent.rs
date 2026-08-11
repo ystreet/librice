@@ -30,12 +30,14 @@ use crate::conncheck::{
 use crate::consent::{self, ConsentFreshness, ConsentFreshnessPoll};
 use crate::gathering::{GatherPoll, GatheredCandidate};
 use crate::rand::rand_u64;
-use crate::stream::{Stream, StreamMut, StreamState};
+use crate::stream::{RestartStreamConfig, Stream, StreamMut, StreamState};
 use crate::turn::TurnConfig;
 use stun_proto::agent::{StunError, Transmit};
 use stun_proto::types::message::StunParseError;
 
 use tracing::{info, warn};
+
+pub use crate::restart::{RestartConfig, RoleChange};
 
 /// Errors that can be returned as a result of agent operations.
 #[derive(Debug)]
@@ -331,6 +333,36 @@ impl Agent {
             stream.set_request_retransmits(rto.clone());
         }
         self.checklistset.set_request_retransmits(rto);
+    }
+
+    /// Perform an ICE-restart.
+    pub fn restart(&mut self, config: &RestartConfig, now: Instant) {
+        match config.local_role_change {
+            RoleChange::None => (),
+            RoleChange::Lite => self.checklistset.set_ice_lite(true),
+            RoleChange::Full => self.checklistset.set_ice_lite(false),
+        }
+
+        let stream_config = RestartStreamConfig::new()
+            .set_remove_local_candidates(config.remove_local_candidates());
+        for stream in self.streams.iter_mut() {
+            if config.local_remove_candidates {
+                stream.restart_gather();
+            }
+            let checklist_id = stream.checklist_id;
+            Self::restart_stream(&mut self.checklistset, checklist_id, &stream_config, now);
+        }
+    }
+
+    pub(crate) fn restart_stream(
+        checklistset: &mut ConnCheckListSet,
+        checklist_id: usize,
+        config: &RestartStreamConfig,
+        now: Instant,
+    ) {
+        let checklist = checklistset.mut_list(checklist_id).unwrap();
+        let checks = checklist.restart(config);
+        checklistset.remove_checks(checklist_id, checks, now);
     }
 
     /// Update the controlling state of the agent based on external factors.

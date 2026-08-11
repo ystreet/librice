@@ -261,7 +261,118 @@ impl Agent {
         }
     }
 
-    // TODO: stun_servers(), add_turn_server(), turn_servers(), stream()
+    /// Perform an ICE-restart.
+    pub fn restart(&self, config: &RestartConfig, now: Instant) {
+        unsafe {
+            crate::ffi::rice_agent_restart(self.ffi, config.ffi, now.as_nanos());
+        }
+    }
+
+    // TODO: stun_servers(), add_turn_server(), turn_servers()
+}
+
+/// Possible role changes for ICE-restart.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum RoleChange {
+    /// No role change.
+    #[default]
+    None,
+    /// Change role to Lite.
+    Lite,
+    /// Change role to Full.
+    Full,
+}
+
+impl RoleChange {
+    fn to_c(self) -> crate::ffi::RiceRoleChange {
+        match self {
+            Self::None => crate::ffi::RICE_ROLE_CHANGE_NONE,
+            Self::Lite => crate::ffi::RICE_ROLE_CHANGE_LITE,
+            Self::Full => crate::ffi::RICE_ROLE_CHANGE_FULL,
+        }
+    }
+
+    fn from_c(role: crate::ffi::RiceRoleChange) -> Self {
+        match role {
+            crate::ffi::RICE_ROLE_CHANGE_NONE => Self::None,
+            crate::ffi::RICE_ROLE_CHANGE_LITE => Self::Lite,
+            crate::ffi::RICE_ROLE_CHANGE_FULL => Self::Full,
+            role => panic!("Unknown RoleChange value {role:x?}"),
+        }
+    }
+}
+
+/// Configuration for what to reset when restarting.
+#[derive(Debug)]
+pub struct RestartConfig {
+    ffi: *mut crate::ffi::RiceRestartConfig,
+}
+
+impl Clone for RestartConfig {
+    fn clone(&self) -> Self {
+        unsafe {
+            Self {
+                ffi: crate::ffi::rice_restart_config_copy(self.ffi),
+            }
+        }
+    }
+}
+
+impl Drop for RestartConfig {
+    fn drop(&mut self) {
+        unsafe {
+            crate::ffi::rice_restart_config_free(self.ffi);
+        }
+    }
+}
+
+impl Default for RestartConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RestartConfig {
+    /// Construct a new [`RestartConfig`] for initiating a restart of a stream.
+    pub fn new() -> Self {
+        unsafe {
+            Self {
+                ffi: crate::ffi::rice_restart_config_new(),
+            }
+        }
+    }
+
+    /// We are changing roles to the specified role.
+    pub fn set_local_role_change(self, role: RoleChange) -> Self {
+        unsafe {
+            crate::ffi::rice_restart_config_set_local_role_change(self.ffi, role.to_c());
+        }
+        self
+    }
+
+    /// We are changing roles to the specified role.
+    pub fn local_role_change(&self) -> RoleChange {
+        unsafe {
+            RoleChange::from_c(crate::ffi::rice_restart_config_get_local_role_change(
+                self.ffi,
+            ))
+        }
+    }
+
+    /// Configure whether any existing local candidates are removed from the agent.
+    ///
+    /// If local candidates are removed, then this will allow restarting of the gathering process.
+    pub fn set_remove_local_candidates(self, remove: bool) -> Self {
+        unsafe {
+            crate::ffi::rice_restart_config_set_remove_local_candidates(self.ffi, remove);
+        }
+        self
+    }
+
+    /// Retrieve whether any existing local candidates are removed from the agent.
+    pub fn remove_local_candidates(&self) -> bool {
+        unsafe { crate::ffi::rice_restart_config_get_remove_local_candidates(self.ffi) }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

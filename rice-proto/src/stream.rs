@@ -443,7 +443,6 @@ impl<'a> StreamMut<'a> {
         )
     )]
     pub fn end_of_remote_candidates(&mut self) {
-        // FIXME: how to deal with ice restarts?
         let Some(checklist) = self.agent.checklistset.mut_list(self.checklist_id) else {
             return;
         };
@@ -509,6 +508,17 @@ impl<'a> StreamMut<'a> {
             return;
         };
         checklist.end_of_local_candidates()
+    }
+
+    /// Perform an ICE restart of this stream.
+    pub fn restart(&mut self, config: &RestartStreamConfig, now: Instant) {
+        if config.local_remove_candidates {
+            let Some(stream) = self.agent.mut_stream_state(self.id) else {
+                return;
+            };
+            stream.restart_gather();
+        }
+        Agent::restart_stream(&mut self.agent.checklistset, self.checklist_id, config, now);
     }
 }
 
@@ -687,14 +697,64 @@ impl StreamState {
             gatherer.set_request_retransmits(rto.clone());
         }
     }
+
+    pub(crate) fn restart_gather(&mut self) {
+        for component in self.components.iter_mut() {
+            let Some(component) = component else {
+                continue;
+            };
+            component.gather_state = GatherProgress::New;
+        }
+    }
+}
+
+/// Configuration for what to reset when restarting.
+#[derive(Debug, Default, Clone)]
+pub struct RestartStreamConfig {
+    pub(crate) new_local_credentials: Option<Credentials>,
+    pub(crate) local_remove_candidates: bool,
+}
+
+impl RestartStreamConfig {
+    /// Construct a new [`RestartStreamConfig`] for initiating a restart of a stream.
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    /// Configure the local credentials to use after the ICE-restart.
+    pub fn set_new_local_credentials(mut self, credentials: Credentials) -> Self {
+        self.new_local_credentials = Some(credentials);
+        self
+    }
+
+    /// Retrieve the local credentials to use after the ICE-restart.
+    pub fn new_local_credentials(&self) -> Option<&Credentials> {
+        self.new_local_credentials.as_ref()
+    }
+
+    /// Configure whether any existing local candidates are removed or kept.
+    pub fn set_remove_local_candidates(mut self, remove: bool) -> Self {
+        self.local_remove_candidates = remove;
+        self
+    }
+
+    /// Retrieve whether any existing local candidates are removed from the agent.
+    pub fn remove_local_candidates(&self) -> bool {
+        self.local_remove_candidates
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+    use turn_client_proto::types::TurnCredentials;
+    use turn_server_proto::api::{TurnServerApi, TurnServerPollRet};
+
     use super::*;
     use crate::agent::{Agent, AgentComponentStateChange, AgentPoll};
     use crate::candidate::{Candidate, CandidateType, TcpType, TransportType};
     use crate::component::ComponentConnectionState;
+    use crate::turn::TurnConfig;
 
     #[test]
     fn getters_setters() {
@@ -713,6 +773,35 @@ mod tests {
         assert_eq!(stream.local_credentials().unwrap(), &lcreds);
         stream.set_remote_credentials(rcreds.clone());
         assert_eq!(stream.remote_credentials().unwrap(), &rcreds);
+    }
+
+    fn gather_agent(agent: &mut Agent, mut now: Instant) -> Instant {
+        loop {
+            match agent.poll(now) {
+                AgentPoll::GatheredCandidate(gathered) => {
+                    agent
+                        .mut_stream(gathered.stream_id)
+                        .unwrap()
+                        .add_local_gathered_candidate(gathered.gathered);
+                }
+                AgentPoll::GatheringComplete(complete) => {
+                    agent
+                        .mut_stream(complete.stream_id)
+                        .unwrap()
+                        .end_of_local_candidates();
+                    break;
+                }
+                AgentPoll::WaitUntil(new_now) => {
+                    if new_now == now {
+                        break;
+                    } else {
+                        now = new_now
+                    }
+                }
+                other => panic!("unexpected poll during gathering: {other:?}"),
+            }
+        }
+        now
     }
 
     /// After local gathering completes, TCP connectivity checks still request a socket via
@@ -742,25 +831,9 @@ mod tests {
                 .unwrap();
         }
 
-        let mut gathering_done = false;
-        while !gathering_done {
-            match agent.poll(now) {
-                AgentPoll::GatheredCandidate(gathered) => {
-                    agent
-                        .mut_stream(stream_id)
-                        .unwrap()
-                        .add_local_gathered_candidate(gathered.gathered);
-                }
-                AgentPoll::GatheringComplete(complete) => {
-                    assert_eq!(complete.component_id, component_id);
-                    agent
-                        .mut_stream(stream_id)
-                        .unwrap()
-                        .end_of_local_candidates();
-                    gathering_done = true;
-                }
-                other => panic!("unexpected poll during gathering: {other:?}"),
-            }
+        {
+            let new_now = gather_agent(&mut agent, now);
+            assert_eq!(new_now, now, "Unexpected wait produced");
         }
 
         let remote_addr: SocketAddr = "192.168.1.2:2000".parse().unwrap();
@@ -819,5 +892,259 @@ mod tests {
             agent.poll_transmit(now).is_some(),
             "checklist should emit STUN after allocated_socket"
         );
+    }
+
+    #[test]
+    fn stream_restart_keep_local_gather_fails() {
+        let _log = crate::tests::test_init_log();
+        let now = Instant::ZERO;
+        let local_bind: SocketAddr = "192.168.1.1:1000".parse().unwrap();
+
+        let mut agent = Agent::default();
+        let stream_id = agent.add_stream();
+        let component_id = agent
+            .mut_stream(stream_id)
+            .unwrap()
+            .add_component()
+            .unwrap();
+        {
+            let mut stream = agent.mut_stream(stream_id).unwrap();
+            stream.set_local_credentials(Credentials::new("luser".into(), "lpass".into()));
+            stream.set_remote_credentials(Credentials::new("ruser".into(), "rpass".into()));
+            stream
+                .mut_component(component_id)
+                .unwrap()
+                .gather_candidates(&[(TransportType::Udp, local_bind)], &[], &[])
+                .unwrap();
+        }
+
+        let now = gather_agent(&mut agent, now);
+
+        let mut stream = agent.mut_stream(stream_id).unwrap();
+        stream.restart(
+            &RestartStreamConfig::new().set_remove_local_candidates(false),
+            now,
+        );
+        assert!(matches!(
+            stream
+                .mut_component(component_id)
+                .unwrap()
+                .gather_candidates(&[(TransportType::Udp, local_bind)], &[], &[]),
+            Err(AgentError::AlreadyInProgress)
+        ));
+    }
+
+    #[test]
+    fn stream_restart_remove_local_regather() {
+        let _log = crate::tests::test_init_log();
+        let now = Instant::ZERO;
+        let local_bind: SocketAddr = "192.168.1.1:1000".parse().unwrap();
+
+        let mut agent = Agent::default();
+        let stream_id = agent.add_stream();
+        let component_id = agent
+            .mut_stream(stream_id)
+            .unwrap()
+            .add_component()
+            .unwrap();
+        {
+            let mut stream = agent.mut_stream(stream_id).unwrap();
+            stream.set_local_credentials(Credentials::new("luser".into(), "lpass".into()));
+            stream.set_remote_credentials(Credentials::new("ruser".into(), "rpass".into()));
+            stream
+                .mut_component(component_id)
+                .unwrap()
+                .gather_candidates(&[(TransportType::Udp, local_bind)], &[], &[])
+                .unwrap();
+        }
+
+        let now = gather_agent(&mut agent, now);
+
+        let mut stream = agent.mut_stream(stream_id).unwrap();
+        stream.restart(
+            &RestartStreamConfig::new().set_remove_local_candidates(true),
+            now,
+        );
+        stream
+            .mut_component(component_id)
+            .unwrap()
+            .gather_candidates(&[(TransportType::Udp, local_bind)], &[], &[])
+            .unwrap();
+
+        gather_agent(&mut agent, now);
+    }
+
+    fn gather_turn(
+        agent: &mut Agent,
+        stream_id: usize,
+        component_id: usize,
+        turn_server: &mut turn_server_proto::server::TurnServer,
+        from: SocketAddr,
+        alloc_addr: SocketAddr,
+        now: Instant,
+    ) -> Instant {
+        // unauthenticated TURN ALLOCATE
+        let AgentPoll::WaitUntil(new_now) = agent.poll(now) else {
+            unreachable!();
+        };
+        let listen_addr = turn_server.listen_address();
+        assert_eq!(new_now, now);
+        let turn_transmit = agent.poll_transmit(now).unwrap();
+        assert_eq!(turn_transmit.transmit.from, from);
+        assert_eq!(turn_transmit.transmit.to, listen_addr);
+        let reply = turn_server
+            .recv(turn_transmit.transmit, now)
+            .unwrap()
+            .build();
+        let mut stream = agent.mut_stream(stream_id).unwrap();
+        let ret = stream.handle_incoming_data(component_id, reply, now);
+        assert!(ret.handled());
+
+        let AgentPoll::WaitUntil(now) = agent.poll(now) else {
+            unreachable!();
+        };
+
+        // authenticated TURN ALLOCATE
+        let turn_transmit = agent.poll_transmit(now).unwrap();
+        assert_eq!(turn_transmit.transmit.from, from);
+        assert_eq!(turn_transmit.transmit.to, listen_addr);
+        assert!(turn_server.recv(turn_transmit.transmit, now).is_none());
+
+        let TurnServerPollRet::AllocateSocket {
+            transport,
+            listen_addr,
+            client_addr,
+            allocation_transport,
+            family,
+        } = turn_server.poll(now)
+        else {
+            unreachable!();
+        };
+        turn_server.allocated_socket(
+            transport,
+            listen_addr,
+            client_addr,
+            allocation_transport,
+            family,
+            Ok(alloc_addr),
+            now,
+        );
+        let reply = turn_server.poll_transmit(now).unwrap();
+
+        let mut stream = agent.mut_stream(stream_id).unwrap();
+        let ret = stream.handle_incoming_data(component_id, reply, now);
+        assert!(ret.handled());
+        now
+    }
+
+    #[test]
+    fn stream_restart_turn() {
+        let _log = crate::tests::test_init_log();
+        let now = Instant::ZERO;
+        let local_bind: SocketAddr = "192.168.1.1:1000".parse().unwrap();
+        let turn_listen_addr = "10.0.2.2:3478".parse().unwrap();
+        let turn_alloc_addr = "10.0.2.2:55555".parse().unwrap();
+        let turn_credentials = TurnCredentials::new("tuser", "tpass");
+        let config = TurnConfig::new(
+            TransportType::Udp,
+            turn_listen_addr,
+            turn_credentials.clone(),
+        );
+        let mut turn_server = turn_server_proto::server::TurnServer::new(
+            TransportType::Udp,
+            turn_listen_addr,
+            "realm".to_string(),
+        );
+        turn_server.add_user(
+            turn_credentials.username().to_string(),
+            turn_credentials.password().to_string(),
+        );
+
+        let mut agent = Agent::default();
+        let stream_id = agent.add_stream();
+        let component_id = agent
+            .mut_stream(stream_id)
+            .unwrap()
+            .add_component()
+            .unwrap();
+        {
+            let mut stream = agent.mut_stream(stream_id).unwrap();
+            stream.set_local_credentials(Credentials::new("luser".into(), "lpass".into()));
+            stream.set_remote_credentials(Credentials::new("ruser".into(), "rpass".into()));
+            stream
+                .mut_component(component_id)
+                .unwrap()
+                .gather_candidates(&[], &[], &[(local_bind, &config)])
+                .unwrap();
+        }
+
+        let now = gather_turn(
+            &mut agent,
+            stream_id,
+            component_id,
+            &mut turn_server,
+            local_bind,
+            turn_alloc_addr,
+            now,
+        );
+
+        let AgentPoll::GatheredCandidate(gathered) = agent.poll(now) else {
+            unreachable!();
+        };
+        assert_eq!(
+            gathered.gathered.candidate.candidate_type,
+            CandidateType::Relayed
+        );
+        assert!(gathered.gathered.turn_agent.is_some());
+        agent
+            .mut_stream(gathered.stream_id)
+            .unwrap()
+            .add_local_gathered_candidate(gathered.gathered);
+        let AgentPoll::GatheringComplete(complete) = agent.poll(now) else {
+            unreachable!();
+        };
+        assert_eq!(complete.stream_id, stream_id);
+        assert_eq!(complete.component_id, component_id);
+
+        let mut stream = agent.mut_stream(stream_id).unwrap();
+        stream.restart(
+            &RestartStreamConfig::new().set_remove_local_candidates(true),
+            now,
+        );
+        let local_bind = "192.168.1.1:2000".parse().unwrap();
+        let turn_alloc_addr = "10.0.2.2:44444".parse().unwrap();
+        stream
+            .mut_component(component_id)
+            .unwrap()
+            .gather_candidates(&[], &[], &[(local_bind, &config)])
+            .unwrap();
+
+        let now = gather_turn(
+            &mut agent,
+            stream_id,
+            component_id,
+            &mut turn_server,
+            local_bind,
+            turn_alloc_addr,
+            now,
+        );
+
+        let AgentPoll::GatheredCandidate(gathered) = agent.poll(now) else {
+            unreachable!();
+        };
+        assert_eq!(
+            gathered.gathered.candidate.candidate_type,
+            CandidateType::Relayed
+        );
+        assert!(gathered.gathered.turn_agent.is_some());
+        agent
+            .mut_stream(gathered.stream_id)
+            .unwrap()
+            .add_local_gathered_candidate(gathered.gathered);
+        let AgentPoll::GatheringComplete(complete) = agent.poll(now) else {
+            unreachable!();
+        };
+        assert_eq!(complete.stream_id, stream_id);
+        assert_eq!(complete.component_id, component_id);
     }
 }
