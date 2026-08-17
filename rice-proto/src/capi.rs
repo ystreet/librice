@@ -366,7 +366,7 @@ pub unsafe extern "C" fn rice_agent_get_ice_lite(agent: *const RiceAgent) -> boo
     }
 }
 
-/// Set whether the `RiceAgent` is confifured for ice-lite usage.
+/// Set whether the `RiceAgent` is configured for ice-lite usage.
 ///
 /// ICE-lite has the following limitations:
 ///  - A single host candidate is gathered per network interface and component id
@@ -383,8 +383,9 @@ pub unsafe extern "C" fn rice_agent_set_ice_lite(agent: *const RiceAgent, ice_li
     }
 }
 
-/// Retrieve the consent freshness configuration. If consent freshness
-/// is not enabled, both are set to 0.
+/// Retrieve the consent freshness configuration.
+///
+/// If consent freshness is not enabled, both are set to 0.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_agent_get_consent_freshness_config(
     agent: *const RiceAgent,
@@ -504,11 +505,11 @@ pub enum RiceAgentPoll {
     RemoveSocket(RiceAgentSocket),
     /// A new pair has been selected for a component.
     SelectedPair(RiceAgentSelectedPair),
-    /// A [`Component`](crate::component::Component) has changed state.
+    /// A [`RiceComponent`] has changed state.
     ComponentStateChange(RiceAgentComponentStateChange),
-    /// A [`Component`](crate::component::Component) has gathered a candidate.
+    /// A [`RiceComponent`] has gathered a candidate.
     GatheredCandidate(RiceAgentGatheredCandidate),
-    /// A [`Component`](crate::component::Component) has completed gathering.
+    /// A [`RiceComponent`] has completed gathering.
     GatheringComplete(RiceAgentGatheringComplete),
 }
 
@@ -772,7 +773,7 @@ impl RiceAgentSelectedPair {
     }
 }
 
-/// A [`Component`](crate::component::Component) has changed state.
+/// A [`RiceComponent`] has changed state.
 #[derive(Debug)]
 #[repr(C)]
 pub struct RiceAgentComponentStateChange {
@@ -804,7 +805,7 @@ impl From<RiceAgentComponentStateChange> for crate::agent::AgentComponentStateCh
     }
 }
 
-/// A [`Component`](crate::component::Component) has gathered a candidate.
+/// A [`RiceComponent`] has gathered a candidate.
 #[derive(Debug)]
 #[repr(C)]
 pub struct RiceAgentGatheredCandidate {
@@ -823,7 +824,7 @@ impl RiceAgentGatheredCandidate {
     }
 }
 
-/// A [`Component`](crate::component::Component) has completed gathering.
+/// A [`RiceComponent`] has completed gathering.
 #[derive(Debug)]
 #[repr(C)]
 pub struct RiceAgentGatheringComplete {
@@ -1298,7 +1299,7 @@ pub unsafe extern "C" fn rice_turn_config_set_supported_integrity(
     }
 }
 
-/// The address family to allocate as a relayed address on the TURN server.
+/// The supported integrity algorithms that can be used for authentication with the TURN server.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_turn_config_get_supported_integrity(
     config: *const RiceTurnConfig,
@@ -1328,7 +1329,7 @@ pub unsafe extern "C" fn rice_turn_config_get_supported_integrity(
 #[derive(Debug, Copy, Clone)]
 #[repr(i32)]
 pub enum RiceFeature {
-    /// The configuration will automatically be used when supported.
+    /// The configuration will not be used.
     Disabled = -1,
     /// The configuration will automatically be used when supported.
     Auto = 0,
@@ -1727,7 +1728,7 @@ pub unsafe extern "C" fn rice_credentials_get_ufrag_bytes(
     }
 }
 
-/// Retrieve the password for this `RiceCredentials`.
+/// Retrieve the user for this `RiceCredentials`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_credentials_get_user(
     credentials: *const RiceCredentials,
@@ -1742,10 +1743,7 @@ pub unsafe extern "C" fn rice_credentials_get_user(
     }
 }
 
-/// Retrieve the `RiceCandidate` ufrag attribute bytes.
-/// The pre-allocated array should be 256 bytes at most.
-///
-/// Returns the actual length of the ufrag attribute.
+/// Retrieve the password for this `RiceCredentials`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_credentials_get_password(
     credentials: *const RiceCredentials,

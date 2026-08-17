@@ -35,7 +35,7 @@ pub const RICE_ERROR_RESOURCE_NOT_FOUND: RiceError = -2;
 #[doc = " The operation is already in progress."]
 pub const RICE_ERROR_ALREADY_IN_PROGRESS: RiceError = -3;
 pub type RiceError = i32;
-#[doc = " The configuration will automatically be used when supported."]
+#[doc = " The configuration will not be used."]
 pub const RICE_FEATURE_DISABLED: RiceFeature = -1;
 #[doc = " The configuration will automatically be used when supported."]
 pub const RICE_FEATURE_AUTO: RiceFeature = 0;
@@ -335,7 +335,7 @@ const _: () = {
     ["Offset of field: RiceAgentSelectedPair::local_turn_remote_addr"]
         [::core::mem::offset_of!(RiceAgentSelectedPair, local_turn_remote_addr) - 192usize];
 };
-#[doc = " A [`Component`](crate::component::Component) has changed state."]
+#[doc = " A [`RiceComponent`] has changed state."]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct RiceAgentComponentStateChange {
@@ -376,7 +376,7 @@ const _: () = {
     ["Offset of field: RiceGatheredCandidate::turn_agent"]
         [::core::mem::offset_of!(RiceGatheredCandidate, turn_agent) - 80usize];
 };
-#[doc = " A [`Component`](crate::component::Component) has gathered a candidate."]
+#[doc = " A [`RiceComponent`] has gathered a candidate."]
 #[repr(C)]
 #[derive(Debug)]
 pub struct RiceAgentGatheredCandidate {
@@ -396,7 +396,7 @@ const _: () = {
     ["Offset of field: RiceAgentGatheredCandidate::gathered"]
         [::core::mem::offset_of!(RiceAgentGatheredCandidate, gathered) - 8usize];
 };
-#[doc = " A [`Component`](crate::component::Component) has completed gathering."]
+#[doc = " A [`RiceComponent`] has completed gathering."]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct RiceAgentGatheringComplete {
@@ -426,11 +426,11 @@ pub const RICE_AGENT_POLL_ALLOCATE_SOCKET: RiceAgentPoll_Tag = 2;
 pub const RICE_AGENT_POLL_REMOVE_SOCKET: RiceAgentPoll_Tag = 3;
 #[doc = " A new pair has been selected for a component."]
 pub const RICE_AGENT_POLL_SELECTED_PAIR: RiceAgentPoll_Tag = 4;
-#[doc = " A [`Component`](crate::component::Component) has changed state."]
+#[doc = " A [`RiceComponent`] has changed state."]
 pub const RICE_AGENT_POLL_COMPONENT_STATE_CHANGE: RiceAgentPoll_Tag = 5;
-#[doc = " A [`Component`](crate::component::Component) has gathered a candidate."]
+#[doc = " A [`RiceComponent`] has gathered a candidate."]
 pub const RICE_AGENT_POLL_GATHERED_CANDIDATE: RiceAgentPoll_Tag = 6;
-#[doc = " A [`Component`](crate::component::Component) has completed gathering."]
+#[doc = " A [`RiceComponent`] has completed gathering."]
 pub const RICE_AGENT_POLL_GATHERING_COMPLETE: RiceAgentPoll_Tag = 7;
 #[doc = " Return value of `rice_agent_poll()`."]
 pub type RiceAgentPoll_Tag = ::core::ffi::c_uint;
@@ -651,11 +651,11 @@ unsafe extern "C" {
     pub fn rice_agent_get_ice_lite(agent: *const RiceAgent) -> bool;
 }
 unsafe extern "C" {
-    #[doc = " Set whether the `RiceAgent` is confifured for ice-lite usage.\n\n ICE-lite has the following limitations:\n  - A single host candidate is gathered per network interface and component id\n  - Connectivity checks are never initiated from the ICE-lite peer."]
+    #[doc = " Set whether the `RiceAgent` is configured for ice-lite usage.\n\n ICE-lite has the following limitations:\n  - A single host candidate is gathered per network interface and component id\n  - Connectivity checks are never initiated from the ICE-lite peer."]
     pub fn rice_agent_set_ice_lite(agent: *const RiceAgent, ice_lite: bool);
 }
 unsafe extern "C" {
-    #[doc = " Retrieve the consent freshness configuration. If consent freshness\n is not enabled, both are set to 0."]
+    #[doc = " Retrieve the consent freshness configuration.\n\n If consent freshness is not enabled, both are set to 0."]
     pub fn rice_agent_get_consent_freshness_config(
         agent: *const RiceAgent,
         interval_nanos: *mut u64,
@@ -817,7 +817,7 @@ unsafe extern "C" {
     );
 }
 unsafe extern "C" {
-    #[doc = " The address family to allocate as a relayed address on the TURN server."]
+    #[doc = " The supported integrity algorithms that can be used for authentication with the TURN server."]
     pub fn rice_turn_config_get_supported_integrity(
         config: *const RiceTurnConfig,
         n_integrities: *mut usize,
@@ -921,13 +921,13 @@ unsafe extern "C" {
     ) -> usize;
 }
 unsafe extern "C" {
-    #[doc = " Retrieve the password for this `RiceCredentials`."]
+    #[doc = " Retrieve the user for this `RiceCredentials`."]
     pub fn rice_credentials_get_user(
         credentials: *const RiceCredentials,
     ) -> *mut ::core::ffi::c_char;
 }
 unsafe extern "C" {
-    #[doc = " Retrieve the `RiceCandidate` ufrag attribute bytes.\n The pre-allocated array should be 256 bytes at most.\n\n Returns the actual length of the ufrag attribute."]
+    #[doc = " Retrieve the password for this `RiceCredentials`."]
     pub fn rice_credentials_get_password(
         credentials: *const RiceCredentials,
     ) -> *mut ::core::ffi::c_char;
