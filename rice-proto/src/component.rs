@@ -248,7 +248,11 @@ impl<'a> ComponentMut<'a> {
 
         let data_len = data.as_ref().len();
 
-        let checklist = self.agent.checklistset.mut_list(checklist_id).unwrap();
+        let checklist = self
+            .agent
+            .checklistset
+            .mut_list(checklist_id)
+            .ok_or(AgentError::ResourceNotFound)?;
         if local_candidate_type == CandidateType::Relayed {
             let turn_client = checklist
                 .mut_turn_client_by_allocated_address(local_transport, local_base_addr)

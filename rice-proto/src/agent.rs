@@ -437,8 +437,9 @@ impl Agent {
     ///
     /// If the stream does not exist, then `None` will be returned.
     pub fn stream(&self, id: usize) -> Option<crate::stream::Stream<'_>> {
-        if self.streams.get(id).is_some() {
-            Some(Stream::from_agent(self, id))
+        if let Some(stream) = self.streams.get(id) {
+            let checklist_id = stream.checklist_id;
+            Some(Stream::from_agent(self, id, checklist_id))
         } else {
             None
         }
@@ -450,8 +451,9 @@ impl Agent {
 
     /// Get a [`StreamMut`] by id.  If the stream does not exist, then `None` will be returned.
     pub fn mut_stream(&mut self, id: usize) -> Option<StreamMut<'_>> {
-        if self.streams.get_mut(id).is_some() {
-            Some(StreamMut::from_agent(self, id))
+        if let Some(stream) = self.streams.get_mut(id) {
+            let checklist_id = stream.checklist_id;
+            Some(StreamMut::from_agent(self, id, checklist_id))
         } else {
             None
         }

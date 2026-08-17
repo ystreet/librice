@@ -36,11 +36,16 @@ use tracing::{info, trace};
 pub struct Stream<'a> {
     agent: &'a crate::agent::Agent,
     id: usize,
+    checklist_id: usize,
 }
 
 impl<'a> Stream<'a> {
-    pub(crate) fn from_agent(agent: &'a Agent, id: usize) -> Self {
-        Self { agent, id }
+    pub(crate) fn from_agent(agent: &'a Agent, id: usize, checklist_id: usize) -> Self {
+        Self {
+            agent,
+            id,
+            checklist_id,
+        }
     }
 
     /// The [`Agent`] that handles this [`Stream`].
@@ -122,8 +127,7 @@ impl<'a> Stream<'a> {
     /// assert_eq!(stream.local_credentials(), Some(&credentials));
     /// ```
     pub fn local_credentials(&self) -> Option<&Credentials> {
-        let stream_state = self.agent.stream_state(self.id)?;
-        let checklist = self.agent.checklistset.list(stream_state.checklist_id)?;
+        let checklist = self.agent.checklistset.list(self.checklist_id)?;
         Some(checklist.local_credentials())
     }
 
@@ -142,20 +146,16 @@ impl<'a> Stream<'a> {
     /// assert_eq!(stream.remote_credentials(), Some(&credentials));
     /// ```
     pub fn remote_credentials(&self) -> Option<&Credentials> {
-        let stream_state = self.agent.stream_state(self.id)?;
-        let checklist = self.agent.checklistset.list(stream_state.checklist_id)?;
+        let checklist = self.agent.checklistset.list(self.checklist_id)?;
         checklist.remote_credentials()
     }
 
     /// Retrieve previously gathered local candidates
     pub fn local_candidates(&self) -> impl Iterator<Item = &'_ Candidate> + '_ {
-        let stream_state = self.agent.stream_state(self.id).unwrap();
-        let checklist = self
-            .agent
-            .checklistset
-            .list(stream_state.checklist_id)
-            .unwrap();
-        checklist.local_candidates()
+        let Some(checklist) = self.agent.checklistset.list(self.checklist_id) else {
+            return DualIter::Left([].iter());
+        };
+        DualIter::Right(checklist.local_candidates())
     }
 
     /// Retrieve previously set remote candidates for connection checks from this stream
@@ -185,9 +185,7 @@ impl<'a> Stream<'a> {
     /// assert_eq!(remote_cands[0], candidate);
     /// ```
     pub fn remote_candidates(&self) -> &[Candidate] {
-        let stream_state = self.agent.stream_state(self.id).unwrap();
-        let checklist_id = stream_state.checklist_id;
-        let checklist = self.agent.checklistset.list(checklist_id).unwrap();
+        let checklist = self.agent.checklistset.list(self.checklist_id).unwrap();
         checklist.remote_candidates()
     }
 
@@ -202,12 +200,31 @@ impl<'a> Stream<'a> {
     }
 }
 
+#[derive(Debug)]
+enum DualIter<I: core::fmt::Debug, L: Iterator<Item = I>, R: Iterator<Item = I>> {
+    Left(L),
+    Right(R),
+}
+
+impl<I: core::fmt::Debug, L: Iterator<Item = I>, R: Iterator<Item = I>> Iterator
+    for DualIter<I, L, R>
+{
+    type Item = I;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Left(l) => l.next(),
+            Self::Right(r) => r.next(),
+        }
+    }
+}
+
 /// A (mutable) ICE stream
 #[derive(Debug)]
 #[repr(C)]
 pub struct StreamMut<'a> {
     agent: &'a mut crate::agent::Agent,
     id: usize,
+    checklist_id: usize,
 }
 
 impl<'a> core::ops::Deref for StreamMut<'a> {
@@ -219,8 +236,12 @@ impl<'a> core::ops::Deref for StreamMut<'a> {
 }
 
 impl<'a> StreamMut<'a> {
-    pub(crate) fn from_agent(agent: &'a mut Agent, id: usize) -> Self {
-        Self { agent, id }
+    pub(crate) fn from_agent(agent: &'a mut Agent, id: usize, checklist_id: usize) -> Self {
+        Self {
+            agent,
+            id,
+            checklist_id,
+        }
     }
 
     /// The [`Agent`] that handles this [`Stream`].
@@ -251,8 +272,11 @@ impl<'a> StreamMut<'a> {
             .mut_stream_state(self.id)
             .ok_or(AgentError::ResourceNotFound)?;
         let component_id = stream_state.add_component()?;
-        let checklist_id = stream_state.checklist_id;
-        let checklist = self.agent.checklistset.mut_list(checklist_id).unwrap();
+        let Some(checklist) = self.agent.checklistset.mut_list(self.checklist_id) else {
+            let stream_state = self.agent.mut_stream_state(self.id).unwrap();
+            stream_state.remove_component(component_id);
+            return Err(AgentError::ResourceNotFound);
+        };
         checklist.add_component(component_id);
         Ok(component_id)
     }
@@ -285,9 +309,9 @@ impl<'a> StreamMut<'a> {
     /// stream.set_local_credentials(credentials);
     /// ```
     pub fn set_local_credentials(&mut self, credentials: Credentials) {
-        let stream_state = self.agent.mut_stream_state(self.id).unwrap();
-        let checklist_id = stream_state.checklist_id;
-        let checklist = self.agent.checklistset.mut_list(checklist_id).unwrap();
+        let Some(checklist) = self.agent.checklistset.mut_list(self.checklist_id) else {
+            return;
+        };
         checklist.set_local_credentials(credentials);
     }
 
@@ -305,9 +329,9 @@ impl<'a> StreamMut<'a> {
     /// stream.set_remote_credentials(credentials);
     /// ```
     pub fn set_remote_credentials(&mut self, credentials: Credentials) {
-        let stream_state = self.agent.mut_stream_state(self.id).unwrap();
-        let checklist_id = stream_state.checklist_id;
-        let checklist = self.agent.checklistset.mut_list(checklist_id).unwrap();
+        let Some(checklist) = self.agent.checklistset.mut_list(self.checklist_id) else {
+            return;
+        };
         checklist.set_remote_credentials(credentials);
     }
 
@@ -342,11 +366,9 @@ impl<'a> StreamMut<'a> {
     )]
     pub fn add_remote_candidate(&mut self, cand: Candidate) {
         info!("adding remote candidate {:?}", cand);
-        let Some(stream_state) = self.agent.mut_stream_state(self.id) else {
+        let Some(checklist) = self.agent.checklistset.mut_list(self.checklist_id) else {
             return;
         };
-        let checklist_id = stream_state.checklist_id;
-        let checklist = self.agent.checklistset.mut_list(checklist_id).unwrap();
         checklist.add_remote_candidate(cand);
     }
 
@@ -406,12 +428,9 @@ impl<'a> StreamMut<'a> {
     ///
     /// Must be called after `handle_incoming_data` if `have_more_data` is `true`.
     pub fn poll_recv(&mut self) -> Option<PendingRecv> {
-        let stream_state = self.agent.mut_stream_state(self.id).unwrap();
-        let checklist_id = stream_state.checklist_id;
-
         self.agent
             .checklistset
-            .mut_list(checklist_id)
+            .mut_list(self.checklist_id)
             .and_then(|s| s.poll_recv())
     }
 
@@ -425,9 +444,9 @@ impl<'a> StreamMut<'a> {
     )]
     pub fn end_of_remote_candidates(&mut self) {
         // FIXME: how to deal with ice restarts?
-        let stream_state = self.agent.mut_stream_state(self.id).unwrap();
-        let checklist_id = stream_state.checklist_id;
-        let checklist = self.agent.checklistset.mut_list(checklist_id).unwrap();
+        let Some(checklist) = self.agent.checklistset.mut_list(self.checklist_id) else {
+            return;
+        };
         checklist.end_of_remote_candidates();
     }
 
@@ -444,7 +463,6 @@ impl<'a> StreamMut<'a> {
         now: Instant,
     ) {
         let stream_state = self.agent.mut_stream_state(self.id).unwrap();
-        let checklist_id = stream_state.checklist_id;
         let Some(component_state) = stream_state.mut_component_state(component_id) else {
             return;
         };
@@ -454,7 +472,7 @@ impl<'a> StreamMut<'a> {
             }
         }
         self.agent.checklistset.allocated_socket(
-            checklist_id,
+            self.checklist_id,
             component_id,
             transport,
             from,
@@ -468,9 +486,9 @@ impl<'a> StreamMut<'a> {
     ///
     /// Returns whether the candidate was added internally.
     pub fn add_local_candidate(&mut self, candidate: Candidate) -> bool {
-        let stream_state = self.agent.mut_stream_state(self.id).unwrap();
-        let checklist_id = stream_state.checklist_id;
-        let checklist = self.agent.checklistset.mut_list(checklist_id).unwrap();
+        let Some(checklist) = self.agent.checklistset.mut_list(self.checklist_id) else {
+            return false;
+        };
         checklist.add_local_candidate(candidate)
     }
 
@@ -478,18 +496,18 @@ impl<'a> StreamMut<'a> {
     ///
     /// Returns whether the candidate was added internally.
     pub fn add_local_gathered_candidate(&mut self, candidate: GatheredCandidate) -> bool {
-        let stream_state = self.agent.mut_stream_state(self.id).unwrap();
-        let checklist_id = stream_state.checklist_id;
-        let checklist = self.agent.checklistset.mut_list(checklist_id).unwrap();
+        let Some(checklist) = self.agent.checklistset.mut_list(self.checklist_id) else {
+            return false;
+        };
         checklist.add_local_gathered_candidate(candidate)
     }
 
     /// Signal the end of local candidates.  Calling this function may allow ICE processing to
     /// complete.
     pub fn end_of_local_candidates(&mut self) {
-        let stream_state = self.agent.mut_stream_state(self.id).unwrap();
-        let checklist_id = stream_state.checklist_id;
-        let checklist = self.agent.checklistset.mut_list(checklist_id).unwrap();
+        let Some(checklist) = self.agent.checklistset.mut_list(self.checklist_id) else {
+            return;
+        };
         checklist.end_of_local_candidates()
     }
 }
@@ -566,6 +584,12 @@ impl StreamState {
         self.components[index] = Some(component);
         trace!("Added component at index {}", index);
         Ok(index + 1)
+    }
+
+    fn remove_component(&mut self, component_id: usize) {
+        debug_assert!(component_id > 0);
+        self.components.remove(component_id - 1);
+        trace!("Removed component at index {}", component_id);
     }
 
     pub(crate) fn handle_incoming_data<T: AsRef<[u8]> + core::fmt::Debug>(
