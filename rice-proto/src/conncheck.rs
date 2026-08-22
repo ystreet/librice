@@ -40,7 +40,7 @@ use stun_proto::types::message::*;
 use turn_client_proto::api::{Socket5Tuple, TransmitBuild, TurnEvent, TurnPollRet, TurnRecvRet};
 use turn_client_proto::prelude::*;
 
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 static STUN_AGENT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
@@ -529,6 +529,8 @@ pub struct ConnCheckList {
     remote_credentials: Option<Credentials>,
     local_candidates: Vec<ConnCheckLocalCandidate>,
     remote_candidates: Vec<Candidate>,
+    // candidates that arrived after an end-of-remote-candidates
+    pending_restart_remote_candidates: Vec<Candidate>,
     // TODO: move to BinaryHeap or similar
     triggered: VecDeque<ConnCheckId>,
     pairs: VecDeque<ConnCheck>,
@@ -676,6 +678,7 @@ impl ConnCheckList {
             remote_credentials: None,
             local_candidates: Vec::new(),
             remote_candidates: Vec::new(),
+            pending_restart_remote_candidates: Vec::new(),
             triggered: VecDeque::new(),
             pairs: VecDeque::new(),
             valid: Vec::new(),
@@ -1204,9 +1207,11 @@ impl ConnCheckList {
     /// Add a remote candidate to the checklist
     pub fn add_remote_candidate(&mut self, remote: Candidate) {
         if remote.candidate_type != CandidateType::PeerReflexive && self.remote_end_of_candidates {
-            error!("Attempt made to add a remote candidate after an end-of-candidates received");
+            info!("Adding pending remote candidate for ICE restart {remote:?}");
+            self.pending_restart_remote_candidates.push(remote);
             return;
         }
+        info!("Adding remote candidate {remote:?}");
         if !self
             .component_ids
             .iter()
@@ -2219,7 +2224,11 @@ impl ConnCheckList {
         if config.local_remove_candidates {
             self.local_candidates.clear();
         }
-        self.remote_candidates.clear();
+        core::mem::swap(
+            &mut self.remote_candidates,
+            &mut self.pending_restart_remote_candidates,
+        );
+        self.pending_restart_remote_candidates.clear();
         self.component_ids
             .iter_mut()
             .for_each(|(_id, state)| *state = ComponentConnectionState::New);
@@ -3539,7 +3548,7 @@ impl ConnCheckListSet {
     }
 
     #[tracing::instrument(
-        level = "info",
+        level = "debug",
         ret,
         skip(self),
         fields(
@@ -4921,6 +4930,7 @@ mod tests {
     use alloc::borrow::ToOwned;
     use alloc::vec;
 
+    use tracing::error;
     use turn_client_proto::{
         tcp::TurnClientTcp,
         types::{
@@ -9446,6 +9456,155 @@ mod tests {
         state
             .local_list()
             .add_remote_candidate(remote_candidate.clone());
+        state.local.peer.candidate.address.set_port(50);
+        state.local.peer.candidate.base_address.set_port(50);
+        let local_candidate = state.local.peer.candidate.clone();
+        state
+            .local_list()
+            .add_local_candidate(local_candidate.clone());
+        let new_pair = CandidatePair::new(local_candidate, remote_candidate);
+
+        // the existing nominated check should still exist as existing data is sent using this pair
+        // while the restart is in progress.
+        let check = state
+            .local_list()
+            .previous_nominated_pairs
+            .iter()
+            .find(|check| check.pair == pair && check.nominate)
+            .unwrap();
+        assert_eq!(check.state(), CandidatePairState::Succeeded);
+        assert_eq!(nominated_id, check.conncheck_id);
+
+        let data = [22; 6];
+        state.recv_data_with_pair(&pair, data, now);
+
+        let now = wait_advance(&mut state.local.checklist_set, now);
+
+        let check = state
+            .local_list()
+            .matching_check(&new_pair, Nominate::False)
+            .unwrap();
+        assert_eq!(check.state(), CandidatePairState::Frozen);
+        let check_id = check.conncheck_id;
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        // perform one tick which will start a connectivity check with the peer
+        send_next_check_and_response(&state.local.peer, &state.remote)
+            .perform(&mut state.local.checklist_set, now);
+        let check = state.local_list().check_by_id(check_id).unwrap();
+        assert_eq!(check.state(), CandidatePairState::Succeeded);
+
+        let now = wait_advance(&mut state.local.checklist_set, now);
+
+        state.check_nomination(&new_pair, now);
+
+        // previously nominated pair is removed
+        let CheckListSetPollRet::RemoveSocket {
+            checklist_id: _,
+            component_id: 1,
+            transport: TransportType::Udp,
+            local_addr,
+            remote_addr: _,
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(local_addr, pair.local.base_address);
+
+        state.local.checklist_set.close(now);
+
+        let CheckListSetPollRet::RemoveSocket {
+            checklist_id: _,
+            component_id: 1,
+            transport: TransportType::Udp,
+            local_addr,
+            remote_addr: _,
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(local_addr, new_pair.local.base_address);
+        let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
+            unreachable!();
+        };
+    }
+
+    #[test]
+    fn restart_new_remote_candidate_before_restart() {
+        let _log = crate::tests::test_init_log();
+        let mut state = FineControl::builder().build();
+        let now = Instant::ZERO;
+        assert_eq!(state.local.component_id, 1);
+
+        state.local_list().end_of_local_candidates();
+        state.local_list().end_of_remote_candidates();
+
+        let pair = CandidatePair::new(
+            state.local.peer.candidate.clone(),
+            state.remote.candidate.clone(),
+        );
+        let check = state
+            .local_list()
+            .matching_check(&pair, Nominate::False)
+            .unwrap();
+        assert_eq!(check.state(), CandidatePairState::Frozen);
+        let check_id = check.conncheck_id;
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        // perform one tick which will start a connectivity check with the peer
+        send_next_check_and_response(&state.local.peer, &state.remote)
+            .perform(&mut state.local.checklist_set, now);
+        let check = state.local_list().check_by_id(check_id).unwrap();
+        assert_eq!(check.state(), CandidatePairState::Succeeded);
+
+        let now = wait_advance(&mut state.local.checklist_set, now);
+
+        state.check_nomination(&pair, now);
+        let check = state
+            .local_list()
+            .matching_check(&pair, Nominate::True)
+            .unwrap();
+        assert_eq!(check.state(), CandidatePairState::Succeeded);
+        let nominated_id = check.conncheck_id;
+
+        let data = [8; 9];
+        state.recv_data(data, now);
+
+        // change the addresses
+        state.remote.candidate.address.set_port(42);
+        state.remote.candidate.base_address.set_port(42);
+        let remote_candidate = state.remote.candidate.clone();
+        state
+            .local_list()
+            .add_remote_candidate(remote_candidate.clone());
+
+        let restart = RestartStreamConfig::new().set_remove_local_candidates(true);
+        let remove = state.local_list().restart(&restart);
+        state
+            .local
+            .checklist_set
+            .remove_checks(state.local.checklist_id, remove, now);
+
+        let remote_credentials = Credentials::new("ruser2".to_owned(), "rpass2".to_owned());
+        state.set_remote_credentials(remote_credentials);
+        let local_credentials = state.local_list().local_credentials().clone();
+        state.local.peer.local_credentials = Some(local_credentials.clone());
+        state.remote.remote_credentials = Some(local_credentials);
+
         state.local.peer.candidate.address.set_port(50);
         state.local.peer.candidate.base_address.set_port(50);
         let local_candidate = state.local.peer.candidate.clone();
