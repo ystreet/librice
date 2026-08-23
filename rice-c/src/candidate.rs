@@ -63,7 +63,29 @@ pub trait CandidateApi: sealed::CandidateAsC {
     fn tcp_type(&self) -> TcpType {
         unsafe { (*self.as_c()).tcp_type.into() }
     }
-    // TODO: extensions
+
+    /// List of extensions
+    fn extensions(&self) -> impl Iterator<Item = (String, String)> {
+        unsafe {
+            let mut i = 0;
+            core::iter::from_fn(move || {
+                if i + 1 >= (*self.as_c()).extensions_len {
+                    return None;
+                }
+                let extensions = core::slice::from_raw_parts(
+                    (*self.as_c()).extensions,
+                    (*self.as_c()).extensions_len,
+                );
+                let key = CStr::from_ptr(extensions[i]).to_str().unwrap().to_owned();
+                let val = CStr::from_ptr(extensions[i + 1])
+                    .to_str()
+                    .unwrap()
+                    .to_owned();
+                i += 2;
+                Some((key, val))
+            })
+        }
+    }
 }
 
 /// Errors produced when parsing a candidate
@@ -139,7 +161,6 @@ pub struct Candidate {
 }
 
 unsafe impl Send for Candidate {}
-unsafe impl Sync for Candidate {}
 
 impl core::fmt::Debug for Candidate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -314,7 +335,6 @@ pub struct CandidateOwned {
 }
 
 unsafe impl Send for CandidateOwned {}
-unsafe impl Sync for CandidateOwned {}
 
 impl core::fmt::Debug for CandidateOwned {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -454,6 +474,15 @@ impl CandidateBuilder {
         }
     }
 
+    /// Add an extension attribute to the candidate
+    pub fn extension(mut self, key: &str, val: &str) -> Self {
+        unsafe {
+            let key = CString::new(key).unwrap();
+            let val = CString::new(val).unwrap();
+            crate::ffi::rice_candidate_add_extension(&mut self.ffi, key.as_ptr(), val.as_ptr());
+            self
+        }
+    }
     // TODO: extensions
 }
 
@@ -781,6 +810,8 @@ mod tests {
         .related_address(related.clone())
         .tcp_type(TcpType::Active)
         .priority(1234)
+        .extension("ufrag", "user")
+        .extension("generation", "0")
         .build();
         assert_eq!(cand.component_id(), 1);
         assert_eq!(cand.candidate_type(), CandidateType::PeerReflexive);
@@ -791,6 +822,10 @@ mod tests {
         assert_eq!(cand.related_address(), Some(related));
         assert_eq!(cand.tcp_type(), TcpType::Active);
         assert_eq!(cand.priority(), 1234);
+        let mut exts = cand.extensions();
+        assert_eq!(exts.next(), Some(("ufrag".to_owned(), "user".to_owned())));
+        assert_eq!(exts.next(), Some(("generation".to_owned(), "0".to_owned())));
+        assert!(exts.next().is_none());
 
         let cand_clone = cand.clone();
         assert_eq!(cand, cand_clone);
@@ -836,6 +871,7 @@ mod tests {
         .related_address(related.clone())
         .tcp_type(TcpType::Active)
         .priority(1234)
+        .extension("ufrag", "user")
         .build();
 
         let s = cand.to_sdp_string();

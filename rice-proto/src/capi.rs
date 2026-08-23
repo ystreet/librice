@@ -1995,6 +1995,19 @@ impl RiceCandidate {
                 None
             };
             let foundation = string_from_c(self.foundation);
+            let extensions = if self.extensions.is_null() || self.extensions_len < 2 {
+                vec![]
+            } else {
+                let extensions_c =
+                    core::slice::from_raw_parts(self.extensions, self.extensions_len);
+                let mut extensions = Vec::with_capacity(self.extensions_len / 2);
+                for i in 0..self.extensions_len / 2 {
+                    let key = string_from_c(extensions_c[i * 2]);
+                    let value = string_from_c(extensions_c[i * 2 + 1]);
+                    extensions.push((key, value));
+                }
+                extensions
+            };
             crate::candidate::Candidate {
                 component_id: self.component_id,
                 candidate_type: self.candidate_type.into(),
@@ -2005,8 +2018,7 @@ impl RiceCandidate {
                 base_address: RiceAddress::into_rice_none(self.base_address).inner(),
                 related_address,
                 tcp_type: self.tcp_type.into(),
-                // FIXME
-                extensions: vec![],
+                extensions,
             }
         }
     }
@@ -2019,6 +2031,20 @@ impl RiceCandidate {
                 None
             };
             let foundation = owned_string_from_c(mut_override(self.foundation));
+            let extensions = if self.extensions.is_null() || self.extensions_len < 2 {
+                vec![]
+            } else {
+                let extensions_c =
+                    core::slice::from_raw_parts(self.extensions, self.extensions_len);
+                let mut extensions = Vec::with_capacity(self.extensions_len / 2);
+                for i in 0..self.extensions_len / 2 {
+                    let key = string_from_c(extensions_c[i * 2]);
+                    let value = string_from_c(extensions_c[i * 2 + 1]);
+                    extensions.push((key, value));
+                }
+                let _ = Box::from_raw(self.extensions);
+                extensions
+            };
             crate::candidate::Candidate {
                 component_id: self.component_id,
                 candidate_type: self.candidate_type.into(),
@@ -2029,8 +2055,7 @@ impl RiceCandidate {
                 base_address: RiceAddress::into_rice_full(self.base_address).inner(),
                 related_address,
                 tcp_type: self.tcp_type.into(),
-                // FIXME
-                extensions: vec![],
+                extensions,
             }
         }
     }
@@ -2043,6 +2068,17 @@ impl RiceCandidate {
         } else {
             core::ptr::null()
         };
+        let extensions_len = value.extensions.len() * 2;
+        let extensions = if value.extensions.is_empty() {
+            core::ptr::null_mut()
+        } else {
+            let mut extensions = Vec::with_capacity(2 * extensions_len);
+            for (ext_key, ext_val) in value.extensions {
+                extensions.push(CString::new(ext_key).unwrap().into_raw());
+                extensions.push(CString::new(ext_val).unwrap().into_raw());
+            }
+            Box::into_raw(extensions.into_boxed_slice()) as *mut _
+        };
         Self {
             component_id: value.component_id,
             candidate_type: value.candidate_type.into(),
@@ -2053,9 +2089,8 @@ impl RiceCandidate {
             base_address: Box::into_raw(base_address),
             related_address,
             tcp_type: value.tcp_type.into(),
-            // FIXME
-            extensions: core::ptr::null_mut(),
-            extensions_len: 0,
+            extensions,
+            extensions_len,
         }
     }
 }
@@ -2301,6 +2336,36 @@ pub unsafe extern "C" fn rice_candidate_set_tcp_type(
     }
 }
 
+/// Add an extension to a `RiceCandidate`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_candidate_add_extension(
+    candidate: *mut RiceCandidate,
+    key: *const c_char,
+    value: *const c_char,
+) {
+    unsafe {
+        let mut candidate = Box::from_raw(candidate);
+        let key = CStr::from_ptr(key).to_owned();
+        let value = CStr::from_ptr(value).to_owned();
+        if candidate.extensions.is_null() {
+            candidate.extensions_len = 2;
+            let extensions = Box::new([key.into_raw(), value.into_raw()]);
+            candidate.extensions = Box::into_raw(extensions) as *mut _;
+        } else {
+            let _old_extensions = Box::from_raw(candidate.extensions);
+            let extensions =
+                core::slice::from_raw_parts(candidate.extensions, candidate.extensions_len);
+            let mut new_extensions = Vec::with_capacity(candidate.extensions_len + 2);
+            new_extensions.extend(extensions);
+            new_extensions.push(key.into_raw());
+            new_extensions.push(value.into_raw());
+            candidate.extensions = Box::into_raw(new_extensions.into_boxed_slice()) as *mut _;
+            candidate.extensions_len += 2;
+        }
+        core::mem::forget(candidate);
+    }
+}
+
 /// Perform a deep copy of a `RiceCandidate`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_candidate_copy(
@@ -2335,6 +2400,21 @@ pub unsafe extern "C" fn rice_candidate_copy_into(
             core::mem::forget(foundation);
             ret
         };
+        let extensions = if candidate.extensions.is_null() || candidate.extensions_len < 2 {
+            core::ptr::null_mut()
+        } else {
+            let extensions_c =
+                core::slice::from_raw_parts(candidate.extensions, candidate.extensions_len);
+            let extensions = (0..candidate.extensions_len)
+                .map(|i| {
+                    let ext = CStr::from_ptr(extensions_c[i]);
+                    let cpy = CString::from_vec_with_nul(ext.to_bytes_with_nul().to_vec()).unwrap();
+                    cpy.into_raw()
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            Box::into_raw(extensions) as *mut _
+        };
         *ret = RiceCandidate {
             component_id: candidate.component_id,
             candidate_type: candidate.candidate_type,
@@ -2349,8 +2429,7 @@ pub unsafe extern "C" fn rice_candidate_copy_into(
                 rice_address_copy(candidate.related_address)
             },
             tcp_type: candidate.tcp_type,
-            // FIXME: extensions
-            extensions: core::ptr::null_mut(),
+            extensions,
             extensions_len: candidate.extensions_len,
         };
         core::mem::forget(candidate);
@@ -2380,8 +2459,15 @@ pub unsafe extern "C" fn rice_candidate_clear(candidate: *mut RiceCandidate) {
         if !(*candidate).related_address.is_null() {
             let _related_address = RiceAddress::into_rice_full((*candidate).related_address);
         }
+        if !(*candidate).extensions.is_null() {
+            let extensions =
+                core::slice::from_raw_parts((*candidate).extensions, (*candidate).extensions_len);
+            for ext in extensions {
+                let _ = CString::from_raw(*ext);
+            }
+            let _ = Box::from_raw((*candidate).extensions);
+        }
         rice_candidate_zero(&mut *candidate);
-        // FIXME extensions
     }
 }
 
@@ -2390,7 +2476,8 @@ fn rice_candidate_zero(candidate: &mut RiceCandidate) {
     candidate.address = core::ptr::null_mut();
     candidate.base_address = core::ptr::null_mut();
     candidate.related_address = core::ptr::null_mut();
-    // FIXME extensions
+    candidate.extensions = core::ptr::null_mut();
+    candidate.extensions_len = 0;
 }
 
 /// Free a `RiceCandidate`.

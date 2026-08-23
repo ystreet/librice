@@ -1028,6 +1028,14 @@ unsafe extern "C" {
     pub fn rice_candidate_set_tcp_type(candidate: *mut RiceCandidate, tcp_type: RiceTcpType);
 }
 unsafe extern "C" {
+    #[doc = " Add an extension to a `RiceCandidate`."]
+    pub fn rice_candidate_add_extension(
+        candidate: *mut RiceCandidate,
+        key: *const ::core::ffi::c_char,
+        value: *const ::core::ffi::c_char,
+    );
+}
+unsafe extern "C" {
     #[doc = " Perform a deep copy of a `RiceCandidate`."]
     pub fn rice_candidate_copy(candidate: *const RiceCandidate) -> *mut RiceCandidate;
 }
