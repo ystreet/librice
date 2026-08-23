@@ -526,32 +526,6 @@ impl AgentPoll {
     }
 }
 
-impl Drop for AgentPoll {
-    fn drop(&mut self) {
-        unsafe {
-            if let Self::GatheredCandidate(gathered) = self {
-                let mut ret = crate::ffi::RiceAgentPoll {
-                    tag: crate::ffi::RICE_AGENT_POLL_GATHERED_CANDIDATE,
-                    field1: crate::ffi::RiceAgentPoll__bindgen_ty_1 {
-                        field6: core::mem::ManuallyDrop::new(
-                            crate::ffi::RiceAgentPoll__bindgen_ty_1__bindgen_ty_6 {
-                                gathered_candidate: crate::ffi::RiceAgentGatheredCandidate {
-                                    stream_id: gathered.stream_id,
-                                    gathered: crate::stream::GatheredCandidate::take(
-                                        &mut gathered.gathered,
-                                    )
-                                    .ffi,
-                                },
-                            },
-                        ),
-                    },
-                };
-                crate::ffi::rice_agent_poll_clear(&raw mut ret);
-            }
-        }
-    }
-}
-
 /// Transmit the data using the specified 5-tuple.
 #[derive(Debug)]
 pub struct AgentTransmit {

@@ -408,16 +408,15 @@ impl GatheredCandidate {
 
     /// Consume the contents of the mutable reference without leaving an invalid invariant.
     ///
-    /// THis is useful when handling
+    /// This is useful when handling
     /// [`AgentGatheredCandidate`](crate::agent::AgentGatheredCandidate).
     pub fn take(&mut self) -> Self {
         unsafe {
             let mut ffi = crate::ffi::RiceGatheredCandidate {
                 candidate: crate::ffi::RiceCandidate::zeroed(),
-                turn_agent: self.ffi.turn_agent,
+                turn_agent: core::ptr::null_mut(),
             };
-            crate::ffi::rice_candidate_copy_into(&self.ffi.candidate, &mut ffi.candidate);
-            self.ffi.turn_agent = core::ptr::null_mut();
+            core::mem::swap(&mut ffi, &mut self.ffi);
             Self { ffi }
         }
     }
@@ -425,6 +424,32 @@ impl GatheredCandidate {
     /// The [`Candidate`].
     pub fn candidate(&self) -> crate::candidate::Candidate {
         unsafe { crate::candidate::Candidate::from_c_none(&self.ffi.candidate) }
+    }
+}
+
+impl Drop for GatheredCandidate {
+    fn drop(&mut self) {
+        unsafe {
+            let mut ffi = crate::ffi::RiceGatheredCandidate {
+                candidate: crate::ffi::RiceCandidate::zeroed(),
+                turn_agent: core::ptr::null_mut(),
+            };
+            core::mem::swap(&mut ffi, &mut self.ffi);
+            let mut ret = crate::ffi::RiceAgentPoll {
+                tag: crate::ffi::RICE_AGENT_POLL_GATHERED_CANDIDATE,
+                field1: crate::ffi::RiceAgentPoll__bindgen_ty_1 {
+                    field6: core::mem::ManuallyDrop::new(
+                        crate::ffi::RiceAgentPoll__bindgen_ty_1__bindgen_ty_6 {
+                            gathered_candidate: crate::ffi::RiceAgentGatheredCandidate {
+                                stream_id: 0,
+                                gathered: ffi,
+                            },
+                        },
+                    ),
+                },
+            };
+            crate::ffi::rice_agent_poll_clear(&raw mut ret);
+        }
     }
 }
 
@@ -453,6 +478,7 @@ mod tests {
 
     #[test]
     fn gather_candidates() {
+        let _log = crate::tests::test_init_log();
         let addr: crate::Address = "192.168.0.1:1000".parse().unwrap();
         let stun_addr: crate::Address = "102.168.0.200:2000".parse().unwrap();
         let agent = Agent::builder().build();
