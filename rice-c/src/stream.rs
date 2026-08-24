@@ -147,9 +147,7 @@ impl Stream {
             crate::ffi::rice_stream_get_local_candidates(self.ffi, &mut len, core::ptr::null_mut());
             let mut ret = vec![crate::ffi::RiceCandidate::zeroed(); len];
             crate::ffi::rice_stream_get_local_candidates(self.ffi, &mut len, ret.as_mut_ptr());
-            ret.into_iter()
-                .map(|cand| Candidate::from_c_none(&cand))
-                .collect()
+            ret.into_iter().map(Candidate::from_c_full).collect()
         }
     }
 
