@@ -48,9 +48,30 @@ pub(crate) struct StreamState {
     inner: Mutex<StreamInner>,
 }
 
+impl Drop for StreamState {
+    fn drop(&mut self) {
+        tracing::error!("dropping stream agent drop");
+        let mut inner = self.inner.lock().unwrap();
+        let mut sockets = vec![];
+        let mut listeners = vec![];
+        core::mem::swap(&mut sockets, &mut inner.sockets);
+        core::mem::swap(&mut listeners, &mut inner.listeners);
+        self.runtime.spawn(Box::pin(async move {
+            for (mut socket, abort) in sockets {
+                let _ = socket.close().await;
+                abort.abort();
+            }
+            for (_addr, abort) in listeners {
+                abort.abort();
+            }
+        }));
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct StreamInner {
-    sockets: Vec<StunChannel>,
+    sockets: Vec<(StunChannel, futures::future::AbortHandle)>,
+    listeners: Vec<(SocketAddr, futures::future::AbortHandle)>,
     components: Vec<Component>,
 }
 
@@ -63,6 +84,7 @@ impl StreamInner {
     ) -> Option<&StunChannel> {
         self.sockets
             .iter()
+            .map(|(socket, _abort)| socket)
             .find(|socket| socket_matches(socket, transport, from, to))
     }
 
@@ -71,11 +93,11 @@ impl StreamInner {
         transport: TransportType,
         from: SocketAddr,
         to: SocketAddr,
-    ) -> Option<StunChannel> {
+    ) -> Option<(StunChannel, futures::future::AbortHandle)> {
         let position = self
             .sockets
             .iter()
-            .position(|socket| socket_matches(socket, transport, from, to))?;
+            .position(|socket| socket_matches(&socket.0, transport, from, to))?;
         Some(self.sockets.swap_remove(position))
     }
 
@@ -552,74 +574,93 @@ impl Stream {
                 let stream_id = self.state.id;
                 match socket {
                     GatherSocket::Udp(udp) => {
-                        let mut inner = self.state.inner.lock().unwrap();
-                        inner.sockets.push(StunChannel::Udp(udp.clone()));
-                        self.state.runtime.spawn(Box::pin(async move {
-                            let recv = udp.recv();
-                            let mut recv = core::pin::pin!(recv);
-                            while let Some((data, from)) = recv.next().await {
-                                Self::handle_incoming_data(
-                                    proto_agent.clone(),
-                                    weak_agent_inner.clone(),
-                                    weak_component.clone(),
-                                    stream_id,
-                                    component_id,
-                                    Transmit::new(
-                                        data.into_boxed_slice(),
-                                        transport,
-                                        from,
-                                        local_addr,
-                                    ),
-                                    base_instant,
-                                )
+                        let (task, abort) = futures::future::abortable({
+                            let udp = udp.clone();
+                            async move {
+                                let recv = udp.recv();
+                                let mut recv = core::pin::pin!(recv);
+                                while let Some((data, from)) = recv.next().await {
+                                    Self::handle_incoming_data(
+                                        proto_agent.clone(),
+                                        weak_agent_inner.clone(),
+                                        weak_component.clone(),
+                                        stream_id,
+                                        component_id,
+                                        Transmit::new(
+                                            data.into_boxed_slice(),
+                                            transport,
+                                            from,
+                                            local_addr,
+                                        ),
+                                        base_instant,
+                                    )
+                                }
                             }
-                            debug!("receive task closed for udp socket {:?}", udp.local_addr());
+                        });
+                        let mut inner = self.state.inner.lock().unwrap();
+                        inner.sockets.push((StunChannel::Udp(udp), abort));
+                        self.state.runtime.spawn(Box::pin(async move {
+                            let _ = task.await;
+                            debug!("receive task closed for udp socket {local_addr}");
                         }));
                     }
                     GatherSocket::Tcp(tcp) => {
                         let weak_state = weak_state.clone();
                         let runtime = self.state.runtime.clone();
-                        self.state.runtime.spawn(Box::pin(async move {
-                            loop {
-                                let Ok(stream) = tcp.accept().await else {
-                                    continue;
-                                };
-                                let proto_agent = proto_agent.clone();
-                                let weak_agent_inner = weak_agent_inner.clone();
-                                let weak_component = weak_component.clone();
-                                let weak_state = weak_state.clone();
-                                let rt = runtime.clone();
-                                runtime.spawn(Box::pin(async move {
+                        let (task, abort) = futures::future::abortable({
+                            async move {
+                                loop {
+                                    let Ok(stream) = tcp.accept().await else {
+                                        break;
+                                    };
+                                    let remote_addr = stream.remote_addr().unwrap();
                                     let Some(state) = weak_state.upgrade() else {
-                                        return;
+                                        break;
                                     };
-                                    let mut channel = {
+                                    let channel = TcpChannel::new(runtime.clone(), stream);
+                                    let (task, abort) = futures::future::abortable({
+                                        let proto_agent = proto_agent.clone();
+                                        let weak_agent_inner = weak_agent_inner.clone();
+                                        let weak_component = weak_component.clone();
+                                        let mut channel = channel.clone();
+                                        async move {
+                                            let recv = channel.recv();
+                                            let mut recv = core::pin::pin!(recv);
+                                            while let Some((data, from)) = recv.next().await {
+                                                Self::handle_incoming_data(
+                                                    proto_agent.clone(),
+                                                    weak_agent_inner.clone(),
+                                                    weak_component.clone(),
+                                                    stream_id,
+                                                    component_id,
+                                                    Transmit::new(
+                                                        data.into_boxed_slice(),
+                                                        transport,
+                                                        from,
+                                                        local_addr,
+                                                    ),
+                                                    base_instant,
+                                                )
+                                            }
+                                        }
+                                    });
+                                    {
                                         let mut inner = state.inner.lock().unwrap();
-                                        let channel = TcpChannel::new(rt, stream);
-                                        inner.sockets.push(StunChannel::Tcp(channel.clone()));
-                                        channel
+                                        inner.sockets.push((StunChannel::Tcp(channel), abort));
                                     };
-
-                                    let recv = channel.recv();
-                                    let mut recv = core::pin::pin!(recv);
-                                    while let Some((data, from)) = recv.next().await {
-                                        Self::handle_incoming_data(
-                                            proto_agent.clone(),
-                                            weak_agent_inner.clone(),
-                                            weak_component.clone(),
-                                            stream_id,
-                                            component_id,
-                                            Transmit::new(
-                                                data.into_boxed_slice(),
-                                                transport,
-                                                from,
-                                                local_addr,
-                                            ),
-                                            base_instant,
-                                        )
-                                    }
-                                }));
+                                    runtime.spawn(Box::pin(async move {
+                                        let _ = task.await;
+                                        debug!("receive task closed for tcp stream from {local_addr} to {remote_addr}");
+                                    }));
+                                }
                             }
+                        });
+                        let mut inner = self.state.inner.lock().unwrap();
+                        // TODO; remove when not needed anymore
+                        inner.listeners.push((local_addr, abort));
+                        self.state.runtime.spawn(Box::pin(async move {
+                            let _ = task.await;
+                            debug!("receive task closed for tcp listener for {local_addr}");
                         }));
                     }
                 }
@@ -783,70 +824,66 @@ impl Stream {
         let rt = runtime.clone();
         runtime.spawn(Box::pin(async move {
             let stream = rt.tcp_connect(to.as_socket()).await;
-            let mut weak_component = None;
-            let channel = match stream {
+            let local_addr = match stream {
                 Ok(stream) => {
+                    let local_addr = stream.local_addr().unwrap();
                     let Some(state) = weak_state.upgrade() else {
                         return;
                     };
                     let mut inner = state.inner.lock().unwrap();
-                    let channel = StunChannel::Tcp(TcpChannel::new(rt.clone(), stream));
-                    inner.sockets.push(channel.clone());
-                    weak_component = Some(Arc::downgrade(
+                    let weak_component = Some(Arc::downgrade(
                         &inner.component(component_id).unwrap().inner,
                     ));
-                    Ok(channel)
+                    let channel = StunChannel::Tcp(TcpChannel::new(rt.clone(), stream));
+                    let (task, abort) = futures::future::abortable({
+                        let mut channel = channel.clone();
+                        let proto_agent = proto_agent.clone();
+                        let weak_agent_inner = weak_agent_inner.clone();
+                        async move {
+                            let local_addr = channel.local_addr().unwrap();
+                            let recv = channel.recv();
+                            let mut recv = core::pin::pin!(recv);
+                            while let Some((data, from)) = recv.next().await {
+                                Self::handle_incoming_data(
+                                    proto_agent.clone(),
+                                    weak_agent_inner.clone(),
+                                    weak_component.clone().unwrap(),
+                                    stream_id,
+                                    component_id,
+                                    Transmit::new(
+                                        data.into_boxed_slice(),
+                                        TransportType::Tcp,
+                                        from,
+                                        local_addr,
+                                    ),
+                                    base_instant,
+                                )
+                            }
+                        }
+                    });
+                    inner.sockets.push((channel, abort));
+                    rt.spawn(Box::pin(async move {
+                        let _ = task.await;
+                    }));
+                    Some(Address::from(local_addr))
                 }
-                Err(_e) => Err(rice_c::agent::AgentError::ResourceNotFound),
+                Err(_e) => None,
             };
 
-            let channel = {
-                let (local_addr, channel) = match channel {
-                    Ok(channel) => {
-                        let local_addr = channel.local_addr().unwrap();
-                        (Some(Address::from(local_addr)), Some(channel))
-                    }
-                    Err(_) => (None, None),
-                };
-
-                let proto_stream = proto_agent.stream(stream_id).unwrap();
-                proto_stream.allocated_socket(
-                    component_id,
-                    transport,
-                    &from,
-                    &to,
-                    local_addr,
-                    Instant::from_std(base_instant),
-                );
-                channel
-            };
+            let proto_stream = proto_agent.stream(stream_id).unwrap();
+            proto_stream.allocated_socket(
+                component_id,
+                transport,
+                &from,
+                &to,
+                local_addr,
+                Instant::from_std(base_instant),
+            );
 
             if let Some(agent) = weak_agent_inner.upgrade() {
                 let mut agent = agent.lock().unwrap();
                 if let Some(waker) = agent.waker.take() {
                     waker.wake();
-                }
-            }
-
-            if let Some(mut channel) = channel {
-                let local_addr = channel.local_addr().unwrap();
-                let recv = channel.recv();
-                let mut recv = core::pin::pin!(recv);
-                while let Some((data, from)) = recv.next().await {
-                    Self::handle_incoming_data(
-                        proto_agent.clone(),
-                        weak_agent_inner.clone(),
-                        weak_component.clone().unwrap(),
-                        stream_id,
-                        component_id,
-                        Transmit::new(
-                            data.into_boxed_slice(),
-                            TransportType::Tcp,
-                            from,
-                            local_addr,
-                        ),
-                        base_instant,
-                    )
                 }
             }
         }));
@@ -867,7 +904,7 @@ impl Stream {
         let from = from.as_socket();
         let to = to.as_socket();
         let mut inner = state.inner.lock().unwrap();
-        let Some(mut channel) = inner.remove_socket_for_5tuple(transport, from, to) else {
+        let Some((mut channel, abort)) = inner.remove_socket_for_5tuple(transport, from, to) else {
             warn!("no {transport} socket for {from} -> {to}");
             return;
         };
@@ -876,6 +913,7 @@ impl Stream {
             if let Err(e) = channel.close().await {
                 warn!("error on close() for {transport} socket for {from} -> {to}: {e:?}");
             }
+            abort.abort()
         }));
     }
 
