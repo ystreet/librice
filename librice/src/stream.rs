@@ -50,7 +50,6 @@ pub(crate) struct StreamState {
 
 impl Drop for StreamState {
     fn drop(&mut self) {
-        tracing::error!("dropping stream agent drop");
         let mut inner = self.inner.lock().unwrap();
         let mut sockets = vec![];
         let mut listeners = vec![];
@@ -1030,6 +1029,7 @@ mod tests {
             Err(AgentError::Proto(ProtoAgentError::AlreadyInProgress))
         ));
         assert!(!s.local_candidates().is_empty());
+        agent.close();
     }
 
     #[cfg(feature = "runtime-smol")]
@@ -1084,6 +1084,7 @@ mod tests {
             Err(AgentError::Proto(ProtoAgentError::AlreadyInProgress))
         ));
         assert!(!s.local_candidates().is_empty());
+        agent.close();
     }
 
     #[test]
