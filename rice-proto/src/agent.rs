@@ -502,6 +502,7 @@ impl Agent {
     /// application needs to do.
     #[tracing::instrument(
         name = "agent_poll",
+        level = "trace",
         ret
         skip(self)
         fields(
