@@ -3114,9 +3114,6 @@ pub unsafe extern "C" fn rice_stream_restart(
     }
 }
 
-// TODO:
-// - local_candidates
-
 /// An ICE component within a `RiceStream`.
 #[derive(Debug)]
 pub struct RiceComponent {
@@ -3233,7 +3230,7 @@ pub unsafe extern "C" fn rice_component_get_state(
 /// Before the pair has been selected through ICE, `local` and `remote` will be zeroed to signal
 /// unset.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rice_component_selected_pair(
+pub unsafe extern "C" fn rice_component_get_selected_pair(
     component: *const RiceComponent,
     local: *mut RiceCandidate,
     remote: *mut RiceCandidate,
@@ -3461,9 +3458,6 @@ pub unsafe extern "C" fn rice_component_set_selected_pair(
         }
     }
 }
-
-// TODO:
-// - selected_pair
 
 /// Create a `RiceAddress` from a string representation of the socket address.
 #[unsafe(no_mangle)]

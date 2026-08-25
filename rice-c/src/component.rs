@@ -73,7 +73,7 @@ impl Component {
         unsafe {
             let mut local = crate::ffi::RiceCandidate::zeroed();
             let mut remote = crate::ffi::RiceCandidate::zeroed();
-            crate::ffi::rice_component_selected_pair(self.ffi, &mut local, &mut remote);
+            crate::ffi::rice_component_get_selected_pair(self.ffi, &mut local, &mut remote);
             if local.address.is_null() || remote.address.is_null() {
                 None
             } else {
