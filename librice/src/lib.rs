@@ -82,7 +82,7 @@
 //! let stream = agent.add_stream();
 //! let local_credentials = Credentials::new("luser", "lpass");
 //! stream.set_local_credentials(&local_credentials);
-//! let component = stream.add_component().unwrap();
+//! let component = stream.add_component();
 //!
 //! // At some point you will also need the remote credentials to be able to successfully connect
 //! // with the peer. If trickle-ice, then this can occur during candidate gathering, otherwise,

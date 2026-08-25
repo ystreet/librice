@@ -225,11 +225,10 @@ impl Stream {
     /// # let _runtime = runtime.enter();
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
-    /// let component = stream.add_component().unwrap();
+    /// let component = stream.add_component();
     /// assert_eq!(component.id(), component::RTP);
     /// ```
-    // TODO: 0.5.0, remove Result
-    pub fn add_component(&self) -> Result<Component, AgentError> {
+    pub fn add_component(&self) -> Component {
         let component = self.state.proto_stream.add_component();
 
         let component = Component::new(
@@ -240,7 +239,7 @@ impl Stream {
         );
         let mut inner = self.state.inner.lock().unwrap();
         inner.components.push(component.clone());
-        Ok(component)
+        component
     }
 
     /// Retrieve a `Component` from this stream.  If the index doesn't exist or a component is not
@@ -263,7 +262,7 @@ impl Stream {
     /// # let _runtime = runtime.enter();
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
-    /// let component = stream.add_component().unwrap();
+    /// let component = stream.add_component();
     /// assert_eq!(component.id(), component::RTP);
     /// assert!(stream.component(component::RTP).is_some());
     /// ```
@@ -405,7 +404,7 @@ impl Stream {
     /// # let _runtime = runtime.enter();
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
-    /// let component = stream.add_component().unwrap();
+    /// let component = stream.add_component();
     /// let addr = "127.0.0.1:9999".parse().unwrap();
     /// let candidate = Candidate::builder(
     ///     0,
@@ -508,7 +507,7 @@ impl Stream {
     /// stream.set_local_credentials(&local_credentials);
     /// let remote_credentials = Credentials::new("ruser", "rpass");
     /// stream.set_remote_credentials(&remote_credentials);
-    /// let component = stream.add_component().unwrap();
+    /// let component = stream.add_component();
     /// # #[cfg(feature = "runtime-smol")]
     /// smol::block_on(async move {
     ///     stream.gather_candidates().await.unwrap();
@@ -763,7 +762,7 @@ impl Stream {
     /// # let _runtime = runtime.enter();
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
-    /// let component = stream.add_component().unwrap();
+    /// let component = stream.add_component();
     /// let addr = "127.0.0.1:9999".parse().unwrap();
     /// let candidate = Candidate::builder(
     ///     0,
@@ -1018,7 +1017,7 @@ mod tests {
         let s = agent.add_stream();
         s.set_local_credentials(&Credentials::new("luser", "lpass"));
         s.set_remote_credentials(&Credentials::new("ruser", "rpass"));
-        let _c = s.add_component().unwrap();
+        let _c = s.add_component();
 
         agent.set_request_retransmits(
             Duration::from_millis(100),
@@ -1064,7 +1063,7 @@ mod tests {
         let s = agent.add_stream();
         s.set_local_credentials(&Credentials::new("luser", "lpass"));
         s.set_remote_credentials(&Credentials::new("ruser", "rpass"));
-        let _c = s.add_component().unwrap();
+        let _c = s.add_component();
         let (send, recv) = futures::channel::oneshot::channel();
 
         runtime.spawn({
@@ -1107,7 +1106,7 @@ mod tests {
         let stream = agent.add_stream();
         assert!(stream.component(0).is_none());
         assert!(stream.component(1).is_none());
-        let comp = stream.add_component().unwrap();
+        let comp = stream.add_component();
         assert_eq!(comp.id(), stream.component(comp.id()).unwrap().id());
 
         stream.set_local_credentials(&lcreds);
@@ -1123,7 +1122,7 @@ mod tests {
         init();
         let agent = Agent::default();
         let stream = agent.add_stream();
-        let _component = stream.add_component().unwrap();
+        let _component = stream.add_component();
         let addr = "127.0.0.1:9999".parse().unwrap();
         let candidate =
             Candidate::builder(0, CandidateType::Host, TransportType::Udp, "0", addr).build();
