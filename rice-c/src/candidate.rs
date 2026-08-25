@@ -162,6 +162,27 @@ pub struct Candidate {
 
 unsafe impl Send for Candidate {}
 
+struct IterDebug<I: core::fmt::Debug, T: IntoIterator<Item = I>> {
+    iter: core::cell::Cell<Option<T>>,
+}
+
+impl<I: core::fmt::Debug, T: IntoIterator<Item = I>> IterDebug<I, T> {
+    fn new(iter: T) -> Self {
+        Self {
+            iter: core::cell::Cell::new(Some(iter)),
+        }
+    }
+}
+
+impl<I: core::fmt::Debug, T: IntoIterator<Item = I>> core::fmt::Debug for IterDebug<I, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.iter.take() {
+            Some(i) => f.debug_list().entries(i).finish(),
+            None => f.write_str("<iterator consumed>"),
+        }
+    }
+}
+
 impl core::fmt::Debug for Candidate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut dbg = f.debug_struct("Candidate");
@@ -174,7 +195,7 @@ impl core::fmt::Debug for Candidate {
         dbg.field("base_address", &self.base_address());
         dbg.field("related_address", &self.related_address());
         dbg.field("tcp_type", &self.tcp_type());
-        // TODO: extensions
+        dbg.field("extensions", &IterDebug::new(self.extensions()));
         dbg.finish()
     }
 }
@@ -348,7 +369,7 @@ impl core::fmt::Debug for CandidateOwned {
         dbg.field("base_address", &self.base_address());
         dbg.field("related_address", &self.related_address());
         dbg.field("tcp_type", &self.tcp_type());
-        // TODO: extensions
+        dbg.field("extensions", &IterDebug::new(self.extensions()));
         dbg.finish()
     }
 }
@@ -483,7 +504,6 @@ impl CandidateBuilder {
             self
         }
     }
-    // TODO: extensions
 }
 
 /// The type of the candidate
@@ -849,10 +869,13 @@ mod tests {
         .related_address(related.clone())
         .tcp_type(TcpType::Active)
         .priority(1234)
+        .extension("ufrag", "user")
         .build();
+        tracing::info!("{cand:?}");
         let owned = cand.to_owned();
         assert_eq!(cand, owned);
         assert_eq!(owned, cand);
+        tracing::info!("{owned:?}");
     }
 
     #[test]
