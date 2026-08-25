@@ -293,12 +293,12 @@ async fn agent_static_connection_test(mut config: AgentStaticTestConfig) {
     let rcreds = Credentials::new("ruser", "rpass");
 
     let lstream = lagent.add_stream();
-    let lcomp = lstream.add_component().unwrap();
+    let lcomp = lstream.add_component();
     lstream.set_local_credentials(&lcreds);
     lstream.set_remote_credentials(&rcreds);
 
     let rstream = ragent.add_stream();
-    let rcomp = rstream.add_component().unwrap();
+    let rcomp = rstream.add_component();
     rstream.set_local_credentials(&rcreds);
     rstream.set_remote_credentials(&lcreds);
 

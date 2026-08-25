@@ -91,7 +91,7 @@ impl Component {
     /// # let _runtime = runtime.enter();
     /// let agent = Agent::default();
     /// let stream = agent.add_stream();
-    /// let component = stream.add_component().unwrap();
+    /// let component = stream.add_component();
     /// assert_eq!(component.state(), ComponentConnectionState::New);
     /// ```
     pub fn state(&self) -> ComponentConnectionState {
@@ -276,7 +276,7 @@ mod tests {
         init();
         let agent = Agent::builder().build();
         let s = agent.add_stream();
-        let c = s.add_component().unwrap();
+        let c = s.add_component();
         assert_eq!(c.state(), ComponentConnectionState::New);
     }
 
@@ -297,7 +297,7 @@ mod tests {
         let runtime = crate::runtime::default_runtime().unwrap();
         let agent = Agent::builder().controlling(false).build();
         let stream = agent.add_stream();
-        let send = stream.add_component().unwrap();
+        let send = stream.add_component();
         let local_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let remote_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let local_addr = local_socket.local_addr().unwrap();
@@ -344,7 +344,7 @@ mod tests {
         let _runtime = crate::tests::tokio_runtime().enter();
         let agent = crate::agent::Agent::default();
         let stream = agent.add_stream();
-        let component = stream.add_component().unwrap();
+        let component = stream.add_component();
         component.revoke_consent();
     }
 }
