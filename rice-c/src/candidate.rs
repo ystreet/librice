@@ -450,6 +450,18 @@ pub struct CandidateBuilder {
     ffi: crate::ffi::RiceCandidate,
 }
 
+impl Clone for CandidateBuilder {
+    fn clone(&self) -> Self {
+        unsafe {
+            let mut ret = Self {
+                ffi: crate::ffi::RiceCandidate::zeroed(),
+            };
+            crate::ffi::rice_candidate_copy_into(&self.ffi, &mut ret.ffi);
+            ret
+        }
+    }
+}
+
 impl CandidateBuilder {
     /// Consume this builder a construct a new [`Candidate`].
     pub fn build(self) -> Candidate {
@@ -907,5 +919,32 @@ mod tests {
         println!("{s}");
         let parsed = Candidate::from_sdp_string(&s).unwrap();
         assert_eq!(parsed, owned);
+    }
+
+    #[test]
+    fn candidate_eq() {
+        let _log = crate::tests::test_init_log();
+
+        let addr = address();
+        let related = related_address();
+        let builder = Candidate::builder(
+            1,
+            CandidateType::PeerReflexive,
+            TransportType::Tcp,
+            "foundation",
+            addr.clone(),
+        )
+        .related_address(related.clone())
+        .tcp_type(TcpType::Active)
+        .priority(1234);
+        let cand1 = builder.clone().build();
+        let cand2 = builder.clone().extension("user", "frag").build();
+        let cand3 = builder.extension("key", "val").build();
+        assert_eq!(cand1, cand1);
+        assert_eq!(cand2, cand2);
+        assert_eq!(cand3, cand3);
+        assert_ne!(cand1, cand2);
+        assert_ne!(cand1, cand3);
+        assert_ne!(cand2, cand3);
     }
 }
