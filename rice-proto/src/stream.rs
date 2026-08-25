@@ -20,12 +20,12 @@ use stun_proto::types::data::Data;
 
 use crate::agent::{Agent, AgentError};
 use crate::component::{Component, ComponentMut, ComponentState, GatherProgress};
-use crate::conncheck::{HandleRecvReply, PendingRecv, RecvIgnorable, RequestRto};
+use crate::conncheck::{HandleRecvReply, PendingRecv, RequestRto};
 
 use crate::candidate::{Candidate, TransportType};
 //use crate::turn::agent::TurnCredentials;
 
-pub use crate::conncheck::Credentials;
+pub use crate::conncheck::{Credentials, RecvIgnorable};
 pub use crate::gathering::GatheredCandidate;
 
 use tracing::{info, trace};
@@ -388,6 +388,7 @@ impl<'a> StreamMut<'a> {
         component_id: usize,
         transmit: Transmit<T>,
         now: Instant,
+        ignorable: &mut Option<RecvIgnorable>,
     ) -> HandleRecvReply<T> {
         let stream_state = self.agent.mut_stream_state(self.id).unwrap();
         let checklist_id = stream_state.checklist_id;
@@ -403,7 +404,7 @@ impl<'a> StreamMut<'a> {
         // or, provide the data to the connection check component for further processing
         self.agent
             .checklistset
-            .incoming_data(checklist_id, component_id, transmit, now)
+            .incoming_data(checklist_id, component_id, transmit, now, ignorable)
     }
 
     /// Send an ignorable error.
@@ -619,9 +620,10 @@ impl StreamState {
         };
         // XXX: is this enough to successfully route to the gatherer over the
         // connection check or component received handling?
-        let mut ret = HandleRecvReply::default();
-        ret.handled = gather.handle_data(transmit, now);
-        ret
+        HandleRecvReply {
+            handled: gather.handle_data(transmit, now),
+            ..Default::default()
+        }
     }
 
     #[tracing::instrument(ret, level = "trace", skip(self))]
@@ -997,7 +999,7 @@ mod tests {
             .unwrap()
             .build();
         let mut stream = agent.mut_stream(stream_id).unwrap();
-        let ret = stream.handle_incoming_data(component_id, reply, now);
+        let ret = stream.handle_incoming_data(component_id, reply, now, &mut None);
         assert!(ret.handled());
 
         let AgentPoll::WaitUntil(now) = agent.poll(now) else {
@@ -1032,7 +1034,7 @@ mod tests {
         let reply = turn_server.poll_transmit(now).unwrap();
 
         let mut stream = agent.mut_stream(stream_id).unwrap();
-        let ret = stream.handle_incoming_data(component_id, reply, now);
+        let ret = stream.handle_incoming_data(component_id, reply, now, &mut None);
         assert!(ret.handled());
         now
     }

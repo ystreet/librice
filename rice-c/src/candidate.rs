@@ -276,10 +276,6 @@ impl Candidate {
         }
     }
 
-    pub(crate) fn as_c(&self) -> *const crate::ffi::RiceCandidate {
-        &self.ffi
-    }
-
     pub(crate) unsafe fn from_c_none(candidate: *const crate::ffi::RiceCandidate) -> Self {
         unsafe {
             let mut ret = Self {

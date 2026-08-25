@@ -445,6 +445,7 @@ mod tests {
         assert_eq!(transmit.data.as_ref(), data.as_slice());
 
         let recved_data = vec![7; 6];
+        let mut ignorable = None;
         let ret = stream.handle_incoming_data(
             send_id,
             Transmit::new(
@@ -454,21 +455,26 @@ mod tests {
                 local_addr,
             ),
             now,
+            &mut ignorable,
         );
         assert_eq!(recved_data.as_slice(), ret.data.unwrap().as_ref());
         assert!(!ret.handled);
         assert!(!ret.have_more_data);
+        assert!(ignorable.is_none());
 
         // Unknown remote is ignored
         let recved_data2 = vec![9; 12];
+        let mut ignorable = None;
         let ret = stream.handle_incoming_data(
             send_id,
             Transmit::new(recved_data2, TransportType::Udp, local_addr, local_addr),
             now,
+            &mut ignorable,
         );
         assert!(ret.data.is_none());
         assert!(!ret.handled);
         assert!(!ret.have_more_data);
+        assert!(ignorable.is_none());
     }
 
     #[test]
@@ -513,7 +519,6 @@ mod tests {
         let mut c = stream.mut_component(component_id).unwrap();
         c.set_selected_pair(pair).unwrap();
         assert!(c.selected_pair().is_some());
-        drop(c);
 
         let pair2 = CandidatePair::new(local, remote);
         let mut c = stream.mut_component(component_id).unwrap();

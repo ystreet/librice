@@ -61,7 +61,7 @@ use crate::component::ComponentConnectionState;
 use crate::consent;
 use crate::gathering::GatheredCandidate;
 use crate::restart::{RestartConfig, RoleChange};
-use crate::stream::{Credentials, RestartStreamConfig};
+use crate::stream::{Credentials, RecvIgnorable, RestartStreamConfig};
 #[cfg(feature = "dimpl")]
 use crate::turn::DimplTurnConfig;
 #[cfg(feature = "openssl")]
@@ -2362,7 +2362,6 @@ pub unsafe extern "C" fn rice_candidate_to_sdp_string(
         let cand = (*candidate).as_rice_none();
         let ret = CString::new(cand.to_sdp_string()).unwrap();
         core::mem::forget(candidate);
-        // FIXME: need to provide a way to free this c string
         ret.into_raw()
     }
 }
@@ -2713,6 +2712,24 @@ impl RiceGatheredCandidate {
     }
 }
 
+/// Add a local `RiceCandidate` to a `RiceStream`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_stream_add_local_candidate(
+    stream: *mut RiceStream,
+    candidate: *const RiceCandidate,
+) -> bool {
+    unsafe {
+        let stream = Arc::from_raw(stream);
+        let mut proto_agent = stream.proto_agent.lock().unwrap();
+        let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
+
+        let ret = proto_stream.add_local_candidate((*candidate).as_rice_none());
+        drop(proto_agent);
+        core::mem::forget(stream);
+        ret
+    }
+}
+
 /// Add a local `RiceGatheredCandidate` to a `RiceStream`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_stream_add_local_gathered_candidate(
@@ -2860,6 +2877,42 @@ pub struct RiceStreamIncomingData {
     data: RiceDataImpl,
 }
 
+/// An error reply that can be ignored if another agent handles the STUN message.
+///
+/// Typically encountered when multiple agents are running using the same local socket in an
+/// ICE-lite configuration.
+#[derive(Debug)]
+pub struct RiceRecvIgnorable {
+    ignorable: Option<RecvIgnorable>,
+}
+
+/// Construct a new `RiceRecvIgnorable`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_recv_ignorable_new() -> *mut RiceRecvIgnorable {
+    Box::into_raw(Box::new(RiceRecvIgnorable {
+        ignorable: None,
+    }))
+}
+
+/// Construct a new `RiceRecvIgnorable`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_recv_ignorable_has_contents(recv_ignorable: *const RiceRecvIgnorable) -> bool {
+    unsafe {
+        let ignorable = Box::from_raw(mut_override(recv_ignorable));
+        let ret = ignorable.ignorable.is_some();
+        core::mem::forget(ignorable);
+        ret
+    }
+}
+
+/// Free a `RiceRecvIgnorable`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_recv_ignorable_free(recv_ignorable: *mut RiceRecvIgnorable) {
+    unsafe {
+        let _recv = Box::from_raw(recv_ignorable);
+    }
+}
+
 /// Provide data to the `RiceStream` for processing.
 ///
 /// The returned value contains what processing was completed on the provided data and any
@@ -2874,7 +2927,8 @@ pub unsafe extern "C" fn rice_stream_handle_incoming_data(
     data: *const u8,
     data_len: usize,
     now_nanos: i64,
-    ret: *mut MaybeUninit<RiceStreamIncomingData>,
+    ret: *mut RiceStreamIncomingData,
+    ignorable: *mut RiceRecvIgnorable,
 ) {
     unsafe {
         let stream = Arc::from_raw(stream);
@@ -2893,7 +2947,8 @@ pub unsafe extern "C" fn rice_stream_handle_incoming_data(
         core::mem::forget(from);
         core::mem::forget(to);
 
-        let stream_ret = proto_stream.handle_incoming_data(component_id, transmit, now);
+        let mut ignorable_ret = None;
+        let stream_ret = proto_stream.handle_incoming_data(component_id, transmit, now, &mut ignorable_ret);
         let data = if let Some(_data_and_range) = &stream_ret.data {
             RiceDataImpl {
                 ptr: mut_override(data),
@@ -2906,20 +2961,42 @@ pub unsafe extern "C" fn rice_stream_handle_incoming_data(
             }
         };
 
-        (*ret).write(RiceStreamIncomingData {
-            handled: stream_ret.handled,
-            have_more_data: stream_ret.have_more_data,
-            data,
-        });
-
-        // FIXME: 0.5 expose this a separate API when bumping ABI to support multiple agents
-        // listening on the same local socket.
-        if let Some(ignorable) = stream_ret.into_ignorable() {
+        (*ret).handled = stream_ret.handled;
+        (*ret).have_more_data = stream_ret.have_more_data;
+        (*ret).data = data;
+        if !ignorable.is_null() {
+            let mut ignorable = Box::from_raw(ignorable);
+            ignorable.ignorable = ignorable_ret;
+            core::mem::forget(ignorable);
+        } else if let Some(ignorable) = ignorable_ret.take() {
             proto_stream.send_ignorable_error(ignorable);
         }
 
         drop(proto_agent);
         core::mem::forget(stream);
+    }
+}
+
+/// Send an ignorable error.
+///
+/// Send an error produced by [`rice_stream_handle_incoming_data()`] that could have been (but was not)
+/// handled by another agent listening on the same local port.
+///
+/// This should be called once all agents listening on the same local socket port have failed
+/// to handle the incoming data.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_stream_send_ignorable_error(stream: *mut RiceStream, ignorable: *mut RiceRecvIgnorable) {
+    unsafe {
+        if let Some(ignorable) = (*ignorable).ignorable.take() {
+            let stream = Arc::from_raw(stream);
+            let mut proto_agent = stream.proto_agent.lock().unwrap();
+            let mut proto_stream = proto_agent.mut_stream(stream.stream_id).unwrap();
+
+            proto_stream.send_ignorable_error(ignorable);
+
+            drop(proto_agent);
+            core::mem::forget(stream);
+        }
     }
 }
 

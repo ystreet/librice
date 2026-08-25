@@ -180,7 +180,6 @@ pub struct HandleRecvReply<T: AsRef<[u8]> + core::fmt::Debug> {
     pub handled: bool,
     pub have_more_data: bool,
     pub data: Option<DataAndRange<T>>,
-    ignorable: Option<RecvIgnorable>,
 }
 
 #[derive(Debug)]
@@ -191,6 +190,9 @@ enum IgnorableReason {
 }
 
 /// An error reply that can be ignored if another agent handles the STUN message.
+///
+/// Typically encountered when multiple agents are running using the same local socket in an
+/// ICE-lite configuration.
 #[derive(Debug)]
 pub struct RecvIgnorable {
     reason: IgnorableReason,
@@ -207,14 +209,6 @@ impl<T: AsRef<[u8]> + core::fmt::Debug> HandleRecvReply<T> {
     /// `poll()` should be called again.
     pub fn handled(&self) -> bool {
         self.handled
-    }
-
-    pub fn is_ignorable(&self) -> bool {
-        self.ignorable.is_some()
-    }
-
-    pub fn into_ignorable(self) -> Option<RecvIgnorable> {
-        self.ignorable
     }
 }
 
@@ -242,7 +236,6 @@ impl<T: AsRef<[u8]> + core::fmt::Debug> Default for HandleRecvReply<T> {
             handled: false,
             have_more_data: false,
             data: None,
-            ignorable: None,
         }
     }
 }
@@ -1789,7 +1782,7 @@ impl ConnCheckList {
         fields(checklist.id = self.checklist_id)
     )]
     fn check_for_failure(&mut self) {
-        if self.state == CheckListState::Completed {
+        if self.ice_lite || self.state == CheckListState::Completed {
             return;
         }
         if self.local_end_of_candidates && self.remote_end_of_candidates {
@@ -2604,6 +2597,7 @@ impl ConnCheckListSet {
         transmit: Transmit<T>,
         turn_client_id: Option<(StunAgentId, SocketAddr)>,
         now: Instant,
+        ignorable: &mut Option<RecvIgnorable>,
     ) -> HandleRecvReply<T> {
         if !self.checklists[checklist_i].pending_recv.is_empty() {
             panic!("Previous data has not been completely handled yet");
@@ -2635,21 +2629,19 @@ impl ConnCheckListSet {
         match transmit.transport {
             TransportType::Udp => match Message::from_bytes(transmit.data.as_ref()) {
                 Ok(msg) => {
-                    let mut ignorable = None;
                     if self.handle_stun(
                         checklist_i,
                         msg,
                         &transmit,
                         agent_id,
                         turn_client_id,
-                        &mut ignorable,
+                        ignorable,
                         now,
                     ) {
                         return HandleRecvReply {
                             handled: true,
                             have_more_data: false,
                             data: None,
-                            ignorable,
                         };
                     }
                 }
@@ -2679,7 +2671,6 @@ impl ConnCheckListSet {
                                     range: 0..transmit.data.as_ref().len(),
                                     data: transmit.data,
                                 }),
-                                ignorable: None,
                             };
                         }
                     }
@@ -2701,19 +2692,18 @@ impl ConnCheckListSet {
                 while let Some(data) = tcp_buffer.pull_data() {
                     match Message::from_bytes(&data) {
                         Ok(msg) => {
-                            let mut ignorable = None;
                             if self.handle_stun(
                                 checklist_i,
                                 msg,
                                 &transmit,
                                 agent_id,
                                 turn_client_id,
-                                &mut ignorable,
+                                ignorable,
                                 now,
                             ) {
                                 handled = true;
                             }
-                            if let Some(ignorable) = ignorable {
+                            if let Some(ignorable) = ignorable.take() {
                                 self.send_ignorable_error(ignorable);
                             }
                         }
@@ -2748,7 +2738,6 @@ impl ConnCheckListSet {
                     handled,
                     have_more_data,
                     data: None,
-                    ignorable: None,
                 };
             }
         }
@@ -2756,7 +2745,6 @@ impl ConnCheckListSet {
             handled: false,
             have_more_data: false,
             data: None,
-            ignorable: None,
         }
     }
 
@@ -2782,6 +2770,7 @@ impl ConnCheckListSet {
         component_id: usize,
         mut transmit: Transmit<T>,
         now: Instant,
+        ignorable: &mut Option<RecvIgnorable>,
     ) -> HandleRecvReply<T> {
         let Some(mut checklist_i) = self
             .checklists
@@ -2837,6 +2826,7 @@ impl ConnCheckListSet {
                         transmit,
                         turn_client_id,
                         now,
+                        ignorable,
                     );
                     if let Some(data) = ret.data.as_ref() {
                         let checklist = &mut self.checklists[checklist_i];
@@ -2865,6 +2855,7 @@ impl ConnCheckListSet {
                                 transmit,
                                 turn_client_id,
                                 now,
+                                ignorable,
                             );
                             if let Some(data) = ret.data.as_ref() {
                                 let checklist = &mut self.checklists[checklist_i];
@@ -2899,7 +2890,14 @@ impl ConnCheckListSet {
             }
         }
 
-        self.incoming_data_or_stun(checklist_i, component_id, transmit, turn_client_id, now)
+        self.incoming_data_or_stun(
+            checklist_i,
+            component_id,
+            transmit,
+            turn_client_id,
+            now,
+            ignorable,
+        )
     }
 
     fn handle_binding_request(
@@ -5844,6 +5842,7 @@ mod tests {
                 pair.local.component_id,
                 transmit,
                 now,
+                &mut None,
             );
             assert_eq!(reply.data.unwrap().as_ref(), data.as_ref());
         }
@@ -5946,7 +5945,7 @@ mod tests {
                 .map(|checklist| checklist.checklist_id)
                 .next()
                 .unwrap();
-            let reply = set.incoming_data(checklist_id, 1, reply, now);
+            let reply = set.incoming_data(checklist_id, 1, reply, now, &mut None);
             trace!("reply: {reply:?}");
             if !self.unhandled_reply {
                 assert!(reply.handled);
@@ -6280,10 +6279,13 @@ mod tests {
             .unwrap();
         assert_eq!(check.state(), CandidatePairState::InProgress);
 
-        state
-            .local
-            .checklist_set
-            .incoming_data(state.local.checklist_id, 1, response, now);
+        state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            1,
+            response,
+            now,
+            &mut None,
+        );
         error!("tcp replied");
 
         let now = wait_advance(&mut state.local.checklist_set, now);
@@ -6304,10 +6306,13 @@ mod tests {
         ) else {
             unreachable!();
         };
-        state
-            .local
-            .checklist_set
-            .incoming_data(state.local.checklist_id, 1, response, now);
+        state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            1,
+            response,
+            now,
+            &mut None,
+        );
 
         let CheckListSetPollRet::Event {
             checklist_id: _,
@@ -6409,6 +6414,7 @@ mod tests {
                         .unwrap()
                         .reinterpret_data(|data| transmit_send(transport, data)),
                     now,
+                    &mut None,
                 )
                 .handled
         );
@@ -6472,10 +6478,13 @@ mod tests {
             .unwrap();
         assert_eq!(check.state(), CandidatePairState::InProgress);
 
-        state
-            .local
-            .checklist_set
-            .incoming_data(state.local.checklist_id, 1, response, now);
+        state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            1,
+            response,
+            now,
+            &mut None,
+        );
         error!("tcp replied");
 
         let now = wait_advance(&mut state.local.checklist_set, now);
@@ -6498,10 +6507,13 @@ mod tests {
             unreachable!();
         };
 
-        state
-            .local
-            .checklist_set
-            .incoming_data(state.local.checklist_id, 1, response, now);
+        state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            1,
+            response,
+            now,
+            &mut None,
+        );
 
         let CheckListSetPollRet::Event {
             checklist_id: _,
@@ -6624,11 +6636,13 @@ mod tests {
         );
 
         info!("sending prflx request");
-        let reply =
-            state
-                .local
-                .checklist_set
-                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        let reply = state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            1,
+            transmit,
+            now,
+            &mut None,
+        );
         assert!(reply.handled);
 
         let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
@@ -7044,11 +7058,13 @@ mod tests {
         );
 
         info!("sending request");
-        let reply =
-            state
-                .local
-                .checklist_set
-                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        let reply = state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            1,
+            transmit,
+            now,
+            &mut None,
+        );
         assert!(reply.handled);
         // eat the success response
         state.local.checklist_set.poll_transmit(now).unwrap();
@@ -7162,11 +7178,13 @@ mod tests {
         );
 
         info!("sending request");
-        let reply =
-            state
-                .local
-                .checklist_set
-                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        let reply = state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            1,
+            transmit,
+            now,
+            &mut None,
+        );
         assert!(reply.handled);
         // eat the success response
         let Some(CheckListSetTransmit {
@@ -7250,11 +7268,13 @@ mod tests {
             remote_generate_check(&remote_peer, &mut remote_agent, to, false, false, now);
 
         info!("sending prflx request");
-        let reply =
-            state
-                .local
-                .checklist_set
-                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        let reply = state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            1,
+            transmit,
+            now,
+            &mut None,
+        );
         assert!(reply.handled);
 
         let mut peer_reflexive_remote = state.remote.candidate.clone();
@@ -7405,7 +7425,7 @@ mod tests {
             transmit.from,
             transmit.to,
         );
-        set.incoming_data(checklist_id, 1, transmit, now);
+        set.incoming_data(checklist_id, 1, transmit, now, &mut None);
         match set.poll(now) {
             CheckListSetPollRet::WaitUntil(now) => now,
             ret => {
@@ -7570,10 +7590,11 @@ mod tests {
             transmit.from,
             transmit.to,
         );
-        let reply = state
-            .local
-            .checklist_set
-            .incoming_data(checklist_id, 1, transmit, now);
+        let reply =
+            state
+                .local
+                .checklist_set
+                .incoming_data(checklist_id, 1, transmit, now, &mut None);
         assert!(reply.handled);
 
         let CheckListSetPollRet::RemoveSocket {
@@ -7696,7 +7717,7 @@ mod tests {
         state
             .local
             .checklist_set
-            .incoming_data(checklist_id, 1, transmit, now);
+            .incoming_data(checklist_id, 1, transmit, now, &mut None);
 
         let CheckListSetPollRet::Event {
             checklist_id: _,
@@ -7798,7 +7819,7 @@ mod tests {
             transmit.from,
             transmit.to,
         );
-        let reply = set.incoming_data(checklist_id, 1, transmit, now);
+        let reply = set.incoming_data(checklist_id, 1, transmit, now, &mut None);
         assert!(reply.handled);
         let CheckListSetPollRet::AllocateSocket {
             checklist_id,
@@ -7826,7 +7847,7 @@ mod tests {
         let msg = Message::from_bytes(&transmit.transmit.data).unwrap();
         assert!(msg.has_method(CONNECTION_BIND));
         let transmit = turn_server.recv(transmit.transmit, now).unwrap().build();
-        let reply = set.incoming_data(checklist_id, 1, transmit, now);
+        let reply = set.incoming_data(checklist_id, 1, transmit, now, &mut None);
         assert!(reply.handled);
         match set.poll(now) {
             CheckListSetPollRet::WaitUntil(now) => now,
@@ -8004,10 +8025,11 @@ mod tests {
             transmit.from,
             transmit.to,
         );
-        let reply = state
-            .local
-            .checklist_set
-            .incoming_data(checklist_id, 1, transmit, now);
+        let reply =
+            state
+                .local
+                .checklist_set
+                .incoming_data(checklist_id, 1, transmit, now, &mut None);
         assert!(reply.handled);
 
         let CheckListSetPollRet::RemoveSocket {
@@ -8344,11 +8366,13 @@ mod tests {
             true,
             now,
         );
-        let reply =
-            state
-                .local
-                .checklist_set
-                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        let reply = state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            1,
+            transmit,
+            now,
+            &mut None,
+        );
         assert!(reply.handled);
         let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
             unreachable!();
@@ -8384,11 +8408,13 @@ mod tests {
             true,
             now,
         );
-        let reply =
-            state
-                .local
-                .checklist_set
-                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        let reply = state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            1,
+            transmit,
+            now,
+            &mut None,
+        );
         assert!(reply.handled);
         let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
             unreachable!();
@@ -8504,11 +8530,13 @@ mod tests {
             true,
             now,
         );
-        let reply =
-            state
-                .local
-                .checklist_set
-                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        let reply = state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            1,
+            transmit,
+            now,
+            &mut None,
+        );
         assert!(reply.handled);
         let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
             unreachable!();
@@ -8643,11 +8671,13 @@ mod tests {
             true,
             now,
         );
-        let reply =
-            state
-                .local
-                .checklist_set
-                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        let reply = state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            1,
+            transmit,
+            now,
+            &mut None,
+        );
         assert!(reply.handled);
 
         let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
@@ -8704,11 +8734,13 @@ mod tests {
             true,
             now,
         );
-        let reply =
-            state
-                .local
-                .checklist_set
-                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        let reply = state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            1,
+            transmit,
+            now,
+            &mut None,
+        );
         assert!(reply.handled);
         let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
             unreachable!();
@@ -8825,14 +8857,17 @@ mod tests {
             true,
             now,
         );
-        let reply =
-            state
-                .local
-                .checklist_set
-                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        let mut ignorable = None;
+        let reply = state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            1,
+            transmit,
+            now,
+            &mut ignorable,
+        );
         assert!(reply.handled);
-        assert!(reply.is_ignorable());
-        let ignorable = reply.into_ignorable().unwrap();
+        assert!(ignorable.is_some());
+        let ignorable = ignorable.unwrap();
         state.local.checklist_set.send_ignorable_error(ignorable);
 
         let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
@@ -8866,14 +8901,17 @@ mod tests {
             true,
             now,
         );
-        let reply =
-            state
-                .local
-                .checklist_set
-                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        let mut ignorable = None;
+        let reply = state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            1,
+            transmit,
+            now,
+            &mut ignorable,
+        );
         assert!(reply.handled);
-        assert!(reply.is_ignorable());
-        let ignorable = reply.into_ignorable().unwrap();
+        assert!(ignorable.is_some());
+        let ignorable = ignorable.unwrap();
         state.local.checklist_set.send_ignorable_error(ignorable);
 
         let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
@@ -8902,13 +8940,16 @@ mod tests {
             true,
             now,
         );
-        let reply =
-            state
-                .local
-                .checklist_set
-                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        let mut ignorable = None;
+        let reply = state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            1,
+            transmit,
+            now,
+            &mut ignorable,
+        );
         assert!(reply.handled);
-        assert!(!reply.is_ignorable());
+        assert!(ignorable.is_none());
 
         let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
             unreachable!();
@@ -9017,11 +9058,13 @@ mod tests {
             now,
         );
 
-        let reply =
-            state
-                .local
-                .checklist_set
-                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        let reply = state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            1,
+            transmit,
+            now,
+            &mut None,
+        );
         assert!(reply.handled);
 
         let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
@@ -9076,11 +9119,13 @@ mod tests {
             state.remote.candidate.address,
             state.local.peer.candidate.address,
         );
-        let reply =
-            state
-                .local
-                .checklist_set
-                .incoming_data(state.local.checklist_id, 1, transmit, now);
+        let reply = state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            1,
+            transmit,
+            now,
+            &mut None,
+        );
 
         assert!(reply.handled);
         assert!(reply.data.is_none());
@@ -9164,7 +9209,7 @@ mod tests {
         let response_data = response.finish();
 
         let response_tx = Transmit::new(response_data, TransportType::Udp, remote_addr, local_addr);
-        let reply = set.incoming_data(cl_id, 1, response_tx, now);
+        let reply = set.incoming_data(cl_id, 1, response_tx, now, &mut None);
         assert!(reply.handled);
 
         match set.poll(now) {
@@ -9253,7 +9298,7 @@ mod tests {
         let response_data = response.finish();
 
         let response_tx = Transmit::new(response_data, TransportType::Udp, remote_addr, local_addr);
-        let reply = set.incoming_data(cl_id, 1, response_tx, now);
+        let reply = set.incoming_data(cl_id, 1, response_tx, now, &mut None);
         assert!(reply.handled);
 
         match set.poll(now) {
