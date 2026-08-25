@@ -41,8 +41,8 @@ impl TurnConfig {
     /// );
     /// assert_eq!(config.client_transport(), TransportType::Udp);
     /// assert_eq!(config.addr(), server_addr);
-    /// // FIXME
-    /// //assert_eq!(config.credentials().username(), credentials.username());
+    /// assert_eq!(config.credentials().user(), credentials.user());
+    /// assert_eq!(config.credentials().password(), credentials.password());
     /// ```
     pub fn new(
         client_transport: TransportType,
@@ -341,8 +341,8 @@ mod tests {
         );
         assert_eq!(cfg.addr(), turn_server_address());
         assert_eq!(cfg.client_transport(), TransportType::Udp);
-        // TODO credentials
-        //assert_eq!(cfg.credentials().username(), turn_credentials().username());
+        assert_eq!(cfg.credentials().user(), turn_credentials().user());
+        assert_eq!(cfg.credentials().password(), turn_credentials().password());
         assert_eq!(&cfg.address_families(), &[AddressFamily::IPV4]);
         assert_eq!(cfg.allocation_transport(), TransportType::Udp);
         assert_eq!(&cfg.supported_integrity(), &[IntegrityAlgorithm::Sha1]);
