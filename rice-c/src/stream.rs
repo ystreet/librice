@@ -152,7 +152,7 @@ impl Stream {
     }
 
     /// Add a remote candidate for connection checks for use with this stream
-    pub fn add_remote_candidate(&self, cand: &crate::candidate::Candidate) {
+    pub fn add_remote_candidate(&self, cand: &impl crate::candidate::CandidateApi) {
         unsafe { crate::ffi::rice_stream_add_remote_candidate(self.ffi, cand.as_c()) }
     }
 
@@ -175,6 +175,13 @@ impl Stream {
             crate::ffi::rice_stream_get_remote_candidates(self.ffi, &mut len, ret.as_mut_ptr());
             ret.into_iter().map(Candidate::from_c_full).collect()
         }
+    }
+
+    /// Add a local candidate for this stream.
+    ///
+    /// Returns whether the candidate was added internally.
+    pub fn add_local_candidate(&self, candidate: &impl crate::candidate::CandidateApi) -> bool {
+        unsafe { crate::ffi::rice_stream_add_local_candidate(self.ffi, candidate.as_c()) }
     }
 
     /// Add a local candidate for this stream.
@@ -229,6 +236,7 @@ impl Stream {
     /// Provide the stream with data that has been received on an external socket.  The returned
     /// value indicates what has been done with the data and any application data that has been
     /// received.
+    #[allow(clippy::too_many_arguments)]
     pub fn handle_incoming_data<'a>(
         &self,
         component_id: usize,
@@ -237,9 +245,15 @@ impl Stream {
         to: crate::Address,
         data: &'a [u8],
         now: Instant,
+        ignorable: Option<&mut RecvIgnorable>,
     ) -> StreamIncomingDataReply<'a> {
         unsafe {
             let mut stream_ret = crate::ffi::RiceStreamIncomingData::default();
+            let ignorable = if let Some(ignorable) = ignorable {
+                ignorable.ffi
+            } else {
+                core::ptr::null_mut()
+            };
             crate::ffi::rice_stream_handle_incoming_data(
                 self.ffi,
                 component_id,
@@ -250,6 +264,7 @@ impl Stream {
                 data.len(),
                 now.as_nanos(),
                 &mut stream_ret,
+                ignorable,
             );
             let mut ret = StreamIncomingDataReply {
                 handled: stream_ret.handled,
@@ -260,6 +275,19 @@ impl Stream {
                 ret.data = Some(data);
             }
             ret
+        }
+    }
+
+    /// Send an ignorable error.
+    ///
+    /// Send an error produced by [`Stream::handle_incoming_data`] that could have been (but was not)
+    /// handled by another agent listening on the same local port.
+    ///
+    /// This should be called once all agents listening on the same local socket port have failed
+    /// to handle the incoming data.
+    pub fn send_ignorable_error(&mut self, ignorable: RecvIgnorable) {
+        unsafe {
+            crate::ffi::rice_stream_send_ignorable_error(self.ffi, ignorable.ffi);
         }
     }
 
@@ -328,6 +356,45 @@ pub struct StreamIncomingDataReply<'a> {
     pub have_more_data: bool,
     /// Any application data that could be parsed from the incoming data.
     pub data: Option<&'a [u8]>,
+}
+
+/// An error reply that can be ignored if another agent handles the STUN message.
+///
+/// Typically encountered when multiple agents are running using the same local socket in an
+/// ICE-lite configuration.
+#[derive(Debug)]
+pub struct RecvIgnorable {
+    ffi: *mut crate::ffi::RiceRecvIgnorable,
+}
+
+impl Drop for RecvIgnorable {
+    fn drop(&mut self) {
+        unsafe {
+            crate::ffi::rice_recv_ignorable_free(self.ffi);
+        }
+    }
+}
+
+impl Default for RecvIgnorable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RecvIgnorable {
+    /// Construct a new [`RecvIgnorable`].
+    pub fn new() -> Self {
+        unsafe {
+            Self {
+                ffi: crate::ffi::rice_recv_ignorable_new(),
+            }
+        }
+    }
+
+    /// Whether an ignorable receive error has been filled.
+    pub fn has_contents(&self) -> bool {
+        unsafe { crate::ffi::rice_recv_ignorable_has_contents(self.ffi) }
+    }
 }
 
 /// A set of ICE/TURN credentials.
@@ -538,7 +605,20 @@ impl Drop for RestartStreamConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::{Agent, AgentPoll};
+
+    use core::net::SocketAddr;
+
+    use crate::{
+        agent::{Agent, AgentPoll},
+        candidate::CandidateApi,
+        component::ComponentConnectionState,
+    };
+    use rice_stun_types::attribute::{IceControlled, IceControlling, Priority, UseCandidate};
+    use stun_types::attribute::Username;
+    use stun_types::message::{
+        BINDING, IntegrityAlgorithm, Message, MessageClass, MessageIntegrityCredentials,
+        MessageWrite, MessageWriteExt, MessageWriteVec, ValidateError,
+    };
 
     #[test]
     fn getters() {
@@ -608,5 +688,221 @@ mod tests {
 
         let _ = agent.poll(Instant::ZERO);
         let _ = agent.poll(Instant::ZERO);
+    }
+
+    fn remote_generate_check(
+        remote_candidate: &Candidate,
+        local_credentials: &Credentials,
+        remote_credentials: &Credentials,
+        nominate: bool,
+        controlling: bool,
+    ) -> Vec<u8> {
+        // send a request from some unknown to the local agent address to produce a peer
+        // reflexive candidate on the local agent
+        let mut request = Message::builder_request(BINDING, MessageWriteVec::new());
+        let priority = Priority::new(remote_candidate.priority());
+        request.add_attribute(&priority).unwrap();
+        if controlling {
+            request.add_attribute(&IceControlling::new(200)).unwrap();
+        } else {
+            request.add_attribute(&IceControlled::new(200)).unwrap();
+        }
+        let username =
+            Username::new(&(remote_credentials.user() + ":" + &local_credentials.password()))
+                .unwrap();
+        request.add_attribute(&username).unwrap();
+        if nominate {
+            request.add_attribute(&UseCandidate::new()).unwrap();
+        }
+        request
+            .add_message_integrity(
+                &MessageIntegrityCredentials::ShortTerm(
+                    stun_types::message::ShortTermCredentials::new(remote_credentials.password()),
+                ),
+                IntegrityAlgorithm::Sha1,
+            )
+            .unwrap();
+        request.add_fingerprint().unwrap();
+
+        request.finish()
+    }
+
+    #[test]
+    fn ice_lite_ignores_wrong_credentials() {
+        let _log = crate::tests::test_init_log();
+        let agent = Agent::builder().ice_lite(true).controlling(false).build();
+        let mut stream = agent.add_stream();
+        let _component = stream.add_component();
+        let local_creds = Credentials::new("luser", "lpass");
+        let remote_creds = Credentials::new("ruser", "rpass");
+        stream.set_local_credentials(&local_creds);
+        stream.set_remote_credentials(&remote_creds);
+
+        let local_addr = crate::Address::from("192.168.1.1:1111".parse::<SocketAddr>().unwrap());
+        let local_candidate = Candidate::builder(
+            1,
+            crate::candidate::CandidateType::Host,
+            TransportType::Udp,
+            "0",
+            local_addr.clone(),
+        )
+        .base_address(local_addr.clone())
+        .priority(100)
+        .build();
+        stream.add_local_candidate(&local_candidate);
+        stream.end_of_local_candidates();
+        let remote_addr = crate::Address::from("192.168.2.2:2222".parse::<SocketAddr>().unwrap());
+        let remote_candidate = Candidate::builder(
+            1,
+            crate::candidate::CandidateType::Host,
+            TransportType::Udp,
+            "0",
+            remote_addr.clone(),
+        )
+        .base_address(remote_addr.clone())
+        .priority(100)
+        .build();
+        stream.add_remote_candidate(&remote_candidate);
+        stream.end_of_remote_candidates();
+        let now = Instant::ZERO;
+
+        let correct_credentials = local_creds.clone();
+        let wrong_user = Credentials::new(
+            &format!("{}wrong", correct_credentials.user()),
+            &correct_credentials.password(),
+        );
+        let msg = remote_generate_check(&remote_candidate, &local_creds, &wrong_user, true, true);
+        let mut ignorable = RecvIgnorable::new();
+        let reply = stream.handle_incoming_data(
+            1,
+            TransportType::Udp,
+            remote_candidate.address(),
+            local_candidate.base_address(),
+            &msg,
+            now,
+            Some(&mut ignorable),
+        );
+        assert!(reply.handled);
+        assert!(ignorable.has_contents());
+        stream.send_ignorable_error(ignorable);
+
+        let Some(transmit) = agent.poll_transmit(now) else {
+            unreachable!();
+        };
+        assert!(agent.poll_transmit(now).is_none());
+
+        assert_eq!(transmit.from, local_candidate.address());
+        let response = Message::from_bytes(transmit.data).unwrap();
+        assert!(response.has_class(MessageClass::Error));
+        assert!(matches!(
+            response.validate_integrity(&MessageIntegrityCredentials::ShortTerm(
+                stun_types::message::ShortTermCredentials::new(wrong_user.password()),
+            )),
+            Ok(IntegrityAlgorithm::Sha1)
+        ));
+        tracing::trace!("received: {response}");
+
+        let wrong_password = Credentials::new(
+            &correct_credentials.user(),
+            &format!("{}wrong", correct_credentials.password()),
+        );
+        let msg =
+            remote_generate_check(&remote_candidate, &local_creds, &wrong_password, true, true);
+        let mut ignorable = RecvIgnorable::new();
+        let reply = stream.handle_incoming_data(
+            1,
+            TransportType::Udp,
+            remote_candidate.address(),
+            local_candidate.base_address(),
+            &msg,
+            now,
+            Some(&mut ignorable),
+        );
+        assert!(reply.handled);
+        assert!(ignorable.has_contents());
+        stream.send_ignorable_error(ignorable);
+
+        let Some(transmit) = agent.poll_transmit(now) else {
+            unreachable!();
+        };
+        assert!(agent.poll_transmit(now).is_none());
+
+        assert_eq!(transmit.from, local_candidate.address());
+        let response = Message::from_bytes(transmit.data).unwrap();
+        assert!(response.has_class(MessageClass::Error));
+        assert!(matches!(
+            response.validate_integrity(&MessageIntegrityCredentials::ShortTerm(
+                stun_types::message::ShortTermCredentials::new(wrong_password.password()),
+            )),
+            Err(ValidateError::IntegrityFailed),
+        ));
+        tracing::trace!("received: {response}");
+
+        let msg = remote_generate_check(
+            &remote_candidate,
+            &local_creds,
+            &correct_credentials,
+            true,
+            true,
+        );
+        let mut ignorable = RecvIgnorable::new();
+        let reply = stream.handle_incoming_data(
+            1,
+            TransportType::Udp,
+            remote_candidate.address(),
+            local_candidate.base_address(),
+            &msg,
+            now,
+            Some(&mut ignorable),
+        );
+        assert!(reply.handled);
+        assert!(!ignorable.has_contents());
+
+        let Some(transmit) = agent.poll_transmit(now) else {
+            unreachable!();
+        };
+        assert!(agent.poll_transmit(now).is_none());
+
+        assert_eq!(transmit.from, local_candidate.address());
+        let response = Message::from_bytes(transmit.data).unwrap();
+        assert!(response.has_class(MessageClass::Success));
+        assert!(matches!(
+            response.validate_integrity(&MessageIntegrityCredentials::ShortTerm(
+                stun_types::message::ShortTermCredentials::new(correct_credentials.password()),
+            )),
+            Ok(IntegrityAlgorithm::Sha1)
+        ));
+        tracing::trace!("received: {response}");
+
+        let AgentPoll::SelectedPair(pair) = agent.poll(now) else {
+            unreachable!();
+        };
+        assert_eq!(pair.local, local_candidate);
+        assert_eq!(pair.remote, remote_candidate);
+        let AgentPoll::ComponentStateChange(changes) = agent.poll(now) else {
+            unreachable!();
+        };
+        assert_eq!(changes.state, ComponentConnectionState::Connected);
+
+        let recv = [8; 9];
+        let ret = stream.handle_incoming_data(
+            1,
+            TransportType::Udp,
+            remote_addr,
+            local_addr,
+            recv.as_slice(),
+            now,
+            None,
+        );
+        assert_eq!(ret.data.unwrap(), recv);
+
+        agent.close(now);
+
+        let AgentPoll::RemoveSocket(_removed) = agent.poll(now) else {
+            unreachable!();
+        };
+        let AgentPoll::Closed = agent.poll(now) else {
+            unreachable!();
+        };
     }
 }

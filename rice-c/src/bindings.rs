@@ -118,6 +118,11 @@ pub struct RiceComponent {
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+pub struct RiceRecvIgnorable {
+    _unused: [u8; 0],
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct RiceRestartConfig {
     _unused: [u8; 0],
 }
@@ -1119,6 +1124,13 @@ unsafe extern "C" {
     pub fn rice_candidate_eq(candidate: *const RiceCandidate, other: *const RiceCandidate) -> bool;
 }
 unsafe extern "C" {
+    #[doc = " Add a local `RiceCandidate` to a `RiceStream`."]
+    pub fn rice_stream_add_local_candidate(
+        stream: *mut RiceStream,
+        candidate: *const RiceCandidate,
+    ) -> bool;
+}
+unsafe extern "C" {
     #[doc = " Add a local `RiceGatheredCandidate` to a `RiceStream`."]
     pub fn rice_stream_add_local_gathered_candidate(
         stream: *mut RiceStream,
@@ -1157,6 +1169,18 @@ unsafe extern "C" {
     );
 }
 unsafe extern "C" {
+    #[doc = " Construct a new `RiceRecvIgnorable`."]
+    pub fn rice_recv_ignorable_new() -> *mut RiceRecvIgnorable;
+}
+unsafe extern "C" {
+    #[doc = " Construct a new `RiceRecvIgnorable`."]
+    pub fn rice_recv_ignorable_has_contents(recv_ignorable: *const RiceRecvIgnorable) -> bool;
+}
+unsafe extern "C" {
+    #[doc = " Free a `RiceRecvIgnorable`."]
+    pub fn rice_recv_ignorable_free(recv_ignorable: *mut RiceRecvIgnorable);
+}
+unsafe extern "C" {
     #[doc = " Provide data to the `RiceStream` for processing.\n\n The returned value contains what processing was completed on the provided data and any\n application data that needs to be handled."]
     pub fn rice_stream_handle_incoming_data(
         stream: *mut RiceStream,
@@ -1168,6 +1192,14 @@ unsafe extern "C" {
         data_len: usize,
         now_nanos: i64,
         ret: *mut RiceStreamIncomingData,
+        ignorable: *mut RiceRecvIgnorable,
+    );
+}
+unsafe extern "C" {
+    #[doc = " Send an ignorable error.\n\n Send an error produced by [`rice_stream_handle_incoming_data()`] that could have been (but was not)\n handled by another agent listening on the same local port.\n\n This should be called once all agents listening on the same local socket port have failed\n to handle the incoming data."]
+    pub fn rice_stream_send_ignorable_error(
+        stream: *mut RiceStream,
+        ignorable: *mut RiceRecvIgnorable,
     );
 }
 unsafe extern "C" {

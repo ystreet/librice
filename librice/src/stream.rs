@@ -461,6 +461,7 @@ impl Stream {
             Address::from(transmit.to),
             transmit.data.as_ref(),
             Instant::from_std(base_instant),
+            None,
         );
 
         let Some(component) = weak_component.upgrade() else {

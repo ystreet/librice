@@ -1738,7 +1738,9 @@ name = "rice-c"
 version = "0.4.3"
 dependencies = [
  "bindgen",
+ "rice-stun-types",
  "sans-io-time",
+ "stun-types",
  "system-deps",
  "thiserror",
  "tracing",
