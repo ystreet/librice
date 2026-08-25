@@ -2236,6 +2236,23 @@ impl RiceCandidate {
 impl PartialEq<RiceCandidate> for RiceCandidate {
     fn eq(&self, other: &RiceCandidate) -> bool {
         unsafe {
+            let mut extensions_equal = self.extensions.is_null() == other.extensions.is_null()
+                && self.extensions_len == other.extensions_len;
+            if extensions_equal && !self.extensions.is_null() {
+                let our_extensions =
+                    core::slice::from_raw_parts(self.extensions, self.extensions_len);
+                let other_extensions =
+                    core::slice::from_raw_parts(other.extensions, other.extensions_len);
+                for i in 0..self.extensions_len {
+                    let our_ext = CStr::from_ptr(our_extensions[i]);
+                    let other_ext = CStr::from_ptr(other_extensions[i]);
+                    if our_ext != other_ext {
+                        extensions_equal = false;
+                        break;
+                    }
+                }
+            }
+
             self.component_id == other.component_id
                 && self.candidate_type == other.candidate_type
                 && self.transport_type == other.transport_type
@@ -2246,7 +2263,7 @@ impl PartialEq<RiceCandidate> for RiceCandidate {
                 && rice_address_cmp(self.base_address, other.base_address) == 0
                 && rice_address_cmp(self.related_address, other.related_address) == 0
                 && self.tcp_type == other.tcp_type
-            // FIXME extensions
+                && extensions_equal
         }
     }
 }
