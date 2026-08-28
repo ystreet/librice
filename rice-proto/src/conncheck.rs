@@ -551,6 +551,7 @@ pub struct ConnCheckList {
 struct CheckTurnClient {
     id: StunAgentId,
     client: TurnClient,
+    component_id: usize,
     local_tcp_sockets: Vec<SocketAddr>,
 }
 
@@ -937,22 +938,16 @@ impl ConnCheckList {
             .map(|idx| self.agents.remove(idx).agent)
     }
 
-    fn mut_turn_client_by_id(&mut self, id: StunAgentId) -> Option<&mut TurnClient> {
+    fn mut_turn_client_by_id(&mut self, id: StunAgentId) -> Option<&mut CheckTurnClient> {
         self.turn_clients
             .iter_mut()
             .chain(self.pending_delete_turn_clients.iter_mut())
-            .find_map(|client| {
-                if id == client.id {
-                    Some(&mut client.client)
-                } else {
-                    None
-                }
-            })
+            .find_map(|client| if id == client.id { Some(client) } else { None })
     }
 
-    fn remove_turn_client_by_id(&mut self, id: StunAgentId) -> Option<TurnClient> {
+    fn remove_turn_client_by_id(&mut self, id: StunAgentId) -> Option<CheckTurnClient> {
         if let Some(position) = self.turn_clients.iter().position(|client| id == client.id) {
-            Some(self.turn_clients.remove(position).client)
+            Some(self.turn_clients.remove(position))
         } else {
             None
         }
@@ -1050,6 +1045,7 @@ impl ConnCheckList {
         } else {
             None
         };
+        let component_id = gathered.candidate.component_id;
         if !self.add_local_candidate_internal(gathered.candidate, turn_id) {
             return false;
         }
@@ -1058,6 +1054,7 @@ impl ConnCheckList {
             self.turn_clients.push(CheckTurnClient {
                 id: turn_id.unwrap(),
                 client: *client,
+                component_id,
                 local_tcp_sockets: Default::default(),
             });
         }
@@ -2797,7 +2794,7 @@ impl ConnCheckListSet {
             let client = self.checklists[checklist_i]
                 .mut_turn_client_by_id(turn_id)
                 .unwrap();
-            match client.recv(transmit, now) {
+            match client.client.recv(transmit, now) {
                 TurnRecvRet::Handled => {
                     // TODO: maybe handle turn events here?
                     trace!("TURN client handled the incoming data");
@@ -2810,7 +2807,7 @@ impl ConnCheckListSet {
                     transmit = ignored;
                 }
                 TurnRecvRet::PeerData(peer) => {
-                    let turn_client_transport = client.transport();
+                    let turn_client_transport = client.client.transport();
                     turn_client_id = Some((turn_id, turn_server_addr));
                     checklist_i = checklist_i2;
                     // FIXME: dual allocation TURN
@@ -2818,7 +2815,7 @@ impl ConnCheckListSet {
                         peer.data(),
                         peer.transport,
                         peer.peer,
-                        client.relayed_addresses().next().unwrap().1,
+                        client.client.relayed_addresses().next().unwrap().1,
                     );
                     let ret = self.incoming_data_or_stun(
                         checklist_i,
@@ -2840,14 +2837,14 @@ impl ConnCheckListSet {
                             let client = self.checklists[checklist_i]
                                 .mut_turn_client_by_id(turn_id)
                                 .unwrap();
-                            let Some(peer) = client.poll_recv(now) else {
+                            let Some(peer) = client.client.poll_recv(now) else {
                                 break;
                             };
                             let transmit = Transmit::new(
                                 peer.data(),
                                 peer.transport,
                                 peer.peer,
-                                client.relayed_addresses().next().unwrap().1,
+                                client.client.relayed_addresses().next().unwrap().1,
                             );
                             let ret = self.incoming_data_or_stun(
                                 checklist_i,
@@ -3504,7 +3501,7 @@ impl ConnCheckListSet {
                         checklist.pending_turn_tcp_connect.pop();
                         return Ok(None);
                     };
-                    client.tcp_connect(remote_addr, now).unwrap();
+                    client.client.tcp_connect(remote_addr, now).unwrap();
                     return Ok(None);
                 } else {
                     return Ok(Some(CheckListSetSocket {
@@ -3701,12 +3698,13 @@ impl ConnCheckListSet {
                 return;
             }
             let checklist = &mut self.checklists[checklist_i];
-            let mut turn_client = checklist.remove_turn_client_by_id(turn_id).unwrap();
-            let _ = turn_client.delete(now);
+            let mut client = checklist.remove_turn_client_by_id(turn_id).unwrap();
+            let _ = client.client.delete(now);
             let checklist = &mut self.checklists[checklist_i];
             checklist.pending_delete_turn_clients.push(CheckTurnClient {
                 id: turn_id,
-                client: turn_client,
+                client: client.client,
+                component_id: client.component_id,
                 local_tcp_sockets: Default::default(),
             });
             // socket remove will occur when the delete reply is received, or on timeout
@@ -3823,7 +3821,7 @@ impl ConnCheckListSet {
                     continue;
                 };
 
-                if let Err(e) = client.create_permission(transport, remote_ip, now) {
+                if let Err(e) = client.client.create_permission(transport, remote_ip, now) {
                     warn!(
                         "received error trying to create a permission to {:?}: {e}",
                         remote_ip
@@ -3955,8 +3953,7 @@ impl ConnCheckListSet {
                     } => {
                         return CheckListSetPollRet::RemoveSocket {
                             checklist_id,
-                            // FIXME: hardcoded component
-                            component_id: 1,
+                            component_id: client.component_id,
                             transport: client.client.transport(),
                             local_addr,
                             remote_addr,
@@ -3994,23 +3991,22 @@ impl ConnCheckListSet {
             while let Some(client) = checklist.pending_delete_turn_clients.get_mut(idx) {
                 match client.client.poll(now) {
                     TurnPollRet::Closed => {
-                        let client = checklist.pending_delete_turn_clients.remove(idx).client;
-                        let transport = client.transport();
+                        let client = checklist.pending_delete_turn_clients.remove(idx);
+                        let transport = client.client.transport();
                         if checklist
                             .find_agent_for_5tuple(
                                 transport,
-                                client.local_addr(),
-                                client.remote_addr(),
+                                client.client.local_addr(),
+                                client.client.remote_addr(),
                             )
                             .is_none()
                         {
                             return CheckListSetPollRet::RemoveSocket {
                                 checklist_id,
-                                // FIXME; hardcoded component id
-                                component_id: 1,
+                                component_id: client.component_id,
                                 transport,
-                                local_addr: client.local_addr(),
-                                remote_addr: client.remote_addr(),
+                                local_addr: client.client.local_addr(),
+                                remote_addr: client.client.remote_addr(),
                             };
                         }
                         continue;
@@ -4120,7 +4116,7 @@ impl ConnCheckListSet {
                                 }
                             }
                         } else if let Some(client) = checklist.mut_turn_client_by_id(agent_id) {
-                            match client.poll(now) {
+                            match client.client.poll(now) {
                                 TurnPollRet::WaitUntil(wait) => {
                                     if wait < lowest_wait {
                                         lowest_wait = wait.max(
@@ -4137,9 +4133,8 @@ impl ConnCheckListSet {
                                 } => {
                                     return CheckListSetPollRet::RemoveSocket {
                                         checklist_id,
-                                        // FIXME: hardcoded component
-                                        component_id: 1,
-                                        transport: client.transport(),
+                                        component_id: client.component_id,
+                                        transport: client.client.transport(),
                                         local_addr,
                                         remote_addr,
                                     };
@@ -4288,7 +4283,10 @@ impl ConnCheckListSet {
                             let Some(client) = checklist.mut_turn_client_by_id(turn_id) else {
                                 continue;
                             };
-                            match client.send_to(transport, pending.to, transmit.data, now) {
+                            match client
+                                .client
+                                .send_to(transport, pending.to, transmit.data, now)
+                            {
                                 Ok(transmit) => {
                                     if let Some(transmit) = transmit {
                                         self.last_send_time = Some(now);
@@ -4324,7 +4322,10 @@ impl ConnCheckListSet {
                             let Some(client) = checklist.mut_turn_client_by_id(turn_id) else {
                                 continue;
                             };
-                            match client.send_to(transport, pending.to, transmit.data, now) {
+                            match client
+                                .client
+                                .send_to(transport, pending.to, transmit.data, now)
+                            {
                                 Ok(transmit) => {
                                     if let Some(transmit) = transmit {
                                         self.last_send_time = Some(now);
@@ -4374,7 +4375,10 @@ impl ConnCheckListSet {
 
                     let transport = transmit.transport;
                     let client = checklist.mut_turn_client_by_id(turn_id).unwrap();
-                    match client.send_to(transport, transmit.to, transmit.data, now) {
+                    match client
+                        .client
+                        .send_to(transport, transmit.to, transmit.data, now)
+                    {
                         Ok(transmit) => {
                             if let Some(transmit) = transmit {
                                 self.last_send_time = Some(now);
