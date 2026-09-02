@@ -916,6 +916,8 @@ pub unsafe extern "C" fn rice_agent_poll_clear(poll: *mut RiceAgentPoll) {
 /// Poll the `RiceAgent` for further progress.
 ///
 /// The returned value indicates what should be done to continue making progress.
+///
+/// `rice_agent_poll_init()` or `rice_agent_poll_clear()` must be called before this function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_agent_poll(
     agent: *mut RiceAgent,
@@ -2648,7 +2650,7 @@ pub unsafe extern "C" fn rice_candidate_free(candidate: *mut RiceCandidate) {
     }
 }
 
-/// Free a `RiceCandidate`.
+/// Checks a `RiceCandidate` for equality with another `RiceCandidate`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_candidate_eq(
     candidate: *const RiceCandidate,
@@ -3308,6 +3310,8 @@ pub unsafe extern "C" fn rice_component_get_state(
 
 /// Retrieve the ICE candidates selected pair of the `RiceComponent`.
 ///
+/// Any previous value stored in `local` or `remote` will be overriden.
+///
 /// Before the pair has been selected through ICE, `local` and `remote` will be zeroed to signal
 /// unset.
 #[unsafe(no_mangle)]
@@ -3469,6 +3473,9 @@ pub unsafe extern "C" fn rice_component_gather_candidates(
 /// Send data to the connected peer.
 ///
 /// This will fail before a connection is successfully completed.
+///
+/// `rice_transmit_init()` or `rice_transmit_clear()` must be called on `transmit` before this
+/// function.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_component_send(
     component: *mut RiceComponent,

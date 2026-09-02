@@ -43,9 +43,9 @@ pub const RICE_FEATURE_AUTO: RiceFeature = 0;
 pub const RICE_FEATURE_REQUIRED: RiceFeature = 1;
 pub type RiceFeature = i32;
 #[doc = " The SHA-1 HMAC."]
-pub const RICE_INTEGRITY_ALGORITHM_SHA1: RiceIntegrityAlgorithm = 0;
+pub const RICE_INTEGRITY_ALGORITHM_SHA1: RiceIntegrityAlgorithm = 1;
 #[doc = " The SHA-256 HMAC."]
-pub const RICE_INTEGRITY_ALGORITHM_SHA256: RiceIntegrityAlgorithm = 1;
+pub const RICE_INTEGRITY_ALGORITHM_SHA256: RiceIntegrityAlgorithm = 2;
 pub type RiceIntegrityAlgorithm = u32;
 #[doc = " No error."]
 pub const RICE_PARSE_CANDIDATE_ERROR_SUCCESS: RiceParseCandidateError = 0;
@@ -729,7 +729,7 @@ unsafe extern "C" {
     pub fn rice_agent_poll_clear(poll: *mut RiceAgentPoll);
 }
 unsafe extern "C" {
-    #[doc = " Poll the `RiceAgent` for further progress.\n\n The returned value indicates what should be done to continue making progress."]
+    #[doc = " Poll the `RiceAgent` for further progress.\n\n The returned value indicates what should be done to continue making progress.\n\n `rice_agent_poll_init()` or `rice_agent_poll_clear()` must be called before this function."]
     pub fn rice_agent_poll(agent: *mut RiceAgent, now_nanos: i64, poll: *mut RiceAgentPoll);
 }
 unsafe extern "C" {
@@ -1120,7 +1120,7 @@ unsafe extern "C" {
     pub fn rice_candidate_free(candidate: *mut RiceCandidate);
 }
 unsafe extern "C" {
-    #[doc = " Free a `RiceCandidate`."]
+    #[doc = " Checks a `RiceCandidate` for equality with another `RiceCandidate`."]
     pub fn rice_candidate_eq(candidate: *const RiceCandidate, other: *const RiceCandidate) -> bool;
 }
 unsafe extern "C" {
@@ -1293,7 +1293,7 @@ unsafe extern "C" {
     ) -> RiceComponentConnectionState;
 }
 unsafe extern "C" {
-    #[doc = " Retrieve the ICE candidates selected pair of the `RiceComponent`.\n\n Before the pair has been selected through ICE, `local` and `remote` will be zeroed to signal\n unset."]
+    #[doc = " Retrieve the ICE candidates selected pair of the `RiceComponent`.\n\n Any previous value stored in `local` or `remote` will be overriden.\n\n Before the pair has been selected through ICE, `local` and `remote` will be zeroed to signal\n unset."]
     pub fn rice_component_get_selected_pair(
         component: *const RiceComponent,
         local: *mut RiceCandidate,
@@ -1320,7 +1320,7 @@ unsafe extern "C" {
     ) -> RiceError;
 }
 unsafe extern "C" {
-    #[doc = " Send data to the connected peer.\n\n This will fail before a connection is successfully completed."]
+    #[doc = " Send data to the connected peer.\n\n This will fail before a connection is successfully completed.\n\n `rice_transmit_init()` or `rice_transmit_clear()` must be called on `transmit` before this\n function."]
     pub fn rice_component_send(
         component: *mut RiceComponent,
         data: *mut u8,
