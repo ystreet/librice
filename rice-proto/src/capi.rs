@@ -1178,10 +1178,10 @@ pub unsafe extern "C" fn rice_turn_config_get_address_families(
             let families = core::slice::from_raw_parts_mut(families, *n_families);
             *n_families = 0;
             for family in config.inner().address_families() {
-                families[*n_families] = RiceAddressFamily::from_rice(*family);
-                if *n_families + 1 > families.len() {
+                if *n_families >= families.len() {
                     break;
                 }
+                families[*n_families] = RiceAddressFamily::from_rice(*family);
                 *n_families += 1;
             }
         }
@@ -1250,7 +1250,7 @@ pub unsafe extern "C" fn rice_turn_config_get_tls_config(
 #[repr(u32)]
 pub enum RiceIntegrityAlgorithm {
     /// The SHA-1 HMAC.
-    Sha1,
+    Sha1 = 1,
     /// The SHA-256 HMAC.
     Sha256,
 }
@@ -1315,10 +1315,10 @@ pub unsafe extern "C" fn rice_turn_config_get_supported_integrity(
             let integrities = core::slice::from_raw_parts_mut(integrities, *n_integrities);
             *n_integrities = 0;
             for integrity in config.inner().supported_integrity() {
-                integrities[*n_integrities] = RiceIntegrityAlgorithm::from(*integrity);
-                if *n_integrities + 1 > integrities.len() {
+                if *n_integrities >= integrities.len() {
                     break;
                 }
+                integrities[*n_integrities] = RiceIntegrityAlgorithm::from(*integrity);
                 *n_integrities += 1;
             }
         }
@@ -1327,7 +1327,7 @@ pub unsafe extern "C" fn rice_turn_config_get_supported_integrity(
 }
 
 /// A feature.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(i32)]
 pub enum RiceFeature {
     /// The configuration will not be used.
@@ -2803,10 +2803,10 @@ pub unsafe extern "C" fn rice_stream_get_local_candidates(
             let candidates = core::slice::from_raw_parts_mut(candidates, *n_candidates);
             *n_candidates = 0;
             for candidate in proto_stream.local_candidates() {
-                candidates[*n_candidates] = RiceCandidate::into_c_full(candidate.clone());
-                if *n_candidates + 1 > candidates.len() {
+                if *n_candidates >= candidates.len() {
                     break;
                 }
+                candidates[*n_candidates] = RiceCandidate::into_c_full(candidate.clone());
                 *n_candidates += 1;
             }
         }
@@ -2849,10 +2849,10 @@ pub unsafe extern "C" fn rice_stream_get_remote_candidates(
             let candidates = core::slice::from_raw_parts_mut(candidates, *n_candidates);
             *n_candidates = 0;
             for candidate in proto_stream.remote_candidates() {
-                candidates[*n_candidates] = RiceCandidate::into_c_full(candidate.clone());
-                if *n_candidates + 1 > candidates.len() {
+                if *n_candidates >= candidates.len() {
                     break;
                 }
+                candidates[*n_candidates] = RiceCandidate::into_c_full(candidate.clone());
                 *n_candidates += 1;
             }
         }
@@ -2889,14 +2889,14 @@ pub struct RiceRecvIgnorable {
 /// Construct a new `RiceRecvIgnorable`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_recv_ignorable_new() -> *mut RiceRecvIgnorable {
-    Box::into_raw(Box::new(RiceRecvIgnorable {
-        ignorable: None,
-    }))
+    Box::into_raw(Box::new(RiceRecvIgnorable { ignorable: None }))
 }
 
 /// Construct a new `RiceRecvIgnorable`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rice_recv_ignorable_has_contents(recv_ignorable: *const RiceRecvIgnorable) -> bool {
+pub unsafe extern "C" fn rice_recv_ignorable_has_contents(
+    recv_ignorable: *const RiceRecvIgnorable,
+) -> bool {
     unsafe {
         let ignorable = Box::from_raw(mut_override(recv_ignorable));
         let ret = ignorable.ignorable.is_some();
@@ -2948,7 +2948,8 @@ pub unsafe extern "C" fn rice_stream_handle_incoming_data(
         core::mem::forget(to);
 
         let mut ignorable_ret = None;
-        let stream_ret = proto_stream.handle_incoming_data(component_id, transmit, now, &mut ignorable_ret);
+        let stream_ret =
+            proto_stream.handle_incoming_data(component_id, transmit, now, &mut ignorable_ret);
         let data = if let Some(_data_and_range) = &stream_ret.data {
             RiceDataImpl {
                 ptr: mut_override(data),
@@ -2985,7 +2986,10 @@ pub unsafe extern "C" fn rice_stream_handle_incoming_data(
 /// This should be called once all agents listening on the same local socket port have failed
 /// to handle the incoming data.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rice_stream_send_ignorable_error(stream: *mut RiceStream, ignorable: *mut RiceRecvIgnorable) {
+pub unsafe extern "C" fn rice_stream_send_ignorable_error(
+    stream: *mut RiceStream,
+    ignorable: *mut RiceRecvIgnorable,
+) {
     unsafe {
         if let Some(ignorable) = (*ignorable).ignorable.take() {
             let stream = Arc::from_raw(stream);
@@ -3060,10 +3064,10 @@ pub unsafe extern "C" fn rice_stream_component_ids(
             let output = core::slice::from_raw_parts_mut(ret, *len);
             *len = 0;
             for component in proto_stream.component_ids_iter() {
-                output[*len] = component;
-                if *len + 1 > output.len() {
+                if *len >= output.len() {
                     break;
                 }
+                output[*len] = component;
                 *len += 1;
             }
         }
@@ -4020,6 +4024,173 @@ mod tests {
             let copy = rice_stream_restart_config_copy(config);
             rice_stream_restart_config_free(config);
             rice_stream_restart_config_free(copy);
+        }
+    }
+
+    #[test]
+    fn rice_turn_config_getters() {
+        unsafe {
+            let addr: SocketAddr = "192.168.0.1:1000".parse().unwrap();
+            let addr = RiceAddress::new(addr).into_c_full();
+            let creds =
+                credentials_to_c(Credentials::new("luser".to_string(), "lpass".to_string()));
+            let config = rice_turn_config_new(RiceTransportType::Tcp, addr, creds);
+            assert_eq!(
+                rice_turn_config_get_client_transport(config),
+                RiceTransportType::Tcp
+            );
+            let server_addr = rice_turn_config_get_addr(config);
+            assert_eq!(rice_address_cmp(addr, server_addr), 0);
+            rice_address_free(server_addr);
+            rice_address_free(mut_override(addr));
+            let stored_creds = rice_turn_config_get_credentials(config);
+            assert!(rice_credentials_eq(creds, stored_creds));
+            rice_credentials_free(stored_creds);
+            rice_credentials_free(creds);
+
+            assert_eq!(
+                rice_turn_config_get_allocation_transport(config),
+                RiceTransportType::Udp
+            );
+
+            assert_eq!(
+                rice_turn_config_get_anonymous_username(config),
+                RiceFeature::Auto
+            );
+            for feat in [
+                RiceFeature::Disabled,
+                RiceFeature::Auto,
+                RiceFeature::Required,
+            ] {
+                rice_turn_config_set_anonymous_username(config, feat);
+                assert_eq!(rice_turn_config_get_anonymous_username(config), feat);
+            }
+            rice_turn_config_free(config);
+        }
+    }
+
+    #[test]
+    fn rice_turn_config_address_families() {
+        unsafe {
+            let addr: SocketAddr = "192.168.0.1:1000".parse().unwrap();
+            let addr = RiceAddress::new(addr).into_c_full();
+            let creds =
+                credentials_to_c(Credentials::new("luser".to_string(), "lpass".to_string()));
+            let config = rice_turn_config_new(RiceTransportType::Tcp, addr, creds);
+            rice_address_free(mut_override(addr));
+            rice_credentials_free(creds);
+
+            for t in [RiceTransportType::Udp, RiceTransportType::Tcp] {
+                rice_turn_config_set_allocation_transport(config, t);
+                assert_eq!(rice_turn_config_get_allocation_transport(config), t);
+            }
+
+            for a in [RiceAddressFamily::Ipv4, RiceAddressFamily::Ipv6] {
+                let mut ret = [0u32; 4];
+                let mut n = ret.len();
+                rice_turn_config_set_address_family(config, a);
+                rice_turn_config_get_address_families(config, &mut n, ret.as_mut_ptr() as _);
+                assert_eq!(n, 1);
+                assert_eq!(ret[0], a as u32);
+                assert_eq!(ret[1], 0);
+                assert_eq!(ret[2], 0);
+                assert_eq!(ret[3], 0);
+            }
+            for (a1, a2) in [
+                (RiceAddressFamily::Ipv4, RiceAddressFamily::Ipv6),
+                (RiceAddressFamily::Ipv6, RiceAddressFamily::Ipv4),
+            ] {
+                rice_turn_config_set_address_family(config, a1);
+                rice_turn_config_add_address_family(config, a2);
+                let mut n = 0;
+                rice_turn_config_get_address_families(config, &mut n, core::ptr::null_mut());
+                assert_eq!(n, 2);
+                n = 1;
+                let mut ret = [0u32; 4];
+                rice_turn_config_get_address_families(config, &mut n, ret.as_mut_ptr() as _);
+                assert_eq!(n, 1);
+                assert_eq!(ret[0], a1 as u32);
+                assert_eq!(ret[1], 0);
+                assert_eq!(ret[2], 0);
+                assert_eq!(ret[3], 0);
+                n = 2;
+                let mut ret = [0u32; 4];
+                rice_turn_config_get_address_families(config, &mut n, ret.as_mut_ptr() as _);
+                assert_eq!(n, 2);
+                assert_eq!(ret[0], a1 as u32);
+                assert_eq!(ret[1], a2 as u32);
+                assert_eq!(ret[2], 0);
+                assert_eq!(ret[3], 0);
+                n = 3;
+                let mut ret = [0u32; 4];
+                rice_turn_config_get_address_families(config, &mut n, ret.as_mut_ptr() as _);
+                assert_eq!(n, 2);
+                assert_eq!(ret[0], a1 as u32);
+                assert_eq!(ret[1], a2 as u32);
+                assert_eq!(ret[2], 0);
+                assert_eq!(ret[3], 0);
+            }
+            rice_turn_config_free(config);
+        }
+    }
+
+    #[test]
+    fn rice_turn_config_supported_integrity() {
+        unsafe {
+            let addr: SocketAddr = "192.168.0.1:1000".parse().unwrap();
+            let addr = RiceAddress::new(addr).into_c_full();
+            let creds =
+                credentials_to_c(Credentials::new("luser".to_string(), "lpass".to_string()));
+            let config = rice_turn_config_new(RiceTransportType::Tcp, addr, creds);
+            rice_address_free(mut_override(addr));
+            rice_credentials_free(creds);
+
+            for a in [RiceIntegrityAlgorithm::Sha1, RiceIntegrityAlgorithm::Sha256] {
+                let mut ret = [0u32; 4];
+                let mut n = ret.len();
+                rice_turn_config_set_supported_integrity(config, a);
+                rice_turn_config_get_supported_integrity(config, &mut n, ret.as_mut_ptr() as _);
+                assert_eq!(n, 1);
+                assert_eq!(ret[0], a as u32);
+                assert_eq!(ret[1], 0);
+                assert_eq!(ret[2], 0);
+                assert_eq!(ret[3], 0);
+            }
+            for (a1, a2) in [
+                (RiceIntegrityAlgorithm::Sha1, RiceIntegrityAlgorithm::Sha256),
+                (RiceIntegrityAlgorithm::Sha256, RiceIntegrityAlgorithm::Sha1),
+            ] {
+                rice_turn_config_set_supported_integrity(config, a1);
+                rice_turn_config_add_supported_integrity(config, a2);
+                let mut n = 0;
+                rice_turn_config_get_supported_integrity(config, &mut n, core::ptr::null_mut());
+                assert_eq!(n, 2);
+                n = 1;
+                let mut ret = [0u32; 4];
+                rice_turn_config_get_supported_integrity(config, &mut n, ret.as_mut_ptr() as _);
+                assert_eq!(n, 1);
+                assert_eq!(ret[0], a1 as u32);
+                assert_eq!(ret[1], 0);
+                assert_eq!(ret[2], 0);
+                assert_eq!(ret[3], 0);
+                n = 2;
+                let mut ret = [0u32; 4];
+                rice_turn_config_get_supported_integrity(config, &mut n, ret.as_mut_ptr() as _);
+                assert_eq!(n, 2);
+                assert_eq!(ret[0], a1 as u32);
+                assert_eq!(ret[1], a2 as u32);
+                assert_eq!(ret[2], 0);
+                assert_eq!(ret[3], 0);
+                n = 3;
+                let mut ret = [0u32; 4];
+                rice_turn_config_get_supported_integrity(config, &mut n, ret.as_mut_ptr() as _);
+                assert_eq!(n, 2);
+                assert_eq!(ret[0], a1 as u32);
+                assert_eq!(ret[1], a2 as u32);
+                assert_eq!(ret[2], 0);
+                assert_eq!(ret[3], 0);
+            }
+            rice_turn_config_free(config);
         }
     }
 }
