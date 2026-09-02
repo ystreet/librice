@@ -3410,17 +3410,22 @@ pub unsafe extern "C" fn rice_component_gather_candidates(
         let mut proto_stream = proto_agent.mut_stream(component.stream_id).unwrap();
         let mut proto_component = proto_stream.mut_component(component.component_id).unwrap();
 
-        let sockets_addr = core::slice::from_raw_parts(sockets_addr, sockets_len);
-        let sockets_transport = core::slice::from_raw_parts(sockets_transports, sockets_len);
+        let sockets = if sockets_len == 0 || sockets_addr.is_null() || sockets_transports.is_null()
+        {
+            vec![]
+        } else {
+            let sockets_addr = core::slice::from_raw_parts(sockets_addr, sockets_len);
+            let sockets_transport = core::slice::from_raw_parts(sockets_transports, sockets_len);
 
-        let sockets = sockets_transport
-            .iter()
-            .zip(sockets_addr.iter())
-            .map(|(&transport, addr)| {
-                let socket_addr = RiceAddress::into_rice_none(*addr).inner();
-                (transport_type_from_c(transport), socket_addr)
-            })
-            .collect::<Vec<_>>();
+            sockets_transport
+                .iter()
+                .zip(sockets_addr.iter())
+                .map(|(&transport, addr)| {
+                    let socket_addr = RiceAddress::into_rice_none(*addr).inner();
+                    (transport_type_from_c(transport), socket_addr)
+                })
+                .collect::<Vec<_>>()
+        };
 
         debug!("sockets: {sockets:?}");
 
