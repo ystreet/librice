@@ -248,7 +248,14 @@ pub struct DataAndRange<T: AsRef<[u8]> + core::fmt::Debug> {
 
 impl<T: AsRef<[u8]> + core::fmt::Debug> AsRef<[u8]> for DataAndRange<T> {
     fn as_ref(&self) -> &[u8] {
-        &self.data.as_ref()[self.range.start..self.range.end]
+        let range = self.range();
+        &self.data.as_ref()[range.start..range.end]
+    }
+}
+
+impl<T: AsRef<[u8]> + core::fmt::Debug> DataAndRange<T> {
+    pub(crate) fn range(&self) -> &Range<usize> {
+        &self.range
     }
 }
 
