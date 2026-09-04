@@ -357,7 +357,7 @@ struct AgentStream {
     base_instant: std::time::Instant,
     inner: Arc<Mutex<AgentInner>>,
     timer: Option<Pin<Box<dyn crate::runtime::AsyncTimer>>>,
-    pending_transmit: Option<AgentTransmit>,
+    pending_transmit: Option<AgentTransmit<'static>>,
     runtime: Arc<dyn Runtime>,
 }
 

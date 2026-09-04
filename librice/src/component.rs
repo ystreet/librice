@@ -118,7 +118,7 @@ impl Component {
 
         trace!("sending {} bytes to {:?}", data.len(), to);
         channel
-            .send_to(transmit.data, transmit.to.as_socket())
+            .send_to(transmit.data(), transmit.to.as_socket())
             .await?;
 
         Ok(())
@@ -198,7 +198,7 @@ pub enum RecvData {
     /// Rust allocated Vec.
     Vec(Vec<u8>),
     /// C allocated data.
-    Proto(CRecvData),
+    Proto(CRecvData<'static>),
 }
 
 impl From<Vec<u8>> for RecvData {
@@ -207,8 +207,8 @@ impl From<Vec<u8>> for RecvData {
     }
 }
 
-impl From<CRecvData> for RecvData {
-    fn from(value: CRecvData) -> Self {
+impl From<CRecvData<'static>> for RecvData {
+    fn from(value: CRecvData<'static>) -> Self {
         Self::Proto(value)
     }
 }
