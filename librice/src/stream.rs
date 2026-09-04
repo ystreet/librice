@@ -44,7 +44,7 @@ pub(crate) struct StreamState {
     base_instant: std::time::Instant,
     id: usize,
     weak_agent_inner: Weak<Mutex<AgentInner>>,
-    transmit_send: futures::channel::mpsc::Sender<AgentTransmit>,
+    transmit_send: futures::channel::mpsc::Sender<AgentTransmit<'static>>,
     inner: Mutex<StreamInner>,
 }
 
@@ -173,7 +173,7 @@ impl Stream {
                         .cloned()
                 };
                 if let Some(mut socket) = socket {
-                    if let Err(e) = socket.send_to(transmit.data, to).await {
+                    if let Err(e) = socket.send_to(transmit.data(), to).await {
                         warn!("failed to send: {e:?}");
                     }
                 } else {
@@ -794,7 +794,10 @@ impl Stream {
         self.state.proto_stream.end_of_remote_candidates()
     }
 
-    pub(crate) fn handle_transmit(&self, transmit: AgentTransmit) -> Option<AgentTransmit> {
+    pub(crate) fn handle_transmit(
+        &self,
+        transmit: AgentTransmit<'static>,
+    ) -> Option<AgentTransmit<'static>> {
         if let Err(e) = self.state.transmit_send.clone().try_send(transmit) {
             if e.is_full() {
                 return Some(e.into_inner());

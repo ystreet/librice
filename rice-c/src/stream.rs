@@ -294,7 +294,7 @@ impl Stream {
     /// Poll for any received data.
     ///
     /// Must be called after `handle_incoming_data` if `have_more_data` is `true`.
-    pub fn poll_recv(&self) -> Option<PollRecv> {
+    pub fn poll_recv<'a>(&self) -> Option<PollRecv<'a>> {
         unsafe {
             let mut len = 0;
             let mut component_id = 0;
@@ -320,27 +320,27 @@ impl Stream {
 
 /// Data that should be sent to a peer as a result of calling [`Stream::poll_recv()`].
 #[derive(Debug)]
-pub struct PollRecv {
+pub struct PollRecv<'a> {
     /// The component id that the data was received for.
     pub component_id: usize,
     /// The received data.
-    pub data: RecvData,
+    pub data: RecvData<'a>,
 }
 
 /// Data to send.
 #[derive(Debug)]
-pub struct RecvData {
-    data: &'static [u8],
+pub struct RecvData<'a> {
+    data: &'a [u8],
 }
 
-impl core::ops::Deref for RecvData {
+impl core::ops::Deref for RecvData<'_> {
     type Target = [u8];
     fn deref(&self) -> &Self::Target {
         self.data
     }
 }
 
-impl Drop for RecvData {
+impl Drop for RecvData<'_> {
     fn drop(&mut self) {
         unsafe { crate::ffi::rice_free_data(mut_override(self.data.as_ptr())) }
     }
@@ -792,7 +792,7 @@ mod tests {
         assert!(agent.poll_transmit(now).is_none());
 
         assert_eq!(transmit.from, local_candidate.address());
-        let response = Message::from_bytes(transmit.data).unwrap();
+        let response = Message::from_bytes(transmit.data()).unwrap();
         assert!(response.has_class(MessageClass::Error));
         assert!(matches!(
             response.validate_integrity(&MessageIntegrityCredentials::ShortTerm(
@@ -828,7 +828,7 @@ mod tests {
         assert!(agent.poll_transmit(now).is_none());
 
         assert_eq!(transmit.from, local_candidate.address());
-        let response = Message::from_bytes(transmit.data).unwrap();
+        let response = Message::from_bytes(transmit.data()).unwrap();
         assert!(response.has_class(MessageClass::Error));
         assert!(matches!(
             response.validate_integrity(&MessageIntegrityCredentials::ShortTerm(
@@ -864,7 +864,7 @@ mod tests {
         assert!(agent.poll_transmit(now).is_none());
 
         assert_eq!(transmit.from, local_candidate.address());
-        let response = Message::from_bytes(transmit.data).unwrap();
+        let response = Message::from_bytes(transmit.data()).unwrap();
         assert!(response.has_class(MessageClass::Success));
         assert!(matches!(
             response.validate_integrity(&MessageIntegrityCredentials::ShortTerm(

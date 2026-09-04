@@ -204,7 +204,7 @@ impl Agent {
     ///
     /// If not-None, then the provided data must be sent to the peer from the provided socket
     /// address.
-    pub fn poll_transmit(&self, now: Instant) -> Option<AgentTransmit> {
+    pub fn poll_transmit<'a>(&self, now: Instant) -> Option<AgentTransmit<'a>> {
         let mut ret = crate::ffi::RiceTransmit {
             stream_id: 0,
             transport: crate::ffi::RICE_TRANSPORT_TYPE_UDP,
@@ -639,7 +639,7 @@ impl AgentPoll {
 
 /// Transmit the data using the specified 5-tuple.
 #[derive(Debug)]
-pub struct AgentTransmit {
+pub struct AgentTransmit<'a> {
     /// The ICE stream id.
     pub stream_id: usize,
     /// The socket to send the data from.
@@ -648,11 +648,15 @@ pub struct AgentTransmit {
     pub to: crate::Address,
     /// The transport to send the data over.
     pub transport: crate::candidate::TransportType,
-    /// The data to send.
-    pub data: &'static [u8],
+    data: &'a [u8],
 }
 
-impl AgentTransmit {
+impl AgentTransmit<'_> {
+    /// The data to send.
+    pub fn data(&self) -> &[u8] {
+        self.data
+    }
+
     pub(crate) fn from_c_full(ffi: crate::ffi::RiceTransmit) -> Self {
         unsafe {
             let data = ffi.data.ptr;
@@ -669,7 +673,7 @@ impl AgentTransmit {
     }
 }
 
-impl Drop for AgentTransmit {
+impl Drop for AgentTransmit<'_> {
     fn drop(&mut self) {
         unsafe {
             let mut transmit = crate::ffi::RiceTransmit {

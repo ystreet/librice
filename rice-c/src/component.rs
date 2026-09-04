@@ -147,7 +147,7 @@ impl Component {
 
     /// Send data to the peer using the selected pair.  This will not succeed until the
     /// [`Component`] has reached [`ComponentConnectionState::Connected`]
-    pub fn send(&self, data: &[u8], now: Instant) -> Result<AgentTransmit, AgentError> {
+    pub fn send<'ret>(&self, data: &[u8], now: Instant) -> Result<AgentTransmit<'ret>, AgentError> {
         unsafe {
             let mut transmit = crate::ffi::RiceTransmit {
                 stream_id: self.stream_id,
