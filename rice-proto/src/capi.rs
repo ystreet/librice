@@ -2952,10 +2952,13 @@ pub unsafe extern "C" fn rice_stream_handle_incoming_data(
         let mut ignorable_ret = None;
         let stream_ret =
             proto_stream.handle_incoming_data(component_id, transmit, now, &mut ignorable_ret);
-        let data = if let Some(_data_and_range) = &stream_ret.data {
+        let data = if let Some(data_and_range) = &stream_ret.data {
+            // XXX: currently we never return subbuffers of the original data however this code
+            // will be wrong once that occurs.
+            debug_assert!(data_and_range.range().start == 0);
             RiceDataImpl {
                 ptr: mut_override(data),
-                size: data_len,
+                size: data_and_range.range().end,
             }
         } else {
             RiceDataImpl {
