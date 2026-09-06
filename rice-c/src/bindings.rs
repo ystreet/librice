@@ -220,7 +220,6 @@ const _: () = {
 };
 #[doc = " Transmit the data using the specified 5-tuple."]
 #[repr(C)]
-#[derive(Debug)]
 pub struct RiceTransmit {
     #[doc = " The associated stream identifier."]
     pub stream_id: usize,
@@ -231,11 +230,11 @@ pub struct RiceTransmit {
     #[doc = " The socket destination address to send to."]
     pub to: *const RiceAddress,
     #[doc = " The data to send."]
-    pub data: RiceDataImpl,
+    pub data: RiceData,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of RiceTransmit"][::core::mem::size_of::<RiceTransmit>() - 48usize];
+    ["Size of RiceTransmit"][::core::mem::size_of::<RiceTransmit>() - 56usize];
     ["Alignment of RiceTransmit"][::core::mem::align_of::<RiceTransmit>() - 8usize];
     ["Offset of field: RiceTransmit::stream_id"]
         [::core::mem::offset_of!(RiceTransmit, stream_id) - 0usize];
@@ -601,18 +600,17 @@ const _: () = {
 pub type RiceCredentials = Credentials;
 #[doc = " Return value for `rice_stream_handle_incoming_data()`."]
 #[repr(C)]
-#[derive(Debug)]
 pub struct RiceStreamIncomingData {
     #[doc = " The data was handled internally. `rice_agent_poll()` should be called at the\n next earliest opportunity."]
     pub handled: bool,
     #[doc = " Whether there is more data to pull using `rice_stream_poll_recv()`."]
     pub have_more_data: bool,
     #[doc = " The data pointer. If non-NULL, this is the same value as provided to\n `rice_stream_handle_incoming_data()` and has the same lifetime contraints as that original\n data pointer."]
-    pub data: RiceDataImpl,
+    pub data: RiceData,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of RiceStreamIncomingData"][::core::mem::size_of::<RiceStreamIncomingData>() - 24usize];
+    ["Size of RiceStreamIncomingData"][::core::mem::size_of::<RiceStreamIncomingData>() - 32usize];
     ["Alignment of RiceStreamIncomingData"]
         [::core::mem::align_of::<RiceStreamIncomingData>() - 8usize];
     ["Offset of field: RiceStreamIncomingData::handled"]

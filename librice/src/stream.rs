@@ -468,7 +468,7 @@ impl Stream {
             return;
         };
         let mut component = component.lock().unwrap();
-        if let Some(data) = reply.data {
+        if let Some(data) = reply.data() {
             component.handle_incoming_data(data.to_vec().into());
         }
         if reply.have_more_data {

@@ -4908,7 +4908,7 @@ pub(crate) fn transmit_send<T: AsRef<[u8]>>(transport: TransportType, data: T) -
     }
 }
 
-fn transmit_send_build_unframed<T: DelayedTransmitBuild + core::fmt::Debug>(
+pub(crate) fn transmit_send_build_unframed<T: DelayedTransmitBuild + core::fmt::Debug>(
     transmit: TransmitBuild<T>,
 ) -> Transmit<Box<[u8]>> {
     Transmit::new(

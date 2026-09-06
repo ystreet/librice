@@ -57,7 +57,7 @@ use std::sync::{Mutex, Once};
 use crate::agent::AgentPoll;
 use crate::agent::{Agent, AgentError};
 use crate::candidate::{Candidate, CandidatePair, CandidateType, TransportType};
-use crate::component::ComponentConnectionState;
+use crate::component::{ComponentConnectionState, SendData};
 use crate::consent;
 use crate::gathering::GatheredCandidate;
 use crate::restart::{RestartConfig, RoleChange};
@@ -609,6 +609,21 @@ impl<'a> From<RiceData> for Data<'a> {
     }
 }
 
+impl From<Box<[u8]>> for RiceData {
+    fn from(value: Box<[u8]>) -> Self {
+        RiceData::Owned(RiceDataImpl::owned_to_c(value))
+    }
+}
+
+impl<T: AsRef<[u8]>> From<SendData<T>> for RiceData {
+    fn from(value: SendData<T>) -> Self {
+        match value {
+            SendData::Reffed(slice) => Self::Borrowed(RiceDataImpl::borrowed_to_c(slice.as_ref())),
+            SendData::Owned(owned) => Self::Owned(RiceDataImpl::owned_to_c(owned.into())),
+        }
+    }
+}
+
 /// The number of bytes in a `RiceData`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_data_len(data: *const RiceData) -> usize {
@@ -644,7 +659,7 @@ pub struct RiceTransmit {
     /// The socket destination address to send to.
     to: *const RiceAddress,
     /// The data to send.
-    data: RiceDataImpl,
+    data: RiceData,
 }
 
 impl Default for RiceTransmit {
@@ -654,7 +669,7 @@ impl Default for RiceTransmit {
             transport: RiceTransportType::Udp,
             from: core::ptr::null(),
             to: core::ptr::null(),
-            data: RiceDataImpl::default(),
+            data: RiceData::Borrowed(RiceDataImpl::default()),
         }
     }
 }
@@ -668,7 +683,7 @@ impl RiceTransmit {
             transport: transport_type_to_c(value.transmit.transport),
             from: Box::into_raw(from),
             to: Box::into_raw(to),
-            data: RiceDataImpl::owned_to_c(value.transmit.data),
+            data: RiceData::from(value.transmit.data),
         }
     }
 }
@@ -687,11 +702,9 @@ pub unsafe extern "C" fn rice_transmit_clear(transmit: *mut RiceTransmit) {
             let _to = RiceAddress::into_rice_full((*transmit).to);
             (*transmit).to = core::ptr::null_mut();
         }
-        let mut data = RiceDataImpl::default();
+        let mut data = RiceData::Borrowed(RiceDataImpl::default());
         core::mem::swap(&mut data, &mut (*transmit).data);
-        if !data.ptr.is_null() {
-            let _data = RiceDataImpl::owned_from_c(data);
-        }
+        let _data = Data::from(data);
     }
 }
 
@@ -2876,7 +2889,7 @@ pub struct RiceStreamIncomingData {
     /// The data pointer. If non-NULL, this is the same value as provided to
     /// `rice_stream_handle_incoming_data()` and has the same lifetime contraints as that original
     /// data pointer.
-    data: RiceDataImpl,
+    data: RiceData,
 }
 
 /// An error reply that can be ignored if another agent handles the STUN message.
@@ -2969,7 +2982,7 @@ pub unsafe extern "C" fn rice_stream_handle_incoming_data(
 
         (*ret).handled = stream_ret.handled;
         (*ret).have_more_data = stream_ret.have_more_data;
-        (*ret).data = data;
+        (*ret).data = RiceData::Borrowed(data);
         if !ignorable.is_null() {
             let mut ignorable = Box::from_raw(ignorable);
             ignorable.ignorable = ignorable_ret;
@@ -3503,7 +3516,7 @@ pub unsafe extern "C" fn rice_component_send(
                     transport: transport_type_to_c(stun_transmit.transport),
                     from: Box::into_raw(Box::new(RiceAddress::new(stun_transmit.from))),
                     to: Box::into_raw(Box::new(RiceAddress::new(stun_transmit.to))),
-                    data: RiceDataImpl::owned_to_c(stun_transmit.data),
+                    data: RiceData::from(stun_transmit.data),
                 };
                 RiceError::Success
             }
@@ -3900,7 +3913,7 @@ mod tests {
             rice_agent_poll_transmit(agent, 0, &mut transmit);
             assert!(transmit.from.is_null());
             assert!(transmit.to.is_null());
-            assert!(transmit.data.ptr.is_null());
+            assert_eq!(rice_data_len(&transmit.data), 0);
             rice_agent_unref(agent);
             rice_stream_unref(stream);
         }

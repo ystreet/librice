@@ -204,22 +204,19 @@ impl Agent {
     ///
     /// If not-None, then the provided data must be sent to the peer from the provided socket
     /// address.
-    pub fn poll_transmit<'a>(&self, now: Instant) -> Option<AgentTransmit<'a>> {
+    pub fn poll_transmit(&self, now: Instant) -> Option<AgentTransmit<'static>> {
         let mut ret = crate::ffi::RiceTransmit {
             stream_id: 0,
             transport: crate::ffi::RICE_TRANSPORT_TYPE_UDP,
             from: core::ptr::null(),
             to: core::ptr::null(),
-            data: crate::ffi::RiceDataImpl {
-                ptr: core::ptr::null_mut(),
-                size: 0,
-            },
+            data: crate::ffi::RiceData::default(),
         };
         unsafe { crate::ffi::rice_agent_poll_transmit(self.ffi, now.as_nanos(), &mut ret) }
         if ret.from.is_null() || ret.to.is_null() {
             return None;
         }
-        Some(AgentTransmit::from_c_full(ret))
+        AgentTransmit::from_c_full(ret)
     }
 
     /// Enable consent freshness.
@@ -639,7 +636,7 @@ impl AgentPoll {
 
 /// Transmit the data using the specified 5-tuple.
 #[derive(Debug)]
-pub struct AgentTransmit<'a> {
+pub struct AgentTransmit<'data> {
     /// The ICE stream id.
     pub stream_id: usize,
     /// The socket to send the data from.
@@ -648,40 +645,45 @@ pub struct AgentTransmit<'a> {
     pub to: crate::Address,
     /// The transport to send the data over.
     pub transport: crate::candidate::TransportType,
-    data: &'a [u8],
+    data: crate::ffi::RiceData,
+    _phantom: core::marker::PhantomData<&'data [u8]>,
 }
+
+/// SAFETY: data pointer is never modified.
+unsafe impl Send for AgentTransmit<'_> {}
 
 impl AgentTransmit<'_> {
     /// The data to send.
     pub fn data(&self) -> &[u8] {
-        self.data
+        unsafe { self.data.data().unwrap() }
     }
 
-    pub(crate) fn from_c_full(ffi: crate::ffi::RiceTransmit) -> Self {
-        unsafe {
-            let data = ffi.data.ptr;
-            let len = ffi.data.size;
-            let data = core::slice::from_raw_parts(data, len);
-            AgentTransmit {
-                stream_id: ffi.stream_id,
-                from: crate::Address::from_c_full(mut_override(ffi.from)),
-                to: crate::Address::from_c_full(mut_override(ffi.to)),
-                transport: ffi.transport.into(),
-                data,
-            }
+    pub(crate) fn from_c_full(ffi: crate::ffi::RiceTransmit) -> Option<Self> {
+        if ffi.from.is_null() || ffi.to.is_null() {
+            return None;
         }
+        Some(AgentTransmit {
+            stream_id: ffi.stream_id,
+            from: crate::Address::from_c_full(mut_override(ffi.from)),
+            to: crate::Address::from_c_full(mut_override(ffi.to)),
+            transport: ffi.transport.into(),
+            data: ffi.data,
+            _phantom: Default::default(),
+        })
     }
 }
 
 impl Drop for AgentTransmit<'_> {
     fn drop(&mut self) {
         unsafe {
+            let mut data = crate::ffi::RiceData::default();
+            core::mem::swap(&mut data, &mut self.data);
             let mut transmit = crate::ffi::RiceTransmit {
                 stream_id: self.stream_id,
                 from: core::ptr::null_mut(),
                 to: core::ptr::null_mut(),
                 transport: self.transport.into(),
-                data: crate::ffi::RiceDataImpl::to_c(self.data),
+                data,
             };
             crate::ffi::rice_transmit_clear(&mut transmit);
         }

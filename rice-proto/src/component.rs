@@ -10,21 +10,23 @@
 
 //! A [`Component`] in an ICE [`Stream`]
 
-use alloc::boxed::Box;
 use core::net::SocketAddr;
 
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use byteorder::{BigEndian, ByteOrder};
 use stun_proto::Instant;
 use stun_proto::agent::Transmit;
+use stun_proto::types::data::DataOwned;
 use stun_proto::types::message::{BINDING, Message, MessageWriteVec};
 use stun_proto::types::prelude::MessageWrite;
 use turn_client_proto::api::TurnClientApi;
-use turn_client_proto::types::prelude::DelayedTransmitBuild;
 
 use crate::candidate::{CandidatePair, CandidateType, TransportType};
 
 use crate::agent::{Agent, AgentError};
 pub use crate::conncheck::SelectedPair;
-use crate::conncheck::{RequestRto, transmit_send};
+use crate::conncheck::{RequestRto, transmit_send_build_unframed};
 use crate::gathering::StunGatherer;
 use crate::stream::Stream;
 use crate::turn::TurnConfig;
@@ -229,7 +231,7 @@ impl<'a> ComponentMut<'a> {
         &mut self,
         data: T,
         now: Instant,
-    ) -> Result<Transmit<Box<[u8]>>, AgentError> {
+    ) -> Result<Transmit<SendData<T>>, AgentError> {
         // TODO: store statistics about bytes/packets sent
         let stream = self.agent.stream_state(self.stream_id).unwrap();
         let checklist_id = stream.checklist_id;
@@ -266,12 +268,7 @@ impl<'a> ComponentMut<'a> {
                 "sending {} bytes from {} {} through TURN server {} with allocation {local_transport} {local_base_addr} to {remote_addr}",
                 data_len, transmit.transport, transmit.from, transmit.to,
             );
-            Ok(Transmit::new(
-                transmit.data.build().into_boxed_slice(),
-                transmit.transport,
-                transmit.from,
-                transmit.to,
-            ))
+            Ok(transmit_send_build_unframed(transmit).reinterpret_data(|data| data.into()))
         } else {
             let stun_agent = checklist
                 .agent_by_id(stun_agent_id)
@@ -282,7 +279,7 @@ impl<'a> ComponentMut<'a> {
             );
             let transmit = stun_agent.send_data(data, remote_addr);
             let transport = transmit.transport;
-            Ok(transmit.reinterpret_data(|data| transmit_send(transport, data.as_ref())))
+            Ok(transmit.reinterpret_data(|data| transmit_send_data(transport, data)))
         }
     }
 
@@ -383,6 +380,56 @@ impl ComponentState {
     #[allow(dead_code)]
     pub(crate) fn state(&self) -> ComponentConnectionState {
         self.state
+    }
+}
+
+/// Application data to be sent to a peer.
+#[derive(Debug)]
+pub enum SendData<T: AsRef<[u8]>> {
+    /// An exact copy of the input buffer.
+    Reffed(T),
+    /// An owned data slice.
+    Owned(DataOwned),
+}
+
+impl<T: AsRef<[u8]>> SendData<T> {
+    fn new(value: T) -> Self {
+        Self::Reffed(value)
+    }
+}
+
+impl<T: AsRef<[u8]>> From<DataOwned> for SendData<T> {
+    fn from(value: DataOwned) -> Self {
+        Self::Owned(value)
+    }
+}
+
+impl<T: AsRef<[u8]>> From<Box<[u8]>> for SendData<T> {
+    fn from(value: Box<[u8]>) -> Self {
+        Self::Owned(DataOwned::from(value))
+    }
+}
+
+impl<T: AsRef<[u8]>> AsRef<[u8]> for SendData<T> {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Self::Reffed(data) => data.as_ref(),
+            Self::Owned(data) => data,
+        }
+    }
+}
+
+pub(crate) fn transmit_send_data<T: AsRef<[u8]>>(transport: TransportType, data: T) -> SendData<T> {
+    match transport {
+        TransportType::Udp => SendData::new(data),
+        TransportType::Tcp => {
+            let len = data.as_ref().len();
+            let mut ret = Vec::with_capacity(2 + len);
+            ret.resize(2, 0);
+            BigEndian::write_u16(&mut ret, len as u16);
+            ret.extend_from_slice(data.as_ref());
+            ret.into_boxed_slice().into()
+        }
     }
 }
 
