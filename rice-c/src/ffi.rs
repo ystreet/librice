@@ -23,15 +23,22 @@ include!("bindings.rs");
 #[cfg(not(docsrs))]
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
+#[allow(clippy::derivable_impls)]
 impl Default for RiceStreamIncomingData {
     fn default() -> Self {
         Self {
             handled: false,
             have_more_data: false,
-            data: RiceDataImpl {
-                ptr: core::ptr::null_mut(),
-                size: 0,
-            },
+            data: RiceData::default(),
+        }
+    }
+}
+
+impl Default for RiceDataImpl {
+    fn default() -> Self {
+        Self {
+            ptr: core::ptr::null_mut(),
+            size: 0,
         }
     }
 }
@@ -45,15 +52,43 @@ impl RiceDataImpl {
     }
 }
 
-impl RiceData {
-    pub(crate) fn to_c_owned(slice: &[u8]) -> Self {
-        RiceData {
-            tag: RICE_DATA_OWNED,
+impl Default for RiceData {
+    fn default() -> Self {
+        Self {
+            tag: RICE_DATA_BORROWED,
             field1: RiceData__bindgen_ty_1 {
-                field2: core::mem::ManuallyDrop::new(RiceData__bindgen_ty_1__bindgen_ty_2 {
-                    owned: RiceDataImpl::to_c(slice),
+                field1: core::mem::ManuallyDrop::new(RiceData__bindgen_ty_1__bindgen_ty_1 {
+                    borrowed: RiceDataImpl::default(),
                 }),
             },
+        }
+    }
+}
+
+impl RiceData {
+    // SAFETY: requires the caller to ensure the lifetime of the returned slice is less than self.
+    pub(crate) unsafe fn data<'a>(&self) -> Option<&'a [u8]> {
+        unsafe {
+            let data = match self.tag {
+                RICE_DATA_BORROWED => &self.field1.field1.borrowed,
+                RICE_DATA_OWNED => &self.field1.field2.owned,
+                val => panic!("Unknown data tag {val}!"),
+            };
+            if data.ptr.is_null() || data.size == 0 {
+                return None;
+            }
+            Some(core::slice::from_raw_parts(data.ptr, data.size))
+        }
+    }
+}
+
+impl core::fmt::Debug for RiceData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        unsafe {
+            let Some(data) = self.data() else {
+                return write!(f, "empty");
+            };
+            write!(f, "{data:?}")
         }
     }
 }

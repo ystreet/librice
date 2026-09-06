@@ -266,15 +266,12 @@ impl Stream {
                 &mut stream_ret,
                 ignorable,
             );
-            let mut ret = StreamIncomingDataReply {
+            StreamIncomingDataReply {
                 handled: stream_ret.handled,
                 have_more_data: stream_ret.have_more_data,
-                data: None,
-            };
-            if !stream_ret.data.ptr.is_null() && stream_ret.data.size > 0 {
-                ret.data = Some(data);
+                data: stream_ret.data,
+                _phantom: Default::default(),
             }
-            ret
         }
     }
 
@@ -354,8 +351,15 @@ pub struct StreamIncomingDataReply<'a> {
     /// Data was received in addition to any in the `data` field that could be retrieved with
     /// [`Stream::poll_recv`].
     pub have_more_data: bool,
+    data: crate::ffi::RiceData,
+    _phantom: core::marker::PhantomData<&'a [u8]>,
+}
+
+impl StreamIncomingDataReply<'_> {
     /// Any application data that could be parsed from the incoming data.
-    pub data: Option<&'a [u8]>,
+    pub fn data(&self) -> Option<&[u8]> {
+        unsafe { self.data.data() }
+    }
 }
 
 /// An error reply that can be ignored if another agent handles the STUN message.
@@ -894,7 +898,7 @@ mod tests {
             now,
             None,
         );
-        assert_eq!(ret.data.unwrap(), recv);
+        assert_eq!(ret.data().unwrap(), recv);
 
         agent.close(now);
 

@@ -147,17 +147,18 @@ impl Component {
 
     /// Send data to the peer using the selected pair.  This will not succeed until the
     /// [`Component`] has reached [`ComponentConnectionState::Connected`]
-    pub fn send<'ret>(&self, data: &[u8], now: Instant) -> Result<AgentTransmit<'ret>, AgentError> {
+    pub fn send<'data>(
+        &self,
+        data: &'data [u8],
+        now: Instant,
+    ) -> Result<AgentTransmit<'data>, AgentError> {
         unsafe {
             let mut transmit = crate::ffi::RiceTransmit {
                 stream_id: self.stream_id,
                 transport: TransportType::Udp.into(),
                 from: core::ptr::null(),
                 to: core::ptr::null(),
-                data: crate::ffi::RiceDataImpl {
-                    ptr: core::ptr::null_mut(),
-                    size: 0,
-                },
+                data: crate::ffi::RiceData::default(),
             };
             AgentError::from_c(crate::ffi::rice_component_send(
                 self.ffi,
@@ -166,7 +167,7 @@ impl Component {
                 now.as_nanos(),
                 &mut transmit,
             ))?;
-            Ok(AgentTransmit::from_c_full(transmit))
+            AgentTransmit::from_c_full(transmit).ok_or(AgentError::Failed)
         }
     }
 

@@ -132,7 +132,7 @@ fn main() {
         .disable_nested_struct_naming()
         .disable_name_namespacing()
         .no_copy(
-            "Rice(Candidate|Transmit|AgentSocket|StreamIncomingData|DataImpl|GatheredCandidate)",
+            "Rice(Candidate|Transmit|AgentSocket|StreamIncomingData|Data|DataImpl|GatheredCandidate)",
         )
         .default_non_copy_union_style(bindgen::NonCopyUnionStyle::ManuallyDrop)
         .anon_fields_prefix("field")
