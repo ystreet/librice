@@ -291,18 +291,19 @@ impl Stream {
     /// Poll for any received data.
     ///
     /// Must be called after `handle_incoming_data` if `have_more_data` is `true`.
-    pub fn poll_recv<'a>(&self) -> Option<PollRecv<'a>> {
+    pub fn poll_recv(&self) -> Option<PollRecv> {
         unsafe {
             let mut len = 0;
             let mut component_id = 0;
             let ptr = crate::ffi::rice_stream_poll_recv(self.ffi, &mut component_id, &mut len);
-            if ptr.is_null() {
+            if ptr.is_null() || len == 0 {
                 return None;
             }
-            let slice = core::slice::from_raw_parts(ptr, len);
             Some(PollRecv {
                 component_id,
-                data: RecvData { data: slice },
+                data: RecvData {
+                    data: crate::ffi::RiceDataImpl { ptr, size: len },
+                },
             })
         }
     }
@@ -317,29 +318,32 @@ impl Stream {
 
 /// Data that should be sent to a peer as a result of calling [`Stream::poll_recv()`].
 #[derive(Debug)]
-pub struct PollRecv<'a> {
+pub struct PollRecv {
     /// The component id that the data was received for.
     pub component_id: usize,
     /// The received data.
-    pub data: RecvData<'a>,
+    pub data: RecvData,
 }
 
 /// Data to send.
 #[derive(Debug)]
-pub struct RecvData<'a> {
-    data: &'a [u8],
+pub struct RecvData {
+    data: crate::ffi::RiceDataImpl,
 }
 
-impl core::ops::Deref for RecvData<'_> {
+/// SAFETY: data pointer is never modified.
+unsafe impl Send for RecvData {}
+
+impl core::ops::Deref for RecvData {
     type Target = [u8];
     fn deref(&self) -> &Self::Target {
-        self.data
+        unsafe { core::slice::from_raw_parts(self.data.ptr, self.data.size) }
     }
 }
 
-impl Drop for RecvData<'_> {
+impl Drop for RecvData {
     fn drop(&mut self) {
-        unsafe { crate::ffi::rice_free_data(mut_override(self.data.as_ptr())) }
+        unsafe { crate::ffi::rice_free_data(mut_override(self.data.ptr)) }
     }
 }
 

@@ -198,7 +198,7 @@ pub enum RecvData {
     /// Rust allocated Vec.
     Vec(Vec<u8>),
     /// C allocated data.
-    Proto(CRecvData<'static>),
+    Proto(CRecvData),
 }
 
 impl From<Vec<u8>> for RecvData {
@@ -207,8 +207,8 @@ impl From<Vec<u8>> for RecvData {
     }
 }
 
-impl From<CRecvData<'static>> for RecvData {
-    fn from(value: CRecvData<'static>) -> Self {
+impl From<CRecvData> for RecvData {
+    fn from(value: CRecvData) -> Self {
         Self::Proto(value)
     }
 }
