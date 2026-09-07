@@ -377,6 +377,7 @@ impl<'a> StreamMut<'a> {
     /// received.
     #[tracing::instrument(
         name = "stream_handle_incoming_data",
+        level = "trace",
         skip(self, component_id, transmit),
         fields(
             stream.id = self.id,
