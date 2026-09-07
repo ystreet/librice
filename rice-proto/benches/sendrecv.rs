@@ -14,8 +14,30 @@ use rice_proto::candidate::{Candidate, CandidatePair};
 use stun_proto::Instant;
 use stun_proto::agent::Transmit;
 use stun_proto::types::TransportType;
+use tracing::subscriber::DefaultGuard;
+use tracing_subscriber::Layer;
+use tracing_subscriber::layer::SubscriberExt;
+
+fn init_logs() -> DefaultGuard {
+    let level_filter = std::env::var("RICE_LOG")
+        .or(std::env::var("RUST_LOG"))
+        .ok()
+        .and_then(|var| var.parse::<tracing_subscriber::filter::Targets>().ok())
+        .unwrap_or(tracing_subscriber::filter::Targets::new().with_default(tracing::Level::INFO));
+    let layer = tracing_subscriber::fmt::layer()
+        .with_file(true)
+        .with_line_number(true)
+        .with_level(true)
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .with_filter(level_filter);
+    let registry = tracing_subscriber::registry().with(layer);
+    tracing::subscriber::set_default(registry)
+}
 
 fn bench_sendrecv_udp(c: &mut Criterion) {
+    let _guard = init_logs();
+
     let local_addr = "192.168.1.1:1000".parse().unwrap();
     let local_candidate = Candidate::builder(
         1,
@@ -83,6 +105,8 @@ fn bench_sendrecv_udp(c: &mut Criterion) {
 }
 
 fn bench_sendrecv_tcp(c: &mut Criterion) {
+    let _guard = init_logs();
+
     let local_addr = "192.168.1.1:1000".parse().unwrap();
     let local_candidate = Candidate::builder(
         1,
