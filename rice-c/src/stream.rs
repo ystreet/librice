@@ -343,7 +343,7 @@ impl core::ops::Deref for RecvData {
 
 impl Drop for RecvData {
     fn drop(&mut self) {
-        unsafe { crate::ffi::rice_free_data(mut_override(self.data.ptr)) }
+        unsafe { crate::ffi::rice_free_data(mut_override(self.data.ptr), self.data.size) }
     }
 }
 

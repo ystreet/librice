@@ -1210,7 +1210,7 @@ unsafe extern "C" {
 }
 unsafe extern "C" {
     #[doc = " Free allocated data."]
-    pub fn rice_free_data(data: *mut u8);
+    pub fn rice_free_data(data: *mut u8, len: usize);
 }
 unsafe extern "C" {
     #[doc = " Return the component ids currently in use by a `RiceStream`.\n\n `ret` can be NULL to discover the length of the data that would be provided."]

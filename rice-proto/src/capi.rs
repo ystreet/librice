@@ -3055,9 +3055,10 @@ pub unsafe extern "C" fn rice_stream_poll_recv(
 
 /// Free allocated data.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn rice_free_data(data: *mut u8) {
+pub unsafe extern "C" fn rice_free_data(data: *mut u8, len: usize) {
     unsafe {
-        let _ = Box::from_raw(data);
+        let slice = core::ptr::slice_from_raw_parts_mut(data, len);
+        let _ = Box::from_raw(slice);
     }
 }
 
