@@ -1523,7 +1523,7 @@ pub unsafe extern "C" fn rice_tls_config_new_rustls_with_ip(
     }
 }
 
-/// Construct a new TLS configuration using Rustls.
+/// Construct a new TLS configuration using `dimpl`.
 #[unsafe(no_mangle)]
 #[cfg(feature = "dimpl")]
 pub unsafe extern "C" fn rice_tls_config_new_dimpl() -> *mut RiceTlsConfig {
