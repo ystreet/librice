@@ -2560,7 +2560,7 @@ pub unsafe extern "C" fn rice_candidate_copy_into(
         if candidate.is_null() {
             return;
         }
-        let candidate = Box::from_raw(mut_override(candidate));
+        let candidate = &*mut_override(candidate);
         let foundation = if candidate.foundation.is_null() {
             core::ptr::null()
         } else {
@@ -2601,7 +2601,6 @@ pub unsafe extern "C" fn rice_candidate_copy_into(
             extensions,
             extensions_len: candidate.extensions_len,
         };
-        core::mem::forget(candidate);
     }
 }
 
