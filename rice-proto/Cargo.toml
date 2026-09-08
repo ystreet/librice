@@ -69,6 +69,9 @@ version_suffix_components = 1
 name = "rice-proto"
 filename = "rice-proto"
 
+[package.metadata.capi.install.include]
+generated = [{from="rice-proto-config.h", to="rice"}]
+
 [[bench]]
 name = "sendrecv"
 harness = false

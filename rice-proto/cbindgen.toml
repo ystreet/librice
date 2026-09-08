@@ -1,5 +1,5 @@
 header = "// SPDX-License-Identifier: MIT OR Apache-2.0"
-includes = []
+includes = ["rice-proto-config.h"]
 include_guard = "LIBRICE_PROTO_H"
 tab_width = 4
 language = "C"
@@ -19,3 +19,8 @@ args = "vertical"
 
 [enum]
 rename_variants = "QualifiedScreamingSnakeCase"
+
+[defines]
+"feature = openssl" = "RICE_PROTO_OPENSSL"
+"feature = rustls" = "RICE_PROTO_RUSTLS"
+"feature = dimpl" = "RICE_PROTO_DIMPL"

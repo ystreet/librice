@@ -3,6 +3,9 @@
 pub const RICE_PROTO_MAJOR: u32 = 0;
 pub const RICE_PROTO_MINOR: u32 = 4;
 pub const RICE_PROTO_PATCH: u32 = 3;
+pub const RICE_PROTO_RUSTLS: u32 = 1;
+pub const RICE_PROTO_OPENSSL: u32 = 1;
+pub const RICE_PROTO_DIMPL: u32 = 1;
 #[doc = " Component is in initial state and no connectivity checks are in progress."]
 pub const RICE_COMPONENT_CONNECTION_STATE_NEW: RiceComponentConnectionState = 0;
 #[doc = " Connectivity checks are in progress for this candidate"]
@@ -879,7 +882,7 @@ unsafe extern "C" {
     pub fn rice_tls_config_new_rustls_with_ip(addr: *const RiceAddress) -> *mut RiceTlsConfig;
 }
 unsafe extern "C" {
-    #[doc = " Construct a new TLS configuration using Rustls."]
+    #[doc = " Construct a new TLS configuration using `dimpl`."]
     pub fn rice_tls_config_new_dimpl() -> *mut RiceTlsConfig;
 }
 unsafe extern "C" {
