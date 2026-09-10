@@ -947,14 +947,6 @@ impl Stream {
     /// Add a local candidate for this stream.
     ///
     /// Returns whether the candidate was added internally.
-    #[deprecated]
-    pub fn add_local_gathered_candidates(&self, gathered: GatheredCandidate) -> bool {
-        self.add_local_gathered_candidate(gathered)
-    }
-
-    /// Add a local candidate for this stream.
-    ///
-    /// Returns whether the candidate was added internally.
     pub fn add_local_gathered_candidate(&self, gathered: GatheredCandidate) -> bool {
         self.state
             .proto_stream
