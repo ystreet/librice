@@ -183,7 +183,7 @@ impl Agent {
             .set_request_retransmits(initial, max, retransmits, final_retransmit_timeout);
     }
 
-    /// Retrieve whether the agent is confiugred for ICE-lite usage.
+    /// Retrieve whether the agent is configured for ICE-lite usage.
     ///
     /// ICE-lite has the following limitations:
     ///  - A single host candidate is gathered per network interface and component id
@@ -276,7 +276,16 @@ impl Agent {
         inner.streams.get(id).cloned()
     }
 
-    /// Close the agent loop
+    /// Close the agent loop.
+    ///
+    /// This will cause the agent to perform closing operations such as:
+    /// - If consent freshness is enabled, incoming STUN checks will return a Forbidden response
+    ///   indicating consent loss to the peer.
+    /// - Removing TURN allocations.
+    /// - Removal of sockets.
+    ///
+    /// Once closure has completed, the futures `Stream` previously returned from [`Agent::messages()`]
+    /// will complete and return `None`.
     pub fn close(&self) {
         let now_nanos = Instant::from_std(self.base_instant);
         self.agent.close(now_nanos);
