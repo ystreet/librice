@@ -406,7 +406,15 @@ impl Agent {
         id
     }
 
-    /// Close the agent loop.  Applications should wait for [`Agent::poll`] to return
+    /// Close the agent loop.
+    ///
+    /// This will cause the agent to perform closing operations such as:
+    /// - If consent freshness is enabled, incoming STUN checks will return a Forbidden response
+    ///   indicating consent loss to the peer.
+    /// - Removing TURN allocations.
+    /// - Removal of sockets.
+    ///
+    /// Applications should wait for [`Agent::poll`] to return
     /// [`AgentPoll::Closed`] after calling this function.
     #[tracing::instrument(
         name = "ice_close",
