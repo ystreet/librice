@@ -37,7 +37,9 @@ use stun_proto::agent::{StunAgent, StunAgentPollRet, StunError, Transmit};
 use stun_proto::types::attribute::*;
 use stun_proto::types::data::Data;
 use stun_proto::types::message::*;
-use turn_client_proto::api::{Socket5Tuple, TransmitBuild, TurnEvent, TurnPollRet, TurnRecvRet};
+use turn_client_proto::api::{
+    BindChannelError, Socket5Tuple, TransmitBuild, TurnEvent, TurnPollRet, TurnRecvRet,
+};
 use turn_client_proto::prelude::*;
 
 use tracing::{debug, info, trace, warn};
@@ -552,6 +554,7 @@ pub struct ConnCheckList {
     pending_turn_permissions: VecDeque<(StunAgentId, TransportType, IpAddr)>,
     pending_recv: VecDeque<PendingRecv>,
     pending_turn_tcp_connect: Vec<PendingTurnTcp>,
+    pending_turn_bind_channel: VecDeque<PendingTurnBindChannel>,
 }
 
 #[derive(Debug)]
@@ -571,6 +574,13 @@ struct PendingTurnTcp {
     peer_addr: SocketAddr,
     turn_connect_id: Option<u32>,
     allocated: bool,
+}
+
+#[derive(Debug)]
+struct PendingTurnBindChannel {
+    turn_id: StunAgentId,
+    transport: TransportType,
+    peer_addr: SocketAddr,
 }
 
 fn candidate_is_same_connection(a: &Candidate, b: &Candidate) -> bool {
@@ -700,6 +710,7 @@ impl ConnCheckList {
             pending_turn_permissions: VecDeque::new(),
             pending_recv: VecDeque::new(),
             pending_turn_tcp_connect: Vec::new(),
+            pending_turn_bind_channel: VecDeque::new(),
         }
     }
 
@@ -1929,19 +1940,26 @@ impl ConnCheckList {
                             return component_ids_selected;
                         };
                         let turn = {
-                            let ret = self
-                                .turn_client_by_allocated_address(
-                                    pair.local.transport_type,
-                                    pair.local.base_address,
-                                )
-                                .map(|(_turn_id, client)| SelectedTurn {
-                                    transport: client.transport(),
-                                    local_addr: client.local_addr(),
-                                    remote_addr: client.remote_addr(),
-                                });
+                            let turn_client = self.turn_client_by_allocated_address(
+                                pair.local.transport_type,
+                                pair.local.base_address,
+                            );
+                            let ret = turn_client.map(|(_turn_id, client)| SelectedTurn {
+                                transport: client.transport(),
+                                local_addr: client.local_addr(),
+                                remote_addr: client.remote_addr(),
+                            });
                             if pair.local.candidate_type == CandidateType::Relayed {
                                 trace!("turn clients: {:?}", self.turn_clients);
                                 debug_assert!(ret.is_some());
+                                let turn_client =
+                                    turn_client.expect("No TURN client for a relayed candidate?!");
+                                self.pending_turn_bind_channel
+                                    .push_front(PendingTurnBindChannel {
+                                        turn_id: turn_client.0,
+                                        transport: pair.local.transport_type,
+                                        peer_addr: pair.remote.address,
+                                    });
                             }
                             ret
                         };
@@ -3818,6 +3836,26 @@ impl ConnCheckListSet {
             }
 
             let checklist = &mut self.checklists[self.checklist_i];
+            while let Some(pending) = checklist.pending_turn_bind_channel.pop_back() {
+                let Some(client) = checklist.mut_turn_client_by_id(pending.turn_id) else {
+                    continue;
+                };
+                match client
+                    .client
+                    .bind_channel(pending.transport, pending.peer_addr, now)
+                {
+                    Ok(()) | Err(BindChannelError::AlreadyExists) => (),
+                    Err(BindChannelError::ExpiredChannelExists(expiry)) => {
+                        warn!("channel bind will not succeed for {:?}", expiry - now);
+                    }
+                    Err(err) => {
+                        warn!(
+                            "Unhandled error attempting to bind channel over {} to {}: {err:?}",
+                            pending.transport, pending.peer_addr
+                        );
+                    }
+                }
+            }
             while let Some((turn_id, transport, remote_ip)) =
                 checklist.pending_turn_permissions.pop_back()
             {
@@ -3839,6 +3877,7 @@ impl ConnCheckListSet {
             let checklist_id = checklist.checklist_id;
             for idx in 0..checklist.turn_clients.len() {
                 let client = &mut checklist.turn_clients[idx];
+                tracing::error!("turn clients {:?}", client.client);
                 let turn_id = client.id;
                 while let Some(event) = client.client.poll_event() {
                     match event {
@@ -3937,22 +3976,11 @@ impl ConnCheckListSet {
                     TurnPollRet::Closed => (),
                     TurnPollRet::WaitUntil(wait) => {
                         all_turn_closed = false;
-                        if wait == now {
-                            return CheckListSetPollRet::WaitUntil(
-                                wait.max(
-                                    self.last_send_time
-                                        .map(|last_send| last_send + self.timing_advance)
-                                        .unwrap_or(now),
-                                ),
-                            );
-                        }
-                        if wait < lowest_wait {
-                            lowest_wait = wait.max(
-                                self.last_send_time
-                                    .map(|last_send| last_send + self.timing_advance)
-                                    .unwrap_or(now),
-                            );
-                        }
+                        lowest_wait = wait.max(
+                            self.last_send_time
+                                .map(|last_send| last_send + self.timing_advance)
+                                .unwrap_or(now),
+                        );
                     }
                     TurnPollRet::TcpClose {
                         local_addr,
@@ -3996,6 +4024,9 @@ impl ConnCheckListSet {
             }
             let mut idx = 0;
             while let Some(client) = checklist.pending_delete_turn_clients.get_mut(idx) {
+                tracing::error!("pending delete client {client:?}");
+                // ignore all events
+                while client.client.poll_event().is_some() {}
                 match client.client.poll(now) {
                     TurnPollRet::Closed => {
                         let client = checklist.pending_delete_turn_clients.remove(idx);
@@ -4123,6 +4154,7 @@ impl ConnCheckListSet {
                                 }
                             }
                         } else if let Some(client) = checklist.mut_turn_client_by_id(agent_id) {
+                            tracing::error!("check turn client {client:?}");
                             match client.client.poll(now) {
                                 TurnPollRet::WaitUntil(wait) => {
                                     if wait < lowest_wait {
@@ -4944,7 +4976,7 @@ mod tests {
         tcp::TurnClientTcp,
         types::{
             TurnCredentials,
-            message::{ALLOCATE, CONNECT, CONNECTION_BIND, CREATE_PERMISSION},
+            message::{ALLOCATE, CHANNEL_BIND, CONNECT, CONNECTION_BIND, CREATE_PERMISSION},
         },
         udp::TurnClientUdp,
     };
@@ -7582,6 +7614,9 @@ mod tests {
             CheckListSetPollRet::Completed
         ));
 
+        let now = wait_advance(&mut state.local.checklist_set, now);
+        set_handle_channel_bind(&mut state.local.checklist_set, &mut turn_server, now);
+
         state.local.checklist_set.close(now);
 
         // no RemoveSocket until the TURN DELETE is handled
@@ -7869,6 +7904,29 @@ mod tests {
         }
     }
 
+    fn set_handle_channel_bind(
+        set: &mut ConnCheckListSet,
+        turn_server: &mut TurnServer,
+        now: Instant,
+    ) {
+        let Some(transmit) = set.poll_transmit(now) else {
+            unreachable!();
+        };
+        let checklist_id = transmit.checklist_id;
+        let channel_bind = Message::from_bytes(&transmit.transmit.data).unwrap();
+        assert!(channel_bind.has_class(MessageClass::Request));
+        assert!(channel_bind.has_method(CHANNEL_BIND));
+        let transmit = turn_server.recv(transmit.transmit, now).unwrap().build();
+        let transmit = Transmit::new(
+            Data::from(transmit.data.as_slice()),
+            transmit.transport,
+            transmit.from,
+            transmit.to,
+        );
+        let reply = set.incoming_data(checklist_id, 1, transmit, now, &mut None);
+        assert!(reply.handled);
+    }
+
     #[test]
     fn turn_tcp_create_permission() {
         let _log = crate::tests::test_init_log();
@@ -8017,13 +8075,13 @@ mod tests {
             CheckListSetPollRet::Completed
         ));
 
+        let now = wait_advance(&mut state.local.checklist_set, now);
+        set_handle_channel_bind(&mut state.local.checklist_set, &mut turn_server, now);
+
         state.local.checklist_set.close(now);
 
         // no RemoveSocket until the TURN DELETE is handled
-        let CheckListSetPollRet::WaitUntil(now) = state.local.checklist_set.poll(now) else {
-            unreachable!();
-        };
-
+        let now = wait_advance(&mut state.local.checklist_set, now);
         let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
             unreachable!();
         };
