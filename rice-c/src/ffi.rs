@@ -39,6 +39,7 @@ impl Default for RiceDataImpl {
         Self {
             ptr: core::ptr::null_mut(),
             size: 0,
+            offset: 0,
         }
     }
 }
@@ -48,6 +49,7 @@ impl RiceDataImpl {
         Self {
             ptr: mut_override(slice.as_ptr()),
             size: slice.len(),
+            offset: 0,
         }
     }
 }
@@ -77,7 +79,9 @@ impl RiceData {
             if data.ptr.is_null() || data.size == 0 {
                 return None;
             }
-            Some(core::slice::from_raw_parts(data.ptr, data.size))
+            let offset = data.offset;
+            let data = core::slice::from_raw_parts(data.ptr, data.size);
+            Some(&data[offset..])
         }
     }
 }

@@ -28,7 +28,7 @@ use crate::component::ComponentConnectionState;
 use crate::gathering::GatheredCandidate;
 use crate::rand::generate_random_ice_string;
 use crate::stream::RestartStreamConfig;
-use crate::tcp::TcpBuffer;
+use crate::tcp::{TcpBuffer, TcpPush};
 use crate::turn::TurnClient;
 use byteorder::{BigEndian, ByteOrder};
 use rice_stun_types::attribute::{IceControlled, IceControlling, Priority, UseCandidate};
@@ -2467,16 +2467,16 @@ impl ConnCheckListSet {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn handle_stun<T: AsRef<[u8]>>(
+    fn handle_stun(
         &mut self,
         checklist_i: usize,
-        msg: Message<'_>,
-        transmit: &Transmit<T>,
+        transmit: &Transmit<Message<'_>>,
         agent_id: StunAgentId,
         turn_id: Option<(StunAgentId, SocketAddr)>,
         ignorable: &mut Option<RecvIgnorable>,
         now: Instant,
     ) -> bool {
+        let msg = transmit.data;
         debug!("received STUN message {msg}");
         if msg.is_response() {
             match self.checklists[checklist_i]
@@ -2602,6 +2602,70 @@ impl ConnCheckListSet {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn incoming_data_with_agent<T: AsRef<[u8]> + core::fmt::Debug>(
+        &mut self,
+        checklist_i: usize,
+        component_id: usize,
+        transmit: Transmit<T>,
+        agent_id: StunAgentId,
+        turn_client_id: Option<(StunAgentId, SocketAddr)>,
+        now: Instant,
+        ignorable: &mut Option<RecvIgnorable>,
+    ) -> HandleRecvReply<T> {
+        match Message::from_bytes(transmit.data.as_ref()) {
+            Ok(msg) => {
+                let msg_transmit =
+                    Transmit::new(msg, transmit.transport, transmit.from, transmit.to);
+                if self.handle_stun(
+                    checklist_i,
+                    &msg_transmit,
+                    agent_id,
+                    turn_client_id,
+                    ignorable,
+                    now,
+                ) {
+                    return HandleRecvReply {
+                        handled: true,
+                        have_more_data: false,
+                        data: None,
+                    };
+                }
+            }
+            Err(_) => {
+                if let Some(agent) = self.checklists[checklist_i].agent_by_id(agent_id) {
+                    if agent.is_validated_peer(transmit.from) {
+                        let cl_id = self.checklists[checklist_i].checklist_id;
+
+                        if self.is_local_consent_revoked(cl_id, component_id) {
+                            trace!(
+                                "dropping incoming data from {:?}: \
+                                 local consent revoked for checklist {cl_id} \
+                                 component {component_id}",
+                                transmit.from
+                            );
+
+                            return HandleRecvReply {
+                                handled: true,
+                                ..Default::default()
+                            };
+                        }
+
+                        return HandleRecvReply {
+                            handled: false,
+                            have_more_data: false,
+                            data: Some(DataAndRange {
+                                range: 0..transmit.data.as_ref().len(),
+                                data: transmit.data,
+                            }),
+                        };
+                    }
+                }
+            }
+        }
+        HandleRecvReply::default()
+    }
+
     #[tracing::instrument(
         name = "incoming_data_or_stun",
         level = "trace",
@@ -2649,124 +2713,99 @@ impl ConnCheckListSet {
             });
 
         match transmit.transport {
-            TransportType::Udp => match Message::from_bytes(transmit.data.as_ref()) {
-                Ok(msg) => {
-                    if self.handle_stun(
-                        checklist_i,
-                        msg,
-                        &transmit,
-                        agent_id,
-                        turn_client_id,
-                        ignorable,
-                        now,
-                    ) {
-                        return HandleRecvReply {
-                            handled: true,
-                            have_more_data: false,
-                            data: None,
-                        };
-                    }
-                }
-                Err(_) => {
-                    if let Some(agent) = self.checklists[checklist_i].agent_by_id(agent_id) {
-                        if agent.is_validated_peer(transmit.from) {
-                            let cl_id = self.checklists[checklist_i].checklist_id;
-
-                            if self.is_local_consent_revoked(cl_id, component_id) {
-                                trace!(
-                                    "dropping incoming data from {:?}: \
-                                     local consent revoked for checklist {cl_id} \
-                                     component {component_id}",
-                                    transmit.from
-                                );
-
-                                return HandleRecvReply {
-                                    handled: true,
-                                    ..Default::default()
-                                };
-                            }
-
-                            return HandleRecvReply {
-                                handled: false,
-                                have_more_data: false,
-                                data: Some(DataAndRange {
-                                    range: 0..transmit.data.as_ref().len(),
-                                    data: transmit.data,
-                                }),
-                            };
-                        }
-                    }
-                }
-            },
+            TransportType::Udp => self.incoming_data_with_agent(
+                checklist_i,
+                component_id,
+                transmit,
+                agent_id,
+                turn_client_id,
+                now,
+                ignorable,
+            ),
             TransportType::Tcp => {
                 // TODO: can potentially return a subset of the original data if the tcp buffer
                 // is empty and the incoming data contains at least one message.
-                let cl_id = self.checklists[checklist_i].checklist_id;
-                let local_consent_revoked = self.is_local_consent_revoked(cl_id, component_id);
                 let mut tcp_buffer = self.checklists[checklist_i]
                     .tcp_buffers
                     .entry((transmit.to, transmit.from))
                     .or_default();
-                tcp_buffer.push_data(transmit.data.as_ref());
-
-                let mut handled = false;
+                let mut handled;
                 let mut have_more_data = false;
-                while let Some(data) = tcp_buffer.pull_data() {
-                    match Message::from_bytes(&data) {
-                        Ok(msg) => {
-                            if self.handle_stun(
-                                checklist_i,
-                                msg,
-                                &transmit,
-                                agent_id,
-                                turn_client_id,
-                                ignorable,
-                                now,
-                            ) {
-                                handled = true;
-                            }
-                            if let Some(ignorable) = ignorable.take() {
-                                self.send_ignorable_error(ignorable);
-                            }
-                        }
-                        Err(_) => {
-                            if local_consent_revoked {
-                                trace!(
-                                    "dropping incoming data from {:?}: \
-                                     local consent revoked for checklist {cl_id} \
-                                     component {component_id}",
-                                    transmit.from
-                                );
-                                continue;
-                            }
+                let mut pending_range = None;
+                if let TcpPush::Subslice(range) = tcp_buffer.push_data(transmit.data.as_ref()) {
+                    let tcp_buffer_empty = tcp_buffer.is_empty();
+                    let data_transmit = Transmit::new(
+                        &transmit.data.as_ref()[range.start..range.end],
+                        transmit.transport,
+                        transmit.from,
+                        transmit.to,
+                    );
+                    let ret = self.incoming_data_with_agent(
+                        checklist_i,
+                        component_id,
+                        data_transmit,
+                        agent_id,
+                        turn_client_id,
+                        now,
+                        ignorable,
+                    );
+                    handled = ret.handled;
+                    have_more_data = !tcp_buffer_empty;
+                    if let Some(ignorable) = ignorable.take() {
+                        self.send_ignorable_error(ignorable);
+                    }
+                    pending_range = ret.data.map(|_| range);
+                    tcp_buffer = self.checklists[checklist_i]
+                        .tcp_buffers
+                        .get_mut(&(transmit.to, transmit.from))
+                        .unwrap();
+                } else {
+                    handled = true;
+                }
 
-                            let checklist = &mut self.checklists[checklist_i];
-                            if let Some(agent) = checklist.agent_by_id(agent_id) {
-                                if agent.is_validated_peer(transmit.from) {
-                                    have_more_data = true;
-                                    checklist
-                                        .pending_recv
-                                        .push_back(PendingRecv { component_id, data });
-                                }
-                            }
-                        }
+                while let Some(data) = tcp_buffer.pull_data() {
+                    let data_transmit =
+                        Transmit::new(&data, transmit.transport, transmit.from, transmit.to);
+                    let ret = self.incoming_data_with_agent(
+                        checklist_i,
+                        component_id,
+                        data_transmit,
+                        agent_id,
+                        turn_client_id,
+                        now,
+                        ignorable,
+                    );
+                    handled |= ret.handled;
+                    if let Some(ignorable) = ignorable.take() {
+                        self.send_ignorable_error(ignorable);
+                    }
+                    if ret.data.is_some() {
+                        let checklist = &mut self.checklists[checklist_i];
+                        have_more_data = true;
+                        checklist
+                            .pending_recv
+                            .push_back(PendingRecv { component_id, data });
                     }
                     tcp_buffer = self.checklists[checklist_i]
                         .tcp_buffers
                         .get_mut(&(transmit.to, transmit.from))
                         .unwrap();
                 }
-                return HandleRecvReply {
-                    handled,
-                    have_more_data,
-                    data: None,
-                };
+                pending_range
+                    .map(|range| HandleRecvReply {
+                        handled,
+                        have_more_data,
+                        data: Some(DataAndRange {
+                            range,
+                            data: transmit.data,
+                        }),
+                    })
+                    .unwrap_or(HandleRecvReply {
+                        handled,
+                        have_more_data,
+                        data: None,
+                    })
             }
-        }
-        HandleRecvReply {
-            handled: false,
-            have_more_data: false,
-            data: None,
         }
     }
 
@@ -6319,13 +6358,16 @@ mod tests {
             .unwrap();
         assert_eq!(check.state(), CandidatePairState::InProgress);
 
-        state.local.checklist_set.incoming_data(
+        let ret = state.local.checklist_set.incoming_data(
             state.local.checklist_id,
             1,
             response,
             now,
             &mut None,
         );
+        assert!(ret.handled);
+        assert!(!ret.have_more_data);
+        assert!(ret.data.is_none());
         error!("tcp replied");
 
         let now = wait_advance(&mut state.local.checklist_set, now);
@@ -6547,13 +6589,16 @@ mod tests {
             unreachable!();
         };
 
-        state.local.checklist_set.incoming_data(
+        let ret = state.local.checklist_set.incoming_data(
             state.local.checklist_id,
             1,
             response,
             now,
             &mut None,
         );
+        assert!(ret.handled);
+        assert!(!ret.have_more_data);
+        assert!(ret.data.is_none());
 
         let CheckListSetPollRet::Event {
             checklist_id: _,

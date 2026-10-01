@@ -149,7 +149,7 @@ pub struct RiceTlsConfig {
 pub struct RiceTurnConfig {
     _unused: [u8; 0],
 }
-#[doc = " A pointer to a sequence of bytes and the associated size."]
+#[doc = " A pointer to a sequence of bytes and the associated size.\n\n `size` indicates the total number of valid bytes starting from position 0.\n `offset` is the number of bytes into `ptr` to start reading from."]
 #[repr(C)]
 #[derive(Debug)]
 pub struct RiceDataImpl {
@@ -157,13 +157,17 @@ pub struct RiceDataImpl {
     pub ptr: *mut u8,
     #[doc = " Number of bytes pointed to in `ptr`."]
     pub size: usize,
+    #[doc = " Byte offset into `ptr` to start reading from."]
+    pub offset: usize,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of RiceDataImpl"][::core::mem::size_of::<RiceDataImpl>() - 16usize];
+    ["Size of RiceDataImpl"][::core::mem::size_of::<RiceDataImpl>() - 24usize];
     ["Alignment of RiceDataImpl"][::core::mem::align_of::<RiceDataImpl>() - 8usize];
     ["Offset of field: RiceDataImpl::ptr"][::core::mem::offset_of!(RiceDataImpl, ptr) - 0usize];
     ["Offset of field: RiceDataImpl::size"][::core::mem::offset_of!(RiceDataImpl, size) - 8usize];
+    ["Offset of field: RiceDataImpl::offset"]
+        [::core::mem::offset_of!(RiceDataImpl, offset) - 16usize];
 };
 #[doc = " The data is borrowed and will not be freed on destruction."]
 pub const RICE_DATA_BORROWED: RiceData_Tag = 0;
@@ -189,7 +193,7 @@ pub struct RiceData__bindgen_ty_1__bindgen_ty_1 {
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
     ["Size of RiceData__bindgen_ty_1__bindgen_ty_1"]
-        [::core::mem::size_of::<RiceData__bindgen_ty_1__bindgen_ty_1>() - 16usize];
+        [::core::mem::size_of::<RiceData__bindgen_ty_1__bindgen_ty_1>() - 24usize];
     ["Alignment of RiceData__bindgen_ty_1__bindgen_ty_1"]
         [::core::mem::align_of::<RiceData__bindgen_ty_1__bindgen_ty_1>() - 8usize];
     ["Offset of field: RiceData__bindgen_ty_1__bindgen_ty_1::borrowed"]
@@ -203,7 +207,7 @@ pub struct RiceData__bindgen_ty_1__bindgen_ty_2 {
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
     ["Size of RiceData__bindgen_ty_1__bindgen_ty_2"]
-        [::core::mem::size_of::<RiceData__bindgen_ty_1__bindgen_ty_2>() - 16usize];
+        [::core::mem::size_of::<RiceData__bindgen_ty_1__bindgen_ty_2>() - 24usize];
     ["Alignment of RiceData__bindgen_ty_1__bindgen_ty_2"]
         [::core::mem::align_of::<RiceData__bindgen_ty_1__bindgen_ty_2>() - 8usize];
     ["Offset of field: RiceData__bindgen_ty_1__bindgen_ty_2::owned"]
@@ -211,13 +215,13 @@ const _: () = {
 };
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of RiceData__bindgen_ty_1"][::core::mem::size_of::<RiceData__bindgen_ty_1>() - 16usize];
+    ["Size of RiceData__bindgen_ty_1"][::core::mem::size_of::<RiceData__bindgen_ty_1>() - 24usize];
     ["Alignment of RiceData__bindgen_ty_1"]
         [::core::mem::align_of::<RiceData__bindgen_ty_1>() - 8usize];
 };
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of RiceData"][::core::mem::size_of::<RiceData>() - 24usize];
+    ["Size of RiceData"][::core::mem::size_of::<RiceData>() - 32usize];
     ["Alignment of RiceData"][::core::mem::align_of::<RiceData>() - 8usize];
     ["Offset of field: RiceData::tag"][::core::mem::offset_of!(RiceData, tag) - 0usize];
 };
@@ -237,7 +241,7 @@ pub struct RiceTransmit {
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of RiceTransmit"][::core::mem::size_of::<RiceTransmit>() - 56usize];
+    ["Size of RiceTransmit"][::core::mem::size_of::<RiceTransmit>() - 64usize];
     ["Alignment of RiceTransmit"][::core::mem::align_of::<RiceTransmit>() - 8usize];
     ["Offset of field: RiceTransmit::stream_id"]
         [::core::mem::offset_of!(RiceTransmit, stream_id) - 0usize];
@@ -613,7 +617,7 @@ pub struct RiceStreamIncomingData {
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of RiceStreamIncomingData"][::core::mem::size_of::<RiceStreamIncomingData>() - 32usize];
+    ["Size of RiceStreamIncomingData"][::core::mem::size_of::<RiceStreamIncomingData>() - 40usize];
     ["Alignment of RiceStreamIncomingData"]
         [::core::mem::align_of::<RiceStreamIncomingData>() - 8usize];
     ["Offset of field: RiceStreamIncomingData::handled"]

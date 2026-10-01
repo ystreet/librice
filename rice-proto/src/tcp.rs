@@ -8,6 +8,8 @@
 //
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+use core::ops::Range;
+
 use alloc::vec::Vec;
 
 use byteorder::{BigEndian, ByteOrder};
@@ -29,29 +31,51 @@ impl core::fmt::Display for TcpBuffer {
     }
 }
 
+#[derive(Debug)]
+pub enum TcpPush {
+    Pull,
+    Subslice(Range<usize>),
+}
+
 impl TcpBuffer {
     /// Construct a new [`TcpBuffer`]
     pub fn new() -> Self {
         Vec::new().into()
     }
 
+    fn parse_length(data: &[u8]) -> Option<usize> {
+        if data.len() < 2 {
+            return None;
+        }
+        Some(BigEndian::read_u16(&data[..2]) as usize)
+    }
+
     /// Push a chunk of received data into the buffer.
-    pub fn push_data(&mut self, data: &[u8]) {
+    pub fn push_data(&mut self, data: &[u8]) -> TcpPush {
+        if self.buf.is_empty() {
+            if let Some(data_length) = Self::parse_length(data) {
+                let end = 2 + data_length;
+                if data.len() >= end {
+                    if data.len() > end {
+                        self.buf.extend(&data[end..]);
+                    }
+                    return TcpPush::Subslice(2..end);
+                }
+                trace!(
+                    "not enough data, buf length {} data specifies length {}",
+                    self.buf.len(),
+                    data_length
+                );
+            }
+        }
         self.buf.extend(data);
+        TcpPush::Pull
     }
 
     /// Pull the next chunk of data from the buffer.  If no buffer is available, then None is
     /// returned.
     pub fn pull_data(&mut self) -> Option<Vec<u8>> {
-        if self.buf.len() < 2 {
-            trace!(
-                "running buffer is currently too small ({} bytes) to provide data",
-                self.buf.len()
-            );
-            return None;
-        }
-
-        let data_length = BigEndian::read_u16(&self.buf[..2]) as usize;
+        let data_length = Self::parse_length(&self.buf)?;
         if self.buf.len() < data_length {
             trace!(
                 "not enough data, buf length {} data specifies length {}",
@@ -74,6 +98,10 @@ impl TcpBuffer {
         let mut data = self.buf.split_off(offset);
         core::mem::swap(&mut data, &mut self.buf);
         data[2..].to_vec()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
     }
 }
 

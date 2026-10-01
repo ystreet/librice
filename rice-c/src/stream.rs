@@ -302,7 +302,11 @@ impl Stream {
             Some(PollRecv {
                 component_id,
                 data: RecvData {
-                    data: crate::ffi::RiceDataImpl { ptr, size: len },
+                    data: crate::ffi::RiceDataImpl {
+                        ptr,
+                        size: len,
+                        offset: 0,
+                    },
                 },
             })
         }
@@ -337,7 +341,10 @@ unsafe impl Send for RecvData {}
 impl core::ops::Deref for RecvData {
     type Target = [u8];
     fn deref(&self) -> &Self::Target {
-        unsafe { core::slice::from_raw_parts(self.data.ptr, self.data.size) }
+        unsafe {
+            let data = core::slice::from_raw_parts(self.data.ptr, self.data.size);
+            &data[self.data.offset..]
+        }
     }
 }
 
@@ -622,10 +629,12 @@ mod tests {
         component::ComponentConnectionState,
     };
     use rice_stun_types::attribute::{IceControlled, IceControlling, Priority, UseCandidate};
-    use stun_types::attribute::Username;
-    use stun_types::message::{
+    use stun_proto::agent::{StunAgent, StunError};
+    use stun_proto::auth::ShortTermAuth;
+    use stun_proto::types::attribute::*;
+    use stun_proto::types::message::{
         BINDING, IntegrityAlgorithm, Message, MessageClass, MessageIntegrityCredentials,
-        MessageWrite, MessageWriteExt, MessageWriteVec, ValidateError,
+        MessageWrite, MessageWriteExt, MessageWriteVec, ShortTermCredentials, ValidateError,
     };
 
     #[test]
@@ -724,9 +733,9 @@ mod tests {
         }
         request
             .add_message_integrity(
-                &MessageIntegrityCredentials::ShortTerm(
-                    stun_types::message::ShortTermCredentials::new(remote_credentials.password()),
-                ),
+                &MessageIntegrityCredentials::ShortTerm(ShortTermCredentials::new(
+                    remote_credentials.password(),
+                )),
                 IntegrityAlgorithm::Sha1,
             )
             .unwrap();
@@ -804,7 +813,7 @@ mod tests {
         assert!(response.has_class(MessageClass::Error));
         assert!(matches!(
             response.validate_integrity(&MessageIntegrityCredentials::ShortTerm(
-                stun_types::message::ShortTermCredentials::new(wrong_user.password()),
+                ShortTermCredentials::new(wrong_user.password()),
             )),
             Ok(IntegrityAlgorithm::Sha1)
         ));
@@ -840,7 +849,7 @@ mod tests {
         assert!(response.has_class(MessageClass::Error));
         assert!(matches!(
             response.validate_integrity(&MessageIntegrityCredentials::ShortTerm(
-                stun_types::message::ShortTermCredentials::new(wrong_password.password()),
+                ShortTermCredentials::new(wrong_password.password()),
             )),
             Err(ValidateError::IntegrityFailed),
         ));
@@ -876,7 +885,7 @@ mod tests {
         assert!(response.has_class(MessageClass::Success));
         assert!(matches!(
             response.validate_integrity(&MessageIntegrityCredentials::ShortTerm(
-                stun_types::message::ShortTermCredentials::new(correct_credentials.password()),
+                ShortTermCredentials::new(correct_credentials.password()),
             )),
             Ok(IntegrityAlgorithm::Sha1)
         ));
@@ -903,6 +912,333 @@ mod tests {
             None,
         );
         assert_eq!(ret.data().unwrap(), recv);
+
+        agent.close(now);
+
+        let AgentPoll::RemoveSocket(_removed) = agent.poll(now) else {
+            unreachable!();
+        };
+        let AgentPoll::Closed = agent.poll(now) else {
+            unreachable!();
+        };
+    }
+
+    fn wait_advance(agent: &mut Agent, now: Instant) -> Instant {
+        let AgentPoll::WaitUntilNanos(next) = agent.poll(now) else {
+            unreachable!();
+        };
+        let next = Instant::from_nanos(next);
+        assert!(next > now);
+        next
+    }
+
+    fn handle_binding_request(
+        local_auth: &ShortTermAuth,
+        msg: &Message,
+        from: SocketAddr,
+        error_response: Option<u16>,
+        response_address: Option<SocketAddr>,
+    ) -> Result<Vec<u8>, StunError> {
+        let local_stun_credentials = local_auth.credentials().unwrap().0.clone();
+
+        if let Some(error_msg) = Message::check_attribute_types(
+            msg,
+            &[
+                Username::TYPE,
+                Fingerprint::TYPE,
+                MessageIntegrity::TYPE,
+                IceControlled::TYPE,
+                IceControlling::TYPE,
+                Priority::TYPE,
+                UseCandidate::TYPE,
+            ],
+            &[
+                Username::TYPE,
+                Fingerprint::TYPE,
+                MessageIntegrity::TYPE,
+                Priority::TYPE,
+            ],
+            MessageWriteVec::new(),
+        ) {
+            // failure -> send error response
+            return Ok(error_msg.finish());
+        }
+
+        if msg
+            .validate_integrity(&local_stun_credentials.clone().into())
+            .is_err()
+        {
+            let code = ErrorCode::builder(ErrorCode::UNAUTHORIZED).build().unwrap();
+            let mut response = Message::builder_error(msg, MessageWriteVec::new());
+            response.add_attribute(&code).unwrap();
+            return Ok(response.finish());
+        }
+
+        let ice_controlling = msg.attribute::<IceControlling>();
+        let ice_controlled = msg.attribute::<IceControlled>();
+
+        let mut response = if ice_controlling.is_err() && ice_controlled.is_err() {
+            tracing::warn!("missing ice controlled/controlling attribute");
+            let mut response = Message::builder_error(msg, MessageWriteVec::new());
+            let error = ErrorCode::builder(ErrorCode::BAD_REQUEST).build()?;
+            response.add_attribute(&error)?;
+            response
+        } else if let Some(error_code) = error_response {
+            tracing::info!("responding with error {}", error_code);
+            let mut response = Message::builder_error(msg, MessageWriteVec::new());
+            let error = ErrorCode::builder(error_code).build()?;
+            response.add_attribute(&error)?;
+            response
+        } else {
+            let mut response = Message::builder_success(msg, MessageWriteVec::new());
+            let xor_addr =
+                XorMappedAddress::new(response_address.unwrap_or(from), msg.transaction_id());
+            response.add_attribute(&xor_addr).unwrap();
+            response
+        };
+        response.add_message_integrity(&local_stun_credentials.into(), IntegrityAlgorithm::Sha1)?;
+        response.add_fingerprint()?;
+        Ok(response.finish())
+    }
+
+    fn transmit_send<T: AsRef<[u8]>>(transport: TransportType, data: T) -> Box<[u8]> {
+        match transport {
+            TransportType::Udp => data.as_ref().into(),
+            TransportType::Tcp => {
+                let len = data.as_ref().len();
+                let mut ret = Vec::with_capacity(2 + len);
+                ret.resize(2, 0);
+                ret[0] = ((len & 0xff00) >> 8) as u8;
+                ret[1] = (len & 0xff) as u8;
+                ret.extend_from_slice(data.as_ref());
+                ret.into_boxed_slice()
+            }
+        }
+    }
+
+    fn reply_to_conncheck<T: AsRef<[u8]>>(
+        agent: &mut StunAgent,
+        auth: &ShortTermAuth,
+        transport: TransportType,
+        from: SocketAddr,
+        data: T,
+        error_response: Option<u16>,
+        response_address: Option<SocketAddr>,
+        now: Instant,
+    ) -> Option<Box<[u8]>> {
+        let offset = match transport {
+            TransportType::Udp => 0,
+            TransportType::Tcp => 2,
+        };
+        tracing::trace!("data: {:x?}", data.as_ref());
+        match Message::from_bytes(&data.as_ref()[offset..]) {
+            Err(e) => tracing::error!("error parsing STUN message {e:?}"),
+            Ok(msg) => {
+                tracing::debug!("received {}", msg);
+                if msg.has_class(MessageClass::Request) && msg.has_method(BINDING) {
+                    let transmit = agent
+                        .send(
+                            handle_binding_request(
+                                auth,
+                                &msg,
+                                from,
+                                error_response,
+                                response_address,
+                            )
+                            .unwrap(),
+                            from,
+                            now,
+                        )
+                        .unwrap();
+                    return Some(transmit_send(transport, transmit.data));
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn tcp_active() {
+        let _log = crate::tests::test_init_log();
+        let mut agent = Agent::builder().controlling(true).build();
+        let stream = agent.add_stream();
+        let component = stream.add_component();
+        let local_creds = Credentials::new("luser", "lpass");
+        let remote_creds = Credentials::new("ruser", "rpass");
+        stream.set_local_credentials(&local_creds);
+        stream.set_remote_credentials(&remote_creds);
+
+        let tcp_local_addr =
+            crate::Address::from("192.168.1.1:1111".parse::<SocketAddr>().unwrap());
+        let local_addr = crate::Address::from("192.168.1.1:9".parse::<SocketAddr>().unwrap());
+        let local_candidate = Candidate::builder(
+            1,
+            crate::candidate::CandidateType::Host,
+            TransportType::Tcp,
+            "0",
+            local_addr.clone(),
+        )
+        .base_address(local_addr.clone())
+        .tcp_type(crate::candidate::TcpType::Active)
+        .priority(100)
+        .build();
+        stream.add_local_candidate(&local_candidate);
+        stream.end_of_local_candidates();
+        let remote_addr = crate::Address::from("192.168.2.2:2222".parse::<SocketAddr>().unwrap());
+        let remote_candidate = Candidate::builder(
+            1,
+            crate::candidate::CandidateType::Host,
+            TransportType::Tcp,
+            "0",
+            remote_addr.clone(),
+        )
+        .base_address(remote_addr.clone())
+        .priority(100)
+        .tcp_type(crate::candidate::TcpType::Passive)
+        .build();
+        stream.add_remote_candidate(&remote_candidate);
+        stream.end_of_remote_candidates();
+        let now = Instant::ZERO;
+        let mut remote_auth = ShortTermAuth::new();
+        remote_auth.set_credentials(
+            ShortTermCredentials::new(remote_creds.password()),
+            stun_proto::types::message::IntegrityAlgorithm::Sha1,
+        );
+        let mut remote_agent = StunAgent::builder(
+            stun_proto::types::TransportType::Tcp,
+            remote_addr.as_socket(),
+        )
+        .remote_addr(tcp_local_addr.as_socket())
+        .build();
+
+        let AgentPoll::AllocateSocket(allocate) = agent.poll(now) else {
+            unreachable!();
+        };
+        assert_eq!(allocate.stream_id, stream.id());
+        assert_eq!(allocate.component_id, component.id());
+        assert_eq!(allocate.transport, TransportType::Tcp);
+        assert_eq!(allocate.from, local_candidate.base_address());
+        assert_eq!(allocate.to, remote_candidate.base_address());
+
+        let AgentPoll::ComponentStateChange(state_change) = agent.poll(now) else {
+            unreachable!()
+        };
+        assert_eq!(state_change.state, ComponentConnectionState::Connecting);
+
+        stream.allocated_socket(
+            allocate.component_id,
+            allocate.transport,
+            &allocate.from,
+            &allocate.to,
+            Some(tcp_local_addr.clone()),
+            now,
+        );
+        agent.poll(now);
+
+        let Some(transmit) = agent.poll_transmit(now) else {
+            unreachable!();
+        };
+        assert!(agent.poll_transmit(now).is_none());
+
+        assert_eq!(transmit.from, tcp_local_addr);
+        let reply = reply_to_conncheck(
+            &mut remote_agent,
+            &remote_auth,
+            TransportType::Tcp,
+            transmit.from.as_socket(),
+            transmit.data(),
+            None,
+            None,
+            now,
+        )
+        .unwrap();
+
+        let reply = stream.handle_incoming_data(
+            1,
+            TransportType::Tcp,
+            remote_candidate.address(),
+            tcp_local_addr.clone(),
+            &reply,
+            now,
+            None,
+        );
+        assert!(reply.handled);
+
+        let now = wait_advance(&mut agent, now);
+        agent.poll(now);
+
+        let Some(transmit) = agent.poll_transmit(now) else {
+            unreachable!();
+        };
+        assert!(agent.poll_transmit(now).is_none());
+        let reply = reply_to_conncheck(
+            &mut remote_agent,
+            &remote_auth,
+            TransportType::Tcp,
+            transmit.from.as_socket(),
+            transmit.data(),
+            None,
+            None,
+            now,
+        )
+        .unwrap();
+
+        let reply = stream.handle_incoming_data(
+            1,
+            TransportType::Tcp,
+            remote_candidate.address(),
+            tcp_local_addr.clone(),
+            &reply,
+            now,
+            None,
+        );
+        assert!(reply.handled);
+
+        let AgentPoll::SelectedPair(selected) = agent.poll(now) else {
+            unreachable!();
+        };
+        assert_eq!(selected.local.base_address(), tcp_local_addr);
+        let AgentPoll::ComponentStateChange(state_change) = agent.poll(now) else {
+            unreachable!();
+        };
+        assert_eq!(state_change.state, ComponentConnectionState::Connected);
+
+        let recv = [0, 8, 1, 2, 3, 4, 5, 6, 7, 8];
+        for split in [1, 2, 6] {
+            let ret = stream.handle_incoming_data(
+                1,
+                TransportType::Tcp,
+                remote_addr.clone(),
+                tcp_local_addr.clone(),
+                &recv.as_slice()[..split],
+                now,
+                None,
+            );
+            tracing::info!(
+                "split {split} push {:?} returned {ret:?}",
+                &recv.as_slice()[..split]
+            );
+            assert!(ret.handled);
+            assert!(!ret.have_more_data);
+            assert!(ret.data().is_none());
+            let ret = stream.handle_incoming_data(
+                1,
+                TransportType::Tcp,
+                remote_addr.clone(),
+                tcp_local_addr.clone(),
+                &recv.as_slice()[split..],
+                now,
+                None,
+            );
+            tracing::info!(
+                "split {split} push {:?} returned {ret:?}",
+                &recv.as_slice()[split..]
+            );
+            assert!(ret.handled);
+            assert!(ret.have_more_data);
+            let ret = stream.poll_recv().unwrap();
+            assert_eq!(ret.data.as_ref(), &recv[2..]);
+        }
 
         agent.close(now);
 
