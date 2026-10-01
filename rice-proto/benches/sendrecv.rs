@@ -168,14 +168,13 @@ fn bench_sendrecv_tcp(c: &mut Criterion) {
         framed[2..].copy_from_slice(&data);
         let transmit = Transmit::new(&framed, TransportType::Tcp, remote_addr, local_addr);
         let reply = stream.handle_incoming_data(1, transmit, now, &mut None);
-        assert!(reply.data.is_none());
-        let reply = stream.poll_recv().unwrap();
-        assert_eq!(&reply.data, &framed[2..]);
+        let recv_data = reply.data.unwrap();
+        assert_eq!(recv_data.as_ref(), &framed[2..]);
+        assert!(stream.poll_recv().is_none());
         group.bench_function(BenchmarkId::new("Recv", size), |b| {
             b.iter(|| {
                 let transmit = Transmit::new(&framed, TransportType::Tcp, remote_addr, local_addr);
                 let _reply = stream.handle_incoming_data(1, transmit, now, &mut None);
-                let _reply = stream.poll_recv().unwrap();
             })
         });
     }

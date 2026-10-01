@@ -1740,7 +1740,7 @@ dependencies = [
  "bindgen",
  "rice-stun-types",
  "sans-io-time",
- "stun-types",
+ "stun-proto",
  "system-deps",
  "thiserror",
  "tracing",
