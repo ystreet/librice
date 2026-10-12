@@ -72,6 +72,7 @@ pub(crate) struct StreamInner {
     sockets: Vec<(StunChannel, futures::future::AbortHandle)>,
     listeners: Vec<(SocketAddr, futures::future::AbortHandle)>,
     components: Vec<Component>,
+    gathered_components: Vec<usize>,
 }
 
 impl StreamInner {
@@ -525,6 +526,7 @@ impl Stream {
             .upgrade()
             .ok_or(AgentError::Proto(ProtoAgentError::ResourceNotFound))?;
         let component_ids = self.state.proto_stream.component_ids();
+        self.state.inner.lock().unwrap().gathered_components.clear();
         let weak_state = Arc::downgrade(&self.state);
         let base_instant = self.state.base_instant;
         let turn_configs = agent_inner.lock().unwrap().turn_servers.clone();
@@ -963,12 +965,50 @@ impl Stream {
             .add_local_gathered_candidate(gathered)
     }
 
+    /// Signals the end of local candidates once every component has finished gathering.
+    pub(crate) fn handle_gathering_complete(&self, component_id: usize) {
+        {
+            let mut inner = self.state.inner.lock().unwrap();
+            if !inner.gathered_components.contains(&component_id) {
+                inner.gathered_components.push(component_id);
+            }
+        }
+        self.signal_end_of_local_candidates_if_gathered();
+    }
+
+    fn signal_end_of_local_candidates_if_gathered(&self) {
+        let all_complete = {
+            let inner = self.state.inner.lock().unwrap();
+            self.state
+                .proto_stream
+                .component_ids()
+                .iter()
+                .all(|id| inner.gathered_components.contains(id))
+        };
+        if all_complete {
+            self.state.proto_stream.end_of_local_candidates();
+        }
+    }
+
+    /// Updates the gathering state after an ICE restart of this stream.
+    pub(crate) fn handle_restart(&self, remove_local_candidates: bool) {
+        if remove_local_candidates {
+            // gathering will be performed again
+            self.state.inner.lock().unwrap().gathered_components.clear();
+        } else {
+            // the existing local candidates are kept but the restart reset the end of local
+            // candidates
+            self.signal_end_of_local_candidates_if_gathered();
+        }
+    }
+
     /// Perform an ICE restart of this stream.
     pub fn restart(&self, config: &RestartStreamConfig) {
         let base_instant = self.state.base_instant;
         self.state
             .proto_stream
             .restart(config, Instant::from_std(base_instant));
+        self.handle_restart(config.remove_local_candidates());
     }
 }
 

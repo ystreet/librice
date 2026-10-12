@@ -344,7 +344,11 @@ impl Agent {
     /// Perform an ICE-restart.
     pub fn restart(&self, config: &RestartConfig) {
         self.agent
-            .restart(config, Instant::from_std(self.base_instant))
+            .restart(config, Instant::from_std(self.base_instant));
+        let streams = self.inner.lock().unwrap().streams.clone();
+        for stream in streams {
+            stream.handle_restart(config.remove_local_candidates());
+        }
     }
 }
 
@@ -497,6 +501,7 @@ impl futures::stream::Stream for AgentStream {
                 AgentPoll::GatheringComplete(ref complete) => {
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(complete.stream_id) {
+                        stream.handle_gathering_complete(complete.component_id);
                         if let Some(component) = stream.component(complete.component_id) {
                             return Poll::Ready(Some(AgentMessage::GatheringComplete(
                                 component.clone(),
@@ -628,5 +633,146 @@ mod tests {
             config = config.set_local_role_change(role);
             assert_eq!(config.local_role_change(), role);
         }
+    }
+
+    #[cfg(feature = "runtime-tokio")]
+    #[test]
+    fn tcp_connect_without_remote_addr_fails() {
+        use crate::candidate::{Candidate, CandidateApi, CandidateType, TcpType};
+        use crate::runtime::{
+            AsyncTcpListener, AsyncTcpStream, AsyncTcpStreamRead, AsyncTcpStreamWrite, AsyncTimer,
+            AsyncUdpSocket,
+        };
+        use crate::stream::{Credentials, RestartStreamConfig};
+        use core::future::Future;
+        use futures::StreamExt;
+
+        // macOS can fail getpeername() with EINVAL when the connection is reset straight away.
+        #[derive(Debug)]
+        struct NoRemoteAddrStream(SocketAddr);
+
+        impl AsyncTcpStream for NoRemoteAddrStream {
+            fn local_addr(&self) -> std::io::Result<SocketAddr> {
+                Ok(self.0)
+            }
+            fn remote_addr(&self) -> std::io::Result<SocketAddr> {
+                Err(std::io::Error::from_raw_os_error(22))
+            }
+            fn split(
+                self: Box<Self>,
+            ) -> (Box<dyn AsyncTcpStreamRead>, Box<dyn AsyncTcpStreamWrite>) {
+                unreachable!()
+            }
+        }
+
+        #[derive(Debug)]
+        struct NoRemoteAddrRuntime(Arc<dyn Runtime>);
+
+        impl Runtime for NoRemoteAddrRuntime {
+            fn spawn(&self, future: Pin<Box<dyn Future<Output = ()> + Send>>) {
+                self.0.spawn(future)
+            }
+            fn new_timer(&self, i: std::time::Instant) -> Pin<Box<dyn AsyncTimer>> {
+                self.0.new_timer(i)
+            }
+            fn wrap_udp_socket(
+                &self,
+                socket: std::net::UdpSocket,
+            ) -> std::io::Result<Arc<dyn AsyncUdpSocket>> {
+                self.0.wrap_udp_socket(socket)
+            }
+            fn new_tcp_listener(
+                &self,
+                addr: SocketAddr,
+            ) -> Pin<Box<dyn Future<Output = std::io::Result<Arc<dyn AsyncTcpListener>>> + Send>>
+            {
+                self.0.new_tcp_listener(addr)
+            }
+            fn tcp_connect(
+                &self,
+                peer: SocketAddr,
+            ) -> Pin<Box<dyn Future<Output = std::io::Result<Box<dyn AsyncTcpStream>>> + Send>>
+            {
+                let local = SocketAddr::new(peer.ip(), 49152);
+                Box::pin(async move { Ok(Box::new(NoRemoteAddrStream(local)) as _) })
+            }
+        }
+
+        init();
+        let tokio_rt = crate::tests::tokio_multi_runtime();
+        let _guard = tokio_rt.enter();
+        let agent = Agent::builder()
+            .controlling(true)
+            .runtime(Arc::new(NoRemoteAddrRuntime(
+                crate::runtime::default_runtime().unwrap(),
+            )))
+            .build();
+        agent.set_request_retransmits(
+            Duration::from_millis(100),
+            Duration::from_millis(400),
+            2,
+            Duration::from_millis(500),
+        );
+        let stream = agent.add_stream();
+        stream.set_local_credentials(&Credentials::new("luser", "lpass"));
+        stream.set_remote_credentials(&Credentials::new("ruser", "rpass"));
+        let component = stream.add_component();
+
+        let states = tokio_rt.block_on(async {
+            let mut messages = agent.messages();
+            stream.gather_candidates().await.unwrap();
+            while let Some(msg) = messages.next().await {
+                match msg {
+                    AgentMessage::GatheringComplete(_) => break,
+                    AgentMessage::GatheredCandidate(stream, candidate) => {
+                        stream.add_local_gathered_candidate(candidate);
+                    }
+                    AgentMessage::ComponentStateChange(_, _) => (),
+                }
+            }
+
+            // a passive remote candidate on our own address so that we connect out to it
+            let active = stream
+                .local_candidates()
+                .into_iter()
+                .find(|c| c.transport() == TransportType::Tcp && c.tcp_type() == TcpType::Active)
+                .unwrap();
+            let addr = SocketAddr::new(active.address().as_socket().ip(), 9);
+            let remote = Candidate::builder(
+                component.id(),
+                CandidateType::Host,
+                TransportType::Tcp,
+                "0",
+                addr.into(),
+            )
+            .priority(1)
+            .tcp_type(TcpType::Passive)
+            .build();
+
+            // fail, then fail again after restarts that keep the existing local candidates
+            let mut states = vec![];
+            for restart in 0..3 {
+                match restart {
+                    0 => (),
+                    1 => stream.restart(&RestartStreamConfig::new()),
+                    _ => agent.restart(&RestartConfig::new()),
+                }
+                stream.set_remote_credentials(&Credentials::new("ruser", "rpass"));
+                stream.add_remote_candidate(&remote);
+                stream.end_of_remote_candidates();
+
+                while let Some(msg) = messages.next().await {
+                    if let AgentMessage::ComponentStateChange(_, state) = msg {
+                        if state != ComponentConnectionState::Connecting {
+                            states.push(state);
+                            break;
+                        }
+                    }
+                }
+            }
+            states
+        });
+        agent.close();
+        assert_eq!(states, vec![ComponentConnectionState::Failed; 3]);
     }
 }
