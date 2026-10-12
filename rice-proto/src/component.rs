@@ -236,25 +236,31 @@ impl<'a> ComponentMut<'a> {
         let stream = self.agent.stream_state(self.stream_id).unwrap();
         let checklist_id = stream.checklist_id;
         let component = stream.component_state(self.component_id).unwrap();
-        let selected_pair = component
-            .selected_pair
-            .as_ref()
-            .ok_or(AgentError::ResourceNotFound)?;
-        let pair = selected_pair.candidate_pair();
+        let (pair, stun_agent_id) = if let Some(selected) = component.selected_pair.as_ref() {
+            (selected.candidate_pair(), selected.stun_agent_id())
+        } else {
+            let checklist = self
+                .agent
+                .checklistset
+                .mut_list(checklist_id)
+                .ok_or(AgentError::ResourceNotFound)?;
+            checklist
+                .best_valid_pair(self.component_id)
+                .ok_or(AgentError::ResourceNotFound)?
+        };
         let local_candidate_type = pair.local.candidate_type;
         let local_transport = pair.local.transport_type;
         let local_base_addr = pair.local.base_address;
         let local_addr = pair.local.address;
         let remote_addr = pair.remote.address;
-        let stun_agent_id = selected_pair.stun_agent_id();
 
         let data_len = data.as_ref().len();
-
         let checklist = self
             .agent
             .checklistset
             .mut_list(checklist_id)
             .ok_or(AgentError::ResourceNotFound)?;
+
         if local_candidate_type == CandidateType::Relayed {
             let turn_client = checklist
                 .mut_turn_client_by_allocated_address(local_transport, local_base_addr)
@@ -315,11 +321,13 @@ pub(crate) enum GatherProgress {
 pub enum ComponentConnectionState {
     /// Component is in initial state and no connectivity checks are in progress.
     New,
-    /// Connectivity checks are in progress for this candidate
+    /// Connectivity checks are in progress for this candidate.
     Connecting,
-    /// A [`CandidatePair`](crate::candidate::CandidatePair`) has been selected for this component
+    /// A valid pair has been discovered.
     Connected,
-    /// No connection could be found for this Component
+    /// A [`CandidatePair`](crate::candidate::CandidatePair`) has been selected for this component.
+    Completed,
+    /// No connection could be found for this Component.
     Failed,
 }
 
