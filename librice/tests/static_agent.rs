@@ -163,6 +163,7 @@ fn turn_credentials() -> Credentials {
 
 #[tracing::instrument(name = "agent_static_connection")]
 async fn agent_static_connection_test(mut config: AgentStaticTestConfig) {
+    info!("starting test");
     let mut ifaces = if_addrs::get_if_addrs().unwrap();
     // We only care about non-loopback interfaces for now
     // TODO: remove 'Deprecated IPv4-compatible IPv6 addresses [RFC4291]'
@@ -325,6 +326,7 @@ async fn agent_static_connection_test(mut config: AgentStaticTestConfig) {
         let rstream = rstream.clone();
         let mut lexit_send = lexit_send.clone();
         let local_candidate_filter = local_candidate_filter.clone();
+        let local_ice_lite = config.local.ice_lite;
         Box::pin(async move {
             while let Some(msg) = lmessages.next().await {
                 match msg {
@@ -341,7 +343,8 @@ async fn agent_static_connection_test(mut config: AgentStaticTestConfig) {
                         let _ = lgath_send.clone().send(()).await;
                     }
                     AgentMessage::ComponentStateChange(_component, state) => {
-                        if state == ComponentConnectionState::Connected
+                        if ((local_ice_lite && state == ComponentConnectionState::Completed)
+                            || !local_ice_lite && state == ComponentConnectionState::Connected)
                             && 1 == n_completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                         {
                             let _ = complete_send.clone().send(()).await;
@@ -360,6 +363,7 @@ async fn agent_static_connection_test(mut config: AgentStaticTestConfig) {
         let rstream = rstream.clone();
         let mut rexit_send = rexit_send.clone();
         let remote_candidate_filter = remote_candidate_filter.clone();
+        let remote_ice_lite = config.remote.ice_lite;
         Box::pin(async move {
             while let Some(msg) = rmessages.next().await {
                 match msg {
@@ -376,7 +380,8 @@ async fn agent_static_connection_test(mut config: AgentStaticTestConfig) {
                         let _ = rgath_send.clone().send(()).await;
                     }
                     AgentMessage::ComponentStateChange(_component, state) => {
-                        if state == ComponentConnectionState::Connected
+                        if ((remote_ice_lite && state == ComponentConnectionState::Completed)
+                            || !remote_ice_lite && state == ComponentConnectionState::Connected)
                             && 1 == n_completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                         {
                             let _ = complete_send.clone().send(()).await;
@@ -402,8 +407,14 @@ async fn agent_static_connection_test(mut config: AgentStaticTestConfig) {
         completed.next().await.unwrap();
         n_completed.store(0, std::sync::atomic::Ordering::SeqCst);
 
-        assert_eq!(lcomp.state(), ComponentConnectionState::Connected);
-        assert_eq!(rcomp.state(), ComponentConnectionState::Connected);
+        assert!(matches!(
+            lcomp.state(),
+            ComponentConnectionState::Connected | ComponentConnectionState::Completed
+        ));
+        assert!(matches!(
+            rcomp.state(),
+            ComponentConnectionState::Connected | ComponentConnectionState::Completed
+        ));
         trace!("connected");
 
         let rcomp_recv_stream = rcomp.recv();

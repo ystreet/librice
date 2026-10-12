@@ -189,8 +189,10 @@ pub enum ComponentConnectionState {
     New = crate::ffi::RICE_COMPONENT_CONNECTION_STATE_NEW,
     /// Connectivity checks are in progress for this candidate
     Connecting = crate::ffi::RICE_COMPONENT_CONNECTION_STATE_CONNECTING,
-    /// A [`CandidatePair`](crate::candidate::CandidatePair`) has been selected for this component
+    /// A valid pair has been discovered.
     Connected = crate::ffi::RICE_COMPONENT_CONNECTION_STATE_CONNECTED,
+    /// A [`CandidatePair`](crate::candidate::CandidatePair`) has been selected for this component
+    Completed = crate::ffi::RICE_COMPONENT_CONNECTION_STATE_COMPLETED,
     /// No connection could be found for this Component
     Failed = crate::ffi::RICE_COMPONENT_CONNECTION_STATE_FAILED,
 }
@@ -205,6 +207,9 @@ impl From<ComponentConnectionState> for crate::ffi::RiceComponentConnectionState
             ComponentConnectionState::Connected => {
                 crate::ffi::RICE_COMPONENT_CONNECTION_STATE_CONNECTED
             }
+            ComponentConnectionState::Completed => {
+                crate::ffi::RICE_COMPONENT_CONNECTION_STATE_COMPLETED
+            }
             ComponentConnectionState::Failed => crate::ffi::RICE_COMPONENT_CONNECTION_STATE_FAILED,
         }
     }
@@ -216,6 +221,7 @@ impl From<crate::ffi::RiceComponentConnectionState> for ComponentConnectionState
             crate::ffi::RICE_COMPONENT_CONNECTION_STATE_NEW => Self::New,
             crate::ffi::RICE_COMPONENT_CONNECTION_STATE_CONNECTING => Self::Connecting,
             crate::ffi::RICE_COMPONENT_CONNECTION_STATE_CONNECTED => Self::Connected,
+            crate::ffi::RICE_COMPONENT_CONNECTION_STATE_COMPLETED => Self::Completed,
             crate::ffi::RICE_COMPONENT_CONNECTION_STATE_FAILED => Self::Failed,
             val => panic!("Unknown component connection state value {val:x?}"),
         }

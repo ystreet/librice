@@ -899,7 +899,7 @@ mod tests {
         let AgentPoll::ComponentStateChange(changes) = agent.poll(now) else {
             unreachable!();
         };
-        assert_eq!(changes.state, ComponentConnectionState::Connected);
+        assert_eq!(changes.state, ComponentConnectionState::Completed);
 
         let recv = [8; 9];
         let ret = stream.handle_incoming_data(
@@ -1164,6 +1164,17 @@ mod tests {
         );
         assert!(reply.handled);
 
+        let AgentPoll::ComponentStateChange(state_change) = agent.poll(now) else {
+            unreachable!();
+        };
+        assert_eq!(state_change.state, ComponentConnectionState::Connected);
+
+        let data = [5; 17];
+        let transmit = component.send(data.as_slice(), now).unwrap();
+        assert_eq!(transmit.transport, TransportType::Tcp);
+        assert_eq!(transmit.from, tcp_local_addr);
+        assert_eq!(transmit.to, remote_candidate.address());
+
         let now = wait_advance(&mut agent, now);
         agent.poll(now);
 
@@ -1201,7 +1212,7 @@ mod tests {
         let AgentPoll::ComponentStateChange(state_change) = agent.poll(now) else {
             unreachable!();
         };
-        assert_eq!(state_change.state, ComponentConnectionState::Connected);
+        assert_eq!(state_change.state, ComponentConnectionState::Completed);
 
         let recv = [0, 8, 1, 2, 3, 4, 5, 6, 7, 8];
         for split in [1, 2, 6] {

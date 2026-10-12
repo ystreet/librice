@@ -45,7 +45,7 @@ pub(crate) struct StreamState {
     id: usize,
     weak_agent_inner: Weak<Mutex<AgentInner>>,
     transmit_send: futures::channel::mpsc::Sender<AgentTransmit<'static>>,
-    inner: Mutex<StreamInner>,
+    pub(crate) inner: Mutex<StreamInner>,
 }
 
 impl Drop for StreamState {
@@ -76,7 +76,7 @@ pub(crate) struct StreamInner {
 }
 
 impl StreamInner {
-    fn socket_for_5tuple(
+    pub(crate) fn socket_for_5tuple(
         &self,
         transport: TransportType,
         from: SocketAddr,

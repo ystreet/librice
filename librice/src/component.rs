@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::task::{Poll, Waker};
 
 use rice_c::Instant;
-use rice_c::candidate::CandidatePair;
+use rice_c::candidate::{CandidatePair, CandidateType};
 use rice_c::prelude::*;
 
 pub use rice_c::component::ComponentConnectionState;
@@ -101,22 +101,33 @@ impl Component {
     /// Send data to the peer using the established communication channel.  This will not succeed
     /// until the component is in the [`Connected`](ComponentConnectionState::Connected) state.
     pub async fn send(&self, data: &[u8]) -> Result<(), AgentError> {
-        let transmit;
-        let (mut channel, to) = {
-            let inner = self.inner.lock().unwrap();
-            let selected_pair = inner.selected_pair.as_ref().ok_or(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "No selected pair",
-            ))?;
-            let to = selected_pair.pair.remote.address();
-            (selected_pair.socket.clone(), to)
-        };
-
-        transmit = self
+        let transmit = self
             .proto
             .send(data, Instant::from_std(self.base_instant))?;
+        let mut channel = {
+            let inner = self.inner.lock().unwrap();
+            if let Some(selected_pair) = inner.selected_pair.as_ref() {
+                if selected_pair.pair.local.candidate_type() != CandidateType::Relayed {
+                    debug_assert_eq!(transmit.to, selected_pair.pair.remote.address());
+                }
+                selected_pair.socket.clone()
+            } else {
+                let stream = self.weak_stream.upgrade().unwrap();
+                let inner = stream.inner.lock().unwrap();
+                inner
+                    .socket_for_5tuple(
+                        transmit.transport,
+                        transmit.from.as_socket(),
+                        transmit.to.as_socket(),
+                    )
+                    .ok_or(AgentError::IoError(std::io::Error::other(
+                        "No channel to send to yet",
+                    )))?
+                    .clone()
+            }
+        };
 
-        trace!("sending {} bytes to {:?}", data.len(), to);
+        trace!("sending {} bytes to {:?}", data.len(), transmit.to);
         channel
             .send_to(transmit.data(), transmit.to.as_socket())
             .await?;
