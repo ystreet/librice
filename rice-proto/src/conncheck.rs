@@ -4217,38 +4217,12 @@ impl ConnCheckListSet {
                                     }
                                 }
                             }
-                        } else if let Some(client) = checklist.mut_turn_client_by_id(agent_id) {
-                            match client.client.poll(now) {
-                                TurnPollRet::WaitUntil(wait) => {
-                                    if wait < lowest_wait {
-                                        lowest_wait = wait.max(
-                                            self.last_send_time
-                                                .map(|last_send| last_send + self.timing_advance)
-                                                .unwrap_or(now),
-                                        );
-                                    }
-                                }
-                                TurnPollRet::Closed => (),
-                                TurnPollRet::TcpClose {
-                                    local_addr,
-                                    remote_addr,
-                                } => {
-                                    return CheckListSetPollRet::RemoveSocket {
-                                        checklist_id,
-                                        component_id: client.component_id,
-                                        transport: client.client.transport(),
-                                        local_addr,
-                                        remote_addr,
-                                    };
-                                }
-                                TurnPollRet::AllocateTcpSocket {
-                                    id: _,
-                                    socket: _,
-                                    peer_addr: _,
-                                } => unimplemented!(),
-                            }
                         } else {
-                            unreachable!();
+                            let check = &mut checklist.pairs[idx];
+                            warn!(
+                                "Failed to retrieve stun agent for check {}",
+                                check.conncheck_id
+                            );
                         }
                     }
                 }
