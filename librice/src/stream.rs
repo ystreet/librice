@@ -612,11 +612,17 @@ impl Stream {
                                     let Ok(stream) = tcp.accept().await else {
                                         break;
                                     };
-                                    let remote_addr = stream.remote_addr().unwrap();
                                     let Some(state) = weak_state.upgrade() else {
                                         break;
                                     };
-                                    let channel = TcpChannel::new(runtime.clone(), stream);
+                                    let channel = match TcpChannel::new(runtime.clone(), stream) {
+                                        Ok(channel) => channel,
+                                        Err(e) => {
+                                            warn!("ignoring tcp connection to {local_addr}: {e:?}");
+                                            continue;
+                                        }
+                                    };
+                                    let remote_addr = channel.remote_addr().unwrap();
                                     let (task, abort) = futures::future::abortable({
                                         let proto_agent = proto_agent.clone();
                                         let weak_agent_inner = weak_agent_inner.clone();
@@ -826,9 +832,10 @@ impl Stream {
         let rt = runtime.clone();
         runtime.spawn(Box::pin(async move {
             let stream = rt.tcp_connect(to.as_socket()).await;
-            let local_addr = match stream {
-                Ok(stream) => {
-                    let local_addr = stream.local_addr().unwrap();
+            let channel = stream.and_then(|stream| TcpChannel::new(rt.clone(), stream));
+            let local_addr = match channel {
+                Ok(channel) => {
+                    let local_addr = channel.local_addr().unwrap();
                     let Some(state) = weak_state.upgrade() else {
                         return;
                     };
@@ -836,7 +843,7 @@ impl Stream {
                     let weak_component = Some(Arc::downgrade(
                         &inner.component(component_id).unwrap().inner,
                     ));
-                    let channel = StunChannel::Tcp(TcpChannel::new(rt.clone(), stream));
+                    let channel = StunChannel::Tcp(channel);
                     let (task, abort) = futures::future::abortable({
                         let mut channel = channel.clone();
                         let proto_agent = proto_agent.clone();
@@ -869,7 +876,10 @@ impl Stream {
                     }));
                     Some(Address::from(local_addr))
                 }
-                Err(_e) => None,
+                Err(e) => {
+                    warn!("failed to connect tcp socket to {to:?}: {e:?}");
+                    None
+                }
             };
 
             let proto_stream = proto_agent.stream(stream_id).unwrap();

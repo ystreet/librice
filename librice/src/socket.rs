@@ -212,9 +212,12 @@ enum TcpData {
 
 impl TcpChannel {
     /// Create a TCP socket from an existing TcpStream
-    pub fn new(runtime: Arc<dyn Runtime>, stream: Box<dyn AsyncTcpStream>) -> Self {
-        let local_addr = stream.local_addr().unwrap();
-        let remote_addr = stream.remote_addr().unwrap();
+    pub fn new(
+        runtime: Arc<dyn Runtime>,
+        stream: Box<dyn AsyncTcpStream>,
+    ) -> std::io::Result<Self> {
+        let local_addr = stream.local_addr()?;
+        let remote_addr = stream.remote_addr()?;
         let (send_tx, send_rx) = futures::channel::mpsc::channel::<TcpData>(1);
         let (mut read, mut write) = stream.split();
         runtime.spawn(Box::pin({
@@ -247,12 +250,12 @@ impl TcpChannel {
                 }
             }
         }));
-        Self {
+        Ok(Self {
             local_addr,
             remote_addr,
             read_channel: Arc::new(Mutex::new(Some(recv_rx))),
             sender_channel: send_tx,
-        }
+        })
     }
 
     #[tracing::instrument(
