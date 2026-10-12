@@ -343,6 +343,7 @@ async fn agent_static_connection_test(mut config: AgentStaticTestConfig) {
                         let _ = lgath_send.clone().send(()).await;
                     }
                     AgentMessage::ComponentStateChange(_component, state) => {
+                        trace!("local component change state to {state:?}");
                         if ((local_ice_lite && state == ComponentConnectionState::Completed)
                             || !local_ice_lite && state == ComponentConnectionState::Connected)
                             && 1 == n_completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -380,6 +381,7 @@ async fn agent_static_connection_test(mut config: AgentStaticTestConfig) {
                         let _ = rgath_send.clone().send(()).await;
                     }
                     AgentMessage::ComponentStateChange(_component, state) => {
+                        trace!("remote component change state to {state:?}");
                         if ((remote_ice_lite && state == ComponentConnectionState::Completed)
                             || !remote_ice_lite && state == ComponentConnectionState::Connected)
                             && 1 == n_completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
