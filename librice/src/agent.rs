@@ -106,6 +106,12 @@ impl AgentBuilder {
         self
     }
 
+    /// Use a specific [`Runtime`] instead of the default one for the enabled features.
+    pub fn runtime(mut self, runtime: Arc<dyn Runtime>) -> Self {
+        self.runtime = Some(runtime);
+        self
+    }
+
     /// Construct a new [`Agent`]
     pub fn build(self) -> Agent {
         let agent = self.parent.build();
