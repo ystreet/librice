@@ -3531,7 +3531,11 @@ pub unsafe extern "C" fn rice_component_send(
             }
             Err(e) => {
                 warn!("Failed to send data: {e:?}");
-                RiceError::Failed
+                match e {
+                    AgentError::AlreadyInProgress => RiceError::AlreadyInProgress,
+                    AgentError::ResourceNotFound => RiceError::ResourceNotFound,
+                    _ => RiceError::Failed,
+                }
             }
         };
 
