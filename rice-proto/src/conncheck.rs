@@ -3766,6 +3766,18 @@ impl ConnCheckListSet {
         {
             return;
         }
+        // a local candidate still references the same agent (e.g. after an ICE restart that
+        // keeps the local candidates), do not remove yet.  Any future check generated from that
+        // local candidate will reuse this agent.
+        if checklist.local_candidates.iter().any(|local| {
+            if let LocalCandidateVariant::Agent(agent_id) = local.variant {
+                agent_id == check_agent_id
+            } else {
+                false
+            }
+        }) {
+            return;
+        }
 
         let Some(agent) = checklist.remove_agent_by_id(check_agent_id) else {
             return;
@@ -4711,6 +4723,8 @@ impl ConnCheckListSet {
         for checklist_i in 0..self.checklists.len() {
             let checklist = &mut self.checklists[checklist_i];
             let checklist_id = checklist.checklist_id;
+            // the checklist is going away so no local candidate can keep an agent alive.
+            checklist.local_candidates.clear();
             let mut checks = VecDeque::new();
             core::mem::swap(&mut checks, &mut checklist.pairs);
             for check in checks {
@@ -10283,6 +10297,120 @@ mod tests {
             unreachable!();
         };
         assert_eq!(local_addr, new_pair.local.base_address);
+        let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
+            unreachable!();
+        };
+    }
+
+    #[test]
+    fn restart_keep_local_candidates_with_in_progress_checks() {
+        let _log = crate::tests::test_init_log();
+        let mut state = FineControl::builder().build();
+        let mut now = Instant::ZERO;
+        assert_eq!(state.local.component_id, 1);
+
+        let local2 = Peer::builder()
+            .foundation("1")
+            .component_id(1)
+            .priority(state.local.peer.candidate.priority - 1)
+            .local_addr("127.0.0.2:3".parse().unwrap())
+            .build();
+        state
+            .local_list()
+            .add_local_candidate(local2.candidate.clone());
+
+        let pair1 = CandidatePair::new(
+            state.local.peer.candidate.clone(),
+            state.remote.candidate.clone(),
+        );
+        let pair2 = CandidatePair::new(local2.candidate.clone(), state.remote.candidate.clone());
+        for pair in [&pair1, &pair2] {
+            let check = state
+                .local_list()
+                .matching_check(pair, Nominate::False)
+                .unwrap();
+            assert_eq!(check.state(), CandidatePairState::Frozen);
+        }
+
+        // Restart before any pair has been nominated.  All the existing checks are removed but
+        // the local candidates (and so the STUN agents and sockets they reference) are retained.
+        let restart = RestartStreamConfig::new();
+        assert!(!restart.remove_local_candidates());
+        let remove = state.local_list().restart(&restart);
+        state
+            .local
+            .checklist_set
+            .remove_checks(state.local.checklist_id, remove, now);
+        let remote_credentials = Credentials::new("ruser2".to_owned(), "rpass2".to_owned());
+        state.set_remote_credentials(remote_credentials);
+        let local_credentials = state.local_list().local_credentials().clone();
+        state.local.peer.local_credentials = Some(local_credentials.clone());
+        state.remote.remote_credentials = Some(local_credentials);
+        let remote_candidate = state.remote.candidate.clone();
+        state.local_list().add_remote_candidate(remote_candidate);
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        // the checks regenerated from the retained local candidates must still reference a
+        // usable STUN agent.
+        let mut pending_checks = vec![];
+        for pair in [&pair1, &pair2] {
+            let check = state
+                .local_list()
+                .matching_check(pair, Nominate::False)
+                .unwrap();
+            let check_id = check.conncheck_id;
+            let mut response = send_next_check_and_response2(pair.local.clone(), &state.remote);
+            let transmit = response.send(&mut state.local.checklist_set, now);
+            let check = state.local_list().check_by_id(check_id).unwrap();
+            assert_eq!(check.state(), CandidatePairState::InProgress);
+            pending_checks.push((response, transmit));
+            now = wait_advance(&mut state.local.checklist_set, now);
+        }
+        for (mut response, transmit) in pending_checks {
+            response.response(&mut state.local.checklist_set, transmit, now);
+        }
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connected),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        state.check_nomination(&pair1, now);
+
+        state.local.checklist_set.close(now);
+
+        let CheckListSetPollRet::RemoveSocket {
+            checklist_id: _,
+            component_id: 1,
+            transport: TransportType::Udp,
+            local_addr,
+            remote_addr: _,
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(local_addr, pair1.local.base_address);
+        let CheckListSetPollRet::RemoveSocket {
+            checklist_id: _,
+            component_id: 1,
+            transport: TransportType::Udp,
+            local_addr,
+            remote_addr: _,
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(local_addr, pair2.local.base_address);
         let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
