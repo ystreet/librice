@@ -3426,6 +3426,7 @@ impl ConnCheckListSet {
     }
 
     #[tracing::instrument(
+        level = "debug",
         skip(self, response),
         fields(
             checklist_id = self.checklists[checklist_i].checklist_id,

@@ -417,6 +417,7 @@ impl<'a> StreamMut<'a> {
     /// to handle the incoming data.
     #[tracing::instrument(
         name = "stream_send_ignorable_error",
+        level = "trace",
         skip(self),
         fields(
             stream.id = self.id,
