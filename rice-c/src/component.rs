@@ -89,6 +89,11 @@ impl Component {
     /// [`Agent::poll`](crate::agent::Agent::poll) is used to progress
     /// the gathering.
     ///
+    /// The `sockets` provided are the local addresses of sockets that the caller has already
+    /// bound and are used as-is.  Deciding which local addresses are worth gathering from, e.g.
+    /// whether to include loopback addresses, is the caller's choice.  Only addresses that can
+    /// never be used as a candidate base (unspecified or multicast addresses) are discarded.
+    ///
     /// Candidates will be generated as follows (if they succeed):
     ///
     /// 1. A host candidate for each `sockets[i]`. If TCP, then both an active and passive host
@@ -101,6 +106,14 @@ impl Component {
     ///    e.g. UDP, TCP, TCP/TLS, then provide each options as different entries in the provided
     ///    Iterator. The `Address` for each TURN server is the local address to communicate with
     ///    the TURN server and should be different than any value provided through `sockets`.
+    ///
+    /// # Errors
+    ///
+    /// - [`AgentError::AlreadyInProgress`] if gathering has already been started for this
+    ///   component.
+    /// - [`AgentError::ResourceNotFound`] if nothing could be gathered from the provided
+    ///   arguments, e.g. no usable local addresses were provided.  Gathering is not started and
+    ///   can be retried with different arguments.
     pub fn gather_candidates<'a, 'b>(
         &self,
         sockets: impl IntoIterator<Item = (TransportType, &'a Address)>,
