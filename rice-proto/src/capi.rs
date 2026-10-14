@@ -564,6 +564,9 @@ pub struct RiceDataImpl {
 
 impl RiceDataImpl {
     unsafe fn owned_from_c(self) -> Box<[u8]> {
+        if self.ptr.is_null() {
+            return Box::default();
+        }
         unsafe { Box::from_raw(core::ptr::slice_from_raw_parts_mut(self.ptr, self.size)) }
     }
 
@@ -578,7 +581,10 @@ impl RiceDataImpl {
     }
 
     unsafe fn borrowed_from_c<'a>(self) -> &'a [u8] {
-        unsafe { core::slice::from_raw_parts_mut(self.ptr, self.size) }
+        if self.ptr.is_null() {
+            return &[];
+        }
+        unsafe { core::slice::from_raw_parts(self.ptr, self.size) }
     }
 
     fn borrowed_to_c(val: &[u8]) -> Self {
@@ -3927,8 +3933,51 @@ mod tests {
             assert!(transmit.from.is_null());
             assert!(transmit.to.is_null());
             assert_eq!(rice_data_len(&transmit.data), 0);
+            rice_transmit_clear(&mut transmit);
             rice_agent_unref(agent);
             rice_stream_unref(stream);
+        }
+    }
+
+    #[test]
+    fn rice_transmit_clear_idempotent() {
+        unsafe {
+            let mut transmit = MaybeUninit::uninit();
+            rice_transmit_init(&mut transmit);
+            let mut transmit = transmit.assume_init();
+
+            rice_transmit_clear(&mut transmit);
+            rice_transmit_clear(&mut transmit);
+
+            assert!(transmit.from.is_null());
+            assert!(transmit.to.is_null());
+            assert!(rice_data_ptr(&transmit.data).is_null());
+            assert_eq!(rice_data_len(&transmit.data), 0);
+        }
+    }
+
+    #[test]
+    fn rice_component_send_failure_transmit_clear() {
+        unsafe {
+            let agent = rice_agent_new(true, false);
+            let stream = rice_agent_add_stream(agent);
+            let component = rice_stream_add_component(stream);
+
+            let mut transmit = RiceTransmit::default();
+            let mut data = [0, 1, 2, 3];
+            // No pair has been selected for the component so sending must fail and `transmit` is
+            // left untouched.
+            let ret =
+                rice_component_send(component, data.as_mut_ptr(), data.len(), 0, &mut transmit);
+            assert_eq!(ret, RiceError::ResourceNotFound);
+            assert!(transmit.from.is_null());
+            assert!(transmit.to.is_null());
+            assert_eq!(rice_data_len(&transmit.data), 0);
+            rice_transmit_clear(&mut transmit);
+
+            rice_component_unref(component);
+            rice_stream_unref(stream);
+            rice_agent_unref(agent);
         }
     }
 
