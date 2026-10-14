@@ -431,6 +431,7 @@ impl Stream {
     #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(
         name = "stream_handle_incoming_data",
+        level = "trace",
         skip(proto_agent, weak_agent_inner, weak_component, stream_id, component_id, transmit),
         fields(
             stream.id = stream_id,
