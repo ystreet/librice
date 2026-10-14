@@ -28,7 +28,7 @@ use stun_proto::agent::{StunAgent, StunAgentPollRet, StunError, Transmit};
 use stun_proto::types::attribute::XorMappedAddress;
 use stun_proto::types::data::Data;
 use stun_proto::types::message::{
-    BINDING, Message, MessageHeader, MessageWriteVec, StunParseError, TransactionId,
+    BINDING, MAGIC_COOKIE, Message, MessageHeader, MessageWriteVec, StunParseError, TransactionId,
 };
 use stun_proto::types::prelude::{MessageWrite, MessageWriteExt};
 use turn_client_proto::api::{TurnEvent, TurnPollRet, TurnRecvRet};
@@ -929,12 +929,35 @@ impl StunGatherer {
                                         request.completed = true;
                                         return false;
                                     }
+                                    if self.tcp_buffers[tcp_idx].tcp_buffer.len()
+                                        < MessageHeader::LENGTH + header.data_length() as usize
+                                    {
+                                        // the message has been split over multiple reads, wait for
+                                        // the remainder of the message to arrive.
+                                        trace!(
+                                            "incomplete STUN message, have {} of {} bytes",
+                                            self.tcp_buffers[tcp_idx].tcp_buffer.len(),
+                                            MessageHeader::LENGTH + header.data_length() as usize
+                                        );
+                                        return false;
+                                    }
                                 }
-                                Err(StunParseError::NotStun) => {
+                                Err(StunParseError::Truncated { .. })
+                                    if data_may_be_stun(&self.tcp_buffers[tcp_idx].tcp_buffer) =>
+                                {
+                                    // the STUN header has been split over multiple reads, wait for
+                                    // the remainder of the header to arrive.
+                                    trace!(
+                                        "incomplete STUN header, have {} of {} bytes",
+                                        self.tcp_buffers[tcp_idx].tcp_buffer.len(),
+                                        MessageHeader::LENGTH
+                                    );
+                                    return false;
+                                }
+                                Err(_) => {
                                     request.completed = true;
                                     return false;
                                 }
-                                _ => (),
                             }
                             let Ok(msg) =
                                 Message::from_bytes(&self.tcp_buffers[tcp_idx].tcp_buffer)
@@ -1097,6 +1120,21 @@ impl StunGatherer {
             }
         }
     }
+}
+
+/// Whether the provided (potentially incomplete) data could be the start of a STUN message.  Only
+/// the bytes that are currently available are validated.
+fn data_may_be_stun(data: &[u8]) -> bool {
+    // the two most significant bits of a STUN message are always zero.
+    if data.len() >= 2 && u16::from_be_bytes([data[0], data[1]]) & 0xc000 != 0 {
+        return false;
+    }
+    let cookie = MAGIC_COOKIE.to_be_bytes();
+    let available = data.len().min(4 + cookie.len());
+    if available > 4 && data[4..available] != cookie[..available - 4] {
+        return false;
+    }
+    true
 }
 
 fn transmit_send_unframed<'a, T: AsRef<[u8]>>(transmit: &Transmit<T>) -> Transmit<Data<'a>> {
@@ -1351,6 +1389,87 @@ mod tests {
             assert_eq!(cand.base_address, local_addr);
             assert_eq!(cand.tcp_type, Some(TcpType::Passive));
             assert_eq!(cand.extensions, vec![]);
+        } else {
+            error!("{ret:?}");
+            unreachable!();
+        }
+        assert!(matches!(gather.poll(now), GatherPoll::Complete(_)));
+        assert!(matches!(gather.poll(now), GatherPoll::Finished));
+    }
+
+    #[test]
+    fn stun_tcp_split_response() {
+        let _log = crate::tests::test_init_log();
+        let local_addr = "192.168.1.1:1000".parse().unwrap();
+        let stun_addr = "192.168.1.2:2000".parse().unwrap();
+        let public_ip = "192.168.1.3:3000".parse().unwrap();
+        let mut gather = StunGatherer::new(
+            false,
+            1,
+            &[(TransportType::Tcp, local_addr)],
+            &[(TransportType::Tcp, stun_addr)],
+            &[],
+        );
+        let now = Instant::ZERO;
+        handle_allocate_socket(&mut gather, local_addr, now);
+        /* host candidate contents checked in `host_tcp()` */
+        assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
+        assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
+
+        let transmit = gather.poll_transmit(now).unwrap();
+        assert_eq!(transmit.from, local_addr);
+        assert_eq!(transmit.to, stun_addr);
+        let response = respond_to_stun_binding(transmit, public_ip);
+        assert!(matches!(gather.poll(now), GatherPoll::WaitUntil(_)));
+
+        /* the response is received over three reads, an incomplete header, an incomplete message,
+         * and finally the remainder of the message. */
+        let first_split = 10;
+        let second_split = MessageHeader::LENGTH + 4;
+        assert!(response.data.len() > second_split);
+        for (i, range) in [
+            0..first_split,
+            first_split..second_split,
+            second_split..response.data.len(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let partial = Transmit::new(
+                &response.data[range],
+                response.transport,
+                response.from,
+                response.to,
+            );
+            assert_eq!(gather.handle_data(&partial, now), i == 2);
+        }
+
+        let ret = gather.poll(now);
+        if let GatherPoll::NewCandidate(cand) = ret {
+            let local_addr = SocketAddr::new(local_addr.ip(), 9);
+            let public_ip = SocketAddr::new(public_ip.ip(), 9);
+            assert!(cand.turn_agent.is_none());
+            let cand = cand.candidate;
+            assert_eq!(cand.component_id, 1);
+            assert_eq!(cand.candidate_type, CandidateType::ServerReflexive);
+            assert_eq!(cand.transport_type, TransportType::Tcp);
+            assert_eq!(cand.address, public_ip);
+            assert_eq!(cand.base_address, local_addr);
+            assert_eq!(cand.tcp_type, Some(TcpType::Active));
+        } else {
+            error!("{ret:?}");
+            unreachable!();
+        }
+        let ret = gather.poll(now);
+        if let GatherPoll::NewCandidate(cand) = ret {
+            assert!(cand.turn_agent.is_none());
+            let cand = cand.candidate;
+            assert_eq!(cand.component_id, 1);
+            assert_eq!(cand.candidate_type, CandidateType::ServerReflexive);
+            assert_eq!(cand.transport_type, TransportType::Tcp);
+            assert_eq!(cand.address, public_ip);
+            assert_eq!(cand.base_address, local_addr);
+            assert_eq!(cand.tcp_type, Some(TcpType::Passive));
         } else {
             error!("{ret:?}");
             unreachable!();
