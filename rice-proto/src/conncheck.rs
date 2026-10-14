@@ -2712,9 +2712,6 @@ impl ConnCheckListSet {
         now: Instant,
         ignorable: &mut Option<RecvIgnorable>,
     ) -> HandleRecvReply<T> {
-        if !self.checklists[checklist_i].pending_recv.is_empty() {
-            panic!("Previous data has not been completely handled yet");
-        }
         let (agent_id, checklist_i) = self.checklists[checklist_i]
             .find_agent_for_5tuple(transmit.transport, transmit.to, transmit.from)
             .map(|agent| (agent.0, checklist_i))
@@ -5014,7 +5011,8 @@ mod tests {
         tcp::TurnClientTcp,
         types::{
             TurnCredentials,
-            message::{ALLOCATE, CHANNEL_BIND, CONNECT, CONNECTION_BIND, CREATE_PERMISSION},
+            attribute::{Data as TurnData, XorPeerAddress},
+            message::{ALLOCATE, CHANNEL_BIND, CONNECT, CONNECTION_BIND, CREATE_PERMISSION, DATA},
         },
         udp::TurnClientUdp,
     };
@@ -7815,6 +7813,100 @@ mod tests {
     fn turn_tcp_allocate_udp() {
         let _log = crate::tests::test_init_log();
         turn_allocate_udp(TransportType::Tcp);
+    }
+
+    #[test]
+    fn turn_tcp_multiple_data_indications_in_one_recv() {
+        let _log = crate::tests::test_init_log();
+        let local_addr = "127.0.0.1:1".parse::<SocketAddr>().unwrap();
+        let turn_addr = "127.0.0.1:3478".parse::<SocketAddr>().unwrap();
+        let turn_alloc_addr = "127.0.0.1:3000".parse::<SocketAddr>().unwrap();
+        let credentials = TurnCredentials::new("tuser", "tpass");
+        let mut state = FineControl::builder()
+            .local_candidate(
+                Candidate::builder(
+                    1,
+                    CandidateType::Relayed,
+                    TransportType::Udp,
+                    "0",
+                    turn_alloc_addr,
+                )
+                .priority(8000)
+                .base_address(turn_alloc_addr)
+                .related_address(local_addr)
+                .build(),
+            )
+            .trickle_ice(true)
+            .build();
+        let peer_addr = state.remote.candidate.address;
+        let now = Instant::ZERO;
+        let mut turn_server = TurnServer::new(TransportType::Tcp, turn_addr, "realm".to_owned());
+        turn_server.add_user(
+            credentials.username().to_owned(),
+            credentials.password().to_owned(),
+        );
+        let mut turn_client = TurnClient::from(TurnClientTcp::allocate(
+            local_addr,
+            turn_addr,
+            turn_client_proto::api::TurnConfig::new(credentials),
+        ));
+        let now = turn_allocate(&mut turn_client, &mut turn_server, turn_alloc_addr, now);
+        let remote_candidate = state.remote.candidate.clone();
+        state.local_list().add_remote_candidate(remote_candidate);
+        let local_candidate = state.local.peer.candidate.clone();
+        state
+            .local_list()
+            .add_local_gathered_candidate(GatheredCandidate {
+                candidate: local_candidate,
+                turn_agent: Some(Box::new(turn_client)),
+            });
+        let now = match state.local.checklist_set.poll(now) {
+            CheckListSetPollRet::WaitUntil(now) => now,
+            ret => panic!("unexpected poll: {ret:?}"),
+        };
+        let now = set_handle_permission(&mut state.local.checklist_set, &mut turn_server, now);
+
+        let agent_id = state
+            .local_list()
+            .find_agent_for_5tuple(TransportType::Udp, turn_alloc_addr, peer_addr)
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| {
+                state
+                    .local_list()
+                    .add_agent_for_5tuple(TransportType::Udp, turn_alloc_addr, peer_addr, None)
+                    .0
+            });
+        state
+            .local_list()
+            .mut_agent_by_id(agent_id)
+            .unwrap()
+            .validated_peer(peer_addr);
+
+        let payloads = [vec![1; 160], vec![2; 1296], vec![3; 1200]];
+        let mut tcp_data = Vec::new();
+        for payload in &payloads {
+            let mut msg = Message::builder_indication(DATA, MessageWriteVec::new());
+            msg.add_attribute(&XorPeerAddress::new(peer_addr, msg.transaction_id()))
+                .unwrap();
+            msg.add_attribute(&TurnData::new(payload)).unwrap();
+            tcp_data.extend(msg.finish());
+        }
+
+        let transmit = Transmit::new(tcp_data, TransportType::Tcp, turn_addr, local_addr);
+        let reply = state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            1,
+            transmit,
+            now,
+            &mut None,
+        );
+        assert!(reply.have_more_data);
+        for payload in payloads {
+            let received = state.local_list().poll_recv().unwrap();
+            assert_eq!(received.component_id, 1);
+            assert_eq!(received.data, payload);
+        }
+        assert!(state.local_list().poll_recv().is_none());
     }
 
     #[test]
