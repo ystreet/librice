@@ -840,6 +840,9 @@ impl StunGatherer {
         tcp_type: Option<TcpType>,
     ) -> Option<Candidate> {
         if address_is_ignorable(stun_addr.ip()) {
+            warn!(
+                "server-reflexive address {stun_addr} reported by STUN server {server} for base address {base_addr} ignored as it cannot be reached by a peer"
+            );
             return None;
         }
         let priority = Candidate::calculate_priority(
