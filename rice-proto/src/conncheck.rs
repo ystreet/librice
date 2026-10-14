@@ -16,7 +16,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
-use core::net::{IpAddr, SocketAddr};
+use core::net::{IpAddr, Ipv4Addr, SocketAddr};
 use core::ops::Range;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
@@ -45,6 +45,10 @@ use turn_client_proto::prelude::*;
 use tracing::{debug, info, trace, warn};
 
 static STUN_AGENT_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Placeholder remote address for cases where a remote address is not applicable, e.g. a UDP
+/// [`StunAgent`] which is shared between all remote peers.
+const UNSPECIFIED_REMOTE_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct StunAgentId(usize);
@@ -866,7 +870,7 @@ impl ConnCheckList {
                 TransportType::Tcp => {
                     a.agent.local_addr() == local
                         && a.agent.transport() == TransportType::Tcp
-                        && a.agent.remote_addr().unwrap() == remote
+                        && a.agent.remote_addr() == Some(remote)
                 }
             };
             if matched {
@@ -891,7 +895,7 @@ impl ConnCheckList {
                 TransportType::Tcp => {
                     a.agent.local_addr() == local
                         && a.agent.transport() == TransportType::Tcp
-                        && a.agent.remote_addr().unwrap() == remote
+                        && a.agent.remote_addr() == Some(remote)
                 }
             };
             if matched {
@@ -922,9 +926,15 @@ impl ConnCheckList {
         })
     }
 
-    pub(crate) fn find_or_create_udp_agent(
+    /// Find an existing [`StunAgent`] that can communicate with `remote` using `candidate`, or
+    /// construct one.
+    ///
+    /// `remote` is only relevant for TCP where an agent is bound to a single connection and must
+    /// always have a remote address configured.  UDP agents are shared between all remote peers.
+    pub(crate) fn find_or_create_agent(
         &mut self,
         candidate: &Candidate,
+        remote: SocketAddr,
         turn_id: Option<StunAgentId>,
     ) -> (StunAgentId, &StunAgent) {
         if let Some(agent_id) = self
@@ -932,19 +942,16 @@ impl ConnCheckList {
             .iter()
             .find(|a| {
                 let a = &a.agent;
-                match candidate.transport_type {
-                    TransportType::Udp => {
-                        a.local_addr() == candidate.base_address
-                            && a.transport() == TransportType::Udp
-                    }
-                    _ => false,
-                }
+                a.transport() == candidate.transport_type
+                    && a.local_addr() == candidate.base_address
+                    && (candidate.transport_type != TransportType::Tcp
+                        || a.remote_addr() == Some(remote))
             })
             .map(|a| a.id)
         {
             return (agent_id, self.agent_by_id(agent_id).unwrap());
         }
-        let agent = StunAgent::builder(candidate.transport_type, candidate.base_address).build();
+        let agent = new_agent(candidate.transport_type, candidate.base_address, remote);
         let (agent_id, agent_idx) = self.add_agent(agent, turn_id);
         (agent_id, &self.agents[agent_idx].agent)
     }
@@ -1154,7 +1161,8 @@ impl ConnCheckList {
 
         match local.transport_type {
             TransportType::Udp => {
-                let (agent_id, _) = self.find_or_create_udp_agent(&local, turn_id);
+                let (agent_id, _) =
+                    self.find_or_create_agent(&local, UNSPECIFIED_REMOTE_ADDR, turn_id);
                 self.local_candidates.push(ConnCheckLocalCandidate {
                     candidate: local,
                     variant: LocalCandidateVariant::Agent(agent_id),
@@ -3998,7 +4006,7 @@ impl ConnCheckListSet {
                                 checklist.agents.iter_mut().find(|a| {
                                     a.agent.transport() == TransportType::Tcp
                                         && a.agent.local_addr() == pending.relayed_addr
-                                        && a.agent.remote_addr().unwrap() == pending.peer_addr
+                                        && a.agent.remote_addr() == Some(pending.peer_addr)
                                 }) {
                                 local_agent.id
                             } else {
@@ -4730,12 +4738,19 @@ impl ConnCheckListSet {
                         });
                     }
                     TransportType::Tcp => {
+                        let Some(remote_addr) = agent.remote_addr() else {
+                            warn!(
+                                "TCP STUN agent with local address {} has no remote address, not removing socket",
+                                agent.local_addr()
+                            );
+                            continue;
+                        };
                         self.pending_remove_sockets.push_back(CheckListSetSocket {
                             checklist_id,
                             component_id: 1, // FIXME
                             transport: agent.transport(),
                             local_addr: agent.local_addr(),
-                            remote_addr: agent.remote_addr().unwrap(),
+                            remote_addr,
                         });
                     }
                 }
@@ -4768,7 +4783,7 @@ impl ConnCheckListSet {
             return;
         };
 
-        let (agent_id, _) = checklist.find_or_create_udp_agent(&local, None);
+        let (agent_id, _) = checklist.find_or_create_agent(&local, to, None);
 
         self.pending_messages
             .push_front(CheckListSetPendingMessage {
@@ -9678,6 +9693,140 @@ mod tests {
     fn tie_breaker_accessor() {
         let set = ConnCheckListSet::builder(42, true).build();
         assert_eq!(set.tie_breaker(), 42);
+    }
+
+    fn consent_check_tcp_set(
+        local_addr: SocketAddr,
+        local_creds: Credentials,
+        remote_creds: Credentials,
+    ) -> (ConnCheckListSet, usize, Candidate) {
+        let mut set = ConnCheckListSet::builder(42, true).build();
+        let cl_id = set.new_list();
+        let cl = set.mut_list(cl_id).unwrap();
+        cl.add_component(1);
+        cl.set_local_credentials(local_creds);
+        cl.set_remote_credentials(remote_creds);
+
+        let local_cand =
+            Candidate::builder(1, CandidateType::Host, TransportType::Tcp, "0", local_addr)
+                .priority(1234)
+                .tcp_type(TcpType::Active)
+                .base_address(local_addr)
+                .build();
+        (set, cl_id, local_cand)
+    }
+
+    fn poll_until_closed(set: &mut ConnCheckListSet, now: Instant) -> Vec<CheckListSetSocket> {
+        let mut removed = Vec::new();
+        loop {
+            match set.poll(now) {
+                CheckListSetPollRet::RemoveSocket {
+                    checklist_id,
+                    component_id,
+                    transport,
+                    local_addr,
+                    remote_addr,
+                } => removed.push(CheckListSetSocket {
+                    checklist_id,
+                    component_id,
+                    transport,
+                    local_addr,
+                    remote_addr,
+                }),
+                CheckListSetPollRet::Closed => break,
+                CheckListSetPollRet::Completed | CheckListSetPollRet::Event { .. } => (),
+                other => panic!("unexpected poll return {other:?}"),
+            }
+        }
+        removed
+    }
+
+    #[test]
+    fn consent_check_tcp_agent_has_remote_address() {
+        let _log = crate::tests::test_init_log();
+        let local_creds = Credentials::new("lufrag".into(), "lpwd".into());
+        let remote_creds = Credentials::new("rufrag".into(), "rpwd".into());
+        let local_addr: SocketAddr = "127.0.0.1:1000".parse().unwrap();
+        let remote_addr: SocketAddr = "127.0.0.1:2000".parse().unwrap();
+        let (mut set, cl_id, local_cand) =
+            consent_check_tcp_set(local_addr, local_creds.clone(), remote_creds.clone());
+        let now = Instant::ZERO;
+
+        let request = generate_binding_request(1234, false, true, 42, local_creds, remote_creds)
+            .unwrap()
+            .to_vec();
+        set.add_consent_check(local_cand, cl_id, 1, request, remote_addr);
+
+        let cl = set.mut_list(cl_id).unwrap();
+        assert_eq!(cl.agents.len(), 1);
+        let agent = &cl.agents[0].agent;
+        assert_eq!(agent.transport(), TransportType::Tcp);
+        assert_eq!(agent.local_addr(), local_addr);
+        assert_eq!(agent.remote_addr(), Some(remote_addr));
+
+        let Some(transmit) = set.poll_transmit(now) else {
+            panic!("Expected a consent check transmit");
+        };
+        assert_eq!(transmit.transmit.transport, TransportType::Tcp);
+        assert_eq!(transmit.transmit.from, local_addr);
+        assert_eq!(transmit.transmit.to, remote_addr);
+
+        // closing must not panic and must remove the socket the agent was using.
+        set.close(now);
+        let removed = poll_until_closed(&mut set, now);
+        assert!(removed.iter().any(|socket| {
+            socket.transport == TransportType::Tcp
+                && socket.local_addr == local_addr
+                && socket.remote_addr == remote_addr
+        }));
+    }
+
+    #[test]
+    fn consent_check_tcp_reuses_existing_agent() {
+        let _log = crate::tests::test_init_log();
+        let local_creds = Credentials::new("lufrag".into(), "lpwd".into());
+        let remote_creds = Credentials::new("rufrag".into(), "rpwd".into());
+        let local_addr: SocketAddr = "127.0.0.1:1000".parse().unwrap();
+        let remote_addr: SocketAddr = "127.0.0.1:2000".parse().unwrap();
+        let (mut set, cl_id, local_cand) =
+            consent_check_tcp_set(local_addr, local_creds.clone(), remote_creds.clone());
+        let now = Instant::ZERO;
+
+        // the agent that the TCP connectivity check would have created for the selected pair.
+        let cl = set.mut_list(cl_id).unwrap();
+        let (conncheck_agent_id, _) =
+            cl.add_agent_for_5tuple(TransportType::Tcp, local_addr, remote_addr, None);
+
+        for _ in 0..3 {
+            let request = generate_binding_request(
+                1234,
+                false,
+                true,
+                42,
+                local_creds.clone(),
+                remote_creds.clone(),
+            )
+            .unwrap()
+            .to_vec();
+            set.add_consent_check(local_cand.clone(), cl_id, 1, request, remote_addr);
+            assert!(set.poll_transmit(now).is_some());
+        }
+
+        // consent checks must reuse the agent for the same 5-tuple instead of adding a new agent
+        // for every check.
+        let cl = set.mut_list(cl_id).unwrap();
+        assert_eq!(cl.agents.len(), 1);
+        assert_eq!(cl.agents[0].id, conncheck_agent_id);
+
+        // a different remote peer requires a different TCP agent.
+        let other_remote: SocketAddr = "127.0.0.1:3000".parse().unwrap();
+        let request = generate_binding_request(1234, false, true, 42, local_creds, remote_creds)
+            .unwrap()
+            .to_vec();
+        set.add_consent_check(local_cand, cl_id, 1, request, other_remote);
+        let cl = set.mut_list(cl_id).unwrap();
+        assert_eq!(cl.agents.len(), 2);
+        assert_eq!(cl.agents[1].agent.remote_addr(), Some(other_remote));
     }
 
     #[test]
