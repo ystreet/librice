@@ -31,7 +31,7 @@ use crate::gathering::StunGatherer;
 use crate::stream::Stream;
 use crate::turn::TurnConfig;
 
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 /// The component id for RTP streaming (and general data).
 pub const RTP: usize = 1;
@@ -145,6 +145,11 @@ impl<'a> ComponentMut<'a> {
     /// [`Agent::poll`](crate::agent::Agent::poll) is used to progress
     /// the gathering.
     ///
+    /// The `sockets` provided are the local addresses of sockets that the caller has already
+    /// bound and are used as-is.  Deciding which local addresses are worth gathering from, e.g.
+    /// whether to include loopback addresses, is the caller's choice.  Only addresses that can
+    /// never be used as a candidate base (unspecified or multicast addresses) are discarded.
+    ///
     /// Candidates will be generated as follows (if they succeed):
     ///
     /// 1. A host candidate for each `sockets[i]`. If TCP, then both an active and passive host
@@ -157,6 +162,14 @@ impl<'a> ComponentMut<'a> {
     ///    e.g. UDP, TCP, TCP/TLS, then provide each option as different entries in the provided
     ///    slice. The `SocketAddr` for each TURN server is the local address to communicate with
     ///    the TURN server and should be different than any value provided through `sockets`.
+    ///
+    /// # Errors
+    ///
+    /// - [`AgentError::AlreadyInProgress`] if gathering has already been started for this
+    ///   component.
+    /// - [`AgentError::ResourceNotFound`] if nothing could be gathered from the provided
+    ///   arguments, e.g. no usable local addresses were provided.  Gathering is not started and
+    ///   can be retried with different arguments.
     pub fn gather_candidates(
         &mut self,
         sockets: &[(TransportType, SocketAddr)],
@@ -365,6 +378,15 @@ impl ComponentState {
 
         let mut gatherer =
             StunGatherer::new(ice_lite, self.id, sockets, stun_servers, turn_servers);
+        if gatherer.is_empty() {
+            warn!(
+                "no candidates can be gathered from the {} provided local address(es), {} STUN server(s), and {} TURN server(s)",
+                sockets.len(),
+                stun_servers.len(),
+                turn_servers.len()
+            );
+            return Err(AgentError::ResourceNotFound);
+        }
         if let Some(rto) = rto {
             gatherer.set_request_retransmits(rto);
         }
@@ -444,7 +466,7 @@ pub(crate) fn transmit_send_data<T: AsRef<[u8]>>(transport: TransportType, data:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::Agent;
+    use crate::agent::{Agent, AgentPoll};
     use crate::candidate::Candidate;
     use alloc::vec;
 
@@ -530,6 +552,51 @@ mod tests {
         assert!(!ret.handled);
         assert!(!ret.have_more_data);
         assert!(ignorable.is_none());
+    }
+
+    #[test]
+    fn gather_loopback_produces_candidates() {
+        let _log = crate::tests::test_init_log();
+        let mut agent = Agent::builder().build();
+        let sid = agent.add_stream();
+        let local_addr = "127.0.0.1:1000".parse().unwrap();
+        {
+            let mut s = agent.mut_stream(sid).unwrap();
+            let cid = s.add_component().unwrap();
+            s.mut_component(cid)
+                .unwrap()
+                .gather_candidates(&[(TransportType::Udp, local_addr)], &[], &[])
+                .unwrap();
+        }
+        let AgentPoll::GatheredCandidate(gathered) = agent.poll(Instant::ZERO) else {
+            unreachable!();
+        };
+        assert_eq!(gathered.gathered.candidate.base_address, local_addr);
+        assert_eq!(gathered.gathered.candidate.address, local_addr);
+    }
+
+    #[test]
+    fn gather_nothing_fails() {
+        let _log = crate::tests::test_init_log();
+        let mut agent = Agent::builder().build();
+        let sid = agent.add_stream();
+        let mut s = agent.mut_stream(sid).unwrap();
+        let cid = s.add_component().unwrap();
+        let unspecified_addr = "0.0.0.0:1000".parse().unwrap();
+        assert!(matches!(
+            s.mut_component(cid).unwrap().gather_candidates(
+                &[(TransportType::Udp, unspecified_addr)],
+                &[],
+                &[]
+            ),
+            Err(AgentError::ResourceNotFound)
+        ));
+        // gathering was not started and can be retried with usable addresses.
+        let local_addr = "192.168.1.1:1000".parse().unwrap();
+        s.mut_component(cid)
+            .unwrap()
+            .gather_candidates(&[(TransportType::Udp, local_addr)], &[], &[])
+            .unwrap();
     }
 
     #[test]
