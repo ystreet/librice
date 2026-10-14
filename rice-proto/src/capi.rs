@@ -3385,7 +3385,7 @@ pub unsafe extern "C" fn rice_stream_get_component(
         let ret = if let Some(component) = inner.components.get(component_id - 1) {
             mut_override(Arc::into_raw(component.clone()))
         } else {
-            return mut_override(core::ptr::null::<RiceComponent>());
+            mut_override(core::ptr::null::<RiceComponent>())
         };
 
         drop(inner);
@@ -3823,6 +3823,28 @@ mod tests {
             rice_stream_unref(stream);
             rice_component_unref(component);
             rice_component_unref(component);
+        }
+    }
+
+    #[test]
+    fn rice_stream_get_component_missing_keeps_stream_ref() {
+        unsafe fn strong_count(stream: *const RiceStream) -> usize {
+            unsafe {
+                let stream = Arc::from_raw(stream);
+                let count = Arc::strong_count(&stream);
+                core::mem::forget(stream);
+                count
+            }
+        }
+        unsafe {
+            let agent = rice_agent_new(true, false);
+            let stream = rice_agent_add_stream(agent);
+            let before = strong_count(stream);
+            assert!(rice_stream_get_component(stream, 7).is_null());
+            assert!(rice_stream_get_component(stream, 0).is_null());
+            assert_eq!(before, strong_count(stream));
+            rice_stream_unref(stream);
+            rice_agent_unref(agent);
         }
     }
 
