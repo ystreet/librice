@@ -785,6 +785,22 @@ impl ConnCheckList {
             })
             .collect::<VecDeque<_>>();
         self.pairs = new_pairs;
+        // A check that is in progress without an outstanding STUN request can never make any
+        // progress on its own as nothing will retransmit or time out.  Reset it to Waiting so
+        // that it is retried with the new credentials.  TCP checks are excluded as they are
+        // in progress while their connection is being established.
+        for check in self.pairs.iter_mut() {
+            if check.state == CandidatePairState::InProgress
+                && check.stun_request.is_none()
+                && matches!(check.variant, ConnCheckVariant::Agent(_))
+            {
+                debug!(
+                    "resetting check {} without a request back to waiting",
+                    check.conncheck_id
+                );
+                check.set_state(CandidatePairState::Waiting);
+            }
+        }
         self.sort_pairs();
 
         for (agent_id, request_id) in request_cancels {
@@ -1245,16 +1261,34 @@ impl ConnCheckList {
         // triggered checks referenced by these ids may be removed before the check has a chance to
         // start.  Simply remove them and continue processing.
         while let Some(check_id) = self.triggered.pop_back() {
-            if let Some(check) = self.mut_check_by_id(check_id) {
-                // Don't trigger this check if there is already a STUN request in progress.
-                // Can happen on remote input if the same check is triggered while the check is
-                // sent to the peer.
-                if check.stun_request.is_some() {
-                    continue;
-                }
-                check.set_state(CandidatePairState::InProgress);
-                return self.mut_check_by_id(check_id);
+            let Some((have_stun_request, have_remote_credentials)) =
+                self.check_by_id(check_id).map(|check| {
+                    (
+                        check.stun_request.is_some(),
+                        check.remote_credentials.is_some(),
+                    )
+                })
+            else {
+                continue;
+            };
+            // Don't trigger this check if there is already a STUN request in progress.
+            // Can happen on remote input if the same check is triggered while the check is
+            // sent to the peer.
+            if have_stun_request {
+                continue;
             }
+            // Without the remote credentials, no request can be constructed for this check yet.
+            // Keep the check on the triggered queue (and in its current state) so that it is
+            // retried once the remote credentials arrive.
+            if !have_remote_credentials {
+                trace!("triggered check {check_id} has no remote credentials yet");
+                self.triggered.push_back(check_id);
+                return None;
+            }
+            if let Some(check) = self.mut_check_by_id(check_id) {
+                check.set_state(CandidatePairState::InProgress);
+            }
+            return self.mut_check_by_id(check_id);
         }
         None
     }
@@ -5785,6 +5819,7 @@ mod tests {
         ice_lite: bool,
         trickle_ice: bool,
         controlling: bool,
+        set_remote_credentials: bool,
         local_peer_builder: PeerBuilder,
         remote_peer_builder: PeerBuilder,
     }
@@ -5797,6 +5832,7 @@ mod tests {
                 ice_lite: false,
                 trickle_ice: false,
                 controlling: true,
+                set_remote_credentials: true,
                 local_peer_builder: Peer::builder()
                     .foundation("0")
                     .local_credentials(local_credentials.clone())
@@ -5827,6 +5863,14 @@ mod tests {
             self
         }
 
+        /// Whether the remote credentials are known to the checklist when built.  Not knowing
+        /// the remote credentials is a normal occurrence with trickle ICE where a peer's
+        /// connectivity check can arrive before its credentials.
+        fn set_remote_credentials(mut self, set_remote_credentials: bool) -> Self {
+            self.set_remote_credentials = set_remote_credentials;
+            self
+        }
+
         fn local_candidate(mut self, candidate: Candidate) -> Self {
             self.local_peer_builder.candidate = Some(candidate);
             self
@@ -5846,7 +5890,9 @@ mod tests {
             let remote_peer = self.remote_peer_builder.build();
 
             local_list.set_local_credentials(local_peer.local_credentials.clone().unwrap());
-            local_list.set_remote_credentials(local_peer.remote_credentials.clone().unwrap());
+            if self.set_remote_credentials {
+                local_list.set_remote_credentials(local_peer.remote_credentials.clone().unwrap());
+            }
             if !self.trickle_ice {
                 local_list.add_local_candidate(local_peer.candidate.clone());
                 local_list.add_remote_candidate(remote_peer.candidate.clone());
@@ -7549,6 +7595,143 @@ mod tests {
 
         state.local.checklist_set.close(now);
 
+        let CheckListSetPollRet::RemoveSocket {
+            checklist_id: _,
+            component_id: 1,
+            transport: TransportType::Udp,
+            local_addr,
+            remote_addr: _,
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(local_addr, pair.local.base_address);
+        let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
+            unreachable!();
+        };
+    }
+
+    /// A controlled agent can receive a nominating (USE-CANDIDATE) binding request before the
+    /// remote credentials have been signalled.  The resulting triggered check cannot be
+    /// performed until the remote credentials arrive and must not be lost in the meantime.
+    #[test]
+    fn conncheck_trickle_ice_nominating_check_before_remote_credentials() {
+        let _log = crate::tests::test_init_log();
+        let mut state = FineControl::builder()
+            .controlling(false)
+            .trickle_ice(true)
+            .set_remote_credentials(false)
+            .build();
+        let now = Instant::ZERO;
+
+        let local_candidate = state.local.peer.candidate.clone();
+        state.local_list().add_local_candidate(local_candidate);
+        assert!(state.local_list().remote_credentials().is_none());
+
+        let mut remote_agent = StunAgent::builder(
+            state.remote.candidate.transport_type,
+            state.remote.candidate.base_address,
+        )
+        .build();
+        let to = state.local.peer.candidate.base_address;
+        let transmit = remote_generate_check(&state.remote, &mut remote_agent, to, true, true, now);
+
+        info!("sending nominating prflx request without any remote credentials");
+        let reply = state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            1,
+            transmit,
+            now,
+            &mut None,
+        );
+        assert!(reply.handled);
+
+        // response to the prflx request
+        let Some(transmit) = state.local.checklist_set.poll_transmit(now) else {
+            unreachable!();
+        };
+        let response = Message::from_bytes(&transmit.transmit.data).unwrap();
+        assert!(response.has_class(MessageClass::Success));
+        assert!(remote_agent.handle_stun_message_with_time(&response, transmit.transmit.from, now));
+
+        let mut peer_reflexive_remote = state.remote.candidate.clone();
+        peer_reflexive_remote.candidate_type = CandidateType::PeerReflexive;
+        // XXX: implementation detail...
+        peer_reflexive_remote.foundation = String::from("rflx");
+        let pair = CandidatePair::new(state.local.peer.candidate.clone(), peer_reflexive_remote);
+
+        let nominate_check = state
+            .local_list()
+            .matching_check(&pair, Nominate::True)
+            .unwrap();
+        assert_eq!(nominate_check.state(), CandidatePairState::Waiting);
+        let check_id = nominate_check.conncheck_id;
+        let check_pair = nominate_check.pair.clone();
+        assert!(state.local_list().is_triggered(&check_pair));
+
+        // polling without any remote credentials cannot perform the triggered check and must
+        // not lose it either.
+        let now = wait_advance(&mut state.local.checklist_set, now);
+        let CheckListSetPollRet::WaitUntil(wait) = state.local.checklist_set.poll(now) else {
+            unreachable!();
+        };
+        // nothing can be done until the remote credentials arrive, poll() must not ask to be
+        // called again straight away
+        assert!(wait > now);
+        assert!(state.local.checklist_set.poll_transmit(now).is_none());
+        let nominate_check = state.local_list().check_by_id(check_id).unwrap();
+        assert_eq!(nominate_check.state(), CandidatePairState::Waiting);
+        assert!(state.local_list().is_triggered(&check_pair));
+
+        // the remote credentials arrive
+        info!("remote credentials set");
+        let remote_credentials = state.remote.local_credentials.clone().unwrap();
+        state.set_remote_credentials(remote_credentials);
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        // the triggered check is now performed and nominates the pair
+        info!("perform triggered nominating check");
+        send_next_check_and_response(&state.local.peer, &state.remote)
+            .perform(&mut state.local.checklist_set, now);
+        let nominate_check = state.local_list().check_by_id(check_id).unwrap();
+        assert_eq!(nominate_check.state(), CandidatePairState::Succeeded);
+        assert!(nominate_check.nominate());
+        assert_eq!(state.local_list().state(), CheckListState::Completed);
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connected),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::SelectedPair(_cid, _selected_pair),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Completed),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert!(matches!(
+            state.local.checklist_set.poll(now),
+            CheckListSetPollRet::Completed
+        ));
+
+        state.local.checklist_set.close(now);
         let CheckListSetPollRet::RemoveSocket {
             checklist_id: _,
             component_id: 1,
