@@ -28,7 +28,8 @@ use stun_proto::agent::{StunAgent, StunAgentPollRet, StunError, Transmit};
 use stun_proto::types::attribute::XorMappedAddress;
 use stun_proto::types::data::Data;
 use stun_proto::types::message::{
-    BINDING, MAGIC_COOKIE, Message, MessageHeader, MessageWriteVec, StunParseError, TransactionId,
+    BINDING, Message, MessageClass, MessageHeader, MessageType, MessageWriteMutSlice,
+    MessageWriteVec, StunParseError, TransactionId,
 };
 use stun_proto::types::prelude::{MessageWrite, MessageWriteExt};
 use turn_client_proto::api::{TurnEvent, TurnPollRet, TurnRecvRet};
@@ -1122,19 +1123,22 @@ impl StunGatherer {
     }
 }
 
-/// Whether the provided (potentially incomplete) data could be the start of a STUN message.  Only
-/// the bytes that are currently available are validated.
+/// Whether the provided (potentially incomplete) data could be the start of a STUN message.
+///
+/// The bytes of the STUN header that have not been received yet are taken from a valid STUN
+/// header so that [`MessageHeader::from_bytes()`] only validates the bytes that are currently
+/// available.
 fn data_may_be_stun(data: &[u8]) -> bool {
-    // the two most significant bits of a STUN message are always zero.
-    if data.len() >= 2 && u16::from_be_bytes([data[0], data[1]]) & 0xc000 != 0 {
-        return false;
-    }
-    let cookie = MAGIC_COOKIE.to_be_bytes();
-    let available = data.len().min(4 + cookie.len());
-    if available > 4 && data[4..available] != cookie[..available - 4] {
-        return false;
-    }
-    true
+    let mut header = [0; MessageHeader::LENGTH];
+    Message::builder(
+        MessageType::from_class_method(MessageClass::Success, BINDING),
+        TransactionId::from(0),
+        MessageWriteMutSlice::new(&mut header),
+    )
+    .finish();
+    let available = data.len().min(header.len());
+    header[..available].copy_from_slice(&data[..available]);
+    MessageHeader::from_bytes(&header).is_ok()
 }
 
 fn transmit_send_unframed<'a, T: AsRef<[u8]>>(transmit: &Transmit<T>) -> Transmit<Data<'a>> {
@@ -1476,6 +1480,31 @@ mod tests {
         }
         assert!(matches!(gather.poll(now), GatherPoll::Complete(_)));
         assert!(matches!(gather.poll(now), GatherPoll::Finished));
+    }
+
+    #[test]
+    fn truncated_header_may_be_stun() {
+        let _log = crate::tests::test_init_log();
+        let header = Message::builder_request(BINDING, MessageWriteVec::new()).finish();
+        assert_eq!(header.len(), MessageHeader::LENGTH);
+        for len in 0..=header.len() {
+            // any prefix of a STUN header may be the start of a STUN message.
+            assert!(data_may_be_stun(&header[..len]));
+            // the two most significant bits of a STUN message are always zero.
+            for bit in [0x40, 0x80] {
+                if len > 0 {
+                    let mut data = header[..len].to_vec();
+                    data[0] |= bit;
+                    assert!(!data_may_be_stun(&data));
+                }
+            }
+            // any available bytes of the magic cookie must match.
+            for i in 4..len.min(8) {
+                let mut data = header[..len].to_vec();
+                data[i] ^= 0xff;
+                assert!(!data_may_be_stun(&data));
+            }
+        }
     }
 
     #[test]
