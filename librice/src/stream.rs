@@ -362,7 +362,15 @@ impl Stream {
     /// stream.set_remote_credentials(&credentials);
     /// ```
     pub fn set_remote_credentials(&self, credentials: &Credentials) {
-        self.state.proto_stream.set_remote_credentials(credentials)
+        self.state.proto_stream.set_remote_credentials(credentials);
+
+        // connectivity checks can only be sent once the remote credentials are known
+        if let Some(agent) = self.state.weak_agent_inner.upgrade() {
+            let mut agent = agent.lock().unwrap();
+            if let Some(waker) = agent.waker.take() {
+                waker.wake();
+            }
+        }
     }
 
     /// Retreive the previouly set remote ICE credentials for this `Stream`.
@@ -1176,6 +1184,44 @@ mod tests {
         let remote_cands = stream.remote_candidates();
         assert_eq!(remote_cands.len(), 1);
         assert_eq!(remote_cands[0], candidate);
+    }
+
+    #[test]
+    fn set_remote_credentials_wakes_agent() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::task::{Context, Wake, Waker};
+
+        #[derive(Debug, Default)]
+        struct CountingWaker(AtomicUsize);
+
+        impl Wake for CountingWaker {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        #[cfg(feature = "runtime-tokio")]
+        let runtime = crate::tests::tokio_runtime();
+        #[cfg(feature = "runtime-tokio")]
+        let _guard = runtime.enter();
+        init();
+        let agent = Agent::default();
+        let stream = agent.add_stream();
+        stream.set_local_credentials(&Credentials::new("luser", "lpass"));
+        let _component = stream.add_component();
+
+        let wakes = Arc::new(CountingWaker::default());
+        let waker = Waker::from(wakes.clone());
+        let mut cx = Context::from_waker(&waker);
+        let mut messages = agent.messages();
+        // nothing can be done yet so the agent waits for a time far in the future
+        assert!(messages.poll_next_unpin(&mut cx).is_pending());
+        assert_eq!(wakes.0.load(Ordering::SeqCst), 0);
+
+        // connectivity checks may now be possible, the agent must not keep waiting
+        stream.set_remote_credentials(&Credentials::new("ruser", "rpass"));
+        assert_eq!(wakes.0.load(Ordering::SeqCst), 1);
+        agent.close();
     }
 
     #[test]
