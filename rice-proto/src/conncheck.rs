@@ -7672,9 +7672,12 @@ mod tests {
         // polling without any remote credentials cannot perform the triggered check and must
         // not lose it either.
         let now = wait_advance(&mut state.local.checklist_set, now);
-        let CheckListSetPollRet::WaitUntil(_) = state.local.checklist_set.poll(now) else {
+        let CheckListSetPollRet::WaitUntil(wait) = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
+        // nothing can be done until the remote credentials arrive, poll() must not ask to be
+        // called again straight away
+        assert!(wait > now);
         assert!(state.local.checklist_set.poll_transmit(now).is_none());
         let nominate_check = state.local_list().check_by_id(check_id).unwrap();
         assert_eq!(nominate_check.state(), CandidatePairState::Waiting);
