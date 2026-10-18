@@ -808,7 +808,15 @@ impl Stream {
         )
     )]
     pub fn end_of_remote_candidates(&self) {
-        self.state.proto_stream.end_of_remote_candidates()
+        self.state.proto_stream.end_of_remote_candidates();
+
+        // components can only fail once all the remote candidates are known
+        if let Some(agent) = self.state.weak_agent_inner.upgrade() {
+            let mut agent = agent.lock().unwrap();
+            if let Some(waker) = agent.waker.take() {
+                waker.wake();
+            }
+        }
     }
 
     pub(crate) fn handle_transmit(
@@ -1238,5 +1246,56 @@ mod tests {
         config = config.set_new_local_credentials(&credentials);
         let retrieved = config.new_local_credentials().unwrap();
         assert_eq!(credentials, retrieved);
+    }
+
+    #[test]
+    fn end_of_remote_candidates_wakes_agent() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::task::{Context, Poll, Wake, Waker};
+
+        use crate::component::ComponentConnectionState;
+
+        #[derive(Debug, Default)]
+        struct CountingWaker(AtomicUsize);
+
+        impl Wake for CountingWaker {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        #[cfg(feature = "runtime-tokio")]
+        let runtime = crate::tests::tokio_runtime();
+        #[cfg(feature = "runtime-tokio")]
+        let _guard = runtime.enter();
+        init();
+        let agent = Agent::default();
+        let stream = agent.add_stream();
+        stream.set_local_credentials(&Credentials::new("luser", "lpass"));
+        stream.set_remote_credentials(&Credentials::new("ruser", "rpass"));
+        let component = stream.add_component();
+        // as done by the agent once gathering has completed for every component
+        stream.handle_gathering_complete(component.id());
+
+        let wakes = Arc::new(CountingWaker::default());
+        let waker = Waker::from(wakes.clone());
+        let mut cx = Context::from_waker(&waker);
+        let mut messages = agent.messages();
+        // more remote candidates may arrive so the agent waits for a time far in the future
+        assert!(messages.poll_next_unpin(&mut cx).is_pending());
+        assert_eq!(wakes.0.load(Ordering::SeqCst), 0);
+
+        // there are no checks that could succeed so the component fails, the agent must not
+        // wait for its timer before reporting that
+        stream.end_of_remote_candidates();
+        assert_eq!(wakes.0.load(Ordering::SeqCst), 1);
+        match messages.poll_next_unpin(&mut cx) {
+            Poll::Ready(Some(AgentMessage::ComponentStateChange(failed, state))) => {
+                assert_eq!(failed.id(), component.id());
+                assert_eq!(state, ComponentConnectionState::Failed);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        agent.close();
     }
 }
