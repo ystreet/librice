@@ -1261,26 +1261,19 @@ impl ConnCheckList {
         // triggered checks referenced by these ids may be removed before the check has a chance to
         // start.  Simply remove them and continue processing.
         while let Some(check_id) = self.triggered.pop_back() {
-            let Some((have_stun_request, have_remote_credentials)) =
-                self.check_by_id(check_id).map(|check| {
-                    (
-                        check.stun_request.is_some(),
-                        check.remote_credentials.is_some(),
-                    )
-                })
-            else {
+            let Some(check) = self.check_by_id(check_id) else {
                 continue;
             };
             // Don't trigger this check if there is already a STUN request in progress.
             // Can happen on remote input if the same check is triggered while the check is
             // sent to the peer.
-            if have_stun_request {
+            if check.stun_request.is_some() {
                 continue;
             }
             // Without the remote credentials, no request can be constructed for this check yet.
             // Keep the check on the triggered queue (and in its current state) so that it is
             // retried once the remote credentials arrive.
-            if !have_remote_credentials {
+            if check.remote_credentials.is_none() {
                 trace!("triggered check {check_id} has no remote credentials yet");
                 self.triggered.push_back(check_id);
                 return None;
