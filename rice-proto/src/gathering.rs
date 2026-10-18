@@ -28,8 +28,7 @@ use stun_proto::agent::{StunAgent, StunAgentPollRet, StunError, Transmit};
 use stun_proto::types::attribute::XorMappedAddress;
 use stun_proto::types::data::Data;
 use stun_proto::types::message::{
-    BINDING, Message, MessageClass, MessageHeader, MessageType, MessageWriteMutSlice,
-    MessageWriteVec, StunParseError, TransactionId,
+    BINDING, Message, MessageHeader, MessageWriteVec, StunParseError, TransactionId,
 };
 use stun_proto::types::prelude::{MessageWrite, MessageWriteExt};
 use turn_client_proto::api::{TurnEvent, TurnPollRet, TurnRecvRet};
@@ -943,11 +942,10 @@ impl StunGatherer {
                                         return false;
                                     }
                                 }
-                                Err(StunParseError::Truncated { .. })
-                                    if data_may_be_stun(&self.tcp_buffers[tcp_idx].tcp_buffer) =>
-                                {
+                                Err(StunParseError::Truncated { .. }) => {
                                     // the STUN header has been split over multiple reads, wait for
-                                    // the remainder of the header to arrive.
+                                    // the remainder of the header to arrive.  Data that cannot be
+                                    // the start of a STUN header fails with NotStun instead.
                                     trace!(
                                         "incomplete STUN header, have {} of {} bytes",
                                         self.tcp_buffers[tcp_idx].tcp_buffer.len(),
@@ -1121,24 +1119,6 @@ impl StunGatherer {
             }
         }
     }
-}
-
-/// Whether the provided (potentially incomplete) data could be the start of a STUN message.
-///
-/// The bytes of the STUN header that have not been received yet are taken from a valid STUN
-/// header so that [`MessageHeader::from_bytes()`] only validates the bytes that are currently
-/// available.
-fn data_may_be_stun(data: &[u8]) -> bool {
-    let mut header = [0; MessageHeader::LENGTH];
-    Message::builder(
-        MessageType::from_class_method(MessageClass::Success, BINDING),
-        TransactionId::from(0),
-        MessageWriteMutSlice::new(&mut header),
-    )
-    .finish();
-    let available = data.len().min(header.len());
-    header[..available].copy_from_slice(&data[..available]);
-    MessageHeader::from_bytes(&header).is_ok()
 }
 
 fn transmit_send_unframed<'a, T: AsRef<[u8]>>(transmit: &Transmit<T>) -> Transmit<Data<'a>> {
@@ -1483,31 +1463,6 @@ mod tests {
     }
 
     #[test]
-    fn truncated_header_may_be_stun() {
-        let _log = crate::tests::test_init_log();
-        let header = Message::builder_request(BINDING, MessageWriteVec::new()).finish();
-        assert_eq!(header.len(), MessageHeader::LENGTH);
-        for len in 0..=header.len() {
-            // any prefix of a STUN header may be the start of a STUN message.
-            assert!(data_may_be_stun(&header[..len]));
-            // the two most significant bits of a STUN message are always zero.
-            for bit in [0x40, 0x80] {
-                if len > 0 {
-                    let mut data = header[..len].to_vec();
-                    data[0] |= bit;
-                    assert!(!data_may_be_stun(&data));
-                }
-            }
-            // any available bytes of the magic cookie must match.
-            for i in 4..len.min(8) {
-                let mut data = header[..len].to_vec();
-                data[i] ^= 0xff;
-                assert!(!data_may_be_stun(&data));
-            }
-        }
-    }
-
-    #[test]
     fn stun_interrupted_by_non_stun() {
         let _log = crate::tests::test_init_log();
         let local_addr = "192.168.1.1:1000".parse().unwrap();
@@ -1530,6 +1485,39 @@ mod tests {
         assert_eq!(transmit.to, stun_addr);
 
         let response = [4; 12];
+        let response = Transmit::new(&response, transmit.transport, transmit.to, transmit.from);
+        assert!(matches!(gather.poll(now), GatherPoll::WaitUntil(_)));
+        assert!(!gather.handle_data(&response, now));
+
+        assert!(matches!(gather.poll(now), GatherPoll::Complete(_)));
+        assert!(matches!(gather.poll(now), GatherPoll::Finished));
+    }
+
+    #[test]
+    fn stun_interrupted_by_short_non_stun() {
+        let _log = crate::tests::test_init_log();
+        let local_addr = "192.168.1.1:1000".parse().unwrap();
+        let stun_addr = "192.168.1.2:2000".parse().unwrap();
+        let mut gather = StunGatherer::new(
+            false,
+            1,
+            &[(TransportType::Tcp, local_addr)],
+            &[(TransportType::Tcp, stun_addr)],
+            &[],
+        );
+        let now = Instant::ZERO;
+        handle_allocate_socket(&mut gather, local_addr, now);
+        /* host candidate contents checked in `host_tcp()` */
+        assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
+        assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_cand)));
+
+        let transmit = gather.poll_transmit(now).unwrap();
+        assert_eq!(transmit.from, local_addr);
+        assert_eq!(transmit.to, stun_addr);
+
+        /* the two most significant bits of a STUN message are always zero so a single byte is
+         * enough to know that this is not a STUN message */
+        let response = [0x80];
         let response = Transmit::new(&response, transmit.transport, transmit.to, transmit.from);
         assert!(matches!(gather.poll(now), GatherPoll::WaitUntil(_)));
         assert!(!gather.handle_data(&response, now));
