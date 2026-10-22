@@ -16,7 +16,7 @@ use alloc::vec::Vec;
 use core::error::Error;
 use core::fmt::Display;
 use core::net::SocketAddr;
-use core::sync::atomic::AtomicU64;
+use core::sync::atomic::AtomicUsize;
 use core::time::Duration;
 
 use stun_proto::Instant;
@@ -231,7 +231,7 @@ impl AgentBuilder {
         turn_client_proto::types::debug_init();
         rice_stun_types::debug_init();
 
-        let id = AGENT_COUNT.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+        let id = AGENT_COUNT.fetch_add(1, core::sync::atomic::Ordering::SeqCst) as u64;
         let tie_breaker = rand_u64();
         let controlling = self.controlling && !self.ice_lite;
         let mut checklistset = ConnCheckListSet::builder(tie_breaker, controlling)
@@ -260,7 +260,7 @@ impl AgentBuilder {
     }
 }
 
-static AGENT_COUNT: AtomicU64 = AtomicU64::new(0);
+static AGENT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 impl Default for Agent {
     fn default() -> Self {
