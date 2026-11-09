@@ -14,14 +14,14 @@ jobs:
 
     strategy:
       matrix:
-        toolchain: ['1.85', stable]
+        toolchain: ['1.89', stable]
         runs-on: [ubuntu-latest, macos-latest, windows-latest]
         features:
           - "--no-default-features"
         include:
           - runs-on: ubuntu-latest
             features: "--all-features"
-            toolchain: '1.85'
+            toolchain: '1.89'
           - runs-on: ubuntu-latest
             features: "--all-features"
             toolchain: stable
@@ -52,10 +52,10 @@ jobs:
       if: matrix.runs-on == 'macos-latest'
     - name: Build using MSRV
       run: cp Cargo.lock.msrv Cargo.lock && cargo build --locked --verbose ${{ matrix.features }}
-      if: matrix.toolchain == '1.85'
+      if: matrix.toolchain == '1.89'
     - name: Build
       run: cargo build --verbose ${{ matrix.features }}
-      if: matrix.toolchain != '1.85'
+      if: matrix.toolchain != '1.89'
   test:
     strategy:
       matrix:

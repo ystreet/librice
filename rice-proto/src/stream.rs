@@ -468,10 +468,10 @@ impl<'a> StreamMut<'a> {
         let Some(component_state) = stream_state.mut_component_state(component_id) else {
             return;
         };
-        if component_state.gather_state == GatherProgress::InProgress {
-            if let Some(gather) = component_state.gatherer.as_mut() {
-                gather.allocated_socket(transport, from, to, &local_addr);
-            }
+        if component_state.gather_state == GatherProgress::InProgress
+            && let Some(gather) = component_state.gatherer.as_mut()
+        {
+            gather.allocated_socket(transport, from, to, &local_addr);
         }
         self.agent.checklistset.allocated_socket(
             self.checklist_id,

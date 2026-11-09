@@ -15,8 +15,7 @@ use rand::prelude::*;
 pub(crate) fn generate_random_ice_string(alphabet: &[u8], length: usize) -> String {
     #[cfg(not(feature = "std"))]
     {
-        use rand::TryRngCore;
-        let mut rng = rand::rngs::OsRng.unwrap_err();
+        let mut rng = rand::rand_core::UnwrapErr(rand::rngs::SysRng);
         String::from_iter((0..length).map(|_| *alphabet.choose(&mut rng).unwrap() as char))
     }
     #[cfg(feature = "std")]
@@ -29,14 +28,13 @@ pub(crate) fn generate_random_ice_string(alphabet: &[u8], length: usize) -> Stri
 pub(crate) fn rand_u64() -> u64 {
     #[cfg(not(feature = "std"))]
     {
-        use rand::Rng;
-        use rand::TryRngCore;
-        let mut rng = rand::rngs::OsRng.unwrap_err();
+        use rand::RngExt;
+        let mut rng = rand::rand_core::UnwrapErr(rand::rngs::SysRng);
         rng.random()
     }
     #[cfg(feature = "std")]
     {
-        use rand::Rng;
+        use rand::RngExt;
         let mut rng = rand::rng();
         rng.random()
     }
@@ -45,14 +43,13 @@ pub(crate) fn rand_u64() -> u64 {
 pub(crate) fn rand_f64() -> f64 {
     #[cfg(not(feature = "std"))]
     {
-        use rand::Rng;
-        use rand::TryRngCore;
-        let mut rng = rand::rngs::OsRng.unwrap_err();
+        use rand::RngExt;
+        let mut rng = rand::rand_core::UnwrapErr(rand::rngs::SysRng);
         rng.random::<f64>()
     }
     #[cfg(feature = "std")]
     {
-        use rand::Rng;
+        use rand::RngExt;
         let mut rng = rand::rng();
         rng.random::<f64>()
     }

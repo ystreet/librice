@@ -52,21 +52,21 @@ impl TcpBuffer {
 
     /// Push a chunk of received data into the buffer.
     pub fn push_data(&mut self, data: &[u8]) -> TcpPush {
-        if self.buf.is_empty() {
-            if let Some(data_length) = Self::parse_length(data) {
-                let end = 2 + data_length;
-                if data.len() >= end {
-                    if data.len() > end {
-                        self.buf.extend(&data[end..]);
-                    }
-                    return TcpPush::Subslice(2..end);
+        if self.buf.is_empty()
+            && let Some(data_length) = Self::parse_length(data)
+        {
+            let end = 2 + data_length;
+            if data.len() >= end {
+                if data.len() > end {
+                    self.buf.extend(&data[end..]);
                 }
-                trace!(
-                    "not enough data, buf length {} data specifies length {}",
-                    self.buf.len(),
-                    data_length
-                );
+                return TcpPush::Subslice(2..end);
             }
+            trace!(
+                "not enough data, buf length {} data specifies length {}",
+                self.buf.len(),
+                data_length
+            );
         }
         self.buf.extend(data);
         TcpPush::Pull
