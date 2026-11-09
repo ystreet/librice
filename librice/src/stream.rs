@@ -823,10 +823,10 @@ impl Stream {
         &self,
         transmit: AgentTransmit<'static>,
     ) -> Option<AgentTransmit<'static>> {
-        if let Err(e) = self.state.transmit_send.clone().try_send(transmit) {
-            if e.is_full() {
-                return Some(e.into_inner());
-            }
+        if let Err(e) = self.state.transmit_send.clone().try_send(transmit)
+            && e.is_full()
+        {
+            return Some(e.into_inner());
         }
         None
     }

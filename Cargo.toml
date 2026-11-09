@@ -7,7 +7,7 @@ resolver = "3"
 version = "0.4.3"
 repository = "https://github.com/ystreet/librice"
 edition = "2024"
-rust-version = "1.85.0"
+rust-version = "1.89.0"
 
 [workspace.dependencies]
 rice-proto = { version = "0.4.3", path = "rice-proto" }
@@ -17,11 +17,11 @@ rice-ctypes = { version = "0.4.3", path = "rice-ctypes" }
 
 stun-proto = { version = "2.0.4", default-features = false }
 stun-types = { version = "2.0.4", default-features = false }
-turn-client-proto = { version = "0.7.1", default-features = false }
-turn-client-dimpl = "0.1"
-turn-client-openssl = "0.1"
-turn-client-rustls = "0.1"
-turn-server-proto = { version = "0.7.0", default-features = false }
+turn-client-proto = { version = "0.8.0", default-features = false }
+turn-client-dimpl = "0.3"
+turn-client-openssl = "0.2"
+turn-client-rustls = "0.2"
+turn-server-proto = { version = "0.8.0", default-features = false }
 
 arbitrary = { version = "1", features = ["derive"] }
 byteorder = { version = "1", default-features = false }
@@ -29,7 +29,7 @@ criterion = "0.8"
 if-addrs = "0.15"
 smallvec = "1"
 thiserror = { version = "2", default-features = false }
-rand = { version = "0.9", default-features = false, features = ["os_rng"] }
+rand = { version = "0.10", default-features = false, features = ["sys_rng"] }
 tracing = { version = "0.1", default-features = false, features = ["attributes"] }
 tracing-subscriber = "0.3"
 

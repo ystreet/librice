@@ -39,7 +39,7 @@ tracing-subscriber = { workspace = true, optional = true }
 turn-client-proto.workspace = true
 
 turn-client-dimpl = { workspace = true, optional = true }
-dimpl = { version = "0.4", optional = true }
+dimpl = { version = "0.9", optional = true }
 
 turn-client-openssl = { workspace = true, optional = true }
 openssl = { version = "0.10", optional = true }

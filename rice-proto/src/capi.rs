@@ -959,12 +959,11 @@ pub unsafe extern "C" fn rice_agent_poll(
         let mut proto_agent = agent.proto_agent.lock().unwrap();
         let now = Instant::from_nanos(now_nanos);
         let ret = proto_agent.poll(now);
-        if let AgentPoll::SelectedPair(ref pair) = ret {
-            if let Some(mut stream) = proto_agent.mut_stream(pair.stream_id) {
-                if let Some(mut component) = stream.mut_component(pair.component_id) {
-                    component.set_selected_pair_with_agent((*pair.selected).clone());
-                }
-            }
+        if let AgentPoll::SelectedPair(ref pair) = ret
+            && let Some(mut stream) = proto_agent.mut_stream(pair.stream_id)
+            && let Some(mut component) = stream.mut_component(pair.component_id)
+        {
+            component.set_selected_pair_with_agent((*pair.selected).clone());
         }
         *poll = RiceAgentPoll::into_c_full(ret);
 

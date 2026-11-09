@@ -2695,33 +2695,33 @@ impl ConnCheckListSet {
                 }
             }
             Err(_) => {
-                if let Some(agent) = self.checklists[checklist_i].agent_by_id(agent_id) {
-                    if agent.is_validated_peer(transmit.from) {
-                        let cl_id = self.checklists[checklist_i].checklist_id;
+                if let Some(agent) = self.checklists[checklist_i].agent_by_id(agent_id)
+                    && agent.is_validated_peer(transmit.from)
+                {
+                    let cl_id = self.checklists[checklist_i].checklist_id;
 
-                        if self.is_local_consent_revoked(cl_id, component_id) {
-                            trace!(
-                                "dropping incoming data from {:?}: \
+                    if self.is_local_consent_revoked(cl_id, component_id) {
+                        trace!(
+                            "dropping incoming data from {:?}: \
                                  local consent revoked for checklist {cl_id} \
                                  component {component_id}",
-                                transmit.from
-                            );
-
-                            return HandleRecvReply {
-                                handled: true,
-                                ..Default::default()
-                            };
-                        }
+                            transmit.from
+                        );
 
                         return HandleRecvReply {
-                            handled: false,
-                            have_more_data: false,
-                            data: Some(DataAndRange {
-                                range: 0..transmit.data.as_ref().len(),
-                                data: transmit.data,
-                            }),
+                            handled: true,
+                            ..Default::default()
                         };
                     }
+
+                    return HandleRecvReply {
+                        handled: false,
+                        have_more_data: false,
+                        data: Some(DataAndRange {
+                            range: 0..transmit.data.as_ref().len(),
+                            data: transmit.data,
+                        }),
+                    };
                 }
             }
         }
@@ -3404,10 +3404,8 @@ impl ConnCheckListSet {
                     // ordinary check on the same connection — so the nominating flag of
                     // the check that just succeeded must be carried over or the
                     // nomination would be lost.
-                    if nominate {
-                        if let Some(existing) = checklist.mut_check_by_id(existing_id) {
-                            existing.nominate = true;
-                        }
+                    if nominate && let Some(existing) = checklist.mut_check_by_id(existing_id) {
+                        existing.nominate = true;
                     }
                     checklist.add_valid(existing_id, &existing_pair);
                     if nominate {
@@ -3515,35 +3513,35 @@ impl ConnCheckListSet {
 
         // if response error -> fail TODO: might be a recoverable error!
         if response.has_class(MessageClass::Error) {
-            if let Ok(err) = response.attribute::<ErrorCode>() {
-                if err.code() == ErrorCode::ROLE_CONFLICT {
-                    info!("Role conflict received {}", response);
-                    let new_role = !conncheck.controlling;
-                    info!(
-                        old_role = self.controlling,
-                        new_role, "Role Conflict changing controlling from"
+            if let Ok(err) = response.attribute::<ErrorCode>()
+                && err.code() == ErrorCode::ROLE_CONFLICT
+            {
+                info!("Role conflict received {}", response);
+                let new_role = !conncheck.controlling;
+                info!(
+                    old_role = self.controlling,
+                    new_role, "Role Conflict changing controlling from"
+                );
+                if self.controlling != new_role {
+                    let old_pair = conncheck.pair.clone();
+                    let old_conncheck_id = conncheck.conncheck_id;
+                    self.controlling = new_role;
+                    let agent_id = conncheck.agent_id().unwrap();
+                    let mut conncheck = ConnCheck::new(
+                        checklist_id,
+                        conncheck.pair.clone(),
+                        agent_id,
+                        false,
+                        self.controlling,
+                        checklist.remote_credentials.clone(),
                     );
-                    if self.controlling != new_role {
-                        let old_pair = conncheck.pair.clone();
-                        let old_conncheck_id = conncheck.conncheck_id;
-                        self.controlling = new_role;
-                        let agent_id = conncheck.agent_id().unwrap();
-                        let mut conncheck = ConnCheck::new(
-                            checklist_id,
-                            conncheck.pair.clone(),
-                            agent_id,
-                            false,
-                            self.controlling,
-                            checklist.remote_credentials.clone(),
-                        );
-                        conncheck.set_state(CandidatePairState::Waiting);
-                        checklist.check_cancel(old_conncheck_id);
-                        checklist.add_triggered(&conncheck);
-                        checklist.add_check(conncheck);
-                        self.checklists[checklist_i].remove_valid(&old_pair);
-                    }
-                    return true;
+                    conncheck.set_state(CandidatePairState::Waiting);
+                    checklist.check_cancel(old_conncheck_id);
+                    checklist.add_triggered(&conncheck);
+                    checklist.add_check(conncheck);
+                    self.checklists[checklist_i].remove_valid(&old_pair);
                 }
+                return true;
             }
             // FIXME: some failures are recoverable
             warn!("error response {}", response);
@@ -4287,11 +4285,11 @@ impl ConnCheckListSet {
             }
             if checklist_state == CheckListState::Running {
                 trace!("last send time {:?}", self.last_send_time);
-                if let Some(last_send) = self.last_send_time {
-                    if last_send + self.timing_advance > now {
-                        trace!("last send time too close to the past, waiting");
-                        return CheckListSetPollRet::WaitUntil(last_send + self.timing_advance);
-                    }
+                if let Some(last_send) = self.last_send_time
+                    && last_send + self.timing_advance > now
+                {
+                    trace!("last send time too close to the past, waiting");
+                    return CheckListSetPollRet::WaitUntil(last_send + self.timing_advance);
                 }
             }
 

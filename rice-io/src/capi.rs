@@ -277,6 +277,8 @@ impl Drop for DestroyOnDrop {
 #[derive(Debug)]
 pub struct RiceTcpListener {
     listener: Arc<Async<TcpListener>>,
+    /// Owned so C code can cancel the listen loop via `rice_io_cancel_cancel`.
+    #[allow(dead_code)]
     cancel: RiceIoCancel,
 }
 
@@ -511,10 +513,10 @@ impl RiceSockets {
             }
         }
 
-        if let Some(notify_data) = removed_notify {
-            if let Some(destroy) = notify_data.io_destroy {
-                destroy(notify_data.io_notify_data.ptr);
-            }
+        if let Some(notify_data) = removed_notify
+            && let Some(destroy) = notify_data.io_destroy
+        {
+            destroy(notify_data.io_notify_data.ptr);
         }
     }
 
@@ -963,7 +965,7 @@ pub unsafe extern "C" fn rice_interfaces(ret_len: *mut usize) -> *mut *mut RiceA
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_addresses_free(addresses: *mut *mut RiceAddress, len: usize) {
     unsafe {
-        let addresses = Box::from_raw(core::slice::from_raw_parts_mut(addresses, len));
+        let addresses = Box::from_raw(std::ptr::slice_from_raw_parts_mut(addresses, len));
         for i in 0..len {
             let _addr = RiceAddress::into_rice_full(addresses[i]);
         }
@@ -1148,10 +1150,6 @@ pub unsafe extern "C" fn rice_sockets_recv(
 
 fn mut_override<T>(val: *const T) -> *mut T {
     val as *mut T
-}
-
-fn const_override<T>(val: *mut T) -> *const T {
-    val as *const T
 }
 
 #[cfg(test)]

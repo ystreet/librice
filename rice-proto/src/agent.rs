@@ -626,18 +626,14 @@ impl Agent {
                         .streams
                         .iter_mut()
                         .find(|s| s.checklist_id == checklist_id)
+                        && let Some(component) = stream.mut_component_state(cid)
+                        && component.set_state(state)
                     {
-                        if let Some(component) = stream.mut_component_state(cid) {
-                            if component.set_state(state) {
-                                return AgentPoll::ComponentStateChange(
-                                    AgentComponentStateChange {
-                                        stream_id: stream.id(),
-                                        component_id: cid,
-                                        state,
-                                    },
-                                );
-                            }
-                        }
+                        return AgentPoll::ComponentStateChange(AgentComponentStateChange {
+                            stream_id: stream.id(),
+                            component_id: cid,
+                            state,
+                        });
                     }
                 }
                 CheckListSetPollRet::Event {
@@ -646,38 +642,33 @@ impl Agent {
                 } => {
                     if let Some(stream) =
                         self.streams.iter().find(|s| s.checklist_id == checklist_id)
+                        && stream.component_state(cid).is_some()
                     {
-                        if stream.component_state(cid).is_some() {
-                            if !self.checklistset.ice_lite() {
-                                if let Some(checklist) = self.checklistset.list(checklist_id) {
-                                    if let Some(cf) = &mut self.consent_freshness {
-                                        if let Some(remote_credentials) =
-                                            checklist.remote_credentials()
-                                        {
-                                            let pair = selected.candidate_pair();
+                        if !self.checklistset.ice_lite()
+                            && let Some(checklist) = self.checklistset.list(checklist_id)
+                            && let Some(cf) = &mut self.consent_freshness
+                            && let Some(remote_credentials) = checklist.remote_credentials()
+                        {
+                            let pair = selected.candidate_pair();
 
-                                            cf.start(
-                                                stream.id(),
-                                                cid,
-                                                pair.local.clone(),
-                                                pair.remote.address,
-                                                checklist.local_credentials().clone(),
-                                                remote_credentials.clone(),
-                                                self.checklistset.controlling(),
-                                                self.checklistset.tie_breaker(),
-                                                now,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-
-                            return AgentPoll::SelectedPair(AgentSelectedPair {
-                                stream_id: stream.id(),
-                                component_id: cid,
-                                selected,
-                            });
+                            cf.start(
+                                stream.id(),
+                                cid,
+                                pair.local.clone(),
+                                pair.remote.address,
+                                checklist.local_credentials().clone(),
+                                remote_credentials.clone(),
+                                self.checklistset.controlling(),
+                                self.checklistset.tie_breaker(),
+                                now,
+                            );
                         }
+
+                        return AgentPoll::SelectedPair(AgentSelectedPair {
+                            stream_id: stream.id(),
+                            component_id: cid,
+                            selected,
+                        });
                     }
                 }
                 CheckListSetPollRet::Event {
@@ -686,13 +677,12 @@ impl Agent {
                 } => {
                     if let Some(stream) =
                         self.streams.iter().find(|s| s.checklist_id == checklist_id)
+                        && let Some(cf) = &mut self.consent_freshness
                     {
-                        if let Some(cf) = &mut self.consent_freshness {
-                            cf.on_response(cid, now);
+                        cf.on_response(cid, now);
 
-                            if revoked {
-                                cf.on_revoked(stream.id(), cid);
-                            }
+                        if revoked {
+                            cf.on_revoked(stream.id(), cid);
                         }
                     }
                 }
@@ -748,16 +738,13 @@ impl Agent {
                             .iter_mut()
                             .find(|s| s.id() == stream_id)
                             .and_then(|stream| stream.mut_component_state(component_id))
+                            && component.set_state(ComponentConnectionState::Failed)
                         {
-                            if component.set_state(ComponentConnectionState::Failed) {
-                                return AgentPoll::ComponentStateChange(
-                                    AgentComponentStateChange {
-                                        stream_id,
-                                        component_id,
-                                        state: ComponentConnectionState::Failed,
-                                    },
-                                );
-                            }
+                            return AgentPoll::ComponentStateChange(AgentComponentStateChange {
+                                stream_id,
+                                component_id,
+                                state: ComponentConnectionState::Failed,
+                            });
                         }
                     }
                     ConsentFreshnessPoll::WaitUntil(wait) => {

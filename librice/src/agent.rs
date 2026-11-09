@@ -388,12 +388,12 @@ impl futures::stream::Stream for AgentStream {
             Some(transmit) => {
                 let mut inner = self.inner.lock().unwrap();
                 inner.waker = Some(cx.waker().clone());
-                if let Some(stream) = inner.streams.get(transmit.stream_id) {
-                    if let Some(retry) = stream.handle_transmit(transmit) {
-                        drop(inner);
-                        self.as_mut().pending_transmit = Some(retry);
-                        return Poll::Pending;
-                    }
+                if let Some(stream) = inner.streams.get(transmit.stream_id)
+                    && let Some(retry) = stream.handle_transmit(transmit)
+                {
+                    drop(inner);
+                    self.as_mut().pending_transmit = Some(retry);
+                    return Poll::Pending;
                 }
             }
             _ => {
@@ -448,26 +448,26 @@ impl futures::stream::Stream for AgentStream {
                 AgentPoll::WaitUntilNanos(time) => Some(Instant::from_nanos(time)),
                 AgentPoll::SelectedPair(ref pair) => {
                     let inner = self.inner.lock().unwrap();
-                    if let Some(stream) = inner.streams.get(pair.stream_id) {
-                        if let Some(component) = stream.component(pair.component_id) {
-                            match stream.socket_for_pair(&pair.local, &pair.remote, &pair.turn) {
-                                Some(socket) => {
-                                    if let Err(e) = component.set_selected_pair(SelectedPair::new(
-                                        CandidatePair::new(
-                                            pair.local.to_owned(),
-                                            pair.remote.to_owned(),
-                                        ),
-                                        socket,
-                                    )) {
-                                        warn!("Failed setting the selected pair: {e:?}");
-                                    }
+                    if let Some(stream) = inner.streams.get(pair.stream_id)
+                        && let Some(component) = stream.component(pair.component_id)
+                    {
+                        match stream.socket_for_pair(&pair.local, &pair.remote, &pair.turn) {
+                            Some(socket) => {
+                                if let Err(e) = component.set_selected_pair(SelectedPair::new(
+                                    CandidatePair::new(
+                                        pair.local.to_owned(),
+                                        pair.remote.to_owned(),
+                                    ),
+                                    socket,
+                                )) {
+                                    warn!("Failed setting the selected pair: {e:?}");
                                 }
-                                _ => {
-                                    warn!(
-                                        "Could not find existing socket for pair (local: {:?}, remote: {:?}, turn: {:?})",
-                                        pair.local, pair.remote, pair.turn
-                                    );
-                                }
+                            }
+                            _ => {
+                                warn!(
+                                    "Could not find existing socket for pair (local: {:?}, remote: {:?}, turn: {:?})",
+                                    pair.local, pair.remote, pair.turn
+                                );
                             }
                         }
                     }
@@ -476,13 +476,13 @@ impl futures::stream::Stream for AgentStream {
                 }
                 AgentPoll::ComponentStateChange(ref state) => {
                     let inner = self.inner.lock().unwrap();
-                    if let Some(stream) = inner.streams.get(state.stream_id) {
-                        if let Some(component) = stream.component(state.component_id) {
-                            return Poll::Ready(Some(AgentMessage::ComponentStateChange(
-                                component.clone(),
-                                state.state,
-                            )));
-                        }
+                    if let Some(stream) = inner.streams.get(state.stream_id)
+                        && let Some(component) = stream.component(state.component_id)
+                    {
+                        return Poll::Ready(Some(AgentMessage::ComponentStateChange(
+                            component.clone(),
+                            state.state,
+                        )));
                     }
                     cx.waker().wake_by_ref();
                     return Poll::Pending;
@@ -515,12 +515,12 @@ impl futures::stream::Stream for AgentStream {
 
             if let Some(transmit) = self.agent.poll_transmit(now_nanos) {
                 let inner = self.inner.lock().unwrap();
-                if let Some(stream) = inner.streams.get(transmit.stream_id) {
-                    if let Some(retry) = stream.handle_transmit(transmit) {
-                        drop(inner);
-                        self.as_mut().pending_transmit = Some(retry);
-                        return Poll::Pending;
-                    }
+                if let Some(stream) = inner.streams.get(transmit.stream_id)
+                    && let Some(retry) = stream.handle_transmit(transmit)
+                {
+                    drop(inner);
+                    self.as_mut().pending_transmit = Some(retry);
+                    return Poll::Pending;
                 }
                 cx.waker().wake_by_ref();
                 return Poll::Pending;
