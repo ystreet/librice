@@ -1163,6 +1163,12 @@ mod tests {
     use turn_client_proto::types::TurnCredentials;
 
     use crate::candidate::{CandidateType, TcpType};
+    #[cfg(feature = "rustls")]
+    use crate::turn::RustlsTurnConfig;
+    #[cfg(feature = "rustls")]
+    use alloc::sync::Arc;
+    #[cfg(feature = "rustls")]
+    use rustls::ClientConfig;
     use stun_proto::types::{
         message::{MessageClass, MessageWriteVec},
         prelude::{MessageWrite, MessageWriteExt},
@@ -2158,6 +2164,37 @@ mod tests {
             unreachable!();
         };
 
+        assert!(matches!(gather.poll(now), GatherPoll::Finished));
+    }
+
+    #[cfg(feature = "rustls")]
+    #[test]
+    fn turn_udp_rustls_tls_skipped() {
+        let _log = crate::tests::test_init_log();
+        let local_addr = "192.168.1.1:1000".parse().unwrap();
+        let turn_listen_addr = "192.168.1.2:3478".parse().unwrap();
+        let turn_credentials = TurnCredentials::new("tuser", "tpass");
+        let mut config = TurnConfig::new(TransportType::Udp, turn_listen_addr, turn_credentials);
+
+        let client_config = Arc::new(
+            ClientConfig::builder()
+                .with_root_certificates(rustls::RootCertStore::empty())
+                .with_no_client_auth(),
+        );
+        let server_name = rustls::pki_types::ServerName::try_from("turn.example.com").unwrap();
+        config.set_tls_config(TurnTlsConfig::Rustls(RustlsTurnConfig::new(
+            client_config,
+            server_name,
+        )));
+
+        let mut gather = StunGatherer::new(false, 1, &[], &[], &[(local_addr, &config)]);
+        let now = Instant::ZERO;
+        /* TURN over UDP with a rustls TLS configuration is not supported; the request is
+         * marked complete without contacting any server and no candidate is produced */
+        let GatherPoll::Complete(1) = gather.poll(now) else {
+            unreachable!();
+        };
+        assert!(gather.poll_transmit(now).is_none());
         assert!(matches!(gather.poll(now), GatherPoll::Finished));
     }
 
