@@ -479,6 +479,11 @@ mod tests {
         let cid = s.add_component().unwrap();
         let c = s.component(cid).unwrap();
         assert_eq!(c.state(), ComponentConnectionState::New);
+        /* the component id is 1-based and round-trips through the accessor */
+        assert_eq!(c.id(), cid);
+        let cid2 = s.add_component().unwrap();
+        assert_ne!(cid, cid2);
+        assert_eq!(s.component(cid2).unwrap().id(), cid2);
     }
 
     #[test]

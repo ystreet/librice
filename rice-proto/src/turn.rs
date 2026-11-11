@@ -346,3 +346,102 @@ turn_client_proto::impl_client!(
     (Udp, TurnClientUdp),
     (Tcp, TurnClientTcp)
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn turn_config_getters_setters() {
+        let _log = crate::tests::test_init_log();
+        let credentials = TurnCredentials::new("user", "pass");
+        let server_addr = "127.0.0.1:3478".parse().unwrap();
+        let mut config = TurnConfig::new(TransportType::Udp, server_addr, credentials.clone());
+
+        assert_eq!(config.addr(), server_addr);
+        assert_eq!(config.client_transport(), TransportType::Udp);
+        assert_eq!(config.credentials().username(), credentials.username());
+        assert_eq!(config.credentials().password(), credentials.password());
+        assert_eq!(config.address_families(), &[AddressFamily::IPV4]);
+        assert_eq!(config.allocation_transport(), TransportType::Udp);
+        assert_eq!(config.supported_integrity(), &[IntegrityAlgorithm::Sha1]);
+        assert_eq!(config.anonymous_username(), Feature::Auto);
+        assert!(config.tls_config().is_none());
+
+        config.set_allocation_transport(TransportType::Tcp);
+        assert_eq!(config.allocation_transport(), TransportType::Tcp);
+
+        config.add_address_family(AddressFamily::IPV6);
+        assert_eq!(
+            config.address_families(),
+            &[AddressFamily::IPV4, AddressFamily::IPV6]
+        );
+        /* duplicates are ignored */
+        config.add_address_family(AddressFamily::IPV6);
+        assert_eq!(
+            config.address_families(),
+            &[AddressFamily::IPV4, AddressFamily::IPV6]
+        );
+        config.set_address_family(AddressFamily::IPV6);
+        assert_eq!(config.address_families(), &[AddressFamily::IPV6]);
+
+        config.add_supported_integrity(IntegrityAlgorithm::Sha256);
+        assert_eq!(
+            config.supported_integrity(),
+            &[IntegrityAlgorithm::Sha1, IntegrityAlgorithm::Sha256]
+        );
+        config.set_supported_integrity(IntegrityAlgorithm::Sha256);
+        assert_eq!(config.supported_integrity(), &[IntegrityAlgorithm::Sha256]);
+
+        config.set_anonymous_username(Feature::Required);
+        assert_eq!(config.anonymous_username(), Feature::Required);
+    }
+
+    #[cfg(feature = "rustls")]
+    #[test]
+    fn turn_config_rustls_tls() {
+        let _log = crate::tests::test_init_log();
+        let credentials = TurnCredentials::new("user", "pass");
+        let server_addr = "127.0.0.1:3478".parse().unwrap();
+        let mut config = TurnConfig::new(TransportType::Tcp, server_addr, credentials);
+
+        let client_config = Arc::new(
+            ClientConfig::builder()
+                .with_root_certificates(rustls::RootCertStore::empty())
+                .with_no_client_auth(),
+        );
+        let server_name = rustls::pki_types::ServerName::try_from("turn.example.com").unwrap();
+        let rustls = RustlsTurnConfig::new(client_config.clone(), server_name.clone());
+        assert!(Arc::ptr_eq(&rustls.client_config(), &client_config));
+        assert_eq!(rustls.server_name(), server_name);
+
+        let tls = TurnTlsConfig::from(rustls);
+        assert!(matches!(tls, TurnTlsConfig::Rustls(_)));
+        config.set_tls_config(tls);
+        assert!(matches!(
+            config.tls_config(),
+            Some(TurnTlsConfig::Rustls(_))
+        ));
+    }
+
+    #[cfg(feature = "openssl")]
+    #[test]
+    fn turn_config_openssl_tls() {
+        let _log = crate::tests::test_init_log();
+        let credentials = TurnCredentials::new("user", "pass");
+        let server_addr = "127.0.0.1:3478".parse().unwrap();
+        let mut config = TurnConfig::new(TransportType::Tcp, server_addr, credentials);
+
+        let ssl = openssl::ssl::SslContext::builder(openssl::ssl::SslMethod::tls())
+            .unwrap()
+            .build();
+        let ossl = OpensslTurnConfig::new(ssl);
+        let tls = TurnTlsConfig::from(ossl);
+        assert!(matches!(tls, TurnTlsConfig::Openssl(_)));
+        config.set_tls_config(tls);
+        let Some(TurnTlsConfig::Openssl(ossl)) = config.tls_config() else {
+            unreachable!();
+        };
+        let _ = ossl.ssl_context();
+    }
+}

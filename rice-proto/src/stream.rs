@@ -1151,4 +1151,89 @@ mod tests {
         assert_eq!(complete.stream_id, stream_id);
         assert_eq!(complete.component_id, component_id);
     }
+
+    #[test]
+    fn stream_getters() {
+        let _log = crate::tests::test_init_log();
+        let mut agent = Agent::default();
+        let stream_id = agent.add_stream();
+        let mut stream_mut = agent.mut_stream(stream_id).unwrap();
+        let comp_id = stream_mut.add_component().unwrap();
+        let comp_id2 = stream_mut.add_component().unwrap();
+        assert_ne!(comp_id, comp_id2);
+
+        /* an immutable view of the same stream */
+        let stream = agent.stream(stream_id).unwrap();
+        assert_eq!(stream.id(), stream_id);
+        assert!(std::ptr::eq(stream.agent(), &agent));
+        assert!(stream.component(0).is_none());
+        assert!(stream.component(comp_id).is_some());
+        assert!(stream.component(comp_id2).is_some());
+        assert!(stream.component(comp_id2 + 1).is_none());
+        assert_eq!(
+            stream.component_ids_iter().collect::<Vec<_>>(),
+            [comp_id, comp_id2]
+        );
+        assert!(stream.local_candidates().next().is_none());
+        assert!(stream.remote_candidates().is_empty());
+
+        let local_cand = Candidate::builder(
+            comp_id,
+            CandidateType::Host,
+            TransportType::Udp,
+            "0",
+            "127.0.0.1:1000".parse().unwrap(),
+        )
+        .build();
+        assert!(
+            agent
+                .mut_stream(stream_id)
+                .unwrap()
+                .add_local_candidate(local_cand.clone())
+        );
+        /* adding a redundant candidate is rejected */
+        assert!(
+            !agent
+                .mut_stream(stream_id)
+                .unwrap()
+                .add_local_candidate(local_cand.clone())
+        );
+        let remote_cand = Candidate::builder(
+            comp_id,
+            CandidateType::Host,
+            TransportType::Udp,
+            "0",
+            "127.0.0.1:2000".parse().unwrap(),
+        )
+        .build();
+        agent
+            .mut_stream(stream_id)
+            .unwrap()
+            .add_remote_candidate(remote_cand.clone());
+
+        let mut stream = agent.mut_stream(stream_id).unwrap();
+        assert_eq!(stream.id(), stream_id);
+        let locals: Vec<_> = stream.local_candidates().collect();
+        assert_eq!(locals, [&local_cand]);
+        assert_eq!(
+            stream.remote_candidates(),
+            core::slice::from_ref(&remote_cand)
+        );
+        assert!(stream.poll_recv().is_none());
+    }
+
+    #[test]
+    fn restart_stream_config_getters() {
+        let _log = crate::tests::test_init_log();
+        let creds = Credentials::new("ufrag".into(), "passwd".into());
+        let config = RestartStreamConfig::new();
+        assert!(config.new_local_credentials().is_none());
+        assert!(!config.remove_local_candidates());
+
+        let config = config
+            .set_new_local_credentials(creds.clone())
+            .set_remove_local_candidates(true);
+        assert_eq!(config.new_local_credentials(), Some(&creds));
+        assert!(config.remove_local_candidates());
+    }
 }
