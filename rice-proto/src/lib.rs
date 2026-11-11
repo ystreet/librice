@@ -148,4 +148,21 @@ pub(crate) mod tests {
         );
         tracing::subscriber::set_default(registry)
     }
+
+    #[test]
+    fn random_string_length_and_alphabet() {
+        let _log = test_init_log();
+        let s = random_string(0);
+        assert!(s.is_empty());
+        let s = random_string(64);
+        assert_eq!(s.len(), 64);
+        for c in s.chars() {
+            assert!(
+                ALPHABET.contains(c),
+                "character {c:?} not in the ICE credential alphabet"
+            );
+        }
+        /* consecutive strings of sufficient length must differ */
+        assert_ne!(random_string(16), random_string(16));
+    }
 }
