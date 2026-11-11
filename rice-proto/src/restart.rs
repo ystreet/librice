@@ -57,3 +57,30 @@ impl RestartConfig {
         self.local_remove_candidates
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_defaults() {
+        let config = RestartConfig::new();
+        assert_eq!(config.local_role_change(), RoleChange::None);
+        assert!(!config.remove_local_candidates());
+    }
+
+    #[test]
+    fn config_getters_setters() {
+        let config = RestartConfig::new()
+            .set_local_role_change(RoleChange::Lite)
+            .set_remove_local_candidates(true);
+        assert_eq!(config.local_role_change(), RoleChange::Lite);
+        assert!(config.remove_local_candidates());
+
+        let config = RestartConfig::new()
+            .set_local_role_change(RoleChange::Full)
+            .set_remove_local_candidates(false);
+        assert_eq!(config.local_role_change(), RoleChange::Full);
+        assert!(!config.remove_local_candidates());
+    }
+}

@@ -206,4 +206,22 @@ mod tests {
         assert!(tcp_buffer.pull_data().is_none());
         assert!(tcp_buffer.is_empty());
     }
+
+    #[test]
+    fn tcp_buffer_display() {
+        let _log = crate::tests::test_init_log();
+        let tcp_buffer = TcpBuffer::default();
+        assert_eq!(
+            alloc::format!("{tcp_buffer}"),
+            "TcpBuffer { buf: \"0 bytes\" }"
+        );
+        /* a partially-received frame (length prefix says 5 bytes but only 3 arrive) is
+         * retained whole in the buffer */
+        let mut tcp_buffer = TcpBuffer::default();
+        assert!(matches!(tcp_buffer.push_data(&[0, 5, 1]), TcpPush::Pull));
+        assert_eq!(
+            alloc::format!("{tcp_buffer}"),
+            "TcpBuffer { buf: \"3 bytes\" }"
+        );
+    }
 }
