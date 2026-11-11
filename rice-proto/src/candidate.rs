@@ -780,6 +780,248 @@ mod tests {
         }
     }
 
+    #[test]
+    fn tcp_type_from_str_and_display() {
+        let _log = crate::tests::test_init_log();
+        for (s, tcp_type) in [
+            ("active", TcpType::Active),
+            ("passive", TcpType::Passive),
+            ("so", TcpType::So),
+        ] {
+            let parsed: TcpType = s.parse().unwrap();
+            assert_eq!(parsed, tcp_type);
+            assert_eq!(parsed.to_string(), s);
+        }
+        assert!(matches!(
+            <TcpType as FromStr>::from_str("unknown"),
+            Err(ParseTcpTypeError::UnknownTcpType)
+        ));
+        assert_eq!(
+            ParseTcpTypeError::UnknownTcpType.to_string(),
+            "UnknownTcpType"
+        );
+    }
+
+    #[test]
+    fn candidate_type_from_str_and_display() {
+        let _log = crate::tests::test_init_log();
+        for (s, ctype) in [
+            ("host", CandidateType::Host),
+            ("prflx", CandidateType::PeerReflexive),
+            ("srflx", CandidateType::ServerReflexive),
+            ("relay", CandidateType::Relayed),
+        ] {
+            let parsed: CandidateType = s.parse().unwrap();
+            assert_eq!(parsed, ctype);
+            assert_eq!(parsed.to_string(), s);
+        }
+        assert!(matches!(
+            <CandidateType as FromStr>::from_str("unknown"),
+            Err(ParseCandidateTypeError::UnknownCandidateType)
+        ));
+        assert_eq!(
+            ParseCandidateTypeError::UnknownCandidateType.to_string(),
+            "UnknownCandidateType"
+        );
+    }
+
+    #[test]
+    fn tcp_priority_without_tcp_type() {
+        let _log = crate::tests::test_init_log();
+        /* the `None` TCP type is only reachable directly through the public API, the builder
+         * panics earlier */
+        assert_eq!(
+            Candidate::calculate_priority(CandidateType::Host, TransportType::Tcp, None, 0, 1),
+            ((1u32 << 24) * Candidate::priority_type_preference(CandidateType::Host)) + 256 - 1
+        );
+        assert_eq!(
+            Candidate::calculate_priority(
+                CandidateType::ServerReflexive,
+                TransportType::Tcp,
+                None,
+                0,
+                1
+            ),
+            ((1u32 << 24) * Candidate::priority_type_preference(CandidateType::ServerReflexive))
+                + 256
+                - 1
+        );
+    }
+
+    #[test]
+    fn calculate_priority_matches_rfc_8445() {
+        let _log = crate::tests::test_init_log();
+        // RFC 8445 6.7.1.1: priority = (G * 2^24) + (L * 2^8) + (256 - C)
+        // where L = (2^13 * direction_preference) + other_preference
+        assert_eq!(
+            Candidate::calculate_priority(CandidateType::Host, TransportType::Udp, None, 0, 1),
+            2128609535,
+        );
+        assert_eq!(
+            Candidate::calculate_priority(
+                CandidateType::Host,
+                TransportType::Tcp,
+                Some(TcpType::Active),
+                100,
+                1,
+            ),
+            2126537983,
+        );
+        assert_eq!(
+            Candidate::calculate_priority(
+                CandidateType::Relayed,
+                TransportType::Tcp,
+                Some(TcpType::Passive),
+                50,
+                2,
+            ),
+            8401662,
+        );
+        assert_eq!(
+            Candidate::calculate_priority(
+                CandidateType::ServerReflexive,
+                TransportType::Udp,
+                None,
+                0,
+                1,
+            ),
+            1692401919,
+        );
+        assert_eq!(
+            Candidate::calculate_priority(CandidateType::Relayed, TransportType::Udp, None, 0, 1),
+            14680319,
+        );
+    }
+
+    #[test]
+    fn redundant_with_different_transport() {
+        let _log = crate::tests::test_init_log();
+        let local_addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let udp = Candidate::builder(
+            1,
+            CandidateType::Host,
+            TransportType::Udp,
+            "foundation",
+            local_addr,
+        )
+        .build();
+        let tcp = Candidate::builder(
+            1,
+            CandidateType::Host,
+            TransportType::Tcp,
+            "foundation",
+            local_addr,
+        )
+        .tcp_type(TcpType::Passive)
+        .build();
+        assert!(!udp.redundant_with(&tcp));
+        assert!(!tcp.redundant_with(&udp));
+
+        /* same address with differing TCP types is not redundant */
+        let tcp_active = Candidate::builder(
+            1,
+            CandidateType::Host,
+            TransportType::Tcp,
+            "foundation",
+            local_addr,
+        )
+        .tcp_type(TcpType::Active)
+        .build();
+        assert!(!tcp.redundant_with(&tcp_active));
+    }
+
+    #[test]
+    fn redundant_with_same_candidate() {
+        let _log = crate::tests::test_init_log();
+        let local_addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let base_addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let a = Candidate::builder(
+            1,
+            CandidateType::ServerReflexive,
+            TransportType::Udp,
+            "foundation",
+            local_addr,
+        )
+        .base_address(base_addr)
+        .build();
+        /* identical transport, address and base address is redundant */
+        let b = Candidate::builder(
+            1,
+            CandidateType::ServerReflexive,
+            TransportType::Udp,
+            "foundation",
+            local_addr,
+        )
+        .base_address(base_addr)
+        .build();
+        assert!(a.redundant_with(&b));
+        assert!(b.redundant_with(&a));
+
+        /* same address but a differing base address is not redundant */
+        let other_base: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+        let c = Candidate::builder(
+            1,
+            CandidateType::ServerReflexive,
+            TransportType::Udp,
+            "foundation",
+            local_addr,
+        )
+        .base_address(other_base)
+        .build();
+        assert!(!a.redundant_with(&c));
+    }
+
+    #[test]
+    #[should_panic(expected = "different component id")]
+    fn candidate_pair_component_id_mismatch_panics() {
+        let local_addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let remote_addr: SocketAddr = "127.0.0.1:9100".parse().unwrap();
+        CandidatePair::new(
+            Candidate::builder(
+                1,
+                CandidateType::Host,
+                TransportType::Udp,
+                "foundation",
+                local_addr,
+            )
+            .build(),
+            Candidate::builder(
+                2,
+                CandidateType::Host,
+                TransportType::Udp,
+                "foundation",
+                remote_addr,
+            )
+            .build(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "different transport")]
+    fn candidate_pair_transport_mismatch_panics() {
+        let local_addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let remote_addr: SocketAddr = "127.0.0.1:9100".parse().unwrap();
+        CandidatePair::new(
+            Candidate::builder(
+                1,
+                CandidateType::Host,
+                TransportType::Udp,
+                "foundation",
+                local_addr,
+            )
+            .build(),
+            Candidate::builder(
+                1,
+                CandidateType::Host,
+                TransportType::Tcp,
+                "foundation",
+                remote_addr,
+            )
+            .tcp_type(TcpType::Passive)
+            .build(),
+        );
+    }
+
     mod parse {
         use super::*;
         use crate::candidate::parse::ParseCandidateError;
