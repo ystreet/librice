@@ -419,6 +419,32 @@ mod tests {
     }
 
     #[test]
+    fn next_interval_within_rfc_range() {
+        let _log = test_init_log();
+        let config = Config {
+            interval: Duration::from_secs(30),
+            timeout: Duration::from_secs(60),
+        };
+        let cf = ConsentFreshness::new(config);
+        // RFC 7675: the interval is randomized to 0.8-1.2x the base period
+        // (clamped to a 4s minimum).  Sample many times to bound the randomized
+        // range; this distinguishes the intended multiplication from a division.
+        let mut min = Duration::MAX;
+        let mut max = Duration::ZERO;
+        for _ in 0..256 {
+            let v = cf.next_interval();
+            if v < min {
+                min = v;
+            }
+            if v > max {
+                max = v;
+            }
+        }
+        assert!(min >= Duration::from_secs_f64(24.0), "min {min:?}");
+        assert!(max < Duration::from_secs_f64(36.0), "max {max:?}");
+    }
+
+    #[test]
     fn consent_freshness_no_response_causes_expiry() {
         let _log = test_init_log();
         let mut cf = ConsentFreshness::new(Config::default());

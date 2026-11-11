@@ -54,3 +54,34 @@ pub(crate) fn rand_f64() -> f64 {
         rng.random::<f64>()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn random_ice_string_length_and_alphabet() {
+        let alphabet = *b"abcdefghijklmnopqrstuvwxyz0123456789";
+        /* an empty length produces an empty string */
+        assert!(generate_random_ice_string(&alphabet, 0).is_empty());
+        let s = generate_random_ice_string(&alphabet, 32);
+        assert_eq!(s.len(), 32);
+        for c in s.bytes() {
+            assert!(alphabet.contains(&c));
+        }
+        /* two draws of sufficient length differ */
+        assert_ne!(
+            generate_random_ice_string(&alphabet, 64),
+            generate_random_ice_string(&alphabet, 64)
+        );
+    }
+
+    #[test]
+    fn rand_u64_and_f64() {
+        /* distinct draws are (with overwhelming probability) different */
+        assert_ne!(rand_u64(), rand_u64());
+        let val = rand_f64();
+        assert!(val.is_finite());
+        assert!((0.0..1.0).contains(&val));
+    }
+}
