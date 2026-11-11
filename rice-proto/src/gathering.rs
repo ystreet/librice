@@ -2160,4 +2160,87 @@ mod tests {
 
         assert!(matches!(gather.poll(now), GatherPoll::Finished));
     }
+
+    #[test]
+    fn stun_udp_no_response_times_out() {
+        let _log = crate::tests::test_init_log();
+        let local_addr = "192.168.1.1:1000".parse().unwrap();
+        let stun_addr = "192.168.1.2:2000".parse().unwrap();
+        let mut gather = StunGatherer::new(
+            false,
+            1,
+            &[(TransportType::Udp, local_addr)],
+            &[(TransportType::Udp, stun_addr)],
+            &[],
+        );
+        let mut now = Instant::ZERO;
+        /* host candidate contents checked in `host_udp()` */
+        assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_)));
+        let _transmit = gather.poll_transmit(now).unwrap();
+        /* the unanswered STUN request times out after its retransmits are exhausted and
+         * the gather completes without a server-reflexive candidate.  A retransmit is
+         * only emitted when `poll_transmit` is called at its due time, so advance `now`
+         * to each `WaitUntil` deadline and transmit anything that is due */
+        let mut timed_out = false;
+        for _ in 0..32 {
+            match gather.poll(now) {
+                GatherPoll::Complete(id) => {
+                    assert_eq!(id, 1);
+                    timed_out = true;
+                    break;
+                }
+                GatherPoll::Finished => unreachable!(),
+                GatherPoll::WaitUntil(wait) => {
+                    now = wait;
+                    let _ = gather.poll_transmit(now);
+                }
+                GatherPoll::NewCandidate(_) => unreachable!(),
+                GatherPoll::AllocateSocket { .. } => unreachable!(),
+            }
+        }
+        assert!(timed_out, "unanswered STUN request did not time out");
+        assert!(matches!(gather.poll(now), GatherPoll::Finished));
+    }
+
+    #[test]
+    fn stun_udp_ignorable_reflexive_address() {
+        let _log = crate::tests::test_init_log();
+        let local_addr = "192.168.1.1:1000".parse().unwrap();
+        let stun_addr = "192.168.1.2:2000".parse().unwrap();
+        /* a link-local address cannot be reached by a peer and must be ignored */
+        let ignorable_ip = "169.254.1.1:3000".parse().unwrap();
+        let mut gather = StunGatherer::new(
+            false,
+            1,
+            &[(TransportType::Udp, local_addr)],
+            &[(TransportType::Udp, stun_addr)],
+            &[],
+        );
+        let now = Instant::ZERO;
+        assert!(matches!(gather.poll(now), GatherPoll::NewCandidate(_)));
+        let transmit = gather.poll_transmit(now).unwrap();
+        let response = respond_to_stun_binding(transmit, ignorable_ip);
+        assert!(gather.handle_data(&response, now));
+        /* no server-reflexive candidate is produced for an ignorable address */
+        let GatherPoll::Complete(1) = gather.poll(now) else {
+            unreachable!();
+        };
+        assert!(matches!(gather.poll(now), GatherPoll::Finished));
+    }
+
+    #[test]
+    fn address_is_ignorable_branches() {
+        let _log = crate::tests::test_init_log();
+        /* loopback, unspecified and multicast are always ignorable */
+        assert!(address_is_ignorable("127.0.0.1".parse().unwrap()));
+        assert!(address_is_ignorable("0.0.0.0".parse().unwrap()));
+        assert!(address_is_ignorable("224.0.0.1".parse().unwrap()));
+        assert!(address_is_ignorable("::1".parse().unwrap()));
+        /* IPv4 broadcast and link-local are ignorable */
+        assert!(address_is_ignorable("255.255.255.255".parse().unwrap()));
+        assert!(address_is_ignorable("169.254.1.1".parse().unwrap()));
+        /* ordinary unicast addresses are usable */
+        assert!(!address_is_ignorable("192.168.1.1".parse().unwrap()));
+        assert!(!address_is_ignorable("2001:db8::1".parse().unwrap()));
+    }
 }
