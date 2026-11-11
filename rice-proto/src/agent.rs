@@ -947,6 +947,63 @@ mod tests {
     }
 
     #[test]
+    fn id_is_stable_and_unique() {
+        let _log = crate::tests::test_init_log();
+        let agent = Agent::builder().build();
+        let id = agent.id();
+        /* the id is a random 64-bit value; a second agent is very unlikely to
+         * share it */
+        let other = Agent::builder().build();
+        assert_ne!(id, other.id());
+        assert_eq!(id, agent.id());
+    }
+
+    #[test]
+    fn close_reports_closed() {
+        let _log = crate::tests::test_init_log();
+        let mut agent = Agent::builder().build();
+        let stream_id = agent.add_stream();
+        let _ = agent
+            .mut_stream(stream_id)
+            .unwrap()
+            .add_component()
+            .unwrap();
+        let now = Instant::ZERO;
+        agent.close(now);
+        /* drain any pending gathering events; the closed agent must then report Closed */
+        for _ in 0..8 {
+            if matches!(agent.poll(now), AgentPoll::Closed) {
+                break;
+            }
+        }
+        assert!(matches!(agent.poll(now), AgentPoll::Closed));
+    }
+
+    #[test]
+    fn restart_changes_ice_lite_role() {
+        let _log = crate::tests::test_init_log();
+        let mut agent = Agent::builder().build();
+        let stream_id = agent.add_stream();
+        let _ = agent
+            .mut_stream(stream_id)
+            .unwrap()
+            .add_component()
+            .unwrap();
+        let now = Instant::ZERO;
+        assert!(!agent.ice_lite());
+        agent.restart(
+            &RestartConfig::new().set_local_role_change(RoleChange::Lite),
+            now,
+        );
+        assert!(agent.ice_lite());
+        agent.restart(
+            &RestartConfig::new().set_local_role_change(RoleChange::Full),
+            now,
+        );
+        assert!(!agent.ice_lite());
+    }
+
+    #[test]
     fn timing_advance() {
         let _log = crate::tests::test_init_log();
         let ta = Duration::from_secs(1);
