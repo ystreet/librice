@@ -1165,7 +1165,8 @@ mod tests {
         let lcreds = Credentials::new("luser", "lpass");
         let rcreds = Credentials::new("ruser", "rpass");
 
-        let agent = Agent::default();
+        let mut agent = Agent::default();
+        agent.set_timing_advance(Duration::from_millis(123));
         let stream = agent.add_stream();
         assert!(stream.component(0).is_none());
         assert!(stream.component(1).is_none());
@@ -1176,6 +1177,14 @@ mod tests {
         assert_eq!(stream.local_credentials().unwrap(), lcreds);
         stream.set_remote_credentials(&rcreds);
         assert_eq!(stream.remote_credentials().unwrap(), rcreds);
+
+        // the stream can be recovered from a component and exposes its id
+        assert_eq!(stream.id(), comp.stream().id());
+        // and the agent can be recovered from a stream, retaining its configuration
+        // (a distinct timing advance proves it is the same agent, not a fresh default)
+        let agent2 = stream.agent();
+        assert_eq!(agent2.timing_advance(), Duration::from_millis(123));
+        assert_eq!(agent2.controlling(), agent.controlling());
     }
 
     #[test]

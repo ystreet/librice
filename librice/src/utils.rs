@@ -32,3 +32,20 @@ impl<T> DebugWrapper<T> {
         Self(name, obj)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_wrapper() {
+        let mut wrapped = DebugWrapper::wrap(10i32, "counter");
+        // Deref reads through to the inner value
+        assert_eq!(*wrapped, 10);
+        // DerefMut writes through to the inner value
+        *wrapped = 42;
+        assert_eq!(*wrapped, 42);
+        // Debug formatting uses the provided name, not the inner value
+        assert_eq!(format!("{wrapped:?}"), "counter");
+    }
+}
