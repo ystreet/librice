@@ -91,3 +91,33 @@ pub async fn iface_sockets(
     }
     Ok(ret)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::IpAddr;
+
+    fn v4(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+    fn v6(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn address_is_ignorable_branches() {
+        // loopback, unspecified and multicast are always ignorable
+        assert!(address_is_ignorable(v4("127.0.0.1")));
+        assert!(address_is_ignorable(v6("::1")));
+        assert!(address_is_ignorable(v4("0.0.0.0")));
+        assert!(address_is_ignorable(v6("::")));
+        assert!(address_is_ignorable(v4("224.0.0.1")));
+        assert!(address_is_ignorable(v6("ff02::1")));
+        // IPv4 broadcast and link-local are ignorable
+        assert!(address_is_ignorable(v4("255.255.255.255")));
+        assert!(address_is_ignorable(v4("169.254.1.1")));
+        // ordinary unicast addresses are not ignorable
+        assert!(!address_is_ignorable(v4("192.168.1.2")));
+        assert!(!address_is_ignorable(v6("2001:db8::1")));
+    }
+}

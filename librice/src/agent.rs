@@ -775,4 +775,35 @@ mod tests {
         agent.close();
         assert_eq!(states, vec![ComponentConnectionState::Failed; 3]);
     }
+
+    #[test]
+    fn agent_error_display_and_from() {
+        use rice_c::agent::AgentError as ProtoAgentError;
+        let err = AgentError::Proto(ProtoAgentError::Failed);
+        assert!(err.to_string().contains("Failed"));
+        let err = AgentError::IoError(std::io::Error::other("socket broken"));
+        assert!(err.to_string().contains("socket broken"));
+        // the From conversions
+        let io_err: AgentError = std::io::Error::other("io boom").into();
+        assert!(matches!(io_err, AgentError::IoError(_)));
+        let proto_err: AgentError = ProtoAgentError::AlreadyInProgress.into();
+        assert!(matches!(proto_err, AgentError::Proto(_)));
+    }
+
+    #[test]
+    fn stream_by_id() {
+        #[cfg(feature = "runtime-tokio")]
+        let _runtime = crate::tests::tokio_runtime().enter();
+        init();
+        let agent = Agent::default();
+        let s1 = agent.add_stream();
+        let s2 = agent.add_stream();
+        // stream ids are 0-based indices into the agent's stream list
+        assert_eq!(s1.id(), 0);
+        assert_eq!(s2.id(), 1);
+        assert_eq!(agent.stream(s1.id()).unwrap().id(), 0);
+        assert_eq!(agent.stream(s2.id()).unwrap().id(), 1);
+        // an id that has not been allocated
+        assert!(agent.stream(usize::MAX).is_none());
+    }
 }
