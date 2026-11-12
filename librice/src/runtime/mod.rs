@@ -229,3 +229,93 @@ pub use smol::SmolRuntime;
 mod tokio;
 #[cfg(feature = "runtime-tokio")]
 pub use tokio::TokioRuntime;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::{
+        AsyncTcpListenerExt, AsyncTcpStreamReadExt, AsyncTcpStreamWriteExt, AsyncUdpSocketExt,
+    };
+    use std::net::{Shutdown, SocketAddr};
+
+    async fn udp_round_trip(runtime: Arc<dyn Runtime>) {
+        let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let local = udp.local_addr().unwrap();
+        let socket = runtime.wrap_udp_socket(udp).unwrap();
+        assert_eq!(socket.local_addr().unwrap(), local);
+        let peer = socket.clone();
+        socket.send_to(b"round-trip", local).await.unwrap();
+        let mut buf = [0u8; 32];
+        let (n, from) = peer.recv_from(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"round-trip");
+        assert_eq!(from, local);
+    }
+
+    async fn tcp_round_trip(runtime: Arc<dyn Runtime>) {
+        let listener = runtime
+            .new_tcp_listener(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let (accepted_tx, accepted_rx) = futures::channel::oneshot::channel();
+        runtime.spawn({
+            let listener = listener.clone();
+            Box::pin(async move {
+                let stream = listener.accept().await.unwrap();
+                let _ = accepted_tx.send(stream);
+            })
+        });
+
+        let connected = runtime.tcp_connect(addr).await.unwrap();
+        let accepted = accepted_rx.await.unwrap();
+        assert_eq!(connected.remote_addr().unwrap(), addr);
+        assert_eq!(
+            accepted.remote_addr().unwrap(),
+            connected.local_addr().unwrap()
+        );
+
+        let (mut a_read, mut a_write) = accepted.split();
+        let (c_read, mut c_write) = connected.split();
+
+        // the split halves still report local and remote addresses
+        assert!(a_read.local_addr().is_ok());
+        assert!(a_read.remote_addr().is_ok());
+        assert!(c_read.local_addr().is_ok());
+        assert!(c_read.remote_addr().is_ok());
+        assert!(c_write.local_addr().is_ok());
+        assert!(c_write.remote_addr().is_ok());
+
+        c_write.write_all(b"ping").await.unwrap();
+        let mut buf = [0u8; 4];
+        let mut n = 0;
+        while n < buf.len() {
+            n += a_read.read(&mut buf[n..]).await.unwrap();
+        }
+        assert_eq!(&buf[..n], b"ping");
+
+        a_write.flush().await.unwrap();
+        c_write.shutdown(Shutdown::Write).await.unwrap();
+    }
+
+    #[cfg(feature = "runtime-smol")]
+    #[test]
+    fn smol_runtime_round_trip() {
+        ::smol::block_on(async {
+            let runtime = Arc::new(SmolRuntime);
+            udp_round_trip(runtime.clone()).await;
+            tcp_round_trip(runtime).await;
+        });
+    }
+
+    #[cfg(feature = "runtime-tokio")]
+    #[test]
+    fn tokio_runtime_round_trip() {
+        let rt = crate::tests::tokio_multi_runtime();
+        let runtime = Arc::new(TokioRuntime::new(rt.handle().clone()));
+        rt.block_on(async move {
+            udp_round_trip(runtime.clone()).await;
+            tcp_round_trip(runtime).await;
+        });
+    }
+}
