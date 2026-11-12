@@ -356,3 +356,58 @@ impl TcpChannel {
         Ok(self.remote_addr)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::{AsyncUdpSocketExt, Runtime};
+
+    fn runtime() -> Arc<dyn Runtime> {
+        crate::runtime::default_runtime().expect("no runtime enabled")
+    }
+
+    #[cfg(feature = "runtime-smol")]
+    #[test]
+    fn stun_channel_udp() {
+        smol::block_on(async {
+            let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let local = udp.local_addr().unwrap();
+            let socket = runtime().wrap_udp_socket(udp).unwrap();
+            let peer = socket.clone();
+
+            let channel = UdpSocketChannel::new(socket);
+            assert_eq!(channel.local_addr().unwrap(), local);
+
+            let mut channel = StunChannel::Udp(channel);
+            assert_eq!(channel.transport(), TransportType::Udp);
+            // connection-less UDP has no single remote address
+            assert_eq!(
+                channel.remote_addr().unwrap_err().kind(),
+                std::io::ErrorKind::NotFound
+            );
+
+            // a send to the bound address round-trips on loopback
+            channel.send_to(b"stun", local).await.unwrap();
+            let mut buf = [0u8; 16];
+            let (n, from) = peer.recv_from(&mut buf).await.unwrap();
+            assert_eq!(&buf[..n], b"stun");
+            assert_eq!(from, local);
+        });
+    }
+
+    #[cfg(feature = "runtime-smol")]
+    #[test]
+    fn stun_channel_udp_send_to_after_close_fails() {
+        smol::block_on(async {
+            let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            let local = udp.local_addr().unwrap();
+            let socket = runtime().wrap_udp_socket(udp).unwrap();
+            let channel = UdpSocketChannel::new(socket);
+
+            let mut channel = StunChannel::Udp(channel);
+            channel.close().await.unwrap();
+            let err = channel.send_to(b"stun", local).await.unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::Other);
+        });
+    }
+}
