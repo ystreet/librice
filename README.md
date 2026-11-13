@@ -14,12 +14,13 @@ also be accessed from Rust using `rice-c`.
 
 ## Current status
 
-The current status is that there is enough of the implementation to sucessfully
-communicate with STUN/TURN servers and/or a browser (Chrome or Firefox) in a WebRTC
-scenario. The STUN implementation is relatively mature. More work is needed on
-the ICE layer for efficiency and API experience. Initial TURN support has been
-implemented and some TURN-related RFCs are currently in progress. Supporting
-more scenarios is part of the near and long term future roadmap.
+There is enough of the implementation to sucessfully communicate with STUN/TURN servers
+and/or a browser (Chrome or Firefox) in many WebRTC environments. Both the STUN and TURN
+implementations are relatively mature. More work is needed on the ICE layer for
+efficiency and API experience.
+
+Some environments such as very restricted networks requiring a http proxy or privacy
+focused through the use of mdns candidates still require some additional implementation.
 
 ## Why sans-io?
 
@@ -76,6 +77,9 @@ For other examples of sans-IO implementations, take a look at:
  - [x] [RFC8838](https://tools.ietf.org/html/rfc8838):
    Trickle ICE: Incremental Provisioning of Candidates for the Interactive
    Connectivity Establishment (ICE) Protocol
+ - [ ] https://datatracker.ietf.org/doc/html/draft-ietf-mmusic-mdns-ice-candidates:
+   mDNS candidates
+ - [ ] HTTP proxy support of TCP connections to a TURN server
 
 ## Structure
 

@@ -66,6 +66,9 @@
 //! - [x] [RFC8838](https://tools.ietf.org/html/rfc8838):
 //!   Trickle ICE: Incremental Provisioning of Candidates for the Interactive
 //!   Connectivity Establishment (ICE) Protocol
+//! - [ ] <https://datatracker.ietf.org/doc/html/draft-ietf-mmusic-mdns-ice-candidates>:
+//!   mDNS candidates
+//! - [ ] HTTP proxy support of TCP connections to a TURN server
 //!
 //! ## Building a C library
 //!
