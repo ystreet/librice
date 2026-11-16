@@ -405,10 +405,49 @@ impl futures::stream::Stream for AgentStream {
         let weak_agent_inner = Arc::downgrade(&self.inner);
         let now_nanos = Instant::from_std(self.base_instant);
 
-        let wait = {
-            let wait = match self.agent.poll(now_nanos) {
+        // Process as many internally-handled events (socket allocation/removal,
+        // pair selection) as possible within a single poll.  Each such event
+        // advances the underlying agent state, so looping makes progress without
+        // requiring a full async round-trip per event; a burst (e.g. every socket
+        // removal during a close after a restart) is handled in one go.
+        loop {
+            match self.agent.poll(now_nanos) {
                 AgentPoll::Closed => return Poll::Ready(None),
-                AgentPoll::AllocateSocket(ref allocate) => {
+                AgentPoll::WaitUntilNanos(time) => {
+                    let wait = Instant::from_nanos(time);
+                    if let Some(transmit) = self.agent.poll_transmit(now_nanos) {
+                        let inner = self.inner.lock().unwrap();
+                        if let Some(stream) = inner.streams.get(transmit.stream_id)
+                            && let Some(retry) = stream.handle_transmit(transmit)
+                        {
+                            drop(inner);
+                            self.as_mut().pending_transmit = Some(retry);
+                            return Poll::Pending;
+                        }
+                        cx.waker().wake_by_ref();
+                        return Poll::Pending;
+                    }
+                    let wait_instant = wait.to_std(self.base_instant);
+                    match self.as_mut().timer.as_mut() {
+                        Some(timer) => timer.as_mut().reset(wait_instant),
+                        None => self.as_mut().timer = Some(self.runtime.new_timer(wait_instant)),
+                    }
+                    if self
+                        .as_mut()
+                        .timer
+                        .as_mut()
+                        .unwrap()
+                        .as_mut()
+                        .poll(cx)
+                        .is_pending()
+                    {
+                        return Poll::Pending;
+                    }
+                    // timeout value passed, rerun our loop which will make more progress
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                AgentPoll::AllocateSocket(allocate) => {
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(allocate.stream_id) {
                         let weak_stream = Arc::downgrade(&stream.state);
@@ -416,7 +455,7 @@ impl futures::stream::Stream for AgentStream {
                         Stream::handle_allocate_socket(
                             weak_stream,
                             self.agent.clone(),
-                            weak_agent_inner,
+                            weak_agent_inner.clone(),
                             allocate.stream_id,
                             allocate.component_id,
                             allocate.transport,
@@ -426,10 +465,8 @@ impl futures::stream::Stream for AgentStream {
                             self.runtime.clone(),
                         );
                     }
-                    cx.waker().wake_by_ref();
-                    return Poll::Pending;
                 }
-                AgentPoll::RemoveSocket(ref remove) => {
+                AgentPoll::RemoveSocket(remove) => {
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(remove.stream_id) {
                         let weak_stream = Arc::downgrade(&stream.state);
@@ -442,11 +479,8 @@ impl futures::stream::Stream for AgentStream {
                             remove.to.clone(),
                         );
                     }
-                    cx.waker().wake_by_ref();
-                    return Poll::Pending;
                 }
-                AgentPoll::WaitUntilNanos(time) => Some(Instant::from_nanos(time)),
-                AgentPoll::SelectedPair(ref pair) => {
+                AgentPoll::SelectedPair(pair) => {
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(pair.stream_id)
                         && let Some(component) = stream.component(pair.component_id)
@@ -471,10 +505,8 @@ impl futures::stream::Stream for AgentStream {
                             }
                         }
                     }
-                    cx.waker().wake_by_ref();
-                    return Poll::Pending;
                 }
-                AgentPoll::ComponentStateChange(ref state) => {
+                AgentPoll::ComponentStateChange(state) => {
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(state.stream_id)
                         && let Some(component) = stream.component(state.component_id)
@@ -484,10 +516,8 @@ impl futures::stream::Stream for AgentStream {
                             state.state,
                         )));
                     }
-                    cx.waker().wake_by_ref();
-                    return Poll::Pending;
                 }
-                AgentPoll::GatheredCandidate(ref mut gathered) => {
+                AgentPoll::GatheredCandidate(mut gathered) => {
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(gathered.stream_id) {
                         return Poll::Ready(Some(AgentMessage::GatheredCandidate(
@@ -495,10 +525,8 @@ impl futures::stream::Stream for AgentStream {
                             rice_c::stream::GatheredCandidate::take(&mut gathered.gathered),
                         )));
                     }
-                    cx.waker().wake_by_ref();
-                    return Poll::Pending;
                 }
-                AgentPoll::GatheringComplete(ref complete) => {
+                AgentPoll::GatheringComplete(complete) => {
                     let inner = self.inner.lock().unwrap();
                     if let Some(stream) = inner.streams.get(complete.stream_id) {
                         stream.handle_gathering_complete(complete.component_id);
@@ -508,48 +536,9 @@ impl futures::stream::Stream for AgentStream {
                             )));
                         }
                     }
-                    cx.waker().wake_by_ref();
-                    return Poll::Pending;
                 }
-            };
-
-            if let Some(transmit) = self.agent.poll_transmit(now_nanos) {
-                let inner = self.inner.lock().unwrap();
-                if let Some(stream) = inner.streams.get(transmit.stream_id)
-                    && let Some(retry) = stream.handle_transmit(transmit)
-                {
-                    drop(inner);
-                    self.as_mut().pending_transmit = Some(retry);
-                    return Poll::Pending;
-                }
-                cx.waker().wake_by_ref();
-                return Poll::Pending;
             }
-            wait
-        };
-
-        if let Some(wait) = wait {
-            let wait_instant = wait.to_std(self.base_instant);
-            match self.as_mut().timer.as_mut() {
-                Some(timer) => timer.as_mut().reset(wait_instant),
-                None => self.as_mut().timer = Some(self.runtime.new_timer(wait_instant)),
-            }
-            if self
-                .as_mut()
-                .timer
-                .as_mut()
-                .unwrap()
-                .as_mut()
-                .poll(cx)
-                .is_pending()
-            {
-                return Poll::Pending;
-            }
-            // timeout value passed, rerun our loop which will make more progress
-            cx.waker().wake_by_ref();
-            return Poll::Pending;
         }
-        Poll::Pending
     }
 }
 
