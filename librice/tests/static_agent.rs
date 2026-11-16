@@ -465,9 +465,9 @@ async fn agent_static_connection_test(mut config: AgentStaticTestConfig) {
                 Restart::Stream(lrestart) => lstream.restart(lrestart),
             }
             trace!("restarting remote with {rrestart:?}");
-            match lrestart {
-                Restart::Agent(lrestart) => ragent.restart(lrestart),
-                Restart::Stream(lrestart) => rstream.restart(lrestart),
+            match rrestart {
+                Restart::Agent(rrestart) => ragent.restart(rrestart),
+                Restart::Stream(rrestart) => rstream.restart(rrestart),
             }
 
             let lcreds = lstream.local_credentials().unwrap();
