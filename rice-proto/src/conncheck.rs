@@ -1285,6 +1285,63 @@ impl CheckPairs {
     }
 }
 
+/// A connectivity from a previous generation that is kept alive until grace period expires
+/// (RFC 8445 Section 8.3.1)
+#[derive(Debug)]
+struct StaleChecks {
+    checks: Vec<ConnCheck>,
+    remove_at: Option<Instant>,
+}
+
+#[derive(Debug, Default)]
+struct StaleGeneration {
+    generations: Vec<StaleChecks>,
+}
+
+impl StaleGeneration {
+    fn defer_candidate_removal(&mut self, checks: Vec<ConnCheck>) {
+        if !checks.is_empty() {
+            for check in checks.iter() {
+                trace!("check {} is now in defered removal", check.conncheck_id);
+            }
+            self.generations.push(StaleChecks {
+                checks,
+                remove_at: None,
+            });
+        }
+    }
+
+    fn start_timer(&mut self, now: Instant) {
+        for stale in self.generations.iter_mut() {
+            if stale.remove_at.is_none() {
+                stale.remove_at = Some(now + SOCKET_GRACE_PERIOD);
+            }
+        }
+    }
+
+    fn take_expired(&mut self, now: Instant) -> Vec<ConnCheck> {
+        let mut expired = Vec::new();
+        let mut i = 0;
+        while i < self.generations.len() {
+            if let Some(remove_at) = self.generations[i].remove_at
+                && now >= remove_at
+            {
+                let stale = &self.generations[i];
+                for check in stale.checks.iter() {
+                    trace!(
+                        "check {} has expired and will be cleared",
+                        check.conncheck_id
+                    );
+                }
+                expired.extend(self.generations.swap_remove(i).checks);
+            } else {
+                i += 1;
+            }
+        }
+        expired
+    }
+}
+
 /// A list of connectivity checks for an ICE stream
 #[derive(Debug)]
 pub struct ConnCheckList {
@@ -1297,6 +1354,10 @@ pub struct ConnCheckList {
     remote_candidates: Vec<Candidate>,
     // candidates that arrived after an end-of-remote-candidates
     pending_restart_remote_candidates: Vec<Candidate>,
+    // previous generation's candidates kept until each candidate's own grace period
+    // elapses;  the grace period begins when the restarted checklist completes with a
+    // new selected pair (RFC 8445 §8.3.1)
+    stale_generation: StaleGeneration,
     pairs: CheckPairs,
     controlling: bool,
     trickle_ice: bool,
@@ -1451,6 +1512,7 @@ impl ConnCheckList {
             local_candidates: Vec::new(),
             remote_candidates: Vec::new(),
             pending_restart_remote_candidates: Vec::new(),
+            stale_generation: StaleGeneration::default(),
             pairs: CheckPairs::default(),
             controlling,
             trickle_ice,
@@ -2185,10 +2247,10 @@ impl ConnCheckList {
 
     #[tracing::instrument(
         level = "debug",
-        skip(self, pair),
+        skip(self, pair, now),
         fields(component.id = pair.local.component_id)
     )]
-    fn nominated_pair(&mut self, pair: &CandidatePair) {
+    fn nominated_pair(&mut self, pair: &CandidatePair, now: Instant) {
         if let Some(idx) = self.pairs.valid.iter().position(|&check_id| {
             self.pairs.check_by_id(check_id).is_some_and(|check| {
                 check.nominate && candidate_pair_is_same_connection(&check.pair, pair)
@@ -2278,7 +2340,7 @@ impl ConnCheckList {
                 "all {} component/s nominated, setting selected pair/s",
                 self.component_ids.len()
             );
-            self.pairs.nominated.clone().iter().fold(
+            let component_ids_selected = self.pairs.nominated.clone().iter().fold(
                 Vec::new(),
                 |mut component_ids_selected, (check_id, pair)| {
                     let check = self.pairs.check_by_id(*check_id);
@@ -2345,6 +2407,16 @@ impl ConnCheckList {
                 },
             );
             self.set_state(CheckListState::Completed);
+            // defer previously nominated pairs' socket removal until the grace
+            // period elapses (RFC 8445 §8.3.1)
+            let mut stale_checks: Vec<ConnCheck> = Vec::new();
+            for component_id in component_ids_selected {
+                self.pairs
+                    .take_previously_nominated(component_id, &mut stale_checks);
+            }
+            tracing::error!("AAAAAAAAAAAAAAAAAA defering checks: {stale_checks:?}");
+            self.stale_generation.defer_candidate_removal(stale_checks);
+            self.stale_generation.start_timer(now);
         }
         self.dump_check_state();
     }
@@ -2450,9 +2522,22 @@ impl ConnCheckList {
 
         let remove_pairs = self.pairs.restart();
 
-        if config.local_remove_candidates {
+        // Defer candidate/socket removal until after the grace period of 3 seconds in order to
+        // allow old packets to be received on the old sockets after a restart.
+        //
+        // RFC 8445 Section 8.3.1:
+        //
+        //  Once a checklist has reached the Completed state, the agent SHOULD
+        //  wait an additional three seconds, and then it can cease responding to
+        //  checks or generating triggered checks on all local candidates other
+        //  than the ones that became selected candidates.
+        let checks = if config.local_remove_candidates && !self.ice_lite {
             self.local_candidates.clear();
-        }
+            self.stale_generation.defer_candidate_removal(remove_pairs);
+            Vec::new()
+        } else {
+            remove_pairs
+        };
         core::mem::swap(
             &mut self.remote_candidates,
             &mut self.pending_restart_remote_candidates,
@@ -2461,9 +2546,7 @@ impl ConnCheckList {
         self.component_ids
             .iter_mut()
             .for_each(|(_id, state)| *state = ComponentConnectionState::New);
-        RestartRemoveChecks {
-            checks: remove_pairs,
-        }
+        RestartRemoveChecks { checks }
     }
 
     pub(crate) fn best_valid_pair(
@@ -2552,6 +2635,11 @@ impl ConnCheckListSetBuilder {
 
 /// The minimum amount of time between iterations of a [`ConnCheckListSet`]
 pub const DEFAULT_MINIMUM_SET_TICK: Duration = Duration::from_millis(50);
+
+/// The grace period after an ICE restart that re-gathers, during which the previous
+/// generation's local candidates (and the sockets backing the previously selected pair)
+/// are kept alive so data can keep flowing on the old path (RFC 8445 §8.3.1).
+pub const SOCKET_GRACE_PERIOD: Duration = Duration::from_secs(3);
 /// Minimum Ta as specified in RFC8445
 pub const MIN_TIMING_ADVANCE: Duration = Duration::from_millis(5);
 
@@ -2715,7 +2803,7 @@ impl ConnCheckListSet {
                     if !agent.handle_stun_message_with_time(&msg, transmit.from, now) {
                         return false;
                     }
-                    self.handle_stun_response(checklist_i, &msg, transmit.from)
+                    self.handle_stun_response(checklist_i, &msg, transmit.from, now)
                 }
                 _ => false,
             }
@@ -2768,6 +2856,7 @@ impl ConnCheckListSet {
                         agent_id,
                         &msg,
                         transmit.from,
+                        now,
                     ) {
                         Ok(response) => {
                             self.pending_messages.push_back(CheckListSetPendingMessage {
@@ -3196,6 +3285,7 @@ impl ConnCheckListSet {
         agent_id: StunAgentId,
         msg: &Message,
         from: SocketAddr,
+        now: Instant,
     ) -> Result<MessageWriteVec, IgnorableReason> {
         let checklist = &mut self.checklists[checklist_i];
         trace!("have request {}", msg);
@@ -3372,7 +3462,7 @@ impl ConnCheckListSet {
         if self.ice_lite {
             if peer_nominating {
                 checklist.dump_check_state();
-                checklist.nominated_pair(&pair);
+                checklist.nominated_pair(&pair, now);
             }
         } else {
             // RFC 8445 Section 7.3.1.4. Triggered Checks
@@ -3507,6 +3597,7 @@ impl ConnCheckListSet {
         conncheck_id: ConnCheckId,
         addr: SocketAddr,
         controlling: bool,
+        now: Instant,
     ) {
         let ice_lite = self.ice_lite;
         let checklist = &mut self.checklists[checklist_i];
@@ -3555,7 +3646,7 @@ impl ConnCheckListSet {
             checklist.add_valid(conncheck_id, &pair);
             if nominate {
                 checklist.dump_check_state();
-                checklist.nominated_pair(&pair);
+                checklist.nominated_pair(&pair, now);
                 return;
             }
             pair_dealt_with = true;
@@ -3588,7 +3679,7 @@ impl ConnCheckListSet {
                     checklist.add_valid(existing_id, &existing_pair);
                     if nominate {
                         checklist.dump_check_state();
-                        checklist.nominated_pair(&existing_pair);
+                        checklist.nominated_pair(&existing_pair, now);
                         return;
                     }
                     pair_dealt_with = true;
@@ -3625,7 +3716,7 @@ impl ConnCheckListSet {
 
             if nominate {
                 checklist.dump_check_state();
-                checklist.nominated_pair(&pair);
+                checklist.nominated_pair(&pair, now);
                 return;
             }
         }
@@ -3647,6 +3738,7 @@ impl ConnCheckListSet {
         checklist_i: usize,
         response: &Message,
         from: SocketAddr,
+        now: Instant,
     ) -> bool {
         if let Some(pos) = self
             .consent_tids
@@ -3733,7 +3825,7 @@ impl ConnCheckListSet {
 
         if let Ok(xor) = response.attribute::<XorMappedAddress>() {
             let xor_addr = xor.addr(response.transaction_id());
-            self.check_success(checklist_i, conncheck_id, xor_addr, self.controlling);
+            self.check_success(checklist_i, conncheck_id, xor_addr, self.controlling, now);
             return true;
         }
 
@@ -4118,9 +4210,11 @@ impl ConnCheckListSet {
                 }
                 return CheckListSetPollRet::WaitUntil(lowest_wait);
             }
-            self.checklist_i += 1;
-            if self.checklist_i >= self.checklists.len() {
-                self.checklist_i = 0;
+            self.checklist_i = (self.checklist_i + 1) % self.checklists.len();
+
+            let checklist = &mut self.checklists[self.checklist_i];
+            for check in checklist.stale_generation.take_expired(now) {
+                self.remove_check_resources(self.checklist_i, check, now);
             }
 
             let checklist = &mut self.checklists[self.checklist_i];
@@ -4325,6 +4419,7 @@ impl ConnCheckListSet {
                         continue;
                     }
                     TurnPollRet::WaitUntil(wait) => {
+                        // TODO: configuration for time limit on TURN closure.
                         all_turn_closed = false;
                         if wait == now {
                             return CheckListSetPollRet::WaitUntil(
@@ -4367,17 +4462,6 @@ impl ConnCheckListSet {
             }
 
             if let Some(event) = checklist.poll_event() {
-                let mut to_remove = Vec::new();
-                if let ConnCheckEvent::SelectedPair(component_id, _selected_pair) = &event {
-                    // any previously used pair from a previous ICE restart is no longer needed
-                    checklist
-                        .pairs
-                        .take_previously_nominated(*component_id, &mut to_remove);
-                    self.maybe_remove_sockets(self.checklist_i, now);
-                }
-                for check in to_remove {
-                    self.remove_check_resources(self.checklist_i, check, now);
-                }
                 return CheckListSetPollRet::Event {
                     checklist_id,
                     event,
@@ -9256,6 +9340,16 @@ mod tests {
         let check = state.local_list().pairs.check_by_id(check_id).unwrap();
         assert_eq!(check.state(), CandidatePairState::Succeeded);
 
+        // The STUN agent validated the peer's address (the response source) on the
+        // check's agent when it processed the success response.  The reported
+        // NAT-mapped address is our local address as seen by the peer and is never
+        // part of the validated-peer set.
+        let agent_id = check.agent_id().unwrap();
+        let peer_addr = state.remote.candidate.address;
+        let agent = state.local_list().agents.agent_by_id(agent_id).unwrap();
+        assert!(agent.is_validated_peer(peer_addr));
+        assert!(!agent.is_validated_peer(nat_mapped));
+
         let CheckListSetPollRet::Event {
             checklist_id: _,
             event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connected),
@@ -9344,6 +9438,17 @@ mod tests {
             selected_pair.candidate_pair.remote.address,
             pair.remote.address
         );
+        // The surviving peer-reflexive check (the one the nomination folded into)
+        // likewise has only the peer's address validated on its agent.
+        let existing_check = state
+            .local_list()
+            .pairs
+            .matching_check(&selected_pair.candidate_pair, Nominate::DontCare)
+            .unwrap();
+        let agent_id = existing_check.agent_id().unwrap();
+        let agent = state.local_list().agents.agent_by_id(agent_id).unwrap();
+        assert!(agent.is_validated_peer(pair.remote.address));
+        assert!(!agent.is_validated_peer(nat_mapped));
         let CheckListSetPollRet::Event {
             checklist_id: _,
             event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Completed),
@@ -9904,6 +10009,95 @@ mod tests {
 
         assert!(reply.handled);
         assert!(reply.data.is_none());
+    }
+
+    #[test]
+    fn check_success_validates_peer() {
+        let _log = crate::tests::test_init_log();
+        let mut state = FineControl::builder().build();
+        let now = Instant::ZERO;
+
+        let local_addr = state.local.peer.candidate.address;
+        let peer_addr = state.remote.candidate.address;
+        let non_stun_data = vec![0x00, 0x01, 0x02, 0x03];
+
+        // No STUN exchange has taken place yet, so the peer is not validated and
+        // non-STUN data from the peer is dropped.
+        let transmit = Transmit::new(
+            non_stun_data.clone(),
+            TransportType::Udp,
+            peer_addr,
+            local_addr,
+        );
+        let reply = state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            state.local.component_id,
+            transmit,
+            now,
+            &mut None,
+        );
+        assert!(reply.data.is_none());
+        assert!(state.local_list().poll_recv().is_none());
+
+        let pair = CandidatePair::new(
+            state.local.peer.candidate.clone(),
+            state.remote.candidate.clone(),
+        );
+        let check_id = state
+            .local_list()
+            .pairs
+            .matching_check(&pair, Nominate::False)
+            .unwrap()
+            .conncheck_id;
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        // We initiate the connectivity check.  The STUN agent validates the peer's
+        // address (the response source) on the check's agent when it processes the
+        // success response, which is what opens the non-STUN data gate.
+        send_next_check_and_response(&state.local.peer, &state.remote)
+            .perform(&mut state.local.checklist_set, now);
+        let c = state.local_list().pairs.check_by_id(check_id).unwrap();
+        assert_eq!(c.state(), CandidatePairState::Succeeded);
+        let agent_id = c.agent_id().unwrap();
+        let agent = state.local_list().agents.agent_by_id(agent_id).unwrap();
+        // Only the peer's address is a validated peer; the local address (the
+        // XOR-MAPPED-ADDRESS in this unmapped case) is never added to the set.
+        assert!(agent.is_validated_peer(peer_addr));
+        assert!(!agent.is_validated_peer(local_addr));
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connected),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        // Now non-STUN data from the peer is accepted.
+        let transmit = Transmit::new(
+            non_stun_data.clone(),
+            TransportType::Udp,
+            peer_addr,
+            local_addr,
+        );
+        let reply = state.local.checklist_set.incoming_data(
+            state.local.checklist_id,
+            state.local.component_id,
+            transmit,
+            now,
+            &mut None,
+        );
+        let Some(data) = &reply.data else {
+            unreachable!("data from validated peer was dropped");
+        };
+        assert_eq!(data.data, non_stun_data);
     }
 
     #[test]
@@ -10500,7 +10694,12 @@ mod tests {
 
         state.check_nomination(&new_pair, now);
 
-        // previously nominated pair is removed
+        // previously nominated pair's socket is kept alive for the grace period
+        assert!(matches!(
+            state.local.checklist_set.poll(now),
+            CheckListSetPollRet::WaitUntil(_)
+        ));
+        let now = now + SOCKET_GRACE_PERIOD;
         let CheckListSetPollRet::RemoveSocket {
             checklist_id: _,
             component_id: 1,
@@ -10669,7 +10868,12 @@ mod tests {
 
         state.check_nomination(&new_pair, now);
 
-        // previously nominated pair is removed
+        // previously nominated pair's socket is kept alive for the grace period
+        assert!(matches!(
+            state.local.checklist_set.poll(now),
+            CheckListSetPollRet::WaitUntil(_)
+        ));
+        let now = now + SOCKET_GRACE_PERIOD;
         let CheckListSetPollRet::RemoveSocket {
             checklist_id: _,
             component_id: 1,
@@ -10814,5 +11018,499 @@ mod tests {
         let CheckListSetPollRet::Closed = state.local.checklist_set.poll(now) else {
             unreachable!();
         };
+    }
+
+    #[test]
+    fn restart_regather_grace_period_defers_stale_socket_removal() {
+        let _log = crate::tests::test_init_log();
+        let mut state = FineControl::builder().build();
+        let now = Instant::ZERO;
+        assert_eq!(state.local.component_id, 1);
+        let local1_addr = state.local.peer.candidate.base_address;
+
+        // a second local candidate so there are multiple checks (and sockets) before the restart
+        let local2 = Peer::builder()
+            .foundation("1")
+            .component_id(1)
+            .priority(state.local.peer.candidate.priority - 1)
+            .local_addr("127.0.0.2:3".parse().unwrap())
+            .build();
+        state
+            .local_list()
+            .add_local_candidate(local2.candidate.clone());
+
+        let pair = CandidatePair::new(
+            state.local.peer.candidate.clone(),
+            state.remote.candidate.clone(),
+        );
+        let check = state
+            .local_list()
+            .pairs
+            .matching_check(&pair, Nominate::False)
+            .unwrap();
+        assert_eq!(check.state(), CandidatePairState::Frozen);
+        let check_id = check.conncheck_id;
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        // perform one tick so the check (and the socket/agent backing it) exists, but do NOT
+        // nominate: the restart below will leaves un-nominated stale checks behind.
+        send_next_check_and_response(&state.local.peer, &state.remote)
+            .perform(&mut state.local.checklist_set, now);
+        let check = state.local_list().pairs.check_by_id(check_id).unwrap();
+        assert_eq!(check.state(), CandidatePairState::Succeeded);
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connected),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        // A restart that re-gathers must not free the previous generation's local candidates
+        // (and the sockets backing the checks) immediately; they are deferred until the
+        // restarted checklist has completed (RFC 8445 Section 8.3.1).  The stale checks are
+        // therefore NOT returned for immediate removal.
+        let restart = RestartStreamConfig::new().set_remove_local_candidates(true);
+        let remove = state.local_list().restart(&restart);
+        assert!(remove.checks.is_empty());
+        let stale = &state.local_list().stale_generation;
+        assert_eq!(stale.generations.len(), 1);
+        assert!(stale.generations[0].remove_at.is_none());
+        assert_eq!(stale.generations[0].checks.len(), 3);
+        state
+            .local
+            .checklist_set
+            .remove_checks(state.local.checklist_id, remove, now);
+
+        // re-gathering continues:  the new generation's credentials and candidates arrive
+        let remote_credentials = Credentials::new("ruser2".to_owned(), "rpass2".to_owned());
+        state.set_remote_credentials(remote_credentials);
+        let local_credentials = state.local_list().local_credentials().clone();
+        state.local.peer.local_credentials = Some(local_credentials.clone());
+        state.remote.remote_credentials = Some(local_credentials);
+
+        // change the addresses
+        state.remote.candidate.address.set_port(42);
+        state.remote.candidate.base_address.set_port(42);
+        let remote_candidate = state.remote.candidate.clone();
+        state
+            .local_list()
+            .add_remote_candidate(remote_candidate.clone());
+        state.local.peer.candidate.address.set_port(50);
+        state.local.peer.candidate.base_address.set_port(50);
+        let local_candidate = state.local.peer.candidate.clone();
+        state
+            .local_list()
+            .add_local_candidate(local_candidate.clone());
+        let new_pair = CandidatePair::new(local_candidate, remote_candidate);
+
+        let now = wait_advance(&mut state.local.checklist_set, now);
+
+        let check = state
+            .local_list()
+            .pairs
+            .matching_check(&new_pair, Nominate::False)
+            .unwrap();
+        assert_eq!(check.state(), CandidatePairState::Frozen);
+        let check_id = check.conncheck_id;
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        // the restarted checklist is still running:  the stale grace timers must NOT be
+        // started before the next check list completion.
+        assert!(
+            state
+                .local_list()
+                .stale_generation
+                .generations
+                .iter()
+                .all(|stale| stale.remove_at.is_none())
+        );
+
+        // perform one full check
+        send_next_check_and_response(&state.local.peer, &state.remote)
+            .perform(&mut state.local.checklist_set, now);
+        let check = state.local_list().pairs.check_by_id(check_id).unwrap();
+        assert_eq!(check.state(), CandidatePairState::Succeeded);
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connected),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        let now = wait_advance(&mut state.local.checklist_set, now);
+
+        // the restarted checklist completes with a new selected pair
+        state.check_nomination(&new_pair, now);
+
+        // only once the restarted checklist has completed, does the grace period
+        // begin. Every stale candidate's timer is started
+        assert!(
+            state
+                .local_list()
+                .stale_generation
+                .generations
+                .iter()
+                .all(|stale| stale.remove_at == Some(now + SOCKET_GRACE_PERIOD))
+        );
+
+        // the stale sockets are kept alive until the grace period elapses
+        assert!(matches!(
+            state.local.checklist_set.poll(now),
+            CheckListSetPollRet::WaitUntil(_)
+        ));
+
+        // advancing past the grace period frees the deferred stale sockets
+        let now = now + SOCKET_GRACE_PERIOD;
+        let CheckListSetPollRet::RemoveSocket {
+            checklist_id: _,
+            component_id: 1,
+            transport: TransportType::Udp,
+            local_addr,
+            remote_addr: _,
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(local_addr, local1_addr);
+        let CheckListSetPollRet::RemoveSocket {
+            checklist_id: _,
+            component_id: 1,
+            transport: TransportType::Udp,
+            local_addr,
+            remote_addr: _,
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(local_addr, local2.candidate.base_address);
+
+        state.local.checklist_set.close(now);
+
+        let CheckListSetPollRet::RemoveSocket {
+            checklist_id: _,
+            component_id: 1,
+            transport: TransportType::Udp,
+            local_addr,
+            remote_addr: _,
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(local_addr, state.local.peer.candidate.base_address);
+
+        assert!(matches!(
+            state.local.checklist_set.poll(now),
+            CheckListSetPollRet::Closed
+        ));
+    }
+
+    #[test]
+    fn restart_during_grace_period_keeps_earlier_stale_timers() {
+        let _log = crate::tests::test_init_log();
+        let mut state = FineControl::builder().build();
+        let now = Instant::ZERO;
+        assert_eq!(state.local.component_id, 1);
+        let local1_addr = state.local.peer.candidate.base_address;
+
+        // a second local candidate so there are multiple checks (and sockets) before the
+        // first restart
+        let local2 = Peer::builder()
+            .foundation("1")
+            .component_id(1)
+            .priority(state.local.peer.candidate.priority - 1)
+            .local_addr("127.0.0.2:3".parse().unwrap())
+            .build();
+        state
+            .local_list()
+            .add_local_candidate(local2.candidate.clone());
+
+        let pair = CandidatePair::new(
+            state.local.peer.candidate.clone(),
+            state.remote.candidate.clone(),
+        );
+        let check = state
+            .local_list()
+            .pairs
+            .matching_check(&pair, Nominate::False)
+            .unwrap();
+        assert_eq!(check.state(), CandidatePairState::Frozen);
+        let check_id = check.conncheck_id;
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        // perform one tick so the check (and the socket/agent backing it) exists, but do NOT
+        // nominate: the restart below therefore leaves un-nominated stale checks behind.
+        send_next_check_and_response(&state.local.peer, &state.remote)
+            .perform(&mut state.local.checklist_set, now);
+        let check = state.local_list().pairs.check_by_id(check_id).unwrap();
+        assert_eq!(check.state(), CandidatePairState::Succeeded);
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connected),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        // first re-gathering restart:  the previous generation's candidates are deferred,
+        // each with its own not-yet-started grace timer
+        let restart = RestartStreamConfig::new().set_remove_local_candidates(true);
+        let remove = state.local_list().restart(&restart);
+        assert!(remove.checks.is_empty());
+        let stale = &state.local_list().stale_generation;
+        assert_eq!(stale.generations.len(), 1);
+        assert!(stale.generations[0].remove_at.is_none());
+        assert_eq!(stale.generations[0].checks.len(), 3);
+        state
+            .local
+            .checklist_set
+            .remove_checks(state.local.checklist_id, remove, now);
+
+        // re-gathering continues and the restarted checklist completes with a new selected
+        // pair, arming the first generation's grace timers
+        let remote_credentials = Credentials::new("ruser2".to_owned(), "rpass2".to_owned());
+        state.set_remote_credentials(remote_credentials.clone());
+        let local_credentials = state.local_list().local_credentials().clone();
+        state.local.peer.local_credentials = Some(local_credentials.clone());
+        state.remote.remote_credentials = Some(local_credentials);
+
+        // change the addresses
+        state.remote.candidate.address.set_port(42);
+        state.remote.candidate.base_address.set_port(42);
+        let remote_candidate = state.remote.candidate.clone();
+        state
+            .local_list()
+            .add_remote_candidate(remote_candidate.clone());
+        state.local.peer.candidate.address.set_port(50);
+        state.local.peer.candidate.base_address.set_port(50);
+        let local_candidate = state.local.peer.candidate.clone();
+        state
+            .local_list()
+            .add_local_candidate(local_candidate.clone());
+        let new_pair = CandidatePair::new(local_candidate.clone(), remote_candidate);
+
+        let now = wait_advance(&mut state.local.checklist_set, now);
+
+        let check = state
+            .local_list()
+            .pairs
+            .matching_check(&new_pair, Nominate::False)
+            .unwrap();
+        assert_eq!(check.state(), CandidatePairState::Frozen);
+        let check_id = check.conncheck_id;
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        send_next_check_and_response(&state.local.peer, &state.remote)
+            .perform(&mut state.local.checklist_set, now);
+        let check = state.local_list().pairs.check_by_id(check_id).unwrap();
+        assert_eq!(check.state(), CandidatePairState::Succeeded);
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connected),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        let now = wait_advance(&mut state.local.checklist_set, now);
+        state.check_nomination(&new_pair, now);
+
+        // the restarted checklist has completed. the first generation's grace timers have
+        // started
+        let remove_time = now + SOCKET_GRACE_PERIOD;
+        assert!(
+            state
+                .local_list()
+                .stale_generation
+                .generations
+                .iter()
+                .all(|stale| stale.remove_at == Some(remove_time))
+        );
+
+        // second re-gathering restart during the first generation's grace period. It must
+        // not change any of the existing stale socket timeres
+        let remove = state.local_list().restart(&restart);
+        assert!(remove.checks.is_empty());
+        let stale = &state.local_list().stale_generation;
+        assert_eq!(stale.generations.len(), 1);
+        // the first generation keeps its original armed timers
+        assert_eq!(stale.generations[0].remove_at, Some(remove_time));
+        assert_eq!(stale.generations[0].checks.len(), 3);
+        // no other checks have been added as stale as no further checks were constructed between
+        // nomination and restart.
+        state
+            .local
+            .checklist_set
+            .remove_checks(state.local.checklist_id, remove, now);
+
+        // Re-gathering continues and the second generation arrives and completes
+        state.set_remote_credentials(remote_credentials);
+        let local_credentials = state.local_list().local_credentials().clone();
+        state.local.peer.local_credentials = Some(local_credentials.clone());
+        state.remote.remote_credentials = Some(local_credentials);
+
+        state.remote.candidate.address.set_port(43);
+        state.remote.candidate.base_address.set_port(43);
+        let remote_candidate = state.remote.candidate.clone();
+        state
+            .local_list()
+            .add_remote_candidate(remote_candidate.clone());
+        state.local.peer.candidate.address.set_port(60);
+        state.local.peer.candidate.base_address.set_port(60);
+        let local_candidate2 = state.local.peer.candidate.clone();
+        state
+            .local_list()
+            .add_local_candidate(local_candidate2.clone());
+        let new_pair2 = CandidatePair::new(local_candidate2, remote_candidate);
+
+        let now = wait_advance(&mut state.local.checklist_set, now);
+
+        let check = state
+            .local_list()
+            .pairs
+            .matching_check(&new_pair2, Nominate::False)
+            .unwrap();
+        assert_eq!(check.state(), CandidatePairState::Frozen);
+        let check_id = check.conncheck_id;
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connecting),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        send_next_check_and_response(&state.local.peer, &state.remote)
+            .perform(&mut state.local.checklist_set, now);
+        let check = state.local_list().pairs.check_by_id(check_id).unwrap();
+        assert_eq!(check.state(), CandidatePairState::Succeeded);
+
+        let CheckListSetPollRet::Event {
+            checklist_id: _,
+            event: ConnCheckEvent::ComponentState(_cid, ComponentConnectionState::Connected),
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+
+        let now = wait_advance(&mut state.local.checklist_set, now);
+        state.check_nomination(&new_pair2, now);
+
+        // the second generation's timer has started
+        let gen2_grace_deadline = now + SOCKET_GRACE_PERIOD;
+        let stale = &state.local_list().stale_generation;
+        // gen1: 2 candidates, gen2: 1 candidate (no checks) + 1 candidate (nominated check)
+        assert_eq!(stale.generations.len(), 2);
+        assert_eq!(stale.generations[0].remove_at, Some(remove_time));
+        assert_eq!(stale.generations[1].remove_at, Some(gen2_grace_deadline));
+
+        assert!(matches!(
+            state.local.checklist_set.poll(now),
+            CheckListSetPollRet::WaitUntil(_)
+        ));
+
+        // when the first generation's grace period elapses, its sockets are freed
+        let now = remove_time;
+        let CheckListSetPollRet::RemoveSocket {
+            checklist_id: _,
+            component_id: 1,
+            transport: TransportType::Udp,
+            local_addr,
+            remote_addr: _,
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(local_addr, local1_addr);
+        let CheckListSetPollRet::RemoveSocket {
+            checklist_id: _,
+            component_id: 1,
+            transport: TransportType::Udp,
+            local_addr,
+            remote_addr: _,
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(local_addr, local2.candidate.base_address);
+
+        // the second generation's timer is still running and the first has been removed
+        let stale = &state.local_list().stale_generation;
+        assert_eq!(stale.generations.len(), 1);
+        assert!(
+            stale
+                .generations
+                .iter()
+                .all(|s| s.remove_at == Some(gen2_grace_deadline))
+        );
+
+        // when the second generation's grace period elapses, its nominated pair's socket is
+        // freed
+        let now = gen2_grace_deadline;
+        let CheckListSetPollRet::RemoveSocket {
+            checklist_id: _,
+            component_id: 1,
+            transport: TransportType::Udp,
+            local_addr,
+            remote_addr: _,
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(local_addr, local_candidate.base_address);
+        assert!(state.local_list().stale_generation.generations.is_empty());
+
+        state.local.checklist_set.close(now);
+
+        let CheckListSetPollRet::RemoveSocket {
+            checklist_id: _,
+            component_id: 1,
+            transport: TransportType::Udp,
+            local_addr,
+            remote_addr: _,
+        } = state.local.checklist_set.poll(now)
+        else {
+            unreachable!();
+        };
+        assert_eq!(local_addr, state.local.peer.candidate.base_address);
+
+        assert!(matches!(
+            state.local.checklist_set.poll(now),
+            CheckListSetPollRet::Closed
+        ));
     }
 }
