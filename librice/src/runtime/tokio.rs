@@ -159,11 +159,7 @@ impl super::AsyncTcpStreamWrite for tokio::net::tcp::OwnedWriteHalf {
     fn poll_flush(&mut self, cx: &mut std::task::Context) -> Poll<std::io::Result<()>> {
         tokio::io::AsyncWrite::poll_flush(Pin::new(&mut *self), cx)
     }
-    fn poll_shutdown(
-        &mut self,
-        cx: &mut std::task::Context,
-        _how: std::net::Shutdown,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_shutdown(&mut self, cx: &mut std::task::Context) -> Poll<std::io::Result<()>> {
         tokio::io::AsyncWrite::poll_shutdown(Pin::new(&mut *self), cx)
     }
 }

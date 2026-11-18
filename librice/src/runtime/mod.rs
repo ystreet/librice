@@ -159,11 +159,7 @@ pub trait AsyncTcpStreamWrite: Send + Sync + Debug {
     /// Poll for flush completion.
     fn poll_flush(&mut self, cx: &mut Context) -> Poll<std::io::Result<()>>;
     /// Poll for shutdown completion.
-    fn poll_shutdown(
-        &mut self,
-        cx: &mut Context,
-        how: std::net::Shutdown,
-    ) -> Poll<std::io::Result<()>>;
+    fn poll_shutdown(&mut self, cx: &mut Context) -> Poll<std::io::Result<()>>;
 }
 
 /// Automatically implemented extension trait for writing to a Tcp connection.
@@ -189,15 +185,15 @@ pub trait AsyncTcpStreamWriteExt: AsyncTcpStreamWrite {
     /// Flush the Tcp connection.
     fn flush(&mut self) -> impl Future<Output = std::io::Result<()>>;
     /// Close the Tcp connection
-    fn shutdown(&mut self, how: std::net::Shutdown) -> impl Future<Output = std::io::Result<()>>;
+    fn shutdown(&mut self) -> impl Future<Output = std::io::Result<()>>;
 }
 
 impl<T: AsyncTcpStreamWrite + ?Sized> AsyncTcpStreamWriteExt for T {
     async fn flush(&mut self) -> std::io::Result<()> {
         core::future::poll_fn(|cx| self.poll_flush(cx)).await
     }
-    async fn shutdown(&mut self, how: std::net::Shutdown) -> std::io::Result<()> {
-        core::future::poll_fn(|cx| self.poll_shutdown(cx, how)).await
+    async fn shutdown(&mut self) -> std::io::Result<()> {
+        core::future::poll_fn(|cx| self.poll_shutdown(cx)).await
     }
     async fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         core::future::poll_fn(|cx| self.poll_write(cx, buf)).await
@@ -236,7 +232,7 @@ mod tests {
     use crate::runtime::{
         AsyncTcpListenerExt, AsyncTcpStreamReadExt, AsyncTcpStreamWriteExt, AsyncUdpSocketExt,
     };
-    use std::net::{Shutdown, SocketAddr};
+    use std::net::SocketAddr;
 
     async fn udp_round_trip(runtime: Arc<dyn Runtime>) {
         let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -295,7 +291,7 @@ mod tests {
         assert_eq!(&buf[..n], b"ping");
 
         a_write.flush().await.unwrap();
-        c_write.shutdown(Shutdown::Write).await.unwrap();
+        c_write.shutdown().await.unwrap();
     }
 
     #[cfg(feature = "runtime-smol")]

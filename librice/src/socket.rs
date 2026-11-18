@@ -233,7 +233,7 @@ impl TcpChannel {
                             }
                         }
                         TcpData::Shutdown => {
-                            if let Err(e) = write.shutdown(std::net::Shutdown::Both).await {
+                            if let Err(e) = write.shutdown().await {
                                 warn!("tcp shutdown produced error {e:?}");
                             }
                             break;

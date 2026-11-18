@@ -176,12 +176,7 @@ impl super::AsyncTcpStreamWrite for smol::net::TcpStream {
     fn poll_flush(&mut self, cx: &mut std::task::Context) -> Poll<std::io::Result<()>> {
         smol::io::AsyncWrite::poll_flush(Pin::new(&mut *self), cx)
     }
-    fn poll_shutdown(
-        &mut self,
-        cx: &mut std::task::Context,
-        how: std::net::Shutdown,
-    ) -> Poll<std::io::Result<()>> {
-        self.shutdown(how)?;
+    fn poll_shutdown(&mut self, cx: &mut std::task::Context) -> Poll<std::io::Result<()>> {
         smol::io::AsyncWrite::poll_close(Pin::new(&mut *self), cx)
     }
 }

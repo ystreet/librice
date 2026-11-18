@@ -169,7 +169,7 @@ pub async fn stund_tcp(
                 }
             }
             // XXX: Assumes that the stun packet arrives in a single packet
-            write.shutdown(std::net::Shutdown::Read).await.unwrap();
+            write.shutdown().await.unwrap();
         }))
     }
     Ok(())
