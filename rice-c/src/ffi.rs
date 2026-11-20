@@ -71,17 +71,12 @@ impl RiceData {
     // SAFETY: requires the caller to ensure the lifetime of the returned slice is less than self.
     pub(crate) unsafe fn data<'a>(&self) -> Option<&'a [u8]> {
         unsafe {
-            let data = match self.tag {
-                RICE_DATA_BORROWED => &self.field1.field1.borrowed,
-                RICE_DATA_OWNED => &self.field1.field2.owned,
-                val => panic!("Unknown data tag {val}!"),
-            };
-            if data.ptr.is_null() || data.size == 0 {
+            let mut len = 0;
+            let ptr = rice_data_payload(self, &mut len);
+            if ptr.is_null() {
                 return None;
             }
-            let offset = data.offset;
-            let data = core::slice::from_raw_parts(data.ptr, data.size);
-            Some(&data[offset..])
+            Some(core::slice::from_raw_parts(ptr, len))
         }
     }
 }

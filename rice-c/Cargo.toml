@@ -34,7 +34,7 @@ stun-proto.workspace = true
 rice-stun-types.workspace = true
 
 [package.metadata.system-deps]
-rice-proto = "0.4.2"
+rice-proto = "0.4.3"
 
 [package.metadata.docs.rs]
 all-features = true
