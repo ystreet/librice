@@ -5,7 +5,29 @@ pub const RICE_PROTO_MINOR: u32 = 4;
 pub const RICE_PROTO_PATCH: u32 = 3;
 pub const RICE_PROTO_RUSTLS: u32 = 1;
 pub const RICE_PROTO_OPENSSL: u32 = 1;
-pub const RICE_PROTO_DIMPL: u32 = 1;
+#[doc = " The UDP transport"]
+pub const RICE_TRANSPORT_TYPE_UDP: RiceTransportType = 0;
+#[doc = " The TCP transport"]
+pub const RICE_TRANSPORT_TYPE_TCP: RiceTransportType = 1;
+pub type RiceTransportType = u32;
+#[doc = " The candidate is a local network interface"]
+pub const RICE_CANDIDATE_TYPE_HOST: RiceCandidateType = 0;
+#[doc = " The candidate was discovered from incoming data"]
+pub const RICE_CANDIDATE_TYPE_PEER_REFLEXIVE: RiceCandidateType = 1;
+#[doc = " The candidate was discovered by asking an external server (STUN/TURN)"]
+pub const RICE_CANDIDATE_TYPE_SERVER_REFLEXIVE: RiceCandidateType = 2;
+#[doc = " The candidate will relay all data through an external server (TURN)."]
+pub const RICE_CANDIDATE_TYPE_RELAYED: RiceCandidateType = 3;
+pub type RiceCandidateType = u32;
+#[doc = " Not a TCP candidate."]
+pub const RICE_TCP_TYPE_NONE: RiceTcpType = 0;
+#[doc = " The candidate address will connect to a remote address."]
+pub const RICE_TCP_TYPE_ACTIVE: RiceTcpType = 1;
+#[doc = " The candidate will listen for incominng TCP connections."]
+pub const RICE_TCP_TYPE_PASSIVE: RiceTcpType = 2;
+#[doc = " Simultaneous open.  The candidate will both listen for incoming connections, and connect to\n remote addresses."]
+pub const RICE_TCP_TYPE_SO: RiceTcpType = 3;
+pub type RiceTcpType = u32;
 #[doc = " Component is in initial state and no connectivity checks are in progress."]
 pub const RICE_COMPONENT_CONNECTION_STATE_NEW: RiceComponentConnectionState = 0;
 #[doc = " Connectivity checks are in progress for this candidate."]
@@ -22,24 +44,11 @@ pub const RICE_ADDRESS_FAMILY_IPV4: RiceAddressFamily = 1;
 #[doc = " IP version 6."]
 pub const RICE_ADDRESS_FAMILY_IPV6: RiceAddressFamily = 2;
 pub type RiceAddressFamily = u32;
-#[doc = " The candidate is a local network interface"]
-pub const RICE_CANDIDATE_TYPE_HOST: RiceCandidateType = 0;
-#[doc = " The candidate was discovered from incoming data"]
-pub const RICE_CANDIDATE_TYPE_PEER_REFLEXIVE: RiceCandidateType = 1;
-#[doc = " The candidate was discovered by asking an external server (STUN/TURN)"]
-pub const RICE_CANDIDATE_TYPE_SERVER_REFLEXIVE: RiceCandidateType = 2;
-#[doc = " The candidate will relay all data through an external server (TURN)."]
-pub const RICE_CANDIDATE_TYPE_RELAYED: RiceCandidateType = 3;
-pub type RiceCandidateType = u32;
-#[doc = " Not an error. The operation was completed successfully."]
-pub const RICE_ERROR_SUCCESS: RiceError = 0;
-#[doc = " The operation failed for an unspecified reason."]
-pub const RICE_ERROR_FAILED: RiceError = -1;
-#[doc = " A required resource was not found."]
-pub const RICE_ERROR_RESOURCE_NOT_FOUND: RiceError = -2;
-#[doc = " The operation is already in progress."]
-pub const RICE_ERROR_ALREADY_IN_PROGRESS: RiceError = -3;
-pub type RiceError = i32;
+#[doc = " The SHA-1 HMAC."]
+pub const RICE_INTEGRITY_ALGORITHM_SHA1: RiceIntegrityAlgorithm = 1;
+#[doc = " The SHA-256 HMAC."]
+pub const RICE_INTEGRITY_ALGORITHM_SHA256: RiceIntegrityAlgorithm = 2;
+pub type RiceIntegrityAlgorithm = u32;
 #[doc = " The configuration will not be used."]
 pub const RICE_FEATURE_DISABLED: RiceFeature = -1;
 #[doc = " The configuration will automatically be used when supported."]
@@ -47,11 +56,20 @@ pub const RICE_FEATURE_AUTO: RiceFeature = 0;
 #[doc = " The configuration is enabled and required."]
 pub const RICE_FEATURE_REQUIRED: RiceFeature = 1;
 pub type RiceFeature = i32;
-#[doc = " The SHA-1 HMAC."]
-pub const RICE_INTEGRITY_ALGORITHM_SHA1: RiceIntegrityAlgorithm = 1;
-#[doc = " The SHA-256 HMAC."]
-pub const RICE_INTEGRITY_ALGORITHM_SHA256: RiceIntegrityAlgorithm = 2;
-pub type RiceIntegrityAlgorithm = u32;
+#[doc = " Openssl."]
+pub const RICE_TLS_VARIANT_OPENSSL: RiceTlsVariant = 1;
+#[doc = " Rustls."]
+pub const RICE_TLS_VARIANT_RUSTLS: RiceTlsVariant = 2;
+#[doc = " Dimpl."]
+pub const RICE_TLS_VARIANT_DIMPL: RiceTlsVariant = 3;
+pub type RiceTlsVariant = u32;
+#[doc = " No role change."]
+pub const RICE_ROLE_CHANGE_NONE: RiceRoleChange = 0;
+#[doc = " Change role to Lite."]
+pub const RICE_ROLE_CHANGE_LITE: RiceRoleChange = 1;
+#[doc = " Change role to Full."]
+pub const RICE_ROLE_CHANGE_FULL: RiceRoleChange = 2;
+pub type RiceRoleChange = i32;
 #[doc = " No error."]
 pub const RICE_PARSE_CANDIDATE_ERROR_SUCCESS: RiceParseCandidateError = 0;
 #[doc = " Not a candidate message."]
@@ -73,34 +91,15 @@ pub const RICE_PARSE_CANDIDATE_ERROR_BAD_EXTENSION: RiceParseCandidateError = -8
 #[doc = " Data is not well formed."]
 pub const RICE_PARSE_CANDIDATE_ERROR_MALFORMED: RiceParseCandidateError = -9;
 pub type RiceParseCandidateError = i32;
-#[doc = " No role change."]
-pub const RICE_ROLE_CHANGE_NONE: RiceRoleChange = 0;
-#[doc = " Change role to Lite."]
-pub const RICE_ROLE_CHANGE_LITE: RiceRoleChange = 1;
-#[doc = " Change role to Full."]
-pub const RICE_ROLE_CHANGE_FULL: RiceRoleChange = 2;
-pub type RiceRoleChange = i32;
-#[doc = " Not a TCP candidate."]
-pub const RICE_TCP_TYPE_NONE: RiceTcpType = 0;
-#[doc = " The candidate address will connect to a remote address."]
-pub const RICE_TCP_TYPE_ACTIVE: RiceTcpType = 1;
-#[doc = " The candidate will listen for incominng TCP connections."]
-pub const RICE_TCP_TYPE_PASSIVE: RiceTcpType = 2;
-#[doc = " Simultaneous open.  The candidate will both listen for incoming connections, and connect to\n remote addresses."]
-pub const RICE_TCP_TYPE_SO: RiceTcpType = 3;
-pub type RiceTcpType = u32;
-#[doc = " Openssl."]
-pub const RICE_TLS_VARIANT_OPENSSL: RiceTlsVariant = 1;
-#[doc = " Rustls."]
-pub const RICE_TLS_VARIANT_RUSTLS: RiceTlsVariant = 2;
-#[doc = " Dimpl."]
-pub const RICE_TLS_VARIANT_DIMPL: RiceTlsVariant = 3;
-pub type RiceTlsVariant = u32;
-#[doc = " The UDP transport"]
-pub const RICE_TRANSPORT_TYPE_UDP: RiceTransportType = 0;
-#[doc = " The TCP transport"]
-pub const RICE_TRANSPORT_TYPE_TCP: RiceTransportType = 1;
-pub type RiceTransportType = u32;
+#[doc = " Not an error. The operation was completed successfully."]
+pub const RICE_ERROR_SUCCESS: RiceError = 0;
+#[doc = " The operation failed for an unspecified reason."]
+pub const RICE_ERROR_FAILED: RiceError = -1;
+#[doc = " A required resource was not found."]
+pub const RICE_ERROR_RESOURCE_NOT_FOUND: RiceError = -2;
+#[doc = " The operation is already in progress."]
+pub const RICE_ERROR_ALREADY_IN_PROGRESS: RiceError = -3;
+pub type RiceError = i32;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct Credentials {
@@ -175,7 +174,7 @@ const _: () = {
 pub const RICE_DATA_BORROWED: RiceData_Tag = 0;
 #[doc = " The data is owned and will be freed on destruction."]
 pub const RICE_DATA_OWNED: RiceData_Tag = 1;
-#[doc = " A pointer to a sequence of bytes and size."]
+#[doc = " A pointer to a sequence of bytes and size.\n\n Use `rice_data_payload()` to access the payload bytes."]
 pub type RiceData_Tag = ::core::ffi::c_uint;
 #[repr(C)]
 pub struct RiceData {
@@ -614,7 +613,7 @@ pub struct RiceStreamIncomingData {
     pub handled: bool,
     #[doc = " Whether there is more data to pull using `rice_stream_poll_recv()`."]
     pub have_more_data: bool,
-    #[doc = " The data pointer. If non-NULL, this is the same value as provided to\n `rice_stream_handle_incoming_data()` and has the same lifetime contraints as that original\n data pointer."]
+    #[doc = " The data pointer. If non-NULL, this is the same value as provided to\n `rice_stream_handle_incoming_data()` and has the same lifetime contraints as that original\n data pointer.\n\n The application data may start at an offset into that data, e.g. after the RFC 4571\n framing header of TCP data. Use `rice_data_payload()` to retrieve it."]
     pub data: RiceData,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
@@ -712,12 +711,16 @@ unsafe extern "C" {
     pub fn rice_component_revoke_consent(component: *const RiceComponent);
 }
 unsafe extern "C" {
-    #[doc = " The number of bytes in a `RiceData`."]
+    #[doc = " The number of bytes in the backing buffer of a `RiceData`.\n\n This describes the backing buffer and is not necessarily the length of the payload, which may\n start at a non-zero offset into the buffer, e.g. after the RFC 4571 framing header of data\n received over TCP. Use `rice_data_payload()` to retrieve the payload.\n\n `data` must not be `NULL`."]
     pub fn rice_data_len(data: *const RiceData) -> usize;
 }
 unsafe extern "C" {
-    #[doc = " The data pointer for a `RiceData`."]
+    #[doc = " The pointer to the start of the backing buffer of a `RiceData`.\n\n This describes the backing buffer and does not necessarily point to the payload, which may\n start at a non-zero offset into the buffer, e.g. after the RFC 4571 framing header of data\n received over TCP. Use `rice_data_payload()` to retrieve the payload.\n\n `data` must not be `NULL`."]
     pub fn rice_data_ptr(data: *const RiceData) -> *mut u8;
+}
+unsafe extern "C" {
+    #[doc = " A read-only view of the payload of a `RiceData`.\n\n Returns a pointer to the first payload byte and stores the number of payload bytes in\n `payload_len`. Unlike `rice_data_ptr()` and `rice_data_len()`, this excludes any leading bytes\n of the backing buffer that are not part of the payload, such as the RFC 4571 framing header of\n data received over TCP.\n\n If there is no payload, `NULL` is returned and `payload_len` is set to 0. This is the case when\n `data` is `NULL`, is empty (e.g. the default value), has a `NULL` backing pointer, or has a\n payload offset at or beyond the end of the backing buffer.\n\n `data` can be `NULL`, otherwise it must point to a valid `RiceData`. Dangling pointers and\n invalid values (e.g. an unknown tag) cannot be detected. `payload_len` is required: it must be\n a non-`NULL` pointer to writable storage.\n\n Nothing is allocated, copied, modified or freed and the ownership of `data` is unchanged. The\n returned pointer refers to the storage of `data` and must not be freed. It is only valid while\n that storage is: borrowed storage must be kept alive by its owner and owned storage must not\n be released (e.g. with `rice_transmit_clear()`) while the payload is in use. Owned storage is\n still released through `data` as before."]
+    pub fn rice_data_payload(data: *const RiceData, payload_len: *mut usize) -> *const u8;
 }
 unsafe extern "C" {
     #[doc = " Free any resources allocated within a `RiceTransmit`.\n\n The `RiceTransmit` must have been previously initialized with `rice_transmit_init()`."]
@@ -886,10 +889,6 @@ unsafe extern "C" {
 unsafe extern "C" {
     #[doc = " Construct a new TLS configuration using Rustls."]
     pub fn rice_tls_config_new_rustls_with_ip(addr: *const RiceAddress) -> *mut RiceTlsConfig;
-}
-unsafe extern "C" {
-    #[doc = " Construct a new TLS configuration using `dimpl`."]
-    pub fn rice_tls_config_new_dimpl() -> *mut RiceTlsConfig;
 }
 unsafe extern "C" {
     #[doc = " Create a new [`RiceStreamRestartConfig`]."]

@@ -538,6 +538,8 @@ impl RiceAgentPoll {
 }
 
 /// A pointer to a sequence of bytes and size.
+///
+/// Use `rice_data_payload()` to access the payload bytes.
 #[derive(Debug)]
 #[repr(C)]
 pub enum RiceData {
@@ -594,6 +596,18 @@ impl RiceDataImpl {
             offset: 0,
         }
     }
+
+    /// The pointer to, and length of, the bytes from `offset` up to `size`, if there are any.
+    fn payload(&self) -> Option<(*const u8, usize)> {
+        if self.ptr.is_null() || self.offset >= self.size {
+            return None;
+        }
+        // Only the address is computed here, nothing is dereferenced.
+        Some((
+            self.ptr.cast_const().wrapping_add(self.offset),
+            self.size - self.offset,
+        ))
+    }
 }
 
 impl Default for RiceDataImpl {
@@ -641,7 +655,13 @@ impl<T: AsRef<[u8]>> From<SendData<T>> for RiceData {
     }
 }
 
-/// The number of bytes in a `RiceData`.
+/// The number of bytes in the backing buffer of a `RiceData`.
+///
+/// This describes the backing buffer and is not necessarily the length of the payload, which may
+/// start at a non-zero offset into the buffer, e.g. after the RFC 4571 framing header of data
+/// received over TCP. Use `rice_data_payload()` to retrieve the payload.
+///
+/// `data` must not be `NULL`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_data_len(data: *const RiceData) -> usize {
     unsafe {
@@ -652,7 +672,13 @@ pub unsafe extern "C" fn rice_data_len(data: *const RiceData) -> usize {
     }
 }
 
-/// The data pointer for a `RiceData`.
+/// The pointer to the start of the backing buffer of a `RiceData`.
+///
+/// This describes the backing buffer and does not necessarily point to the payload, which may
+/// start at a non-zero offset into the buffer, e.g. after the RFC 4571 framing header of data
+/// received over TCP. Use `rice_data_payload()` to retrieve the payload.
+///
+/// `data` must not be `NULL`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rice_data_ptr(data: *const RiceData) -> *mut u8 {
     unsafe {
@@ -660,6 +686,39 @@ pub unsafe extern "C" fn rice_data_ptr(data: *const RiceData) -> *mut u8 {
             RiceData::Borrowed(imp) => imp.ptr,
             RiceData::Owned(imp) => imp.ptr,
         }
+    }
+}
+
+/// Returns a pointer to the first payload byte and stores the number of payload bytes in
+/// `payload_len`.
+///
+/// - `data` is a valid `RiceData` or `NULL`.
+/// - `payload_len` is a required output location for the number of valid bytes in the returned
+///   data pointer.
+///
+/// The lifetime of any non-`NULL` data pointer returned is the same as the data pointer returned
+/// by `rice_data_ptr()`.
+///
+/// If there is no valid payload, `NULL` is returned and `payload_len` is set to 0.
+///
+/// This function will exclude any leading bytes of the backing buffer that are not part of the
+/// payload, e.g. the RFC 4571 framing header of data received over TCP.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rice_data_payload(
+    data: *const RiceData,
+    payload_len: *mut usize,
+) -> *const u8 {
+    unsafe {
+        let payload = if data.is_null() {
+            None
+        } else {
+            match &*data {
+                RiceData::Borrowed(imp) | RiceData::Owned(imp) => imp.payload(),
+            }
+        };
+        let (ptr, len) = payload.unwrap_or((core::ptr::null(), 0));
+        *payload_len = len;
+        ptr
     }
 }
 
@@ -2904,6 +2963,9 @@ pub struct RiceStreamIncomingData {
     /// The data pointer. If non-NULL, this is the same value as provided to
     /// `rice_stream_handle_incoming_data()` and has the same lifetime contraints as that original
     /// data pointer.
+    ///
+    /// The application data may start at an offset into that data, e.g. after the RFC 4571
+    /// framing header of TCP data. Use `rice_data_payload()` to retrieve it.
     data: RiceData,
 }
 
@@ -4078,6 +4140,530 @@ mod tests {
             assert_eq!(rice_data_len(&transmit.data), 0);
             rice_transmit_clear(&mut transmit);
 
+            rice_component_unref(component);
+            rice_stream_unref(stream);
+            rice_agent_unref(agent);
+        }
+    }
+
+    /// Calls `rice_data_payload()`, checking that the output length is always written.
+    unsafe fn data_payload(data: *const RiceData) -> (*const u8, usize) {
+        let mut len = usize::MAX;
+        let ptr = unsafe { rice_data_payload(data, &mut len) };
+        if ptr.is_null() {
+            assert_eq!(len, 0);
+        } else {
+            assert_ne!(len, 0);
+            assert_ne!(len, usize::MAX);
+        }
+        (ptr, len)
+    }
+
+    unsafe fn data_payload_slice<'a>(data: *const RiceData) -> Option<&'a [u8]> {
+        let (ptr, len) = unsafe { data_payload(data) };
+        (!ptr.is_null()).then(|| unsafe { core::slice::from_raw_parts(ptr, len) })
+    }
+
+    unsafe fn assert_no_payload(data: *const RiceData) {
+        let (ptr, len) = unsafe { data_payload(data) };
+        assert!(ptr.is_null());
+        assert_eq!(len, 0);
+    }
+
+    #[test]
+    fn rice_data_payload_borrowed() {
+        let buf = [0x10_u8, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17];
+        for offset in [0, 1, 2, buf.len() - 1] {
+            unsafe {
+                let data = RiceData::Borrowed(RiceDataImpl {
+                    ptr: mut_override(buf.as_ptr()),
+                    size: buf.len(),
+                    offset,
+                });
+                let (ptr, len) = data_payload(&data);
+                assert_eq!(ptr, buf.as_ptr().add(offset));
+                assert_eq!(len, buf.len() - offset);
+                assert_eq!(core::slice::from_raw_parts(ptr, len), &buf[offset..]);
+
+                // The existing accessors still describe the whole backing buffer.
+                assert_eq!(rice_data_ptr(&data).cast_const(), buf.as_ptr());
+                assert_eq!(rice_data_len(&data), buf.len());
+                let RiceData::Borrowed(ref imp) = data else {
+                    unreachable!();
+                };
+                assert_eq!(imp.ptr.cast_const(), buf.as_ptr());
+                assert_eq!(imp.size, buf.len());
+                assert_eq!(imp.offset, offset);
+
+                // Releasing the value does not free the borrowed storage.
+                let mut transmit = RiceTransmit {
+                    data,
+                    ..Default::default()
+                };
+                rice_transmit_clear(&mut transmit);
+                assert_no_payload(&transmit.data);
+            }
+        }
+        assert_eq!(buf, [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17]);
+    }
+
+    #[test]
+    fn rice_data_payload_owned() {
+        let bytes = [0x20_u8, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27];
+        for offset in [0, 1, 2, bytes.len() - 1] {
+            unsafe {
+                let mut data = RiceData::from(Box::<[u8]>::from(bytes.as_slice()));
+                let RiceData::Owned(ref mut imp) = data else {
+                    unreachable!();
+                };
+                imp.offset = offset;
+                let base = imp.ptr.cast_const();
+
+                for _ in 0..2 {
+                    let (ptr, len) = data_payload(&data);
+                    assert_eq!(ptr, base.add(offset));
+                    assert_eq!(len, bytes.len() - offset);
+                    assert_eq!(core::slice::from_raw_parts(ptr, len), &bytes[offset..]);
+                }
+
+                // The existing accessors still describe the whole backing buffer, which is left
+                // untouched.
+                assert_eq!(rice_data_ptr(&data).cast_const(), base);
+                assert_eq!(rice_data_len(&data), bytes.len());
+                let RiceData::Owned(ref imp) = data else {
+                    unreachable!();
+                };
+                assert_eq!(imp.ptr.cast_const(), base);
+                assert_eq!(imp.size, bytes.len());
+                assert_eq!(imp.offset, offset);
+                assert_eq!(core::slice::from_raw_parts(base, bytes.len()), &bytes);
+
+                // The owned storage is released once, through the original allocation.
+                let mut transmit = RiceTransmit {
+                    data,
+                    ..Default::default()
+                };
+                rice_transmit_clear(&mut transmit);
+                assert!(rice_data_ptr(&transmit.data).is_null());
+                assert_eq!(rice_data_len(&transmit.data), 0);
+                assert_no_payload(&transmit.data);
+                rice_transmit_clear(&mut transmit);
+            }
+        }
+    }
+
+    #[test]
+    fn rice_data_payload_empty() {
+        unsafe {
+            let mut len = usize::MAX;
+            assert!(rice_data_payload(core::ptr::null(), &mut len).is_null());
+            assert_eq!(len, 0);
+
+            let mut transmit = MaybeUninit::uninit();
+            rice_transmit_init(&mut transmit);
+            let mut transmit = transmit.assume_init();
+            assert_no_payload(&transmit.data);
+            rice_transmit_clear(&mut transmit);
+            assert_no_payload(&transmit.data);
+
+            for data in [
+                RiceData::Borrowed(RiceDataImpl::default()),
+                RiceData::Owned(RiceDataImpl::default()),
+            ] {
+                assert_no_payload(&data);
+                assert!(rice_data_ptr(&data).is_null());
+                assert_eq!(rice_data_len(&data), 0);
+            }
+
+            // A NULL backing pointer has no payload, whatever the size and offset.
+            for (size, offset) in [(0, 0), (4, 0), (4, 2), (4, 4), (4, 5)] {
+                for data in [
+                    RiceData::Borrowed(RiceDataImpl {
+                        ptr: core::ptr::null_mut(),
+                        size,
+                        offset,
+                    }),
+                    RiceData::Owned(RiceDataImpl {
+                        ptr: core::ptr::null_mut(),
+                        size,
+                        offset,
+                    }),
+                ] {
+                    assert_no_payload(&data);
+                    assert!(rice_data_ptr(&data).is_null());
+                    assert_eq!(rice_data_len(&data), size);
+                }
+            }
+
+            // Neither does an empty, non-NULL, backing buffer.
+            let empty = [0_u8; 0];
+            let data = RiceData::Borrowed(RiceDataImpl::borrowed_to_c(&empty));
+            assert_no_payload(&data);
+            assert_eq!(rice_data_ptr(&data).cast_const(), empty.as_ptr());
+            assert_eq!(rice_data_len(&data), 0);
+            let mut transmit = RiceTransmit {
+                data: RiceData::from(Box::<[u8]>::default()),
+                ..Default::default()
+            };
+            assert_no_payload(&transmit.data);
+            assert!(!rice_data_ptr(&transmit.data).is_null());
+            assert_eq!(rice_data_len(&transmit.data), 0);
+            rice_transmit_clear(&mut transmit);
+
+            // Nor does an offset at, or beyond, the end of the backing buffer.
+            let buf = [0x30_u8, 0x31, 0x32, 0x33];
+            for offset in [buf.len(), buf.len() + 1, usize::MAX] {
+                let data = RiceData::Borrowed(RiceDataImpl {
+                    ptr: mut_override(buf.as_ptr()),
+                    size: buf.len(),
+                    offset,
+                });
+                assert_no_payload(&data);
+                assert_eq!(rice_data_ptr(&data).cast_const(), buf.as_ptr());
+                assert_eq!(rice_data_len(&data), buf.len());
+
+                let mut data = RiceData::from(Box::<[u8]>::from(buf.as_slice()));
+                let RiceData::Owned(ref mut imp) = data else {
+                    unreachable!();
+                };
+                imp.offset = offset;
+                let base = imp.ptr.cast_const();
+                assert_no_payload(&data);
+                assert_eq!(rice_data_ptr(&data).cast_const(), base);
+                assert_eq!(rice_data_len(&data), buf.len());
+                assert_eq!(core::slice::from_raw_parts(base, buf.len()), &buf);
+                let mut transmit = RiceTransmit {
+                    data,
+                    ..Default::default()
+                };
+                rice_transmit_clear(&mut transmit);
+            }
+            assert_eq!(buf, [0x30, 0x31, 0x32, 0x33]);
+        }
+    }
+
+    fn rfc4571_frame(data: &[u8]) -> Vec<u8> {
+        let mut ret = Vec::from(u16::try_from(data.len()).unwrap().to_be_bytes());
+        ret.extend_from_slice(data);
+        ret
+    }
+
+    unsafe fn tcp_host_candidate(addr: SocketAddr, tcp_type: RiceTcpType) -> *mut RiceCandidate {
+        unsafe {
+            let foundation = CString::new("0").unwrap();
+            let address = mut_override(RiceAddress::new(addr).into_c_full());
+            let candidate = rice_candidate_new(
+                1,
+                RiceCandidateType::Host,
+                RiceTransportType::Tcp,
+                foundation.as_ptr(),
+                address,
+            );
+            assert!(!candidate.is_null());
+            rice_candidate_set_priority(candidate, 100);
+            rice_candidate_set_tcp_type(candidate, tcp_type);
+            candidate
+        }
+    }
+
+    unsafe fn expect_component_state(
+        agent: *mut RiceAgent,
+        now: i64,
+        state: ComponentConnectionState,
+    ) {
+        unsafe {
+            let mut poll = RiceAgentPoll::Closed;
+            rice_agent_poll(agent, now, &mut poll);
+            let RiceAgentPoll::ComponentStateChange(ref change) = poll else {
+                unreachable!("{poll:?}");
+            };
+            assert_eq!(change.component_id, 1);
+            assert_eq!(change.state, state);
+            rice_agent_poll_clear(&mut poll);
+        }
+    }
+
+    /// Provide `data` received on the ICE-TCP connection of component 1 to `stream`.
+    unsafe fn tcp_recv(
+        stream: *mut RiceStream,
+        from: *const RiceAddress,
+        to: *const RiceAddress,
+        data: &[u8],
+        now: i64,
+    ) -> RiceStreamIncomingData {
+        let mut ret = RiceStreamIncomingData {
+            handled: false,
+            have_more_data: false,
+            data: RiceData::Borrowed(RiceDataImpl::default()),
+        };
+        unsafe {
+            rice_stream_handle_incoming_data(
+                stream,
+                1,
+                RiceTransportType::Tcp,
+                from,
+                to,
+                data.as_ptr(),
+                data.len(),
+                now,
+                &mut ret,
+                core::ptr::null_mut(),
+            );
+        }
+        ret
+    }
+
+    unsafe fn poll_recv(stream: *mut RiceStream) -> Option<Vec<u8>> {
+        unsafe {
+            let mut component_id = usize::MAX;
+            let mut len = usize::MAX;
+            let ptr = rice_stream_poll_recv(stream, &mut component_id, &mut len);
+            if ptr.is_null() {
+                assert_eq!(component_id, 0);
+                assert_eq!(len, 0);
+                return None;
+            }
+            assert_eq!(component_id, 1);
+            let ret = core::slice::from_raw_parts(ptr, len).to_vec();
+            rice_free_data(ptr, len);
+            Some(ret)
+        }
+    }
+
+    /// Checks that `ret` exposes the payload of the RFC 4571 frame at the start of `input` in
+    /// place.
+    unsafe fn assert_in_place_payload(ret: &RiceStreamIncomingData, input: &[u8], payload: &[u8]) {
+        unsafe {
+            assert!(!ret.handled);
+            assert!(matches!(ret.data, RiceData::Borrowed(_)));
+            let (ptr, len) = data_payload(&ret.data);
+            assert_eq!(ptr, input.as_ptr().add(2));
+            assert_eq!(len, payload.len());
+            assert_eq!(core::slice::from_raw_parts(ptr, len), payload);
+            // The existing accessors still describe the backing buffer, framing header included.
+            assert_eq!(rice_data_ptr(&ret.data).cast_const(), input.as_ptr());
+            assert_eq!(rice_data_len(&ret.data), 2 + payload.len());
+        }
+    }
+
+    /// Answers, as the remote peer, the next connectivity check sent by `agent` over ICE-TCP.
+    unsafe fn answer_tcp_check(
+        agent: *mut RiceAgent,
+        stream: *mut RiceStream,
+        remote: *const RiceAddress,
+        tcp_local: *const RiceAddress,
+        now: i64,
+    ) {
+        use stun_proto::types::attribute::XorMappedAddress;
+        use stun_proto::types::message::{
+            BINDING, Message, MessageClass, MessageIntegrityCredentials, MessageWrite,
+            MessageWriteExt, MessageWriteVec, ShortTermCredentials,
+        };
+
+        unsafe {
+            let mut transmit = RiceTransmit::default();
+            rice_agent_poll_transmit(agent, now, &mut transmit);
+            assert_eq!(transmit.transport, RiceTransportType::Tcp);
+            let from = RiceAddress::into_rice_none(transmit.from).inner();
+            assert_eq!(from, RiceAddress::into_rice_none(tcp_local).inner());
+            assert_eq!(
+                RiceAddress::into_rice_none(transmit.to).inner(),
+                RiceAddress::into_rice_none(remote).inner()
+            );
+            // Data to send has no leading bytes to skip: the payload is the whole RFC 4571 frame.
+            let framed = data_payload_slice(&transmit.data).unwrap();
+            assert_eq!(framed.as_ptr(), rice_data_ptr(&transmit.data).cast_const());
+            assert_eq!(framed.len(), rice_data_len(&transmit.data));
+            let (header, request) = framed.split_at(2);
+            assert_eq!(
+                usize::from(u16::from_be_bytes([header[0], header[1]])),
+                request.len()
+            );
+
+            let request = Message::from_bytes(request).unwrap();
+            assert!(request.has_class(MessageClass::Request));
+            assert!(request.has_method(BINDING));
+            let credentials: MessageIntegrityCredentials =
+                ShortTermCredentials::new("rpass".to_string()).into();
+            request.validate_integrity(&credentials).unwrap();
+            let mut response = Message::builder_success(&request, MessageWriteVec::new());
+            response
+                .add_attribute(&XorMappedAddress::new(from, request.transaction_id()))
+                .unwrap();
+            response
+                .add_message_integrity(&credentials, IntegrityAlgorithm::Sha1)
+                .unwrap();
+            response.add_fingerprint().unwrap();
+            let response = rfc4571_frame(&response.finish());
+            rice_transmit_clear(&mut transmit);
+
+            rice_agent_poll_transmit(agent, now, &mut transmit);
+            assert_no_payload(&transmit.data);
+            rice_transmit_clear(&mut transmit);
+
+            let ret = tcp_recv(stream, remote, tcp_local, &response, now);
+            assert!(ret.handled);
+            assert_no_payload(&ret.data);
+        }
+    }
+
+    #[test]
+    fn rice_data_payload_ice_tcp_recv() {
+        let _log = crate::tests::test_init_log();
+        unsafe {
+            let agent = rice_agent_new(true, false);
+            let stream = rice_agent_add_stream(agent);
+            let component = rice_stream_add_component(stream);
+            let local_credentials =
+                credentials_to_c(Credentials::new("luser".to_string(), "lpass".to_string()));
+            let remote_credentials =
+                credentials_to_c(Credentials::new("ruser".to_string(), "rpass".to_string()));
+            rice_stream_set_local_credentials(stream, local_credentials);
+            rice_credentials_free(local_credentials);
+            rice_stream_set_remote_credentials(stream, remote_credentials);
+            rice_credentials_free(remote_credentials);
+
+            let local_addr: SocketAddr = "192.168.1.1:9".parse().unwrap();
+            let tcp_local_addr: SocketAddr = "192.168.1.1:1111".parse().unwrap();
+            let remote_addr: SocketAddr = "192.168.2.2:2222".parse().unwrap();
+            let tcp_local = RiceAddress::new(tcp_local_addr).into_c_full();
+            let remote = RiceAddress::new(remote_addr).into_c_full();
+
+            let candidate = tcp_host_candidate(local_addr, RiceTcpType::Active);
+            assert!(rice_stream_add_local_candidate(stream, candidate));
+            rice_candidate_free(candidate);
+            rice_stream_end_of_local_candidates(stream);
+            let candidate = tcp_host_candidate(remote_addr, RiceTcpType::Passive);
+            rice_stream_add_remote_candidate(stream, candidate);
+            rice_candidate_free(candidate);
+            rice_stream_end_of_remote_candidates(stream);
+
+            // Connect over ICE-TCP.
+            let mut now = 0;
+            let mut poll = RiceAgentPoll::Closed;
+            rice_agent_poll(agent, now, &mut poll);
+            let RiceAgentPoll::AllocateSocket(ref allocate) = poll else {
+                unreachable!("{poll:?}");
+            };
+            assert_eq!(allocate.component_id, 1);
+            assert_eq!(allocate.transport, RiceTransportType::Tcp);
+            let allocate_from = rice_address_copy(allocate.from);
+            let allocate_to = rice_address_copy(allocate.to);
+            rice_agent_poll_clear(&mut poll);
+            expect_component_state(agent, now, ComponentConnectionState::Connecting);
+            rice_stream_handle_allocated_socket(
+                stream,
+                1,
+                RiceTransportType::Tcp,
+                allocate_from,
+                allocate_to,
+                rice_address_copy(tcp_local),
+                now,
+            );
+            rice_address_free(allocate_from);
+            rice_address_free(allocate_to);
+            rice_agent_poll(agent, now, &mut poll);
+            rice_agent_poll_clear(&mut poll);
+
+            answer_tcp_check(agent, stream, remote, tcp_local, now);
+            expect_component_state(agent, now, ComponentConnectionState::Connected);
+
+            rice_agent_poll(agent, now, &mut poll);
+            let RiceAgentPoll::WaitUntilNanos(next) = poll else {
+                unreachable!("{poll:?}");
+            };
+            assert!(next > now);
+            now = next;
+            rice_agent_poll(agent, now, &mut poll);
+            rice_agent_poll_clear(&mut poll);
+
+            // Nomination.
+            answer_tcp_check(agent, stream, remote, tcp_local, now);
+            rice_agent_poll(agent, now, &mut poll);
+            let RiceAgentPoll::SelectedPair(ref _selected) = poll else {
+                unreachable!("{poll:?}");
+            };
+            rice_agent_poll_clear(&mut poll);
+            expect_component_state(agent, now, ComponentConnectionState::Completed);
+
+            // A complete frame exposes only its payload, in place, without the framing header.
+            let payload = b"\x80single frame";
+            let input = rfc4571_frame(payload);
+            let ret = tcp_recv(stream, remote, tcp_local, &input, now);
+            assert!(!ret.have_more_data);
+            assert_in_place_payload(&ret, &input, payload);
+            assert_eq!(poll_recv(stream), None);
+            assert_eq!(input, rfc4571_frame(payload));
+
+            // With multiple frames in one read, the first is exposed in place and the remaining
+            // frames are retrieved with rice_stream_poll_recv().
+            let payloads: [&[u8]; 3] = [b"\x80first", b"\x80second frame", b"\x80third"];
+            let input = payloads
+                .iter()
+                .flat_map(|payload| rfc4571_frame(payload))
+                .collect::<Vec<_>>();
+            let ret = tcp_recv(stream, remote, tcp_local, &input, now);
+            assert!(ret.have_more_data);
+            assert_in_place_payload(&ret, &input, payloads[0]);
+            assert_eq!(poll_recv(stream).as_deref(), Some(payloads[1]));
+            assert_eq!(poll_recv(stream).as_deref(), Some(payloads[2]));
+            assert_eq!(poll_recv(stream), None);
+
+            // A fragmented frame is buffered and then retrieved with rice_stream_poll_recv().
+            let payload = b"\x80fragmented frame";
+            let input = rfc4571_frame(payload);
+            for split in [1, 2, 5, input.len() - 1] {
+                let ret = tcp_recv(stream, remote, tcp_local, &input[..split], now);
+                assert!(ret.handled);
+                assert!(!ret.have_more_data);
+                assert_no_payload(&ret.data);
+                let ret = tcp_recv(stream, remote, tcp_local, &input[split..], now);
+                assert!(ret.handled);
+                assert!(ret.have_more_data);
+                assert_no_payload(&ret.data);
+                assert_eq!(poll_recv(stream).as_deref(), Some(payload.as_slice()));
+                assert_eq!(poll_recv(stream), None);
+            }
+
+            // A complete frame followed by the start of the next frame.
+            let first = b"\x80complete";
+            let second = b"\x80split over two reads";
+            let second_frame = rfc4571_frame(second);
+            let mut input = rfc4571_frame(first);
+            input.extend_from_slice(&second_frame[..3]);
+            let ret = tcp_recv(stream, remote, tcp_local, &input, now);
+            assert_in_place_payload(&ret, &input, first);
+            assert_eq!(poll_recv(stream), None);
+            let ret = tcp_recv(stream, remote, tcp_local, &second_frame[3..], now);
+            assert!(ret.have_more_data);
+            assert_no_payload(&ret.data);
+            assert_eq!(poll_recv(stream).as_deref(), Some(second.as_slice()));
+            assert_eq!(poll_recv(stream), None);
+
+            // An empty frame has no payload.
+            let input = rfc4571_frame(&[]);
+            let ret = tcp_recv(stream, remote, tcp_local, &input, now);
+            assert_no_payload(&ret.data);
+            assert_eq!(poll_recv(stream), None);
+
+            // Data to send is owned and has no leading bytes to skip: the payload is the whole
+            // RFC 4571 frame.
+            let mut send = *b"\x80sent data";
+            let mut transmit = RiceTransmit::default();
+            assert_eq!(
+                rice_component_send(component, send.as_mut_ptr(), send.len(), now, &mut transmit),
+                RiceError::Success
+            );
+            assert!(matches!(transmit.data, RiceData::Owned(_)));
+            let framed = data_payload_slice(&transmit.data).unwrap();
+            assert_eq!(framed, rfc4571_frame(&send));
+            assert_eq!(framed.as_ptr(), rice_data_ptr(&transmit.data).cast_const());
+            assert_eq!(framed.len(), rice_data_len(&transmit.data));
+            rice_transmit_clear(&mut transmit);
+            assert_no_payload(&transmit.data);
+
+            rice_address_free(mut_override(tcp_local));
+            rice_address_free(mut_override(remote));
             rice_component_unref(component);
             rice_stream_unref(stream);
             rice_agent_unref(agent);
