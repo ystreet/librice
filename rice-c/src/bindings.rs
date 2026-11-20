@@ -175,7 +175,7 @@ const _: () = {
 pub const RICE_DATA_BORROWED: RiceData_Tag = 0;
 #[doc = " The data is owned and will be freed on destruction."]
 pub const RICE_DATA_OWNED: RiceData_Tag = 1;
-#[doc = " A pointer to a sequence of bytes and size."]
+#[doc = " A pointer to a sequence of bytes and size.\n\n Use `rice_data_payload()` to access the payload bytes."]
 pub type RiceData_Tag = ::core::ffi::c_uint;
 #[repr(C)]
 pub struct RiceData {
@@ -614,7 +614,7 @@ pub struct RiceStreamIncomingData {
     pub handled: bool,
     #[doc = " Whether there is more data to pull using `rice_stream_poll_recv()`."]
     pub have_more_data: bool,
-    #[doc = " The data pointer. If non-NULL, this is the same value as provided to\n `rice_stream_handle_incoming_data()` and has the same lifetime contraints as that original\n data pointer."]
+    #[doc = " The data pointer. If non-NULL, this is the same value as provided to\n `rice_stream_handle_incoming_data()` and has the same lifetime contraints as that original\n data pointer.\n\n The application data may start at an offset into that data, e.g. after the RFC 4571\n framing header of TCP data. Use `rice_data_payload()` to retrieve it."]
     pub data: RiceData,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
@@ -712,12 +712,16 @@ unsafe extern "C" {
     pub fn rice_component_revoke_consent(component: *const RiceComponent);
 }
 unsafe extern "C" {
-    #[doc = " The number of bytes in a `RiceData`."]
+    #[doc = " The number of bytes in the backing buffer of a `RiceData`.\n\n This describes the backing buffer and is not necessarily the length of the payload, which may\n start at a non-zero offset into the buffer, e.g. after the RFC 4571 framing header of data\n received over TCP. Use `rice_data_payload()` to retrieve the payload.\n\n `data` must not be `NULL`."]
     pub fn rice_data_len(data: *const RiceData) -> usize;
 }
 unsafe extern "C" {
-    #[doc = " The data pointer for a `RiceData`."]
+    #[doc = " The pointer to the start of the backing buffer of a `RiceData`.\n\n This describes the backing buffer and does not necessarily point to the payload, which may\n start at a non-zero offset into the buffer, e.g. after the RFC 4571 framing header of data\n received over TCP. Use `rice_data_payload()` to retrieve the payload.\n\n `data` must not be `NULL`."]
     pub fn rice_data_ptr(data: *const RiceData) -> *mut u8;
+}
+unsafe extern "C" {
+    #[doc = " A read-only view of the payload of a `RiceData`.\n\n Returns a pointer to the first payload byte and stores the number of payload bytes in\n `payload_len`. Unlike `rice_data_ptr()` and `rice_data_len()`, this excludes any leading bytes\n of the backing buffer that are not part of the payload, such as the RFC 4571 framing header of\n data received over TCP.\n\n If there is no payload, `NULL` is returned and `payload_len` is set to 0. This is the case when\n `data` is `NULL`, is empty (e.g. the default value), has a `NULL` backing pointer, or has a\n payload offset at or beyond the end of the backing buffer.\n\n `data` can be `NULL`, otherwise it must point to a valid `RiceData`. Dangling pointers and\n invalid values (e.g. an unknown tag) cannot be detected. `payload_len` is required: it must be\n a non-`NULL` pointer to writable storage.\n\n Nothing is allocated, copied, modified or freed and the ownership of `data` is unchanged. The\n returned pointer refers to the storage of `data` and must not be freed. It is only valid while\n that storage is: borrowed storage must be kept alive by its owner and owned storage must not\n be released (e.g. with `rice_transmit_clear()`) while the payload is in use. Owned storage is\n still released through `data` as before."]
+    pub fn rice_data_payload(data: *const RiceData, payload_len: *mut usize) -> *const u8;
 }
 unsafe extern "C" {
     #[doc = " Free any resources allocated within a `RiceTransmit`.\n\n The `RiceTransmit` must have been previously initialized with `rice_transmit_init()`."]
